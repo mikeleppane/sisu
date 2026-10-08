@@ -7,7 +7,7 @@ through LLVM.
 
 Sisu (Finnish for grit) is a learning project: the goal is to build a language
 end to end, from source text to a running binary, not to ship a production
-language. The compiler, `sisuc`, is written in Rust and drives LLVM 18 through
+language. The compiler, `sisuc`, is written in Rust and drives LLVM 22 through
 [inkwell](https://github.com/TheDan64/inkwell).
 
 ```
@@ -36,9 +36,13 @@ Early work: the workspace and tooling are in place, the compiler is not yet.
 ## Development
 
 You need the Rust toolchain pinned in `rust-toolchain.toml` (rustup installs it
-on first use) and LLVM 18 (`llvm-18-dev` on Ubuntu).
+on first use), and `libzstd-dev`, `libxml2-dev` and `zlib1g-dev` on Ubuntu.
+LLVM 22 lives inside the repo: `scripts/install-llvm.sh` puts the official
+release in `.llvm/22` (about 12 GB), and `.cargo/config.toml` points the build
+at it. Any system LLVM is left alone.
 
 ```console
+$ ./scripts/install-llvm.sh  # once per clone: LLVM 22 into .llvm/
 $ cargo build --workspace
 $ cargo nextest run --workspace
 $ prek install            # once per clone: run the checks on every commit
