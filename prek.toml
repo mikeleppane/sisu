@@ -40,3 +40,18 @@ name = "typos"
 language = "system"
 entry = "typos --force-exclude"
 types = ["text"]
+
+# Preinstalled on GitHub's Ubuntu runners.
+[[repos.hooks]]
+id = "shellcheck"
+name = "shellcheck"
+language = "system"
+entry = "shellcheck"
+types = ["shell"]
+
+# Lints .github/workflows, including `run:` scripts through shellcheck.
+# prek builds it with its own Go toolchain, so it needs no local install.
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "914e7df21a07ef503a81201c76d2b11c789d3fca" # v1.7.12
+hooks = [{ id = "actionlint" }]
