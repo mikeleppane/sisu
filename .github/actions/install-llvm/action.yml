@@ -1,0 +1,20 @@
+name: Install LLVM
+description: Restores or installs the project-local LLVM in .llvm/22 that llvm-sys builds against.
+runs:
+  using: composite
+  steps:
+    # llvm-config names these system libraries; libzstd.a by absolute path.
+    - name: Install LLVM's system libraries
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends libzstd-dev libxml2-dev zlib1g-dev
+    # The script pins the LLVM version and checksum, so a version bump changes the key.
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .llvm/22
+        key: llvm-${{ runner.os }}-${{ hashFiles('scripts/install-llvm.sh') }}
+    # Does nothing on a cache hit.
+    - name: Install LLVM
+      shell: bash
+      run: scripts/install-llvm.sh

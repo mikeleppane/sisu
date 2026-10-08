@@ -37,9 +37,10 @@ Early work: the workspace and tooling are in place, the compiler is not yet.
 
 You need the Rust toolchain pinned in `rust-toolchain.toml` (rustup installs it
 on first use), and `libzstd-dev`, `libxml2-dev` and `zlib1g-dev` on Ubuntu.
-LLVM 22 lives inside the repo: `scripts/install-llvm.sh` puts the official
-release in `.llvm/22` (about 12 GB), and `.cargo/config.toml` points the build
-at it. Any system LLVM is left alone.
+LLVM 22 lives inside the repo: `scripts/install-llvm.sh` downloads the official
+release (1.9 GB) and keeps only what the build needs in `.llvm/22` (about
+360 MB). `.cargo/config.toml` points the build at it. Any system LLVM is left
+alone.
 
 ```console
 $ ./scripts/install-llvm.sh  # once per clone: LLVM 22 into .llvm/

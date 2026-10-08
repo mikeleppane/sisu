@@ -5,7 +5,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 yanked = "deny"
 
 [licenses]
-allow = ["Apache-2.0", "MIT"]
+# Unicode-3.0: unicode-ident (via syn, a build-time dependency of inkwell).
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
 # Workspace crates are `publish = false` and carry no license.
 private = { ignore = true }
 
