@@ -1,0 +1,42 @@
+# Git hooks, run by prek (https://prek.j178.dev). Install once per clone:
+#   prek install
+# Run everything by hand: prek run --all-files
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "mixed-line-ending" },
+  { id = "check-merge-conflict" },
+  { id = "check-added-large-files" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+language = "system"
+entry = "cargo fmt --all -- --check"
+types = ["rust"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+language = "system"
+entry = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+# Lint config lives in the manifests, so their changes re-run clippy too.
+files = '(\.rs|Cargo\.toml|Cargo\.lock|clippy\.toml)$'
+pass_filenames = false
+
+[[repos.hooks]]
+id = "typos"
+name = "typos"
+language = "system"
+entry = "typos --force-exclude"
+types = ["text"]
