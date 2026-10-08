@@ -19,12 +19,19 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-curl --fail --location --retry 3 --output "$tmp/llvm.tar.xz" "$url"
+curl --fail --location --retry 3 --no-progress-meter --output "$tmp/llvm.tar.xz" "$url"
 echo "$sha256  $tmp/llvm.tar.xz" | sha256sum --check --quiet
 
 rm -rf "$dest"
 mkdir -p "$dest"
-tar -xJf "$tmp/llvm.tar.xz" -C "$dest" --strip-components=1
+# Only what llvm-sys builds against: llvm-config, the C API headers, and the
+# static LLVM and Polly libraries that `llvm-config --libnames` lists. That is
+# about 360 MB of the 12 GB release; the rest (clang, lld and other tools)
+# would not fit the 10 GB GitHub Actions cache.
+top="LLVM-${version}-Linux-X64"
+tar -xJf "$tmp/llvm.tar.xz" -C "$dest" --strip-components=1 --wildcards \
+    "$top/bin/llvm-config" "$top/include/llvm" "$top/include/llvm-c" \
+    "$top/lib/libLLVM*.a" "$top/lib/libPolly*.a"
 # Written last, so an interrupted run is redone on the next call.
 echo "$version" >"$dest/VERSION"
 echo "Installed LLVM $version in $dest"
