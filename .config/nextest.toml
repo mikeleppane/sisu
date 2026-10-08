@@ -1,0 +1,4 @@
+[profile.ci]
+# Report every failure, not just the first.
+fail-fast = false
+failure-output = "immediate-final"
