@@ -19,9 +19,7 @@ Once per clone, run `scripts/install-llvm.sh` and `prek install`. The script ins
 ## Code rules
 
 - Lint policy lives in the root `Cargo.toml` under `[workspace.lints]`. Every crate opts in with `[lints] workspace = true`. CI fails on any warning.
-- To silence one lint at one site, use `#[expect(lint, reason = "...")]`. Do not use a bare `#[allow]`, and do not weaken the workspace lint table to make code pass.
-- Do not use `unwrap()` outside tests. Use `expect("why this cannot fail")`, or return an error.
-- Each `unsafe` block needs a `// SAFETY:` comment.
+- Clippy enforces the code rules (`#[expect]` with a reason, no `unwrap()` outside tests, `// SAFETY:` comments). Fix the code to satisfy a lint; the lint table changes only with the user's agreement.
 
 ## Open-source facts: use GitHits, do not guess
 
