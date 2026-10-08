@@ -1,0 +1,18 @@
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = ["Apache-2.0", "MIT"]
+# Workspace crates are `publish = false` and carry no license.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

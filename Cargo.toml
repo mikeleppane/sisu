@@ -1,0 +1,46 @@
+[workspace]
+members = ["crates/sisuc", "crates/runtime"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# Lint policy lives here; each crate opts in with `[lints] workspace = true`.
+# CI and the pre-commit hook run clippy with `-D warnings`, so every `warn`
+# below blocks a merge. Silence a single site with
+# `#[expect(lint, reason = "...")]`, never a bare `#[allow]`.
+[workspace.lints.rust]
+unsafe_code = "deny" # the runtime opts out per item with a reason
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that cost more than they give in a compiler.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+# Picks from the restriction group.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn" # use `expect("why this cannot fail")`
+undocumented_unsafe_blocks = "warn"
+semicolon_if_nothing_returned = "warn"
+
+[profile.dev]
+# The runtime is a staticlib called from generated code over the C ABI; a
+# Rust panic must never unwind into it. Tests ignore this setting.
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1
