@@ -1,6 +1,10 @@
 //! `sisuc`, the Sisu compiler.
 
 mod codegen;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 4"))]
+mod diagnostic;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 4"))]
+mod lexer;
 mod link;
 
 use std::fs;
