@@ -20,6 +20,7 @@ Once per clone, run `scripts/install-llvm.sh` and `prek install`. The script ins
 
 - Lint policy lives in the root `Cargo.toml` under `[workspace.lints]`. Every crate opts in with `[lints] workspace = true`. CI fails on any warning.
 - Clippy enforces the code rules (`#[expect]` with a reason, no `unwrap()` outside tests, `// SAFETY:` comments). Fix the code to satisfy a lint; the lint table changes only with the user's agreement.
+- Reviews: apply `CODING_STANDARDS.md`.
 
 ## Open-source facts: use GitHits, do not guess
 

@@ -1,0 +1,8 @@
+fn f() -> i64 {
+    while true { return 1 }
+    2
+}
+
+fn main() {
+    print(f())
+}

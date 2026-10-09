@@ -1,0 +1,5 @@
+fn main() {
+    let min = -9_223_372_036_854_775_807 - 1
+    let r = min / -1
+    print(r)
+}

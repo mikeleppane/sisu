@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+annotate-snippets = "0.12.16"
 # llvm22-1 binds llvm-sys 221, which finds LLVM through LLVM_SYS_221_PREFIX
 # (set in .cargo/config.toml).
 inkwell = { version = "0.10.0", features = ["llvm22-1"] }
