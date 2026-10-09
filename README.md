@@ -27,7 +27,7 @@ Early work: the workspace and tooling are in place, the compiler is not yet.
 | # | Milestone | Done when |
 | --- | --- | --- |
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers |
-| 2 | Classes, methods, heap, optionals, reference counting | A linked list and a binary tree run clean under Valgrind |
+| 2 | Classes, methods, heap, optionals, reference counting, `break` and `continue` | A linked list and a binary tree run clean under Valgrind |
 | 3 | Arrays and a byte type | A prime sieve prints correct answers |
 | 4 | Strings | A program reverses and compares strings |
 | 5 | Input and output | A word-count tool reads standard input |
