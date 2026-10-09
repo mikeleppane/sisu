@@ -163,10 +163,12 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut tokens: Vec<Token> = Vec::new();
     let mut open: Vec<Open> = Vec::new();
     let mut chars = source.char_indices().peekable();
+    let mut line_start = true;
     while let Some((start, c)) = chars.next() {
         let kind = match c {
             ' ' | '\t' | '\r' => continue,
             '\n' => {
+                line_start = true;
                 if ends_statement(&tokens, &open) {
                     tokens.push(newline(Span::new(start, start + 1)));
                 }
@@ -199,6 +201,10 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         };
         let end = chars.peek().map_or(source.len(), |&(i, _)| i);
         let span = Span::new(start, end);
+        if line_start {
+            check_line_start(&tokens, &open, &kind, span)?;
+            line_start = false;
+        }
         track_bracket(&mut open, &kind, span)?;
         tokens.push(Token { kind, span });
     }
@@ -230,13 +236,42 @@ fn newline(span: Span) -> Token {
 /// Whether a line break here ends a statement: the previous token can end one,
 /// and the innermost open bracket, if any, is a block.
 fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
+    can_end_statement(tokens) && open.last().is_none_or(|&(c, _)| c == '{')
+}
+
+/// Whether the previous token can end a statement (Go's rule).
+fn can_end_statement(tokens: &[Token]) -> bool {
     use TokenKind::{False, Ident, Int, RBrace, RParen, Return, True};
     tokens.last().is_some_and(|t| {
         matches!(
             t.kind,
             Ident(_) | Int(_) | True | False | Return | RParen | RBrace
         )
-    }) && open.last().is_none_or(|&(c, _)| c == '{')
+    })
+}
+
+/// Layout rules 2 and 3 inside `( )`, where no `Newline` reaches the parser:
+/// `kind` starts a line after a token that could end a statement.
+fn check_line_start(
+    tokens: &[Token],
+    open: &[Open],
+    kind: &TokenKind,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    if open.last().is_none_or(|&(c, _)| c != '(') || !can_end_statement(tokens) {
+        return Ok(());
+    }
+    match kind {
+        TokenKind::Else => Err(Diagnostic::error(
+            span,
+            "`else` must be on the same line as the closing `}`",
+        )),
+        TokenKind::LBrace => Err(Diagnostic::error(
+            span,
+            "`{` must be on the same line as `if`, `else` or `while`",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Pushes an opening bracket onto `open`, or checks that a closing one matches the top.
@@ -706,6 +741,30 @@ mod tests {
         assert_eq!(
             all_kinds("a -\n- b"),
             [ident("a"), Minus, Minus, ident("b"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn else_on_new_line_inside_parens() {
+        assert_eq!(
+            err("fn main() { print(if true { 1 }\nelse { 2 }) }"),
+            (
+                "`else` must be on the same line as the closing `}`".to_string(),
+                2,
+                1
+            )
+        );
+    }
+
+    #[test]
+    fn brace_on_new_line_inside_parens() {
+        assert_eq!(
+            err("fn main() { print(if true\n{ 1 } else { 2 }) }"),
+            (
+                "`{` must be on the same line as `if`, `else` or `while`".to_string(),
+                2,
+                1
+            )
         );
     }
 
