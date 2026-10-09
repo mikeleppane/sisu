@@ -23,6 +23,7 @@ impl Span {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Severity {
     Error,
+    Warning,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +58,20 @@ impl Diagnostic {
             reason = "used by the checker, wired into the CLI in Task 11"
         )
     )]
+    pub(crate) fn warning(span: Span, message: impl Into<String>) -> Diagnostic {
+        Diagnostic {
+            severity: Severity::Warning,
+            ..Diagnostic::error(span, message)
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "used by the checker, wired into the CLI in Task 11"
+        )
+    )]
     pub(crate) fn label(mut self, text: impl Into<String>) -> Diagnostic {
         self.label = Some(text.into());
         self
@@ -76,6 +91,7 @@ impl Diagnostic {
     pub(crate) fn render(&self, path: &str, source: &str) -> String {
         let level = match self.severity {
             Severity::Error => Level::ERROR,
+            Severity::Warning => Level::WARNING,
         };
         let mut primary = AnnotationKind::Primary.span(self.span.start..self.span.end);
         if let Some(label) = &self.label {
@@ -114,6 +130,16 @@ mod tests {
         assert_eq!(line_col("ää x", 5), (1, 4));
         assert_eq!(line_col("ää\nx", 5), (2, 1));
         assert_eq!(line_col("", 0), (1, 1));
+    }
+
+    #[test]
+    fn renders_warning() {
+        let source = "fn main() {\n    var count = 0\n}\n";
+        let rendered = Diagnostic::warning(Span::new(20, 25), "`count` is never reassigned")
+            .help("declare it with `let`")
+            .render("w.sisu", source);
+        assert!(rendered.starts_with("warning: `count` is never reassigned\n --> w.sisu:2:9"));
+        assert!(rendered.ends_with("= help: declare it with `let`"));
     }
 
     #[test]

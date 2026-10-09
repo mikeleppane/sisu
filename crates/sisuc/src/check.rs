@@ -1,4 +1,4 @@
-//! The checker: signatures, scopes and names. Typing rules follow in Task 10.
+//! The checker: signatures, scopes, names and types.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -28,10 +28,6 @@ impl fmt::Display for Type {
 }
 
 struct Signature {
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "Task 10 checks call arguments against it")
-    )]
     params: Vec<Type>,
     ret: Type,
     name_span: Span,
@@ -127,14 +123,29 @@ impl Checker {
     }
 
     fn function(&mut self, f: &Function) -> Result<(), Diagnostic> {
-        self.ret = self.functions[&f.name.name].ret;
+        let sig = &self.functions[&f.name.name];
+        let (params, ret) = (sig.params.clone(), sig.ret);
+        self.ret = ret;
         self.scopes.push(HashMap::new());
-        for p in &f.params {
-            self.declare(&p.name, resolve(&p.ty)?, BindingKind::Param)?;
+        for (p, ty) in f.params.iter().zip(params) {
+            self.declare(&p.name, ty, BindingKind::Param)?;
         }
-        self.block(&f.body)?;
+        let body = self.block(&f.body)?;
         self.scopes.pop();
-        Ok(())
+        match body {
+            _ if ret == Type::Unit || body == Type::Never || body == ret => Ok(()),
+            Type::Unit => {
+                let end = f.body.span.end;
+                Err(Diagnostic::error(
+                    Span::new(end - 1, end),
+                    format!(
+                        "function `{}` must return {ret}, but its body has no value",
+                        f.name.name
+                    ),
+                ))
+            }
+            _ => Err(mismatch(value_span(&f.body), ret, body)),
+        }
     }
 
     fn declare(&mut self, name: &Ident, ty: Type, kind: BindingKind) -> Result<(), Diagnostic> {
@@ -165,12 +176,22 @@ impl Checker {
             .ok_or_else(|| Diagnostic::error(span, format!("cannot find `{name}` in this scope")))
     }
 
-    /// The type of the block's last statement, or `unit` when it has none.
+    /// `never` once a statement is `never`, else the type of the last statement (`unit` when
+    /// there is none). Warns "unreachable code" on the first statement after a `never` one.
     fn block(&mut self, block: &Block) -> Result<Type, Diagnostic> {
         self.scopes.push(HashMap::new());
         let mut ty = Type::Unit;
+        let mut warned = false;
         for stmt in &block.stmts {
-            ty = self.stmt(stmt)?;
+            if ty == Type::Never && !warned {
+                self.warnings
+                    .push(Diagnostic::warning(stmt.span, "unreachable code"));
+                warned = true;
+            }
+            let stmt_ty = self.stmt(stmt)?;
+            if ty != Type::Never {
+                ty = stmt_ty;
+            }
         }
         self.scopes.pop();
         Ok(ty)
@@ -184,31 +205,69 @@ impl Checker {
                 ty,
                 init,
             } => {
-                let declared = ty.as_ref().map(resolve).transpose()?;
-                let init_ty = self.expr(init)?;
+                let ty = match ty {
+                    Some(ty) => {
+                        let declared = resolve(ty)?;
+                        self.expect(init, declared)?;
+                        declared
+                    }
+                    None => self.value(init)?,
+                };
                 let kind = if *mutable {
                     BindingKind::Var
                 } else {
                     BindingKind::Let
                 };
-                self.declare(name, declared.unwrap_or(init_ty), kind)?;
+                self.declare(name, ty, kind)?;
                 Ok(Type::Unit)
             }
             StmtKind::While { cond, body } => {
-                self.expr(cond)?;
+                self.expect(cond, Type::Bool)?;
                 self.block(body)?;
                 Ok(Type::Unit)
             }
-            StmtKind::Return(value) => {
-                value.as_ref().map(|v| self.expr(v)).transpose()?;
+            StmtKind::Return(None) if self.ret != Type::Unit => Err(Diagnostic::error(
+                stmt.span,
+                format!("`return` needs a value of type {}", self.ret),
+            )),
+            StmtKind::Return(None) => Ok(Type::Never),
+            StmtKind::Return(Some(value)) => {
+                let ty = self.value(value)?;
+                if self.ret == Type::Unit {
+                    return Err(Diagnostic::error(
+                        value.span,
+                        "this function returns no value",
+                    ));
+                }
+                if ty != self.ret {
+                    return Err(mismatch(value.span, self.ret, ty));
+                }
                 Ok(Type::Never)
             }
             StmtKind::Assign { target, value } => {
                 self.lookup(&target.name, target.span)?;
-                self.expr(value)?;
+                self.value(value)?;
                 Ok(Type::Unit)
             }
             StmtKind::Expr(e) => self.expr(e),
+        }
+    }
+
+    /// The type of an expression whose value is used: `i64` or `bool`.
+    fn value(&mut self, expr: &Expr) -> Result<Type, Diagnostic> {
+        match self.expr(expr)? {
+            Type::Unit => Err(Diagnostic::error(expr.span, "expression has no value")),
+            Type::Never => Err(Diagnostic::error(expr.span, "unreachable code")),
+            ty => Ok(ty),
+        }
+    }
+
+    fn expect(&mut self, expr: &Expr, want: Type) -> Result<Type, Diagnostic> {
+        let ty = self.value(expr)?;
+        if ty == want {
+            Ok(ty)
+        } else {
+            Err(mismatch(expr.span, want, ty))
         }
     }
 
@@ -217,47 +276,39 @@ impl Checker {
             ExprKind::Int(_) => Ok(Type::I64),
             ExprKind::Bool(_) => Ok(Type::Bool),
             ExprKind::Name(name) => Ok(self.lookup(name, expr.span)?.ty),
-            ExprKind::Call { callee, args } => {
-                let ret = if callee.name == "print" {
-                    Type::Unit
-                } else {
-                    self.functions
-                        .get(&callee.name)
-                        .map(|s| s.ret)
-                        .ok_or_else(|| {
-                            Diagnostic::error(
-                                callee.span,
-                                format!("cannot find function `{}`", callee.name),
-                            )
-                        })?
-                };
-                for arg in args {
-                    self.expr(arg)?;
-                }
-                Ok(ret)
-            }
-            ExprKind::Unary { op, operand } => {
-                self.expr(operand)?;
-                Ok(match op {
+            ExprKind::Call { callee, args } => self.call(expr, callee, args),
+            ExprKind::Unary { op, operand } => self.expect(
+                operand,
+                match op {
                     UnaryOp::Neg => Type::I64,
                     UnaryOp::Not => Type::Bool,
-                })
-            }
+                },
+            ),
             ExprKind::Binary { op, lhs, rhs } => {
-                self.expr(lhs)?;
-                self.expr(rhs)?;
-                Ok(match op {
+                let operand = match op {
+                    BinaryOp::Eq | BinaryOp::Ne => {
+                        let (l, r) = (self.value(lhs)?, self.value(rhs)?);
+                        if l != r {
+                            return Err(Diagnostic::error(
+                                expr.span,
+                                format!("cannot compare {l} with {r}"),
+                            ));
+                        }
+                        return Ok(Type::Bool);
+                    }
+                    BinaryOp::And | BinaryOp::Or => Type::Bool,
                     BinaryOp::Add
                     | BinaryOp::Sub
                     | BinaryOp::Mul
                     | BinaryOp::Div
                     | BinaryOp::Rem => Type::I64,
-                    _ => Type::Bool,
-                })
+                };
+                self.expect(lhs, operand)?;
+                self.expect(rhs, operand)
             }
             ExprKind::Compare { operands, .. } => {
                 for operand in operands {
-                    self.expr(operand)?;
+                    self.expect(operand, Type::I64)?;
                 }
                 Ok(Type::Bool)
             }
@@ -266,15 +317,65 @@ impl Checker {
                 then_block,
                 else_block,
             } => {
-                self.expr(cond)?;
-                let ty = self.block(then_block)?;
-                match else_block {
-                    Some(block) => self.block(block).map(|_| ty),
-                    None => Ok(Type::Unit),
+                self.expect(cond, Type::Bool)?;
+                let then_ty = self.block(then_block)?;
+                let Some(else_block) = else_block else {
+                    return Ok(Type::Unit);
+                };
+                match (then_ty, self.block(else_block)?) {
+                    (Type::Never, ty) => Ok(ty),
+                    (ty, else_ty) if else_ty == ty || else_ty == Type::Never => Ok(ty),
+                    (ty, else_ty) => Err(mismatch(value_span(else_block), ty, else_ty)),
                 }
             }
         }
     }
+
+    fn call(&mut self, expr: &Expr, callee: &Ident, args: &[Expr]) -> Result<Type, Diagnostic> {
+        if callee.name == "print" {
+            let wrong = || Diagnostic::error(expr.span, "`print` takes one `i64` or `bool`");
+            let [arg] = args else {
+                return Err(wrong());
+            };
+            return match self.expr(arg)? {
+                Type::Unit => Err(wrong()),
+                Type::Never => Err(Diagnostic::error(arg.span, "unreachable code")),
+                _ => Ok(Type::Unit),
+            };
+        }
+        let sig = self.functions.get(&callee.name).ok_or_else(|| {
+            Diagnostic::error(
+                callee.span,
+                format!("cannot find function `{}`", callee.name),
+            )
+        })?;
+        let (params, ret) = (sig.params.clone(), sig.ret);
+        if params.len() != args.len() {
+            let plural = if params.len() == 1 { "" } else { "s" };
+            return Err(Diagnostic::error(
+                expr.span,
+                format!(
+                    "`{}` takes {} argument{plural}, found {}",
+                    callee.name,
+                    params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        for (arg, param) in args.iter().zip(params) {
+            self.expect(arg, param)?;
+        }
+        Ok(ret)
+    }
+}
+
+fn mismatch(span: Span, want: Type, got: Type) -> Diagnostic {
+    Diagnostic::error(span, format!("expected {want}, found {got}"))
+}
+
+/// Where a block's value comes from: its last statement, or the block itself when empty.
+fn value_span(block: &Block) -> Span {
+    block.stmts.last().map_or(block.span, |s| s.span)
 }
 
 fn duplicate(name: &Ident) -> Diagnostic {
@@ -325,6 +426,25 @@ mod tests {
             .collect();
         assert_eq!(found, secondary);
         assert_eq!(d.help.as_deref(), help);
+    }
+
+    /// Asserts exactly one error with this message and position, and no label or help.
+    fn error(src: &str, message: &str, pos: (usize, usize)) {
+        expect_error(src, message, pos, None, &[], None);
+    }
+
+    /// Asserts exactly one diagnostic: a warning with this message and position.
+    fn warning(src: &str, message: &str, pos: (usize, usize)) {
+        let ds = diags(src);
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        assert_eq!(ds[0].severity, Severity::Warning);
+        assert_eq!(ds[0].message, message);
+        assert_eq!(at(src, ds[0].span), pos);
+    }
+
+    fn clean(src: &str) {
+        let ds = diags(src);
+        assert!(ds.is_empty(), "{ds:?}");
     }
 
     #[test]
@@ -467,6 +587,327 @@ mod tests {
             None,
             &[],
             None,
+        );
+    }
+
+    #[test]
+    fn unknown_type_in_signature() {
+        expect_error(
+            "fn f(a: str) {}\nfn main() {}",
+            "unknown type `str`",
+            (1, 9),
+            None,
+            &[],
+            Some("the types are `i64` and `bool`"),
+        );
+    }
+
+    #[test]
+    fn condition_must_be_bool() {
+        error(
+            "fn main() { if 1 { } }",
+            "expected `bool`, found `i64`",
+            (1, 16),
+        );
+    }
+
+    #[test]
+    fn while_condition_must_be_bool() {
+        error(
+            "fn main() { while 1 { } }",
+            "expected `bool`, found `i64`",
+            (1, 19),
+        );
+    }
+
+    #[test]
+    fn arithmetic_needs_i64() {
+        error(
+            "fn main() { print(1 + true) }",
+            "expected `i64`, found `bool`",
+            (1, 23),
+        );
+    }
+
+    #[test]
+    fn not_needs_bool() {
+        error(
+            "fn main() { print(!1) }",
+            "expected `bool`, found `i64`",
+            (1, 20),
+        );
+    }
+
+    #[test]
+    fn equality_needs_same_type() {
+        error(
+            "fn main() { print(1 == true) }",
+            "cannot compare `i64` with `bool`",
+            (1, 19),
+        );
+    }
+
+    #[test]
+    fn arity() {
+        error(
+            "fn f(a: i64) {}\nfn main() { f() }",
+            "`f` takes 1 argument, found 0",
+            (2, 13),
+        );
+        error(
+            "fn f(a: i64, b: i64) {}\nfn main() { f(1) }",
+            "`f` takes 2 arguments, found 1",
+            (2, 13),
+        );
+    }
+
+    #[test]
+    fn argument_type() {
+        error(
+            "fn f(a: i64) {}\nfn main() { f(true) }",
+            "expected `i64`, found `bool`",
+            (2, 15),
+        );
+    }
+
+    #[test]
+    fn print_no_argument() {
+        error(
+            "fn main() { print() }",
+            "`print` takes one `i64` or `bool`",
+            (1, 13),
+        );
+    }
+
+    #[test]
+    fn print_two_arguments() {
+        error(
+            "fn main() { print(1, 2) }",
+            "`print` takes one `i64` or `bool`",
+            (1, 13),
+        );
+    }
+
+    #[test]
+    fn print_unit_argument() {
+        error(
+            "fn g() {}\nfn main() { print(g()) }",
+            "`print` takes one `i64` or `bool`",
+            (2, 13),
+        );
+    }
+
+    #[test]
+    fn bind_unit() {
+        error(
+            "fn g() {}\nfn main() { let x = g() }",
+            "expression has no value",
+            (2, 21),
+        );
+    }
+
+    #[test]
+    fn if_without_else_has_no_value() {
+        error(
+            "fn main() {\n    let x = if true { 1 }\n}",
+            "expression has no value",
+            (2, 13),
+        );
+    }
+
+    #[test]
+    fn if_branches_differ() {
+        error(
+            "fn main() {\n    let x = if true { 1 } else { false }\n}",
+            "expected `i64`, found `bool`",
+            (2, 34),
+        );
+    }
+
+    #[test]
+    fn body_value_type() {
+        error(
+            "fn f() -> i64 {\n    true\n}\nfn main() {}",
+            "expected `i64`, found `bool`",
+            (2, 5),
+        );
+    }
+
+    #[test]
+    fn body_without_value() {
+        let src = "fn f() -> i64 {\n    let x = 1\n}\nfn main() {}";
+        error(
+            src,
+            "function `f` must return `i64`, but its body has no value",
+            (3, 1),
+        );
+        assert_eq!(diags(src)[0].span, Span::new(30, 31));
+    }
+
+    #[test]
+    fn return_value_type() {
+        error(
+            "fn f() -> i64 {\n    return true\n}\nfn main() {}",
+            "expected `i64`, found `bool`",
+            (2, 12),
+        );
+    }
+
+    #[test]
+    fn return_needs_value() {
+        error(
+            "fn f() -> i64 {\n    return\n}\nfn main() {}",
+            "`return` needs a value of type `i64`",
+            (2, 5),
+        );
+    }
+
+    #[test]
+    fn return_value_in_unit_fn() {
+        error(
+            "fn main() {\n    return 1\n}",
+            "this function returns no value",
+            (2, 12),
+        );
+    }
+
+    #[test]
+    fn all_paths_return_is_fine() {
+        clean(
+            "fn sign(n: i64) -> i64 {\n    if n < 0 { return -1 } else { return 1 }\n}\nfn main() {}",
+        );
+    }
+
+    #[test]
+    fn never_as_return_value() {
+        error(
+            "fn f(c: bool) -> i64 {\n    return if c { return 1 } else { return 2 }\n}\nfn main() {}",
+            "unreachable code",
+            (2, 12),
+        );
+    }
+
+    #[test]
+    fn annotated_let_type() {
+        error(
+            "fn main() { let x: bool = 1 }",
+            "expected `bool`, found `i64`",
+            (1, 27),
+        );
+    }
+
+    #[test]
+    fn annotated_let_matches() {
+        clean("fn main() {\n    let x: bool = true\n    print(x)\n}");
+    }
+
+    #[test]
+    fn never_as_operand() {
+        error(
+            "fn f(c: bool) -> i64 {\n    1 + if c { return 1 } else { return 2 }\n}\nfn main() {}",
+            "unreachable code",
+            (2, 9),
+        );
+    }
+
+    #[test]
+    fn statement_after_return() {
+        warning(
+            "fn main() {\n    return\n    print(1)\n}",
+            "unreachable code",
+            (3, 5),
+        );
+    }
+
+    #[test]
+    fn block_after_return_is_never() {
+        warning(
+            "fn f() -> i64 {\n    return 1\n    print(2)\n}\nfn main() {}",
+            "unreachable code",
+            (3, 5),
+        );
+    }
+
+    #[test]
+    fn neg_needs_i64() {
+        error(
+            "fn main() { print(-true) }",
+            "expected `i64`, found `bool`",
+            (1, 20),
+        );
+    }
+
+    #[test]
+    fn less_needs_i64() {
+        error(
+            "fn main() { print(true < false) }",
+            "expected `i64`, found `bool`",
+            (1, 19),
+        );
+    }
+
+    #[test]
+    fn and_needs_bool() {
+        error(
+            "fn main() { print(1 && true) }",
+            "expected `bool`, found `i64`",
+            (1, 19),
+        );
+    }
+
+    #[test]
+    fn unit_operand() {
+        error(
+            "fn g() {}\nfn main() { print(1 + g()) }",
+            "expression has no value",
+            (2, 23),
+        );
+    }
+
+    #[test]
+    fn unit_argument() {
+        error(
+            "fn g() {}\nfn f(a: i64) {}\nfn main() { f(g()) }",
+            "expression has no value",
+            (3, 15),
+        );
+    }
+
+    #[test]
+    fn separate_namespaces() {
+        clean("fn f() -> i64 { 1 }\nfn main() {\n    let f = 2\n    print(f)\n    print(f())\n}");
+    }
+
+    #[test]
+    fn never_branch_takes_other_type() {
+        clean(
+            "fn f(c: bool) -> i64 {\n    let x = if c { return 1 } else { 2 }\n    let y = if c { 3 } else { return 4 }\n    x + y\n}\nfn main() {}",
+        );
+    }
+
+    #[test]
+    fn unreachable_warned_once_per_block() {
+        warning(
+            "fn main() {\n    return\n    print(1)\n    print(2)\n}",
+            "unreachable code",
+            (3, 5),
+        );
+    }
+
+    #[test]
+    fn statements_after_return_are_checked() {
+        let src = "fn main() {\n    return\n    print(true + 1)\n}";
+        let ds = diags(src);
+        let found: Vec<_> = ds
+            .iter()
+            .map(|d| (d.severity, d.message.as_str(), at(src, d.span)))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (Severity::Warning, "unreachable code", (3, 5)),
+                (Severity::Error, "expected `i64`, found `bool`", (3, 11)),
+            ]
         );
     }
 }
