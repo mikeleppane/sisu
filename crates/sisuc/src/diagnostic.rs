@@ -52,7 +52,10 @@ impl Diagnostic {
 
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "first used by the checker in Task 9")
+        expect(
+            dead_code,
+            reason = "used by the checker, wired into the CLI in Task 11"
+        )
     )]
     pub(crate) fn label(mut self, text: impl Into<String>) -> Diagnostic {
         self.label = Some(text.into());

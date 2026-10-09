@@ -1,6 +1,8 @@
 //! `sisuc`, the Sisu compiler.
 
 mod ast;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 11"))]
+mod check;
 mod codegen;
 mod diagnostic;
 mod lexer;
