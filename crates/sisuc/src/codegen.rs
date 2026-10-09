@@ -7,27 +7,28 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
 use inkwell::types::{BasicMetadataTypeEnum, IntType};
 use inkwell::values::{BasicValue, FunctionValue, IntValue};
-use inkwell::{IntPredicate, OptimizationLevel};
+use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use crate::ast::{
     BinaryOp, Block, CompareOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, TypeExpr,
     UnaryOp,
 };
+use crate::diagnostic::{Span, line_col};
 
 /// Compiles a program that passed `check` into an LLVM module.
 #[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 15"))]
-// `_path` and `_source` locate panic messages once Task 14 adds checked arithmetic.
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
     program: &Program,
-    _path: &str,
-    _source: &str,
+    path: &str,
+    source: &str,
 ) -> Module<'ctx> {
     let module = context.create_module("main");
     let i64_type = context.i64_type();
@@ -46,6 +47,22 @@ pub(crate) fn compile<'ctx>(
         None,
     );
     print_bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
+    // `sisu_panic(msg, len)` prints the message and exits; it never returns.
+    let panic = module.add_function(
+        "sisu_panic",
+        void.fn_type(
+            &[
+                context.ptr_type(AddressSpace::default()).into(),
+                i64_type.into(),
+            ],
+            false,
+        ),
+        None,
+    );
+    panic.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("noreturn"), 0),
+    );
 
     let mut codegen = Codegen {
         context,
@@ -53,6 +70,9 @@ pub(crate) fn compile<'ctx>(
         builder: context.create_builder(),
         print_int,
         print_bool,
+        panic,
+        path,
+        source,
         scopes: Vec::new(),
     };
     // Declare every function first so that calls can refer to functions defined later.
@@ -77,16 +97,20 @@ enum Local<'ctx> {
     Value(IntValue<'ctx>),
 }
 
-struct Codegen<'ctx> {
+struct Codegen<'ctx, 'src> {
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
     print_int: FunctionValue<'ctx>,
     print_bool: FunctionValue<'ctx>,
+    panic: FunctionValue<'ctx>,
+    /// The input path as given, and its text: panic messages name a position in it.
+    path: &'src str,
+    source: &'src str,
     scopes: Vec<HashMap<String, Local<'ctx>>>,
 }
 
-impl<'ctx> Codegen<'ctx> {
+impl<'ctx> Codegen<'ctx, '_> {
     fn int_type(&self, ty: &TypeExpr) -> IntType<'ctx> {
         if ty.name == "bool" {
             self.context.bool_type()
@@ -259,12 +283,17 @@ impl<'ctx> Codegen<'ctx> {
             ExprKind::Unary { op, operand } => {
                 let operand = self.value(operand);
                 match op {
-                    UnaryOp::Neg => self.builder.build_int_neg(operand, "neg"),
-                    UnaryOp::Not => self.builder.build_not(operand, "not"),
+                    UnaryOp::Neg => {
+                        let zero = self.context.i64_type().const_zero();
+                        self.checked("llvm.ssub.with.overflow", zero, operand, e.span)
+                    }
+                    UnaryOp::Not => self
+                        .builder
+                        .build_not(operand, "not")
+                        .expect("builder is positioned"),
                 }
-                .expect("builder is positioned")
             }
-            ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs),
+            ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
             ExprKind::If {
                 cond,
@@ -303,24 +332,125 @@ impl<'ctx> Codegen<'ctx> {
             .map(|v| v.into_int_value())
     }
 
-    // shortcut: plain arithmetic wraps on overflow; Task 14 replaces it with checked arithmetic.
-    fn binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
+    /// `span` is the operator expression's: arithmetic panics point at its start.
+    fn binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr, span: Span) -> IntValue<'ctx> {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             return self.short_circuit(op == BinaryOp::And, lhs, rhs);
         }
         let (l, r) = (self.value(lhs), self.value(rhs));
-        let b = &self.builder;
         match op {
-            BinaryOp::Add => b.build_int_add(l, r, "add"),
-            BinaryOp::Sub => b.build_int_sub(l, r, "sub"),
-            BinaryOp::Mul => b.build_int_mul(l, r, "mul"),
-            BinaryOp::Div => b.build_int_signed_div(l, r, "div"),
-            BinaryOp::Rem => b.build_int_signed_rem(l, r, "rem"),
-            BinaryOp::Eq => b.build_int_compare(IntPredicate::EQ, l, r, "eq"),
-            BinaryOp::Ne => b.build_int_compare(IntPredicate::NE, l, r, "ne"),
+            BinaryOp::Add => self.checked("llvm.sadd.with.overflow", l, r, span),
+            BinaryOp::Sub => self.checked("llvm.ssub.with.overflow", l, r, span),
+            BinaryOp::Mul => self.checked("llvm.smul.with.overflow", l, r, span),
+            BinaryOp::Div | BinaryOp::Rem => self.division(op == BinaryOp::Rem, l, r, span),
+            BinaryOp::Eq => self.int_compare(IntPredicate::EQ, l, r),
+            BinaryOp::Ne => self.int_compare(IntPredicate::NE, l, r),
             BinaryOp::And | BinaryOp::Or => unreachable!("handled above"),
         }
+    }
+
+    fn int_compare(
+        &self,
+        predicate: IntPredicate,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        self.builder
+            .build_int_compare(predicate, lhs, rhs, "cmp")
+            .expect("builder is positioned")
+    }
+
+    /// `lhs op rhs` through `intrinsic`, an `llvm.s*.with.overflow` that returns the wrapped
+    /// result and an overflow flag; the flag branches to an "integer overflow" panic.
+    fn checked(
+        &self,
+        intrinsic: &str,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+        span: Span,
+    ) -> IntValue<'ctx> {
+        let function = Intrinsic::find(intrinsic)
+            .expect("LLVM has the overflow intrinsics")
+            .get_declaration(&self.module, &[self.context.i64_type().into()])
+            .expect("the intrinsic is overloaded on i64");
+        let pair = self
+            .builder
+            .build_call(function, &[lhs.into(), rhs.into()], "checked")
+            .expect("builder is positioned")
+            .try_as_basic_value()
+            .basic()
+            .expect("the intrinsic returns a pair")
+            .into_struct_value();
+        let field = |index, name| {
+            self.builder
+                .build_extract_value(pair, index, name)
+                .expect("the pair has two fields")
+                .into_int_value()
+        };
+        let (result, overflow) = (field(0, "result"), field(1, "overflow"));
+        self.panic_if(overflow, span, "integer overflow");
+        result
+    }
+
+    /// `lhs / rhs` or `lhs % rhs`: panics on a zero divisor, then on `i64::MIN / -1`, whose
+    /// quotient does not fit (`sdiv` and `srem` are undefined for both).
+    fn division(
+        &self,
+        rem: bool,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+        span: Span,
+    ) -> IntValue<'ctx> {
+        let i64_type = self.context.i64_type();
+        let zero = self.int_compare(IntPredicate::EQ, rhs, i64_type.const_zero());
+        self.panic_if(zero, span, "division by zero");
+        let min = i64_type.const_int(i64::MIN.cast_unsigned(), false);
+        let minus_one = i64_type.const_int((-1_i64).cast_unsigned(), false);
+        let overflow = self
+            .builder
+            .build_and(
+                self.int_compare(IntPredicate::EQ, lhs, min),
+                self.int_compare(IntPredicate::EQ, rhs, minus_one),
+                "overflow",
+            )
+            .expect("builder is positioned");
+        self.panic_if(overflow, span, "integer overflow");
+        if rem {
+            self.builder.build_int_signed_rem(lhs, rhs, "rem")
+        } else {
+            self.builder.build_int_signed_div(lhs, rhs, "div")
+        }
         .expect("builder is positioned")
+    }
+
+    /// Branches to a fresh panic block when `fails` holds, and continues in a fresh block
+    /// otherwise. The panic block calls `sisu_panic` with `<path>:<line>:<col>: <message>`
+    /// for the start of `span`.
+    fn panic_if(&self, fails: IntValue<'ctx>, span: Span, message: &str) {
+        let function = self.current_function();
+        let panic_block = self.context.append_basic_block(function, "panic");
+        let ok = self.context.append_basic_block(function, "ok");
+        self.builder
+            .build_conditional_branch(fails, panic_block, ok)
+            .expect("builder is positioned");
+        self.builder.position_at_end(panic_block);
+        let (line, col) = line_col(self.source, span.start);
+        let text = format!("{}:{line}:{col}: {message}", self.path);
+        let msg = self
+            .builder
+            .build_global_string_ptr(&text, "panic.msg")
+            .expect("builder is positioned");
+        let len = self.context.i64_type().const_int(
+            u64::try_from(text.len()).expect("a message fits in u64"),
+            false,
+        );
+        self.builder
+            .build_call(self.panic, &[msg.as_pointer_value().into(), len.into()], "")
+            .expect("builder is positioned");
+        self.builder
+            .build_unreachable()
+            .expect("builder is positioned");
+        self.builder.position_at_end(ok);
     }
 
     /// `lhs && rhs` or `lhs || rhs`: `rhs` runs only when `lhs` does not decide the result.
@@ -615,6 +745,68 @@ mod tests {
             &Context::create(),
             "fn g() { 1 }\nfn main() {\n    g()\n    if true { 1 } else { 2 }\n}",
         );
+    }
+
+    #[test]
+    fn verifies_else_if_with_short_circuit_in_branch() {
+        compiled(
+            &Context::create(),
+            "fn f(a: i64) -> i64 {\n    if a < 0 { -1 } else if a == 0 && true { 0 } else { 1 }\n}\nfn main() { print(f(2)) }",
+        );
+    }
+
+    #[test]
+    fn print_bool_passes_a_zero_extended_i1() {
+        let context = Context::create();
+        let ir = compiled(&context, "fn main() { print(true) }")
+            .print_to_string()
+            .to_string();
+        for wanted in [
+            "declare void @sisu_print_bool(i1 zeroext)",
+            "call void @sisu_print_bool(i1 zeroext",
+        ] {
+            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+        }
+    }
+
+    #[test]
+    fn arithmetic_calls_overflow_intrinsics() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "fn f(a: i64, b: i64) -> i64 { a * b - a / b }\n\nfn main() {\n    print(-f(1, 2))\n}",
+        )
+        .print_to_string()
+        .to_string();
+        for wanted in [
+            "@llvm.smul.with.overflow.i64",
+            "@llvm.ssub.with.overflow.i64",
+            "sdiv",
+            "call void @sisu_panic",
+        ] {
+            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+        }
+        // `a * b` and `a * b - a / b` start at column 31, `a / b` at 39, `-f(1, 2)` at 4:11.
+        for message in [
+            "test.sisu:1:31: integer overflow",
+            "test.sisu:1:39: division by zero",
+            "test.sisu:1:39: integer overflow",
+            "test.sisu:4:11: integer overflow",
+        ] {
+            assert_panics_with(&ir, message);
+        }
+    }
+
+    /// Asserts that `ir` has a `sisu_panic` call that passes `message` and its byte length.
+    fn assert_panics_with(ir: &str, message: &str) {
+        let constant = format!("c\"{message}\\00\"");
+        let global = ir
+            .lines()
+            .find(|l| l.ends_with(&constant) || l.contains(&format!("{constant},")))
+            .and_then(|l| l.split(" = ").next())
+            .unwrap_or_else(|| panic!("no constant {constant} in\n{ir}"));
+        let call = format!("@sisu_panic(ptr {global}, i64 {})", message.len());
+        assert!(ir.contains(&call), "missing {call:?} in\n{ir}");
     }
 
     #[test]
