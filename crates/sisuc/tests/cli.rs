@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 #[test]
 fn emit_tokens() {
@@ -80,16 +80,22 @@ fn parse_error_exits_1() {
     );
 }
 
-/// Runs `sisuc --check` on `source`, saved as `<name>.sisu` in the target tmp dir.
-fn check(name: &str, source: &str) -> std::process::Output {
+/// Runs `sisuc <flags> <name>.sisu` on `source`, saved as `<name>.sisu` in the target tmp dir.
+fn run_on(name: &str, source: &str, flags: &[&str]) -> Output {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let file = format!("{name}.sisu");
     fs::write(dir.join(&file), source).expect("writes");
     Command::new(env!("CARGO_BIN_EXE_sisuc"))
         .current_dir(dir)
-        .args(["--check", &file])
+        .args(flags)
+        .arg(&file)
         .output()
         .expect("sisuc starts")
+}
+
+/// Runs `sisuc --check` on `source`, saved as `<name>.sisu` in the target tmp dir.
+fn check(name: &str, source: &str) -> Output {
+    run_on(name, source, &["--check"])
 }
 
 #[test]
@@ -162,13 +168,48 @@ fn mem2reg_removes_every_alloca() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let (before, after) = ir_sections(&stdout);
+    assert!(before.contains("alloca"), "{before}");
+    assert!(!after.contains("alloca"), "{after}");
+}
+
+/// Splits `--emit ir` output into the modules before and after `mem2reg`, and checks that
+/// each defines `main`.
+fn ir_sections(stdout: &str) -> (&str, &str) {
     let before = stdout
         .strip_prefix("; before mem2reg\n")
         .unwrap_or_else(|| panic!("no `; before mem2reg` header in\n{stdout}"));
     let (before, after) = before
         .split_once("\n; after mem2reg\n")
         .unwrap_or_else(|| panic!("no `; after mem2reg` line in\n{stdout}"));
-    assert!(before.starts_with("; ModuleID = 'main'\n"), "{before}");
-    assert!(before.contains("alloca"), "{before}");
-    assert!(!after.contains("alloca"), "{after}");
+    for section in [before, after] {
+        assert!(section.contains("define void @sisu.main()"), "{section}");
+    }
+    (before, after)
+}
+
+#[test]
+fn emit_ir_error_prints_no_ir() {
+    let out = run_on(
+        "emit_ir_error_prints_no_ir",
+        "fn main() {\n    let n = 0\n    n = 1\n}\n",
+        &["--emit", "ir"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+#[test]
+fn emit_ir_warning_still_prints_ir() {
+    let out = run_on(
+        "emit_ir_warning_still_prints_ir",
+        "fn main() {\n    var count = 0\n    print(count)\n}\n",
+        &["--emit", "ir"],
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).starts_with("warning: `count` is never reassigned")
+    );
+    ir_sections(&String::from_utf8_lossy(&out.stdout));
 }

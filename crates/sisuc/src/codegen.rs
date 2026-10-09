@@ -783,6 +783,14 @@ mod tests {
     }
 
     #[test]
+    fn verifies_loop_body_ending_in_return() {
+        compiled(
+            &Context::create(),
+            "fn f() -> i64 {\n    while true { return 1 }\n    2\n}\nfn main() { print(f()) }",
+        );
+    }
+
+    #[test]
     fn verifies_early_return_in_main() {
         compiled(
             &Context::create(),
@@ -857,39 +865,62 @@ mod tests {
         )
         .print_to_string()
         .to_string();
-        for (name, op) in [("d", "sdiv i64 %0, %1"), ("r", "srem i64 %0, %1")] {
+        for (name, op) in [("d", "sdiv"), ("r", "srem")] {
             let header = format!("define i64 @sisu.{name}(");
             let body = ir
                 .split(&header)
                 .nth(1)
                 .and_then(|rest| rest.split("\n}").next())
                 .unwrap_or_else(|| panic!("no {header} in\n{ir}"));
-            // The zero guard, then the `MIN / -1` guard, then the operation itself.
-            let mut from = 0;
-            for wanted in [
-                "%cmp = icmp eq i64 %1, 0",
-                "br i1 %cmp, label %panic",
-                "icmp eq i64 %0, -9223372036854775808",
-                "icmp eq i64 %1, -1",
-                "%overflow = and i1",
-                "br i1 %overflow, label %panic",
-                op,
-            ] {
-                let at = body[from..]
-                    .find(wanted)
-                    .unwrap_or_else(|| panic!("missing {wanted:?} after byte {from} in\n{body}"));
-                from += at + wanted.len();
-            }
-            // Each guard's true edge goes to a panic block, its false edge on to `ok`.
-            let branches: Vec<_> = body.lines().filter(|l| l.contains("br i1 ")).collect();
-            assert_eq!(branches.len(), 2, "{body}");
-            for branch in branches {
-                let labels: Vec<_> = branch.split("label %").skip(1).collect();
+            let lines: Vec<&str> = body.lines().map(str::trim).collect();
+            let find = |wanted: &dyn Fn(&str) -> bool, what: &str| {
+                instruction(&lines, wanted).unwrap_or_else(|| panic!("no {what} in\n{body}"))
+            };
+            let (op_at, _, op_text) = find(&|t| t.starts_with(&format!("{op} i64 ")), op);
+            let (a, b) = op_text[op.len() + " i64 ".len()..]
+                .split_once(", ")
+                .unwrap_or_else(|| panic!("two operands in {op_text:?}"));
+            // The zero guard tests the divisor; the `MIN / -1` guard tests both operands.
+            let zero_test = format!("icmp eq i64 {b}, 0");
+            let min_test = format!("icmp eq i64 {a}, -9223372036854775808");
+            let neg_test = format!("icmp eq i64 {b}, -1");
+            let (zero_at, zero, _) = find(&|t| t == zero_test, &zero_test);
+            let (min_at, min, _) = find(&|t| t == min_test, &min_test);
+            let (neg_at, neg, _) = find(&|t| t == neg_test, &neg_test);
+            let (and_at, overflow, _) = find(
+                &|t| t == format!("and i1 {min}, {neg}") || t == format!("and i1 {neg}, {min}"),
+                "the `and` of the `MIN / -1` tests",
+            );
+            // Each guard branches on its own test: true to a panic block, false on to `ok`.
+            let branch = |cond: &str| {
+                let at = lines
+                    .iter()
+                    .position(|l| l.starts_with(&format!("br i1 {cond}, ")))
+                    .unwrap_or_else(|| panic!("no branch on {cond} in\n{body}"));
+                let labels: Vec<_> = lines[at].split("label %").skip(1).collect();
                 assert!(
                     matches!(labels.as_slice(), [t, f] if t.starts_with("panic") && f.starts_with("ok")),
-                    "{branch}"
+                    "{}",
+                    lines[at]
                 );
-            }
+                at
+            };
+            // The zero guard, then the `MIN / -1` guard, then the operation itself.
+            let order = [
+                zero_at,
+                branch(zero),
+                min_at.min(neg_at),
+                min_at.max(neg_at),
+                and_at,
+                branch(overflow),
+                op_at,
+            ];
+            assert!(order.is_sorted(), "{order:?} in\n{body}");
+            assert_eq!(
+                lines.iter().filter(|l| l.starts_with("br i1 ")).count(),
+                2,
+                "{body}"
+            );
         }
         for message in [
             "test.sisu:1:31: division by zero",
@@ -899,6 +930,18 @@ mod tests {
         ] {
             assert_panics_with(&ir, message);
         }
+    }
+
+    /// The first instruction `<value> = <text>` in `lines` whose text is `wanted`: its line
+    /// index, the value it defines and its text.
+    fn instruction<'a>(
+        lines: &[&'a str],
+        wanted: &dyn Fn(&str) -> bool,
+    ) -> Option<(usize, &'a str, &'a str)> {
+        lines.iter().enumerate().find_map(|(i, line)| {
+            let (value, text) = line.split_once(" = ")?;
+            wanted(text).then_some((i, value, text))
+        })
     }
 
     /// Asserts that `ir` has a `sisu_panic` call that passes `message` and its byte length.

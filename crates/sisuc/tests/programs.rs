@@ -92,6 +92,21 @@ fn loops() {
 }
 
 #[test]
+fn short_circuit() {
+    assert_prints_out_file("short_circuit");
+}
+
+#[test]
+fn loop_return() {
+    assert_prints_out_file("loop_return");
+}
+
+#[test]
+fn bool_var() {
+    assert_prints_out_file("bool_var");
+}
+
+#[test]
 fn overflow() {
     assert_panics(
         &run("overflow"),
@@ -262,4 +277,43 @@ fn failed_link_leaves_no_object_file() {
     assert!(stderr.contains("sisuc: cc failed: "), "{stderr}");
     assert_empty(&tmp);
     assert!(!dir.join("link_fails.o").exists());
+}
+
+/// Runs `sisuc <name>.sisu <name>` on `source` in the target tmp dir, after removing any
+/// earlier `<name>`; returns the output and the executable's path.
+fn build_tmp(name: &str, source: &str) -> (Output, PathBuf) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join(format!("{name}.sisu")), source).expect("writes");
+    let exe = dir.join(name);
+    // It is absent on the first run, so a failure here is expected and harmless.
+    let _ = fs::remove_file(&exe);
+    let out = sisuc(dir, &format!("{name}.sisu"), &exe)
+        .output()
+        .expect("sisuc starts");
+    (out, exe)
+}
+
+#[test]
+fn build_error_makes_no_executable() {
+    let (out, exe) = build_tmp(
+        "build_error_makes_no_executable",
+        "fn main() {\n    let n = 0\n    n = 1\n}\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
+    assert!(!exe.exists());
+}
+
+#[test]
+fn build_warning_still_makes_the_executable() {
+    let (out, exe) = build_tmp(
+        "build_warning_still_makes_the_executable",
+        "fn main() {\n    var count = 0\n    print(count)\n}\n",
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).starts_with("warning: `count` is never reassigned")
+    );
+    let run = Command::new(exe).output().expect("the program starts");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "0\n");
 }

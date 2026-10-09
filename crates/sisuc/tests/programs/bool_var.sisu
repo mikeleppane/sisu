@@ -1,0 +1,10 @@
+fn main() {
+    var going = true
+    var n = 0
+    while going {
+        n += 1
+        going = n < 3
+    }
+    print(going)
+    print(n)
+}

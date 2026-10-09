@@ -2,7 +2,8 @@
 
 use std::io::Write;
 
-/// Prints `value` and a newline to standard output. Sisu's `print_int` calls this.
+/// Prints `value` and a newline to standard output. Sisu's `print` calls this for an `i64`
+/// argument.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"

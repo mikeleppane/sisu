@@ -1,0 +1,17 @@
+// `t` prints 1 and `f` prints 0 when called, so each line shows whether the right operand ran.
+fn t() -> bool {
+    print(1)
+    true
+}
+
+fn f() -> bool {
+    print(0)
+    false
+}
+
+fn main() {
+    print(true && t())
+    print(true && f())
+    print(false || t())
+    print(false || f())
+}

@@ -839,6 +839,24 @@ mod tests {
     }
 
     #[test]
+    fn never_as_initializer() {
+        error(
+            "fn f(c: bool) -> i64 {\n    let x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
+            "unreachable code",
+            (2, 13),
+        );
+    }
+
+    #[test]
+    fn never_as_condition() {
+        error(
+            "fn f(c: bool) -> i64 {\n    while if c { return 1 } else { return 2 } {}\n    1\n}\nfn main() {}",
+            "unreachable code",
+            (2, 11),
+        );
+    }
+
+    #[test]
     fn never_as_operand() {
         error(
             "fn f(c: bool) -> i64 {\n    1 + if c { return 1 } else { return 2 }\n}\nfn main() {}",
