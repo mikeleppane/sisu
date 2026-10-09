@@ -153,6 +153,18 @@ fn run_check(input: &Path) -> ExitCode {
 
 /// Compiles `input` into the executable `output`.
 fn build(input: &Path, output: &Path) -> ExitCode {
+    // `cc -o` would replace the source with the executable.
+    let overwrites_input = match (fs::canonicalize(input), fs::canonicalize(output)) {
+        (Ok(input), Ok(output)) => input == output,
+        _ => input == output,
+    };
+    if overwrites_input {
+        eprintln!(
+            "sisuc: output {} would overwrite the input",
+            output.to_string_lossy()
+        );
+        return ExitCode::FAILURE;
+    }
     let path = input.to_string_lossy();
     let Some(source) = read(input) else {
         return ExitCode::FAILURE;
@@ -194,11 +206,12 @@ fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
     }
 }
 
-/// Compiles `program` into the executable `output`, going through `output.o`.
+/// Compiles `program` into the executable `output`, going through a temporary object file.
 fn compile(program: &Program, path: &str, source: &str, output: &Path) -> Result<(), String> {
     let context = Context::create();
     let module = codegen::compile(&context, program, path, source);
-    let object = output.with_added_extension("o");
+    // A name of its own, so a user's `<output>.o` is left alone.
+    let object = std::env::temp_dir().join(format!("sisuc-{}.o", std::process::id()));
     let machine = codegen::target_machine()?;
     codegen::run_mem2reg(&module, &machine)?;
     codegen::write_object(&module, &machine, &object)?;

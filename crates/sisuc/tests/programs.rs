@@ -9,8 +9,8 @@ const PROGRAMS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
 const MIN: &str = "    let min = -9_223_372_036_854_775_807 - 1";
 const MAX: &str = "    let big = 9_223_372_036_854_775_807";
 
-/// Compiles `<dir>/<name>.sisu`, run from `dir`, into `<CARGO_TARGET_TMPDIR>/<name>`.
-fn compile(dir: &Path, name: &str) -> PathBuf {
+/// `sisuc <input> <output>`, run from `dir`, once the runtime archive is built.
+fn sisuc(dir: &Path, input: &str, output: &Path) -> Command {
     // `cargo nextest run` does not build the runtime archive that `sisuc` links
     // against, so build it here. This is a no-op when it is up to date.
     let built = Command::new(env!("CARGO"))
@@ -19,11 +19,15 @@ fn compile(dir: &Path, name: &str) -> PathBuf {
         .expect("cargo starts");
     assert!(built.success(), "building sisu-runtime failed");
 
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sisuc"));
+    command.current_dir(dir).arg(input).arg(output);
+    command
+}
+
+/// Compiles `<dir>/<name>.sisu`, run from `dir`, into `<CARGO_TARGET_TMPDIR>/<name>`.
+fn compile(dir: &Path, name: &str) -> PathBuf {
     let exe = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-        .current_dir(dir)
-        .arg(format!("{name}.sisu"))
-        .arg(&exe)
+    let out = sisuc(dir, &format!("{name}.sisu"), &exe)
         .output()
         .expect("sisuc starts");
     assert!(
@@ -184,4 +188,78 @@ fn panic_exits_101_when_stderr_write_fails() {
         .status()
         .expect("the program starts");
     assert_eq!(status.code(), Some(101));
+}
+
+#[test]
+fn output_naming_the_input_is_refused() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let source = "fn main() {\n    print(1)\n}\n";
+    let input = dir.join("overwrite_input.sisu");
+    fs::write(&input, source).expect("writes");
+    for output in ["overwrite_input.sisu", "./overwrite_input.sisu"] {
+        let out = sisuc(dir, "overwrite_input.sisu", Path::new(output))
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(out.status.code(), Some(1), "output {output}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("sisuc: output {output} would overwrite the input\n")
+        );
+        assert_eq!(fs::read_to_string(&input).expect("reads"), source);
+    }
+}
+
+/// An empty directory under the target tmp dir, for `sisuc` to use as `TMPDIR`.
+fn empty_dir(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    // It is absent on the first run, so a failure here is expected and harmless.
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir(&dir).expect("creates the directory");
+    dir
+}
+
+fn assert_empty(dir: &Path) {
+    let left: Vec<_> = fs::read_dir(dir).expect("reads").collect();
+    assert!(left.is_empty(), "sisuc left {left:?}");
+}
+
+#[test]
+fn existing_object_file_survives_a_build() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("keep_object.sisu"), "fn main() {}\n").expect("writes");
+    fs::write(dir.join("keep_object.o"), "not sisuc's").expect("writes");
+    let tmp = empty_dir("keep_object_tmp");
+    let out = sisuc(dir, "keep_object.sisu", &dir.join("keep_object"))
+        .env("TMPDIR", &tmp)
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("keep_object.o")).expect("`keep_object.o` is still there"),
+        "not sisuc's"
+    );
+    assert_empty(&tmp);
+}
+
+#[test]
+fn failed_link_leaves_no_object_file() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("link_fails.sisu"), "fn main() {}\n").expect("writes");
+    // `cc` cannot write an executable over a directory.
+    let output = empty_dir("link_fails");
+    let tmp = empty_dir("link_fails_tmp");
+    let out = sisuc(dir, "link_fails.sisu", &output)
+        .env("TMPDIR", &tmp)
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("sisuc: cc failed: "), "{stderr}");
+    assert_empty(&tmp);
+    assert!(!dir.join("link_fails.o").exists());
 }
