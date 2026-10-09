@@ -5,7 +5,6 @@ mod codegen;
 mod diagnostic;
 mod lexer;
 mod link;
-#[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 8"))]
 mod parser;
 
 use std::ffi::OsString;
@@ -20,24 +19,29 @@ const USAGE: &str =
     "usage: sisuc <input.sisu> <output> | --emit tokens|ast|ir <input.sisu> | --check <input.sisu>";
 
 /// What the command line asks for.
-#[derive(Debug, PartialEq, Eq)]
 enum Mode {
     Emit { stage: Stage, input: PathBuf },
     // The fixed program, until stage 4 replaces it with the real compile path.
     Hello { output: PathBuf },
 }
 
-#[derive(Debug, PartialEq, Eq)]
 enum Stage {
     Tokens,
+    Ast,
 }
 
 fn parse_args(args: &[OsString]) -> Result<Mode, String> {
     match args {
-        [flag, stage, input] if flag == "--emit" && stage == "tokens" => Ok(Mode::Emit {
-            stage: Stage::Tokens,
-            input: PathBuf::from(input),
-        }),
+        [flag, stage, input] if flag == "--emit" && (stage == "tokens" || stage == "ast") => {
+            Ok(Mode::Emit {
+                stage: if stage == "tokens" {
+                    Stage::Tokens
+                } else {
+                    Stage::Ast
+                },
+                input: PathBuf::from(input),
+            })
+        }
         [output] if !output.to_string_lossy().starts_with('-') => Ok(Mode::Hello {
             output: PathBuf::from(output),
         }),
@@ -76,10 +80,21 @@ fn emit(stage: &Stage, input: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let tokens = match lexer::lex(&source) {
+        Ok(tokens) => tokens,
+        Err(d) => {
+            report(&path, &source, &[d]);
+            return ExitCode::FAILURE;
+        }
+    };
     match stage {
-        Stage::Tokens => match lexer::lex(&source) {
-            Ok(tokens) => {
-                print!("{}", lexer::dump(&source, &tokens));
+        Stage::Tokens => {
+            print!("{}", lexer::dump(&source, &tokens));
+            ExitCode::SUCCESS
+        }
+        Stage::Ast => match parser::parse(&tokens) {
+            Ok(program) => {
+                println!("{program}");
                 ExitCode::SUCCESS
             }
             Err(d) => {

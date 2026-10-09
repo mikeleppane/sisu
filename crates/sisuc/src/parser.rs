@@ -281,7 +281,6 @@ impl Parser<'_> {
                     return Ok(lhs);
                 }
                 self.bump();
-                // Level 3 is non-associative: its right side is one level up.
                 let rhs = self.binary(level + 1)?;
                 lhs = Expr {
                     span: lhs.span.to(rhs.span),
@@ -291,6 +290,7 @@ impl Parser<'_> {
                         rhs: Box::new(rhs),
                     },
                 };
+                // Level 3 is non-associative: a second `==`/`!=` is an error, not a chain.
                 if level == 3 && matches!(self.peek().kind, TokenKind::EqEq | TokenKind::NotEq) {
                     return Err(
                         Diagnostic::error(self.peek().span, "`==` and `!=` do not chain")
@@ -608,6 +608,10 @@ mod tests {
             ("true && false", "(&& true false)"),
             ("x += 1", "(= x (+ x 1))"),
             ("x %= 2", "(= x (% x 2))"),
+            ("x -= 1", "(= x (- x 1))"),
+            ("x *= 2", "(= x (* x 2))"),
+            ("x /= 2", "(= x (/ x 2))"),
+            ("(x) = 1", "(= x 1)"),
         ];
         for (src, expected) in rows {
             assert_eq!(expr(src), expected, "{src}");
@@ -639,6 +643,26 @@ mod tests {
                 1,
                 19
             )
+        );
+    }
+
+    #[test]
+    fn mixed_chain_directions_report_at_the_second_operator() {
+        assert_eq!(
+            expr_err("a > b <= c"),
+            (
+                "a comparison chain must go in one direction".to_string(),
+                1,
+                19
+            )
+        );
+    }
+
+    #[test]
+    fn mixed_equality_operators_do_not_chain() {
+        assert_eq!(
+            expr_err("a == b != c"),
+            ("`==` and `!=` do not chain".to_string(), 1, 20)
         );
     }
 
