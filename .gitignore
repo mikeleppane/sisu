@@ -3,3 +3,5 @@
 /warmup/
 # Project-local LLVM, installed by scripts/install-llvm.sh.
 /.llvm/
+# CodeGraph index, built locally by `codegraph init`.
+/.codegraph/
