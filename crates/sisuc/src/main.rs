@@ -146,7 +146,8 @@ fn compile(output: &Path) -> Result<(), String> {
     let context = Context::create();
     let module = codegen::hello_module(&context);
     let object = output.with_added_extension("o");
-    codegen::write_object(&module, &object)?;
+    let machine = codegen::target_machine()?;
+    codegen::write_object(&module, &machine, &object)?;
     link::link(&object, output)?;
     fs::remove_file(&object).map_err(|e| format!("cannot remove {}: {e}", object.display()))
 }
