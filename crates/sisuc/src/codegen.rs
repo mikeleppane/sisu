@@ -9,11 +9,12 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::Module;
+use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
 use inkwell::types::{BasicMetadataTypeEnum, IntType};
-use inkwell::values::{BasicValue, FunctionValue, IntValue};
+use inkwell::values::{BasicValue, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use crate::ast::{
@@ -94,6 +95,8 @@ fn zeroext(context: &Context) -> Attribute {
 enum Local<'ctx> {
     /// A `let` binding or a parameter: an SSA value.
     Value(IntValue<'ctx>),
+    /// A `var`: an `alloca` of this type, loaded and stored until `mem2reg` promotes it.
+    Slot(PointerValue<'ctx>, IntType<'ctx>),
 }
 
 struct Codegen<'ctx, 'src> {
@@ -219,22 +222,36 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn stmt(&mut self, stmt: &Stmt, used: bool) -> Option<IntValue<'ctx>> {
         match &stmt.kind {
             StmtKind::Let {
-                mutable: false,
+                mutable,
                 name,
                 init,
                 ..
             } => {
                 let value = self.value(init);
+                let local = if *mutable {
+                    let slot = self.entry_alloca(value.get_type(), &name.name);
+                    self.store(slot, value);
+                    Local::Slot(slot, value.get_type())
+                } else {
+                    Local::Value(value)
+                };
                 self.scopes
                     .last_mut()
                     .expect("a block pushed a scope")
-                    .insert(name.name.clone(), Local::Value(value));
+                    .insert(name.name.clone(), local);
                 None
             }
-            StmtKind::Let { mutable: true, .. }
-            | StmtKind::While { .. }
-            | StmtKind::Assign { .. } => {
-                panic!("codegen for `var`/`while`/assignment lands in stage 5")
+            StmtKind::Assign { target, value } => {
+                let value = self.value(value);
+                let Local::Slot(slot, _) = self.local(&target.name) else {
+                    unreachable!("checked: only a `var` is assigned")
+                };
+                self.store(slot, value);
+                None
+            }
+            StmtKind::While { cond, body } => {
+                self.while_stmt(cond, body);
+                None
             }
             StmtKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| self.expr(e));
@@ -268,16 +285,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         let value = match &e.kind {
             ExprKind::Int(n) => self.context.i64_type().const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
-            ExprKind::Name(name) => {
-                let local = self
-                    .scopes
-                    .iter()
-                    .rev()
-                    .find_map(|scope| scope.get(name))
-                    .expect("checked: every name is bound");
-                let Local::Value(value) = *local;
-                value
-            }
+            ExprKind::Name(name) => match self.local(name) {
+                Local::Value(value) => value,
+                Local::Slot(slot, ty) => self
+                    .builder
+                    .build_load(ty, slot, name)
+                    .expect("builder is positioned")
+                    .into_int_value(),
+            },
             ExprKind::Call { callee, args } => return self.call(&callee.name, args),
             ExprKind::Unary { op, operand } => {
                 let operand = self.value(operand);
@@ -301,6 +316,60 @@ impl<'ctx> Codegen<'ctx, '_> {
             } => return self.if_expr(cond, then_block, else_block.as_ref(), true),
         };
         Some(value)
+    }
+
+    fn local(&self, name: &str) -> Local<'ctx> {
+        *self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .expect("checked: every name is bound")
+    }
+
+    /// An `alloca` at the start of the function's entry block, wherever the `var` sits:
+    /// `mem2reg` promotes only entry-block allocas, and one in a loop body would grow the
+    /// stack on every iteration.
+    fn entry_alloca(&self, ty: IntType<'ctx>, name: &str) -> PointerValue<'ctx> {
+        let entry = self
+            .current_function()
+            .get_first_basic_block()
+            .expect("the function has an entry block");
+        let builder = self.context.create_builder();
+        match entry.get_first_instruction() {
+            Some(first) => builder.position_before(&first),
+            None => builder.position_at_end(entry),
+        }
+        builder
+            .build_alloca(ty, name)
+            .expect("builder is positioned")
+    }
+
+    fn store(&self, slot: PointerValue<'ctx>, value: IntValue<'ctx>) {
+        self.builder
+            .build_store(slot, value)
+            .expect("builder is positioned");
+    }
+
+    /// `while`: the condition block branches to the body or to the end, where codegen
+    /// continues; the body branches back to the condition unless it ended in a terminator.
+    fn while_stmt(&mut self, cond: &Expr, body: &Block) {
+        let function = self.current_function();
+        let cond_block = self.context.append_basic_block(function, "while.cond");
+        let body_block = self.context.append_basic_block(function, "while.body");
+        let end = self.context.append_basic_block(function, "while.end");
+        self.branch_to(cond_block);
+        self.builder.position_at_end(cond_block);
+        let cond = self.value(cond);
+        self.builder
+            .build_conditional_branch(cond, body_block, end)
+            .expect("builder is positioned");
+        self.builder.position_at_end(body_block);
+        self.block(body, false);
+        if !self.terminated() {
+            self.branch_to(cond_block);
+        }
+        self.builder.position_at_end(end);
     }
 
     fn call(&mut self, callee: &str, args: &[Expr]) -> Option<IntValue<'ctx>> {
@@ -628,6 +697,14 @@ pub(crate) fn target_machine() -> Result<TargetMachine, String> {
             CodeModel::Default,
         )
         .ok_or_else(|| "LLVM cannot create a target machine for this host".to_string())
+}
+
+/// Verifies `module`, then runs `mem2reg`, which turns each `var`'s `alloca` into SSA values.
+pub(crate) fn run_mem2reg(module: &Module<'_>, machine: &TargetMachine) -> Result<(), String> {
+    module.verify().map_err(|e| e.to_string())?;
+    module
+        .run_passes("mem2reg", machine, PassBuilderOptions::create())
+        .map_err(|e| e.to_string())
 }
 
 /// Writes `module` to `path` as an object file for `machine`.

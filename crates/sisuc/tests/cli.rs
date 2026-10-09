@@ -145,3 +145,30 @@ fn unreadable_input_exits_1() {
             .starts_with("sisuc: cannot read no_such_dir/unreadable_input_exits_1.sisu: ")
     );
 }
+
+#[test]
+fn mem2reg_removes_every_alloca() {
+    // `loops.sisu` declares `var sq` inside the loop body: its `alloca` must still sit in the
+    // entry block, or `mem2reg` leaves it in place.
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs"))
+        .args(["--emit", "ir", "loops.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let before = stdout
+        .strip_prefix("; before mem2reg\n")
+        .unwrap_or_else(|| panic!("no `; before mem2reg` header in\n{stdout}"));
+    let (before, after) = before
+        .split_once("\n; after mem2reg\n")
+        .unwrap_or_else(|| panic!("no `; after mem2reg` line in\n{stdout}"));
+    assert!(before.starts_with("; ModuleID = 'main'\n"), "{before}");
+    assert!(before.contains("alloca"), "{before}");
+    assert!(!after.contains("alloca"), "{after}");
+}

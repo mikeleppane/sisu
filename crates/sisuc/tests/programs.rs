@@ -40,7 +40,7 @@ fn run(name: &str) -> Output {
     Command::new(exe).output().expect("the program starts")
 }
 
-/// Runs `<name>.sisu` and checks that it exits 0 and prints `<name>.out`.
+/// Runs `<name>.sisu` and checks that it exits 0, prints `<name>.out` and nothing on stderr.
 fn assert_prints_out_file(name: &str) {
     let expected =
         fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.out"))).expect("reads .out");
@@ -52,6 +52,7 @@ fn assert_prints_out_file(name: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 }
 
 /// Checks that `out` is a panic: exit 101, `stdout`, and exactly the panic line on stderr.
@@ -74,6 +75,16 @@ fn fib() {
 #[test]
 fn semantics() {
     assert_prints_out_file("semantics");
+}
+
+#[test]
+fn primes() {
+    assert_prints_out_file("primes");
+}
+
+#[test]
+fn loops() {
+    assert_prints_out_file("loops");
 }
 
 #[test]
@@ -138,6 +149,12 @@ fn panic_cases() {
             format!("fn main() {{\n{MIN}\n    print(min % -1)\n}}\n"),
             "3:11: integer overflow",
         ),
+        (
+            "compound_overflow",
+            "fn main() {\n    var x = 9_223_372_036_854_775_807\n    x += 1\n    print(x)\n}\n"
+                .to_string(),
+            "3:5: integer overflow",
+        ),
     ];
     for (name, source, position_and_message) in cases {
         let out = Command::new(compile_tmp(name, &source))
@@ -154,10 +171,10 @@ fn panic_cases() {
 #[test]
 fn panic_exits_101_when_stderr_write_fails() {
     // Writes to /dev/full fail with ENOSPC, so the runtime's panic line cannot be written.
-    let Ok(full) = File::options().write(true).open("/dev/full") else {
-        eprintln!("skipped: /dev/full does not exist on this system");
-        return;
-    };
+    let full = File::options()
+        .write(true)
+        .open("/dev/full")
+        .expect("Linux has /dev/full, the only target Sisu supports");
     let exe = compile_tmp(
         "stderr_full",
         "fn main() {\n    let z = 0\n    print(1 / z)\n}\n",

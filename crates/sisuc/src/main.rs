@@ -30,6 +30,7 @@ enum Mode {
 enum Stage {
     Tokens,
     Ast,
+    Ir,
 }
 
 fn parse_args(args: &[OsString]) -> Result<Mode, String> {
@@ -38,6 +39,7 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
             let stage = match stage.to_str() {
                 Some("tokens") => Stage::Tokens,
                 Some("ast") => Stage::Ast,
+                Some("ir") => Stage::Ir,
                 _ => return Err(USAGE.to_string()),
             };
             Ok(Mode::Emit {
@@ -113,6 +115,31 @@ fn emit(stage: &Stage, input: &Path) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Stage::Ir => emit_ir(&path, &source),
+    }
+}
+
+/// Prints the module for `source` before and after `mem2reg`, once it passes the checker.
+fn emit_ir(path: &str, source: &str) -> ExitCode {
+    let Some(program) = front_end(path, source) else {
+        return ExitCode::FAILURE;
+    };
+    let context = Context::create();
+    let module = codegen::compile(&context, &program, path, source);
+    // `LLVMString`'s `Display` quotes and escapes the text; `to_string` does not.
+    let before = module.print_to_string().to_string();
+    match codegen::target_machine().and_then(|machine| codegen::run_mem2reg(&module, &machine)) {
+        Ok(()) => {
+            print!(
+                "; before mem2reg\n{before}\n; after mem2reg\n{}",
+                module.print_to_string().to_string()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("sisuc: {message}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -173,7 +200,11 @@ fn compile(program: &Program, path: &str, source: &str, output: &Path) -> Result
     let module = codegen::compile(&context, program, path, source);
     let object = output.with_added_extension("o");
     let machine = codegen::target_machine()?;
+    codegen::run_mem2reg(&module, &machine)?;
     codegen::write_object(&module, &machine, &object)?;
-    link::link(&object, output)?;
-    fs::remove_file(&object).map_err(|e| format!("cannot remove {}: {e}", object.display()))
+    // Remove the object file whether or not the link worked; a link error wins.
+    let linked = link::link(&object, output);
+    let removed =
+        fs::remove_file(&object).map_err(|e| format!("cannot remove {}: {e}", object.display()));
+    linked.and(removed)
 }
