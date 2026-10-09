@@ -691,4 +691,24 @@ mod tests {
             ("expected `=`, found end of line".to_string(), 3, 10)
         );
     }
+
+    #[test]
+    fn end_of_line_renders_one_caret() {
+        let src = "fn main() {\n    let y\n}";
+        let expected = "\
+error: expected `=`, found end of line
+ --> a.sisu:2:10
+  |
+2 |     let y
+  |          ^";
+        assert_eq!(parse_diagnostic(src).render("a.sisu", src), expected);
+    }
+
+    #[test]
+    fn crlf_end_of_line_column_matches_lf() {
+        assert_eq!(
+            parse_err("fn main() {\r\n    let y\r\n}\r\n"),
+            ("expected `=`, found end of line".to_string(), 2, 10)
+        );
+    }
 }

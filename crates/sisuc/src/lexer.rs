@@ -170,7 +170,10 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             '\n' => {
                 line_start = true;
                 if ends_statement(&tokens, &open) {
-                    tokens.push(newline(Span::new(start, start + 1)));
+                    // Empty, at the line end: a span over `\n` renders as a two-line range,
+                    // and one at `\n` after `\r` sits a column too far right.
+                    let end = start - usize::from(source[..start].ends_with('\r'));
+                    tokens.push(newline(Span::new(end, end)));
                 }
                 continue;
             }
@@ -675,7 +678,8 @@ mod tests {
 
     #[test]
     fn newline_and_eof_spans() {
-        // A Newline covers its `\n`, or sits empty at end of file; Eof sits just after the last code.
+        // A Newline sits empty at the line end, before `\r\n` or `\n`, or at end of file;
+        // Eof sits just after the last code.
         let spans = |src| -> Vec<Span> {
             lex(src)
                 .expect("source lexes")
@@ -685,7 +689,11 @@ mod tests {
         };
         assert_eq!(
             spans("x // c\n"),
-            [Span::new(0, 1), Span::new(6, 7), Span::new(1, 1)]
+            [Span::new(0, 1), Span::new(6, 6), Span::new(1, 1)]
+        );
+        assert_eq!(
+            spans("x\r\n"),
+            [Span::new(0, 1), Span::new(1, 1), Span::new(1, 1)]
         );
         assert_eq!(
             spans("x"),
