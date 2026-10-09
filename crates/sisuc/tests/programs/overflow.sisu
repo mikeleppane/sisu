@@ -1,0 +1,5 @@
+fn main() {
+    let big = 9_223_372_036_854_775_807
+    print(1)
+    print(big + 1)
+}

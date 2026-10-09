@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use ast::Program;
 use diagnostic::{Diagnostic, Severity};
 use inkwell::context::Context;
 
@@ -23,8 +24,7 @@ const USAGE: &str =
 enum Mode {
     Emit { stage: Stage, input: PathBuf },
     Check { input: PathBuf },
-    // The fixed program, until stage 4 replaces it with the real compile path.
-    Hello { output: PathBuf },
+    Build { input: PathBuf, output: PathBuf },
 }
 
 enum Stage {
@@ -48,9 +48,16 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
         [flag, input] if flag == "--check" => Ok(Mode::Check {
             input: PathBuf::from(input),
         }),
-        [output] if !output.to_string_lossy().starts_with('-') => Ok(Mode::Hello {
-            output: PathBuf::from(output),
-        }),
+        [input, output]
+            if [input, output]
+                .iter()
+                .all(|a| !a.to_string_lossy().starts_with('-')) =>
+        {
+            Ok(Mode::Build {
+                input: PathBuf::from(input),
+                output: PathBuf::from(output),
+            })
+        }
         _ => Err(USAGE.to_string()),
     }
 }
@@ -67,25 +74,22 @@ fn main() -> ExitCode {
     match mode {
         Mode::Emit { stage, input } => emit(&stage, &input),
         Mode::Check { input } => run_check(&input),
-        Mode::Hello { output } => match compile(&output) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(message) => {
-                eprintln!("sisuc: {message}");
-                ExitCode::FAILURE
-            }
-        },
+        Mode::Build { input, output } => build(&input, &output),
     }
+}
+
+/// Reads `input`, or prints why it cannot.
+fn read(input: &Path) -> Option<String> {
+    fs::read_to_string(input)
+        .inspect_err(|e| eprintln!("sisuc: cannot read {}: {e}", input.to_string_lossy()))
+        .ok()
 }
 
 /// Prints one stage's output for `input` to stdout.
 fn emit(stage: &Stage, input: &Path) -> ExitCode {
     let path = input.to_string_lossy();
-    let source = match fs::read_to_string(input) {
-        Ok(source) => source,
-        Err(e) => {
-            eprintln!("sisuc: cannot read {path}: {e}");
-            return ExitCode::FAILURE;
-        }
+    let Some(source) = read(input) else {
+        return ExitCode::FAILURE;
     };
     let tokens = match lexer::lex(&source) {
         Ok(tokens) => tokens,
@@ -114,24 +118,46 @@ fn emit(stage: &Stage, input: &Path) -> ExitCode {
 
 /// Lexes, parses and checks `input`; prints every diagnostic. Fails if any is an error.
 fn run_check(input: &Path) -> ExitCode {
+    match read(input).and_then(|source| front_end(&input.to_string_lossy(), &source)) {
+        Some(_) => ExitCode::SUCCESS,
+        None => ExitCode::FAILURE,
+    }
+}
+
+/// Compiles `input` into the executable `output`.
+fn build(input: &Path, output: &Path) -> ExitCode {
     let path = input.to_string_lossy();
-    let source = match fs::read_to_string(input) {
-        Ok(source) => source,
-        Err(e) => {
-            eprintln!("sisuc: cannot read {path}: {e}");
-            return ExitCode::FAILURE;
+    let Some(source) = read(input) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(program) = front_end(&path, &source) else {
+        return ExitCode::FAILURE;
+    };
+    match compile(&program, &path, &source, output) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("sisuc: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Lexes, parses and checks `source`; prints every diagnostic. Returns the program unless
+/// a diagnostic is an error.
+fn front_end(path: &str, source: &str) -> Option<Program> {
+    let program = match lexer::lex(source).and_then(|tokens| parser::parse(&tokens)) {
+        Ok(program) => program,
+        Err(d) => {
+            report(path, source, &[d]);
+            return None;
         }
     };
-    let diagnostics = match lexer::lex(&source).and_then(|tokens| parser::parse(&tokens)) {
-        Ok(program) => check::check(&program),
-        Err(d) => vec![d],
-    };
-    report(&path, &source, &diagnostics);
-    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    let diagnostics = check::check(&program);
+    report(path, source, &diagnostics);
+    diagnostics
+        .iter()
+        .all(|d| d.severity != Severity::Error)
+        .then_some(program)
 }
 
 /// Prints each diagnostic to stderr, followed by a blank line.
@@ -141,10 +167,10 @@ fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
     }
 }
 
-/// Compiles the program into the executable `output`, going through `output.o`.
-fn compile(output: &Path) -> Result<(), String> {
+/// Compiles `program` into the executable `output`, going through `output.o`.
+fn compile(program: &Program, path: &str, source: &str, output: &Path) -> Result<(), String> {
     let context = Context::create();
-    let module = codegen::hello_module(&context);
+    let module = codegen::compile(&context, program, path, source);
     let object = output.with_added_extension("o");
     let machine = codegen::target_machine()?;
     codegen::write_object(&module, &machine, &object)?;

@@ -23,7 +23,6 @@ use crate::ast::{
 use crate::diagnostic::{Span, line_col};
 
 /// Compiles a program that passed `check` into an LLVM module.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 15"))]
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
     program: &Program,
@@ -613,31 +612,6 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 }
 
-/// Builds the module for the fixed program `fn main() { print_int(42) }`.
-/// The parser replaces this once it exists.
-pub(crate) fn hello_module(context: &Context) -> Module<'_> {
-    let module = context.create_module("main");
-    let i64_type = context.i64_type();
-    let i32_type = context.i32_type();
-
-    // declare void @sisu_print_int(i64): the runtime defines it, the linker finds it.
-    let print_int_type = context.void_type().fn_type(&[i64_type.into()], false);
-    let print_int = module.add_function("sisu_print_int", print_int_type, None);
-
-    // define i32 @main(): the C startup code calls main and expects an exit status.
-    let main_fn = module.add_function("main", i32_type.fn_type(&[], false), None);
-    let entry = context.append_basic_block(main_fn, "entry");
-    let builder = context.create_builder();
-    builder.position_at_end(entry);
-    builder
-        .build_call(print_int, &[i64_type.const_int(42, false).into()], "")
-        .expect("builder is positioned and the argument types match");
-    builder
-        .build_return(Some(&i32_type.const_zero()))
-        .expect("builder is positioned");
-    module
-}
-
 /// A target machine for the host `sisuc` runs on.
 pub(crate) fn target_machine() -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())?;
@@ -873,24 +847,5 @@ mod tests {
         ] {
             assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
         }
-    }
-
-    #[test]
-    fn hello_module_calls_print_int_and_returns_zero() {
-        let context = Context::create();
-        let module = hello_module(&context);
-        module.verify().expect("the module is valid IR");
-        let expected = r#"; ModuleID = 'main'
-source_filename = "main"
-
-declare void @sisu_print_int(i64)
-
-define i32 @main() {
-entry:
-  call void @sisu_print_int(i64 42)
-  ret i32 0
-}
-"#;
-        assert_eq!(module.print_to_string().to_string(), expected);
     }
 }
