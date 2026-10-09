@@ -236,13 +236,13 @@ fn newline(span: Span) -> Token {
 /// Whether a line break here ends a statement: the previous token can end one,
 /// and the innermost open bracket, if any, is a block.
 fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
-    can_end_statement(tokens) && open.last().is_none_or(|&(c, _)| c == '{')
+    can_end_statement(tokens.last()) && open.last().is_none_or(|&(c, _)| c == '{')
 }
 
-/// Whether the previous token can end a statement (Go's rule).
-fn can_end_statement(tokens: &[Token]) -> bool {
+/// Whether `token` can end a statement (Go's rule).
+fn can_end_statement(token: Option<&Token>) -> bool {
     use TokenKind::{False, Ident, Int, RBrace, RParen, Return, True};
-    tokens.last().is_some_and(|t| {
+    token.is_some_and(|t| {
         matches!(
             t.kind,
             Ident(_) | Int(_) | True | False | Return | RParen | RBrace
@@ -250,26 +250,36 @@ fn can_end_statement(tokens: &[Token]) -> bool {
     })
 }
 
-/// Layout rules 2 and 3 inside `( )`, where no `Newline` reaches the parser:
-/// `kind` starts a line after a token that could end a statement.
+/// Layout rules 2 and 3 where the parser cannot see them; `kind` starts a line.
+/// A `{` only ever follows `fn …`, `if …`, `else` or `while …` on its own line, so a
+/// line-initial `{` after a token that could end a statement, or after `else`, breaks
+/// rule 2 at any depth. Inside `( )`, where no `Newline` reaches the parser, so does a
+/// line-initial `else` (rule 3).
 fn check_line_start(
     tokens: &[Token],
     open: &[Open],
     kind: &TokenKind,
     span: Span,
 ) -> Result<(), Diagnostic> {
-    if open.last().is_none_or(|&(c, _)| c != '(') || !can_end_statement(tokens) {
-        return Ok(());
-    }
     match kind {
-        TokenKind::Else => Err(Diagnostic::error(
-            span,
-            "`else` must be on the same line as the closing `}`",
-        )),
-        TokenKind::LBrace => Err(Diagnostic::error(
-            span,
-            "`{` must be on the same line as `if`, `else` or `while`",
-        )),
+        TokenKind::LBrace => {
+            let code = tokens.iter().rfind(|t| t.kind != TokenKind::Newline);
+            if can_end_statement(code) || code.is_some_and(|t| t.kind == TokenKind::Else) {
+                return Err(Diagnostic::error(
+                    span,
+                    "`{` must be on the same line as `fn`, `if`, `else` or `while`",
+                ));
+            }
+            Ok(())
+        }
+        TokenKind::Else
+            if open.last().is_some_and(|&(c, _)| c == '(') && can_end_statement(tokens.last()) =>
+        {
+            Err(Diagnostic::error(
+                span,
+                "`else` must be on the same line as the closing `}`",
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -756,15 +766,37 @@ mod tests {
         );
     }
 
+    const BRACE_ON_NEW_LINE: &str = "`{` must be on the same line as `fn`, `if`, `else` or `while`";
+
     #[test]
     fn brace_on_new_line_inside_parens() {
         assert_eq!(
             err("fn main() { print(if true\n{ 1 } else { 2 }) }"),
-            (
-                "`{` must be on the same line as `if`, `else` or `while`".to_string(),
-                2,
-                1
-            )
+            (BRACE_ON_NEW_LINE.to_string(), 2, 1)
+        );
+    }
+
+    #[test]
+    fn brace_on_new_line_after_else() {
+        assert_eq!(
+            err("fn main() {\n    if true { print(1) } else\n    { print(2) }\n}"),
+            (BRACE_ON_NEW_LINE.to_string(), 3, 5)
+        );
+    }
+
+    #[test]
+    fn brace_on_new_line_after_else_inside_parens() {
+        assert_eq!(
+            err("fn main() { print(if true { 1 } else\n{ 2 }) }"),
+            (BRACE_ON_NEW_LINE.to_string(), 2, 1)
+        );
+    }
+
+    #[test]
+    fn brace_on_new_line_after_fn() {
+        assert_eq!(
+            err("fn main()\n{\n}"),
+            (BRACE_ON_NEW_LINE.to_string(), 2, 1)
         );
     }
 
