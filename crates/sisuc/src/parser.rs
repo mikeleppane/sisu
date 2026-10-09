@@ -1,7 +1,8 @@
 //! The parser: tokens to the syntax tree.
 
 use crate::ast::{
-    Block, Expr, ExprKind, Function, Ident, Param, Program, Stmt, StmtKind, TypeExpr,
+    BinaryOp, Block, CompareOp, Expr, ExprKind, Function, Ident, Param, Program, Stmt, StmtKind,
+    TypeExpr, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -9,6 +10,32 @@ use crate::lexer::{Token, TokenKind};
 /// Parses `tokens`, which must end with `Eof`. Stops at the first error.
 pub(crate) fn parse(tokens: &[Token]) -> Result<Program, Diagnostic> {
     Parser { tokens, pos: 0 }.program()
+}
+
+/// The level and operator of a binary operator token, except the comparisons of level 4.
+fn binary_op(kind: &TokenKind) -> Option<(u8, BinaryOp)> {
+    Some(match kind {
+        TokenKind::OrOr => (1, BinaryOp::Or),
+        TokenKind::AndAnd => (2, BinaryOp::And),
+        TokenKind::EqEq => (3, BinaryOp::Eq),
+        TokenKind::NotEq => (3, BinaryOp::Ne),
+        TokenKind::Plus => (5, BinaryOp::Add),
+        TokenKind::Minus => (5, BinaryOp::Sub),
+        TokenKind::Star => (6, BinaryOp::Mul),
+        TokenKind::Slash => (6, BinaryOp::Div),
+        TokenKind::Percent => (6, BinaryOp::Rem),
+        _ => return None,
+    })
+}
+
+fn compare_op(kind: &TokenKind) -> Option<CompareOp> {
+    Some(match kind {
+        TokenKind::Lt => CompareOp::Lt,
+        TokenKind::Le => CompareOp::Le,
+        TokenKind::Gt => CompareOp::Gt,
+        TokenKind::Ge => CompareOp::Ge,
+        _ => return None,
+    })
 }
 
 struct Parser<'a> {
@@ -163,7 +190,7 @@ impl Parser<'_> {
                     "`else` must be on the same line as the closing `}`",
                 ));
             }
-            _ => StmtKind::Expr(self.expr()?),
+            _ => self.expr_or_assign()?,
         };
         Ok(Stmt {
             kind,
@@ -192,9 +219,130 @@ impl Parser<'_> {
         })
     }
 
-    // Task 7 turns this into the Pratt loop; for now an expression is a primary.
+    /// An expression statement, or an assignment when an assignment operator follows.
+    fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
+        let target = self.expr()?;
+        let op = match self.peek().kind {
+            TokenKind::Eq => None,
+            TokenKind::PlusEq => Some(BinaryOp::Add),
+            TokenKind::MinusEq => Some(BinaryOp::Sub),
+            TokenKind::StarEq => Some(BinaryOp::Mul),
+            TokenKind::SlashEq => Some(BinaryOp::Div),
+            TokenKind::PercentEq => Some(BinaryOp::Rem),
+            _ => return Ok(StmtKind::Expr(target)),
+        };
+        let ExprKind::Name(name) = &target.kind else {
+            return Err(Diagnostic::error(
+                target.span,
+                "cannot assign to this expression",
+            ));
+        };
+        let ident = Ident {
+            name: name.clone(),
+            span: target.span,
+        };
+        self.bump();
+        let rhs = self.expr()?;
+        let span = target.span.to(self.last_span());
+        // `x += e` becomes `x = x + e`.
+        let value = match op {
+            None => rhs,
+            Some(op) => Expr {
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(target),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            },
+        };
+        Ok(StmtKind::Assign {
+            target: ident,
+            value,
+        })
+    }
+
     fn expr(&mut self) -> Result<Expr, Diagnostic> {
-        self.primary()
+        self.binary(1)
+    }
+
+    /// Precedence climbing over levels 1 to 6; `min` is the lowest level to accept.
+    fn binary(&mut self, min: u8) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.unary()?;
+        loop {
+            let kind = &self.peek().kind;
+            if compare_op(kind).is_some() {
+                if min > 4 {
+                    return Ok(lhs);
+                }
+                lhs = self.comparison_chain(lhs)?;
+            } else if let Some((level, op)) = binary_op(kind) {
+                if level < min {
+                    return Ok(lhs);
+                }
+                self.bump();
+                // Level 3 is non-associative: its right side is one level up.
+                let rhs = self.binary(level + 1)?;
+                lhs = Expr {
+                    span: lhs.span.to(rhs.span),
+                    kind: ExprKind::Binary {
+                        op,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                };
+                if level == 3 && matches!(self.peek().kind, TokenKind::EqEq | TokenKind::NotEq) {
+                    return Err(
+                        Diagnostic::error(self.peek().span, "`==` and `!=` do not chain")
+                            .help("join the comparisons with `&&`"),
+                    );
+                }
+            } else {
+                return Ok(lhs);
+            }
+        }
+    }
+
+    /// Level 4: `first` and every `<`/`<=`/`>`/`>=` operand after it, as one node.
+    fn comparison_chain(&mut self, first: Expr) -> Result<Expr, Diagnostic> {
+        let start = first.span;
+        let mut operands = vec![first];
+        let mut ops: Vec<CompareOp> = Vec::new();
+        while let Some(op) = compare_op(&self.peek().kind) {
+            if ops
+                .first()
+                .is_some_and(|first| first.is_less() != op.is_less())
+            {
+                return Err(Diagnostic::error(
+                    self.peek().span,
+                    "a comparison chain must go in one direction",
+                ));
+            }
+            self.bump();
+            ops.push(op);
+            operands.push(self.binary(5)?);
+        }
+        Ok(Expr {
+            span: start.to(self.last_span()),
+            kind: ExprKind::Compare { operands, ops },
+        })
+    }
+
+    fn unary(&mut self) -> Result<Expr, Diagnostic> {
+        let op = match self.peek().kind {
+            TokenKind::Minus => UnaryOp::Neg,
+            TokenKind::Bang => UnaryOp::Not,
+            _ => return self.primary(),
+        };
+        let start = self.bump().span;
+        let operand = self.unary()?;
+        Ok(Expr {
+            span: start.to(operand.span),
+            kind: ExprKind::Unary {
+                op,
+                operand: Box::new(operand),
+            },
+        })
     }
 
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
@@ -427,6 +575,95 @@ mod tests {
         assert_eq!(
             parse_err("let x = 1"),
             ("expected `fn`, found `let`".to_string(), 1, 1)
+        );
+    }
+
+    /// Parses `fn main() { <src> }` and prints the first statement.
+    fn expr(src: &str) -> String {
+        parsed(&format!("fn main() {{ {src} }}")).functions[0]
+            .body
+            .stmts[0]
+            .to_string()
+    }
+
+    /// Error message, line and column for `fn main() { <src> }`; the columns start at 13.
+    fn expr_err(src: &str) -> (String, usize, usize) {
+        parse_err(&format!("fn main() {{ {src} }}"))
+    }
+
+    #[test]
+    fn expression_shapes() {
+        let rows = [
+            ("1 + 2 * 3", "(+ 1 (* 2 3))"),
+            ("1 - 2 - 3", "(- (- 1 2) 3)"),
+            ("-a * b", "(* (- a) b)"),
+            ("!a && b || c", "(|| (&& (! a) b) c)"),
+            ("(1 + 2) * 3", "(* (+ 1 2) 3)"),
+            ("f(1, g(2))", "(call f 1 (call g 2))"),
+            ("a < b", "(< a b)"),
+            ("a < b <= c", "(< a b <= c)"),
+            ("a > b >= c", "(> a b >= c)"),
+            ("a == b < c", "(== a (< b c))"),
+            ("(a < b) < c", "(< (< a b) c)"),
+            ("true && false", "(&& true false)"),
+            ("x += 1", "(= x (+ x 1))"),
+            ("x %= 2", "(= x (% x 2))"),
+        ];
+        for (src, expected) in rows {
+            assert_eq!(expr(src), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn parenthesized_primary() {
+        assert_eq!(body("fn main() { (f()) }"), "(block (call f))");
+    }
+
+    #[test]
+    fn compound_assignment_spans() {
+        let tree = parsed("fn main() { x += 1 }");
+        let stmt = &tree.functions[0].body.stmts[0];
+        assert_eq!(stmt.span, Span::new(12, 18));
+        let StmtKind::Assign { value, .. } = &stmt.kind else {
+            panic!("not an assignment: {stmt}");
+        };
+        assert_eq!(value.span, stmt.span);
+    }
+
+    #[test]
+    fn opposite_comparison_directions() {
+        assert_eq!(
+            expr_err("a < b > c"),
+            (
+                "a comparison chain must go in one direction".to_string(),
+                1,
+                19
+            )
+        );
+    }
+
+    #[test]
+    fn equality_does_not_chain() {
+        let src = "fn main() { a == b == c }";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.message, "`==` and `!=` do not chain");
+        assert_eq!(d.help.as_deref(), Some("join the comparisons with `&&`"));
+        assert_eq!(line_col(src, d.span.start), (1, 20));
+    }
+
+    #[test]
+    fn cannot_assign_to_expression() {
+        assert_eq!(
+            expr_err("1 + 2 = 3"),
+            ("cannot assign to this expression".to_string(), 1, 13)
+        );
+    }
+
+    #[test]
+    fn missing_initializer_at_end_of_line() {
+        assert_eq!(
+            parse_err("fn main() {\n    let x = 1\n    let y\n}"),
+            ("expected `=`, found end of line".to_string(), 3, 10)
         );
     }
 }

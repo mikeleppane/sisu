@@ -64,10 +64,6 @@ pub(crate) enum StmtKind {
         body: Block,
     },
     Return(Option<Expr>),
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed by the operator parser in Task 7")
-    )]
     Assign {
         target: Ident,
         value: Expr,
@@ -90,27 +86,15 @@ pub(crate) enum ExprKind {
         callee: Ident,
         args: Vec<Expr>,
     },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed by the operator parser in Task 7")
-    )]
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,
     },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed by the operator parser in Task 7")
-    )]
     Binary {
         op: BinaryOp,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed by the operator parser in Task 7")
-    )]
     /// A chain `a < b <= c`; `operands.len() == ops.len() + 1`.
     Compare {
         operands: Vec<Expr>,
@@ -125,20 +109,12 @@ pub(crate) enum ExprKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "constructed by the operator parser in Task 7")
-)]
 pub(crate) enum UnaryOp {
     Neg,
     Not,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "constructed by the operator parser in Task 7")
-)]
 pub(crate) enum BinaryOp {
     Add,
     Sub,
@@ -152,15 +128,18 @@ pub(crate) enum BinaryOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "constructed by the operator parser in Task 7")
-)]
 pub(crate) enum CompareOp {
     Lt,
     Le,
     Gt,
     Ge,
+}
+
+impl CompareOp {
+    /// `<` and `<=` run one way, `>` and `>=` the other.
+    pub(crate) fn is_less(self) -> bool {
+        matches!(self, CompareOp::Lt | CompareOp::Le)
+    }
 }
 
 impl fmt::Display for UnaryOp {
