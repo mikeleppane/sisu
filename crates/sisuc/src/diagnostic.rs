@@ -13,6 +13,11 @@ impl Span {
     pub(crate) fn new(start: usize, end: usize) -> Span {
         Span { start, end }
     }
+
+    /// The span from the start of `self` to the end of `other`.
+    pub(crate) fn to(self, other: Span) -> Span {
+        Span::new(self.start, other.end)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

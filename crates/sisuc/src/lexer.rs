@@ -104,6 +104,55 @@ impl TokenKind {
     }
 }
 
+impl TokenKind {
+    /// How a diagnostic names the token: "`)`", "`x`", "end of line".
+    pub(crate) fn describe(&self) -> String {
+        let text = match self {
+            TokenKind::Ident(name) => name.as_str(),
+            TokenKind::Int(n) => return format!("`{n}`"),
+            TokenKind::Fn => "fn",
+            TokenKind::Let => "let",
+            TokenKind::Var => "var",
+            TokenKind::If => "if",
+            TokenKind::Else => "else",
+            TokenKind::While => "while",
+            TokenKind::Return => "return",
+            TokenKind::True => "true",
+            TokenKind::False => "false",
+            TokenKind::Plus => "+",
+            TokenKind::Minus => "-",
+            TokenKind::Star => "*",
+            TokenKind::Slash => "/",
+            TokenKind::Percent => "%",
+            TokenKind::PlusEq => "+=",
+            TokenKind::MinusEq => "-=",
+            TokenKind::StarEq => "*=",
+            TokenKind::SlashEq => "/=",
+            TokenKind::PercentEq => "%=",
+            TokenKind::EqEq => "==",
+            TokenKind::NotEq => "!=",
+            TokenKind::Lt => "<",
+            TokenKind::Le => "<=",
+            TokenKind::Gt => ">",
+            TokenKind::Ge => ">=",
+            TokenKind::AndAnd => "&&",
+            TokenKind::OrOr => "||",
+            TokenKind::Bang => "!",
+            TokenKind::Eq => "=",
+            TokenKind::LParen => "(",
+            TokenKind::RParen => ")",
+            TokenKind::LBrace => "{",
+            TokenKind::RBrace => "}",
+            TokenKind::Comma => ",",
+            TokenKind::Colon => ":",
+            TokenKind::Arrow => "->",
+            TokenKind::Newline => return "end of line".to_string(),
+            TokenKind::Eof => return "end of file".to_string(),
+        };
+        format!("`{text}`")
+    }
+}
+
 type Chars<'a> = Peekable<CharIndices<'a>>;
 
 /// An open bracket: its char (`(` or `{`) and where it stands.

@@ -1,9 +1,12 @@
 //! `sisuc`, the Sisu compiler.
 
+mod ast;
 mod codegen;
 mod diagnostic;
 mod lexer;
 mod link;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 8"))]
+mod parser;
 
 use std::ffi::OsString;
 use std::fs;
