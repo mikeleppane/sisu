@@ -79,3 +79,42 @@ fn parse_error_exits_1() {
             .starts_with("error: expected `fn`, found `let`\n --> parse_error_exits_1.sisu:1:1")
     );
 }
+
+/// Runs `sisuc --check` on `source`, saved as `<name>.sisu` in the target tmp dir.
+fn check(name: &str, source: &str) -> std::process::Output {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let file = format!("{name}.sisu");
+    fs::write(dir.join(&file), source).expect("writes");
+    Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--check", &file])
+        .output()
+        .expect("sisuc starts")
+}
+
+#[test]
+fn check_valid_file() {
+    let out = check("check_valid_file", "fn main() {\n    print(1)\n}\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+#[test]
+fn check_warning_exits_0() {
+    let out = check(
+        "check_warning_exits_0",
+        "fn main() {\n    var count = 0\n    print(count)\n}\n",
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("warning: "));
+}
+
+#[test]
+fn check_error_exits_1() {
+    let out = check(
+        "check_error_exits_1",
+        "fn main() {\n    let n = 0\n    n = 1\n}\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
+}

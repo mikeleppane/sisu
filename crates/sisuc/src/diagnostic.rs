@@ -51,13 +51,6 @@ impl Diagnostic {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the checker, wired into the CLI in Task 11"
-        )
-    )]
     pub(crate) fn warning(span: Span, message: impl Into<String>) -> Diagnostic {
         Diagnostic {
             severity: Severity::Warning,
@@ -65,13 +58,6 @@ impl Diagnostic {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the checker, wired into the CLI in Task 11"
-        )
-    )]
     pub(crate) fn label(mut self, text: impl Into<String>) -> Diagnostic {
         self.label = Some(text.into());
         self

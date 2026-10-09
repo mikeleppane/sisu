@@ -33,6 +33,7 @@ struct Signature {
     name_span: Span,
 }
 
+#[derive(PartialEq)]
 enum BindingKind {
     Let,
     Var,
@@ -41,12 +42,9 @@ enum BindingKind {
 
 struct Binding {
     ty: Type,
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "Task 11 checks assignments against it")
-    )]
     kind: BindingKind,
     span: Span,
+    reassigned: bool,
 }
 
 struct Checker {
@@ -131,7 +129,7 @@ impl Checker {
             self.declare(&p.name, ty, BindingKind::Param)?;
         }
         let body = self.block(&f.body)?;
-        self.scopes.pop();
+        self.pop_scope();
         match body {
             _ if ret == Type::Unit || body == Type::Never || body == ret => Ok(()),
             Type::Unit => {
@@ -163,16 +161,30 @@ impl Checker {
                 ty,
                 kind,
                 span: name.span,
+                reassigned: false,
             },
         );
         Ok(())
     }
 
-    fn lookup(&self, name: &str, span: Span) -> Result<&Binding, Diagnostic> {
+    /// Closes the innermost scope, warning about each `var` that was never reassigned.
+    fn pop_scope(&mut self) {
+        let scope = self.scopes.pop().expect("a scope is open");
+        for (name, b) in scope {
+            if b.kind == BindingKind::Var && !b.reassigned {
+                self.warnings.push(
+                    Diagnostic::warning(b.span, format!("`{name}` is never reassigned"))
+                        .help("declare it with `let`"),
+                );
+            }
+        }
+    }
+
+    fn lookup(&mut self, name: &str, span: Span) -> Result<&mut Binding, Diagnostic> {
         self.scopes
-            .iter()
+            .iter_mut()
             .rev()
-            .find_map(|scope| scope.get(name))
+            .find_map(|scope| scope.get_mut(name))
             .ok_or_else(|| Diagnostic::error(span, format!("cannot find `{name}` in this scope")))
     }
 
@@ -193,7 +205,7 @@ impl Checker {
                 ty = stmt_ty;
             }
         }
-        self.scopes.pop();
+        self.pop_scope();
         Ok(ty)
     }
 
@@ -245,8 +257,27 @@ impl Checker {
                 Ok(Type::Never)
             }
             StmtKind::Assign { target, value } => {
-                self.lookup(&target.name, target.span)?;
-                self.value(value)?;
+                let binding = self.lookup(&target.name, target.span)?;
+                let want = binding.ty;
+                let declared = binding.span;
+                match binding.kind {
+                    BindingKind::Var => binding.reassigned = true,
+                    BindingKind::Let => {
+                        return Err(cannot_assign(stmt.span, target)
+                            .label("cannot assign twice")
+                            .secondary(declared, "declared with `let` here")
+                            .help("declare it with `var`"));
+                    }
+                    BindingKind::Param => {
+                        return Err(cannot_assign(stmt.span, target)
+                            .secondary(declared, "declared as a parameter here")
+                            .help(format!(
+                                "copy it into a `var`: `var {0} = {0}`",
+                                target.name
+                            )));
+                    }
+                }
+                self.expect(value, want)?;
                 Ok(Type::Unit)
             }
             StmtKind::Expr(e) => self.expr(e),
@@ -333,6 +364,7 @@ impl Checker {
 
     fn call(&mut self, expr: &Expr, callee: &Ident, args: &[Expr]) -> Result<Type, Diagnostic> {
         if callee.name == "print" {
+            // Not `value()`: a `unit` argument needs this message, not "expression has no value".
             let wrong = || Diagnostic::error(expr.span, "`print` takes one `i64` or `bool`");
             let [arg] = args else {
                 return Err(wrong());
@@ -367,6 +399,10 @@ impl Checker {
         }
         Ok(ret)
     }
+}
+
+fn cannot_assign(span: Span, target: &Ident) -> Diagnostic {
+    Diagnostic::error(span, format!("cannot assign to `{}`", target.name))
 }
 
 fn mismatch(span: Span, want: Type, got: Type) -> Diagnostic {
@@ -575,7 +611,8 @@ mod tests {
 
     #[test]
     fn var_may_shadow_a_param() {
-        assert!(diags("fn f(n: i64) { var n = n }\nfn main() {}").is_empty());
+        let src = "fn f(n: i64) {\n    var n = n\n    n = 1\n}\nfn main() {}";
+        clean(src);
     }
 
     #[test]
@@ -908,6 +945,85 @@ mod tests {
                 (Severity::Warning, "unreachable code", (3, 5)),
                 (Severity::Error, "expected `i64`, found `bool`", (3, 11)),
             ]
+        );
+    }
+
+    #[test]
+    fn assign_to_let() {
+        expect_error(
+            "fn main() {\n    let n = 0\n    n = 1\n}",
+            "cannot assign to `n`",
+            (3, 5),
+            Some("cannot assign twice"),
+            &[(2, 9, "declared with `let` here")],
+            Some("declare it with `var`"),
+        );
+    }
+
+    #[test]
+    fn compound_assign_to_let() {
+        expect_error(
+            "fn main() {\n    let n = 0\n    n += 1\n}",
+            "cannot assign to `n`",
+            (3, 5),
+            Some("cannot assign twice"),
+            &[(2, 9, "declared with `let` here")],
+            Some("declare it with `var`"),
+        );
+    }
+
+    #[test]
+    fn assign_to_param() {
+        expect_error(
+            "fn f(n: i64) {\n    n = 1\n}\nfn main() {}",
+            "cannot assign to `n`",
+            (2, 5),
+            None,
+            &[(1, 6, "declared as a parameter here")],
+            Some("copy it into a `var`: `var n = n`"),
+        );
+    }
+
+    #[test]
+    fn assign_type() {
+        error(
+            "fn main() {\n    var x = 1\n    x = true\n}",
+            "expected `i64`, found `bool`",
+            (3, 9),
+        );
+    }
+
+    #[test]
+    fn unused_var() {
+        let src = "fn main() {\n    var count = 0\n    print(count)\n}";
+        warning(src, "`count` is never reassigned", (2, 9));
+        assert_eq!(diags(src)[0].help.as_deref(), Some("declare it with `let`"));
+    }
+
+    #[test]
+    fn var_reassigned_in_inner_block() {
+        clean("fn main() {\n    var n = 0\n    if true { n = 1 }\n    print(n)\n}");
+    }
+
+    #[test]
+    fn empty_file_has_no_main() {
+        let ds = diags("");
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        assert_eq!(ds[0].message, "no `main` function");
+        assert_eq!(at("", ds[0].span), (1, 1));
+        assert!(
+            ds[0]
+                .render("empty.sisu", "")
+                .starts_with("error: no `main` function")
+        );
+    }
+
+    #[test]
+    fn never_as_print_argument() {
+        error(
+            "fn f(c: bool) -> i64 {\n    print(if c { return 1 } else { return 2 })\n    1\n}\nfn main() {}",
+            "unreachable code",
+            (2, 11),
         );
     }
 }

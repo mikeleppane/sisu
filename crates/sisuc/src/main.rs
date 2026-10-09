@@ -1,7 +1,6 @@
 //! `sisuc`, the Sisu compiler.
 
 mod ast;
-#[cfg_attr(not(test), expect(dead_code, reason = "wired into the CLI in Task 11"))]
 mod check;
 mod codegen;
 mod diagnostic;
@@ -14,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use diagnostic::Diagnostic;
+use diagnostic::{Diagnostic, Severity};
 use inkwell::context::Context;
 
 const USAGE: &str =
@@ -23,6 +22,7 @@ const USAGE: &str =
 /// What the command line asks for.
 enum Mode {
     Emit { stage: Stage, input: PathBuf },
+    Check { input: PathBuf },
     // The fixed program, until stage 4 replaces it with the real compile path.
     Hello { output: PathBuf },
 }
@@ -34,16 +34,20 @@ enum Stage {
 
 fn parse_args(args: &[OsString]) -> Result<Mode, String> {
     match args {
-        [flag, stage, input] if flag == "--emit" && (stage == "tokens" || stage == "ast") => {
+        [flag, stage, input] if flag == "--emit" => {
+            let stage = match stage.to_str() {
+                Some("tokens") => Stage::Tokens,
+                Some("ast") => Stage::Ast,
+                _ => return Err(USAGE.to_string()),
+            };
             Ok(Mode::Emit {
-                stage: if stage == "tokens" {
-                    Stage::Tokens
-                } else {
-                    Stage::Ast
-                },
+                stage,
                 input: PathBuf::from(input),
             })
         }
+        [flag, input] if flag == "--check" => Ok(Mode::Check {
+            input: PathBuf::from(input),
+        }),
         [output] if !output.to_string_lossy().starts_with('-') => Ok(Mode::Hello {
             output: PathBuf::from(output),
         }),
@@ -62,6 +66,7 @@ fn main() -> ExitCode {
     };
     match mode {
         Mode::Emit { stage, input } => emit(&stage, &input),
+        Mode::Check { input } => run_check(&input),
         Mode::Hello { output } => match compile(&output) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
@@ -104,6 +109,28 @@ fn emit(stage: &Stage, input: &Path) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+    }
+}
+
+/// Lexes, parses and checks `input`; prints every diagnostic. Fails if any is an error.
+fn run_check(input: &Path) -> ExitCode {
+    let path = input.to_string_lossy();
+    let source = match fs::read_to_string(input) {
+        Ok(source) => source,
+        Err(e) => {
+            eprintln!("sisuc: cannot read {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let diagnostics = match lexer::lex(&source).and_then(|tokens| parser::parse(&tokens)) {
+        Ok(program) => check::check(&program),
+        Err(d) => vec![d],
+    };
+    report(&path, &source, &diagnostics);
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
