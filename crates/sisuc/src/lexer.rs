@@ -1,9 +1,10 @@
 //! The lexer: source text to tokens.
 
+use std::fmt::Write;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, Span, line_col};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
@@ -55,16 +56,73 @@ pub(crate) struct Token {
     pub(crate) span: Span,
 }
 
+impl TokenKind {
+    /// The variant name, as `--emit tokens` prints it.
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            TokenKind::Ident(_) => "Ident",
+            TokenKind::Int(_) => "Int",
+            TokenKind::Fn => "Fn",
+            TokenKind::Let => "Let",
+            TokenKind::Var => "Var",
+            TokenKind::If => "If",
+            TokenKind::Else => "Else",
+            TokenKind::While => "While",
+            TokenKind::Return => "Return",
+            TokenKind::True => "True",
+            TokenKind::False => "False",
+            TokenKind::Plus => "Plus",
+            TokenKind::Minus => "Minus",
+            TokenKind::Star => "Star",
+            TokenKind::Slash => "Slash",
+            TokenKind::Percent => "Percent",
+            TokenKind::PlusEq => "PlusEq",
+            TokenKind::MinusEq => "MinusEq",
+            TokenKind::StarEq => "StarEq",
+            TokenKind::SlashEq => "SlashEq",
+            TokenKind::PercentEq => "PercentEq",
+            TokenKind::EqEq => "EqEq",
+            TokenKind::NotEq => "NotEq",
+            TokenKind::Lt => "Lt",
+            TokenKind::Le => "Le",
+            TokenKind::Gt => "Gt",
+            TokenKind::Ge => "Ge",
+            TokenKind::AndAnd => "AndAnd",
+            TokenKind::OrOr => "OrOr",
+            TokenKind::Bang => "Bang",
+            TokenKind::Eq => "Eq",
+            TokenKind::LParen => "LParen",
+            TokenKind::RParen => "RParen",
+            TokenKind::LBrace => "LBrace",
+            TokenKind::RBrace => "RBrace",
+            TokenKind::Comma => "Comma",
+            TokenKind::Colon => "Colon",
+            TokenKind::Arrow => "Arrow",
+            TokenKind::Newline => "Newline",
+            TokenKind::Eof => "Eof",
+        }
+    }
+}
+
 type Chars<'a> = Peekable<CharIndices<'a>>;
+
+/// An open bracket: its char (`(` or `{`) and where it stands.
+type Open = (char, Span);
 
 /// Lexes `source`; the tokens always end with `Eof`. Stops at the first error.
 pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
-    let mut tokens = Vec::new();
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut open: Vec<Open> = Vec::new();
     let mut chars = source.char_indices().peekable();
     while let Some((start, c)) = chars.next() {
         let kind = match c {
-            // Task 3 turns '\n' into a Newline token.
-            ' ' | '\t' | '\r' | '\n' => continue,
+            ' ' | '\t' | '\r' => continue,
+            '\n' => {
+                if ends_statement(&tokens, &open) {
+                    tokens.push(newline(Span::new(start, start + 1)));
+                }
+                continue;
+            }
             '/' if chars.next_if(|&(_, n)| n == '/').is_some() => {
                 while chars.next_if(|&(_, n)| n != '\n').is_some() {}
                 continue;
@@ -79,19 +137,92 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 let end = take_while(&mut chars, source, |c| c.is_ascii_digit() || c == '_');
                 TokenKind::Int(int_literal(source, start, end)?)
             }
+            '-' if matches!(chars.peek(), Some(&(_, ' ' | '\t')))
+                && tokens.last().is_some_and(|t| t.kind == TokenKind::Newline) =>
+            {
+                return Err(Diagnostic::error(
+                    Span::new(start, start + 1),
+                    "a line cannot start with a binary `-`",
+                )
+                .help("to continue the previous line, end it with `-`; to negate, write `-x`"));
+            }
             _ => symbol(c, &mut chars).ok_or_else(|| unexpected(c, start))?,
         };
         let end = chars.peek().map_or(source.len(), |&(i, _)| i);
-        tokens.push(Token {
-            kind,
-            span: Span::new(start, end),
-        });
+        let span = Span::new(start, end);
+        track_bracket(&mut open, &kind, span)?;
+        tokens.push(Token { kind, span });
     }
+    if let Some(&(c, span)) = open.last() {
+        return Err(Diagnostic::error(span, format!("unclosed `{c}`")));
+    }
+    if ends_statement(&tokens, &open) {
+        tokens.push(newline(Span::new(source.len(), source.len())));
+    }
+    // Eof sits just after the last code, so "found end of file" points at its line.
+    let after_code = tokens
+        .iter()
+        .rfind(|t| t.kind != TokenKind::Newline)
+        .map_or(0, |t| t.span.end);
     tokens.push(Token {
         kind: TokenKind::Eof,
-        span: Span::new(source.len(), source.len()),
+        span: Span::new(after_code, after_code),
     });
     Ok(tokens)
+}
+
+fn newline(span: Span) -> Token {
+    Token {
+        kind: TokenKind::Newline,
+        span,
+    }
+}
+
+/// Whether a line break here ends a statement: the previous token can end one,
+/// and the innermost open bracket, if any, is a block.
+fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
+    use TokenKind::{False, Ident, Int, RBrace, RParen, Return, True};
+    tokens.last().is_some_and(|t| {
+        matches!(
+            t.kind,
+            Ident(_) | Int(_) | True | False | Return | RParen | RBrace
+        )
+    }) && open.last().is_none_or(|&(c, _)| c == '{')
+}
+
+/// Pushes an opening bracket onto `open`, or checks that a closing one matches the top.
+fn track_bracket(open: &mut Vec<Open>, kind: &TokenKind, span: Span) -> Result<(), Diagnostic> {
+    let (closes, c) = match kind {
+        TokenKind::LParen | TokenKind::LBrace => {
+            let c = if *kind == TokenKind::LParen { '(' } else { '{' };
+            open.push((c, span));
+            return Ok(());
+        }
+        TokenKind::RParen => ('(', ')'),
+        TokenKind::RBrace => ('{', '}'),
+        _ => return Ok(()),
+    };
+    match open.pop() {
+        Some((o, _)) if o == closes => Ok(()),
+        Some((o, o_span)) => Err(Diagnostic::error(span, format!("unexpected `{c}`"))
+            .secondary(o_span, format!("`{o}` opened here"))),
+        None => Err(Diagnostic::error(span, format!("unexpected `{c}`"))),
+    }
+}
+
+/// One token per line, `line:col Kind text`; `Newline` and `Eof` print without text.
+pub(crate) fn dump(source: &str, tokens: &[Token]) -> String {
+    let mut out = String::new();
+    for t in tokens {
+        let (line, col) = line_col(source, t.span.start);
+        write!(out, "{line}:{col} {}", t.kind.name()).expect("writing to a String cannot fail");
+        if !matches!(t.kind, TokenKind::Newline | TokenKind::Eof) {
+            write!(out, " {}", &source[t.span.start..t.span.end])
+                .expect("writing to a String cannot fail");
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Consumes chars while `pred` holds and returns the byte offset after the last one.
@@ -119,8 +250,8 @@ fn keyword_or_ident(text: &str) -> TokenKind {
 fn int_literal(source: &str, start: usize, end: usize) -> Result<i64, Diagnostic> {
     let text = &source[start..end];
     for (i, _) in text.match_indices('_') {
-        let digit_at = |j: Option<usize>| j.is_some_and(|j| text.as_bytes()[j].is_ascii_digit());
-        if !digit_at(i.checked_sub(1)) || !digit_at(Some(i + 1).filter(|&j| j < text.len())) {
+        let is_digit = |j: usize| text.as_bytes().get(j).is_some_and(u8::is_ascii_digit);
+        if !i.checked_sub(1).is_some_and(is_digit) || !is_digit(i + 1) {
             let at = start + i;
             return Err(Diagnostic::error(
                 Span::new(at, at + 1),
@@ -329,7 +460,8 @@ mod tests {
 
     #[test]
     fn token_spans_are_byte_offsets() {
-        let spans: Vec<Span> = lex("ab 12 +=")
+        // The two-byte `ä` shifts byte offsets away from char offsets.
+        let spans: Vec<Span> = lex("// ä\nab 12 +=")
             .expect("source lexes")
             .into_iter()
             .map(|t| t.span)
@@ -337,11 +469,203 @@ mod tests {
         assert_eq!(
             spans,
             [
-                Span::new(0, 2),
-                Span::new(3, 5),
                 Span::new(6, 8),
-                Span::new(8, 8)
+                Span::new(9, 11),
+                Span::new(12, 14),
+                Span::new(14, 14)
             ]
+        );
+    }
+
+    fn all_kinds(src: &str) -> Vec<TokenKind> {
+        lex(src)
+            .expect("source lexes")
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
+    }
+
+    #[test]
+    fn newline_after_rparen() {
+        use TokenKind::{Eof, LParen, Newline, RParen};
+        assert_eq!(
+            all_kinds("f()\nx"),
+            [
+                ident("f"),
+                LParen,
+                RParen,
+                Newline,
+                ident("x"),
+                Newline,
+                Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn no_newline_inside_parens() {
+        use TokenKind::{Comma, Eof, Int, LParen, Newline, RParen};
+        assert_eq!(
+            all_kinds("f(1,\n2)"),
+            [
+                ident("f"),
+                LParen,
+                Int(1),
+                Comma,
+                Int(2),
+                RParen,
+                Newline,
+                Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn block_inside_parens() {
+        use TokenKind::{Eof, LBrace, LParen, Newline, RBrace, RParen};
+        assert_eq!(
+            all_kinds("(\n{\nx\ny\n}\n)"),
+            [
+                LParen,
+                LBrace,
+                ident("x"),
+                Newline,
+                ident("y"),
+                Newline,
+                RBrace,
+                RParen,
+                Newline,
+                Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn newline_after_comment() {
+        use TokenKind::{Eof, Newline};
+        assert_eq!(
+            all_kinds("x // hi\ny"),
+            [ident("x"), Newline, ident("y"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn no_newline_after_operator() {
+        use TokenKind::{Eof, Int, Newline, Plus};
+        assert_eq!(all_kinds("1 +\n2"), [Int(1), Plus, Int(2), Newline, Eof]);
+    }
+
+    #[test]
+    fn blank_lines_give_one_newline() {
+        use TokenKind::{Eof, Newline};
+        assert_eq!(
+            all_kinds("x\n\n\ny"),
+            [ident("x"), Newline, ident("y"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn newline_at_eof() {
+        use TokenKind::{Eof, Newline};
+        assert_eq!(all_kinds("x"), [ident("x"), Newline, Eof]);
+    }
+
+    #[test]
+    fn crlf_line_endings() {
+        use TokenKind::{Eof, Newline};
+        assert_eq!(
+            all_kinds("x\r\ny\r\n"),
+            [ident("x"), Newline, ident("y"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn newline_and_eof_spans() {
+        // A Newline covers its `\n`, or sits empty at end of file; Eof sits just after the last code.
+        let spans = |src| -> Vec<Span> {
+            lex(src)
+                .expect("source lexes")
+                .into_iter()
+                .map(|t| t.span)
+                .collect()
+        };
+        assert_eq!(
+            spans("x // c\n"),
+            [Span::new(0, 1), Span::new(6, 7), Span::new(1, 1)]
+        );
+        assert_eq!(
+            spans("x"),
+            [Span::new(0, 1), Span::new(1, 1), Span::new(1, 1)]
+        );
+    }
+
+    #[test]
+    fn unary_minus_line_is_fine() {
+        use TokenKind::{Eof, Minus, Newline};
+        assert_eq!(
+            all_kinds("x\n-y"),
+            [ident("x"), Newline, Minus, ident("y"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn binary_minus_line_is_error() {
+        let src = "let t = a\n- b";
+        let d = lex(src).expect_err("a line cannot start with a binary `-`");
+        assert_eq!(d.message, "a line cannot start with a binary `-`");
+        assert_eq!(line_col(src, d.span.start), (2, 1));
+        assert_eq!(
+            d.help.as_deref(),
+            Some("to continue the previous line, end it with `-`; to negate, write `-x`")
+        );
+    }
+
+    #[test]
+    fn unexpected_close() {
+        assert_eq!(err("x)"), ("unexpected `)`".to_string(), 1, 2));
+    }
+
+    #[test]
+    fn mismatched_close() {
+        let d = lex("(}").expect_err("`}` does not close `(`");
+        assert_eq!(d.message, "unexpected `}`");
+        assert_eq!(line_col("(}", d.span.start), (1, 2));
+        let [(open, text)] = d.secondary.as_slice() else {
+            panic!("one secondary span, got {:?}", d.secondary);
+        };
+        assert_eq!(text, "`(` opened here");
+        assert_eq!(line_col("(}", open.start), (1, 1));
+    }
+
+    #[test]
+    fn unclosed_paren() {
+        assert_eq!(err("(x"), ("unclosed `(`".to_string(), 1, 1));
+    }
+
+    #[test]
+    fn binary_minus_inside_parens_is_fine() {
+        use TokenKind::{Eof, LParen, Minus, Newline, RParen};
+        assert_eq!(
+            all_kinds("(a\n- b)"),
+            [LParen, ident("a"), Minus, ident("b"), RParen, Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn binary_minus_after_operator_is_fine() {
+        use TokenKind::{Eof, Minus, Newline};
+        assert_eq!(
+            all_kinds("a -\n- b"),
+            [ident("a"), Minus, Minus, ident("b"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn dump_format() {
+        let src = "fn main() {}\n";
+        assert_eq!(
+            dump(src, &lex(src).expect("source lexes")),
+            "1:1 Fn fn\n1:4 Ident main\n1:8 LParen (\n1:9 RParen )\n1:11 LBrace {\n1:12 RBrace }\n1:13 Newline\n1:13 Eof\n"
         );
     }
 }
