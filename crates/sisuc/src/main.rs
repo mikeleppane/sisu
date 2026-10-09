@@ -239,15 +239,16 @@ fn create_object(
     bytes: &[u8],
     names: impl IntoIterator<Item = String>,
 ) -> Result<PathBuf, String> {
+    // `create_new` is `O_CREAT | O_EXCL`: it fails on any existing path, a symlink included,
+    // so a name planted in a shared temp dir is never followed or overwritten.
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Owner-only from creation: other users of the shared temp dir cannot read the object.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     for name in names {
         let path = dir.join(name);
-        // `create_new` is `O_CREAT | O_EXCL`: it fails on any existing path, a symlink included,
-        // so a name planted in a shared temp dir is never followed or overwritten.
-        let mut file = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
+        let mut file = match options.open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
@@ -296,5 +297,23 @@ mod tests {
         assert!(create_object(&dir, b"object", ["taken.o".to_string()]).is_err());
         assert_eq!(fs::read_to_string(&target).expect("reads"), "not sisuc's");
         fs::remove_dir_all(&dir).expect("removes the directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn object_file_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("sisuc-object-mode-{}", std::process::id()));
+        // It is absent unless an earlier run failed, so a failure here is expected and harmless.
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).expect("creates the directory");
+        let object = create_object(&dir, b"object", ["private.o".to_string()]).expect("creates");
+        let mode = fs::metadata(&object)
+            .expect("reads metadata")
+            .permissions()
+            .mode();
+        fs::remove_dir_all(&dir).expect("removes the directory");
+        assert_eq!(mode & 0o077, 0, "mode {mode:o}");
     }
 }
