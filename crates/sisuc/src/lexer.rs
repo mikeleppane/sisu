@@ -588,14 +588,14 @@ mod tests {
 
     #[test]
     fn no_newline_inside_parens() {
-        use TokenKind::{Comma, Eof, Int, LParen, Newline, RParen};
+        use TokenKind::{Eof, Int, LParen, Newline, Plus, RParen};
         assert_eq!(
-            all_kinds("f(1,\n2)"),
+            all_kinds("f(1\n+2)"),
             [
                 ident("f"),
                 LParen,
                 Int(1),
-                Comma,
+                Plus,
                 Int(2),
                 RParen,
                 Newline,

@@ -950,13 +950,25 @@ mod tests {
 
     #[test]
     fn assign_to_let() {
+        let src = "fn main() {\n    let n = 0\n    n = 1\n}";
         expect_error(
-            "fn main() {\n    let n = 0\n    n = 1\n}",
+            src,
             "cannot assign to `n`",
             (3, 5),
             Some("cannot assign twice"),
             &[(2, 9, "declared with `let` here")],
             Some("declare it with `var`"),
+        );
+        let span = diags(src)[0].span;
+        assert_eq!(&src[span.start..span.end], "n = 1");
+    }
+
+    #[test]
+    fn never_assigned_value() {
+        error(
+            "fn f(c: bool) -> i64 {\n    var x = 0\n    x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
+            "unreachable code",
+            (3, 9),
         );
     }
 
@@ -998,6 +1010,31 @@ mod tests {
         let src = "fn main() {\n    var count = 0\n    print(count)\n}";
         warning(src, "`count` is never reassigned", (2, 9));
         assert_eq!(diags(src)[0].help.as_deref(), Some("declare it with `let`"));
+    }
+
+    #[test]
+    fn unused_vars_in_source_order() {
+        // The inner scope pops first, so this fails unless warnings are sorted.
+        let src = "fn main() {\n    var a = 0\n    if true {\n        var b = 0\n        print(b)\n    }\n    print(a)\n}";
+        let found: Vec<_> = diags(src)
+            .iter()
+            .map(|d| (d.severity, d.message.clone(), at(src, d.span)))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    Severity::Warning,
+                    "`a` is never reassigned".to_string(),
+                    (2, 9)
+                ),
+                (
+                    Severity::Warning,
+                    "`b` is never reassigned".to_string(),
+                    (4, 13)
+                ),
+            ]
+        );
     }
 
     #[test]

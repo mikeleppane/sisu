@@ -797,6 +797,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn division_guards_precede_the_division() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "fn d(a: i64, b: i64) -> i64 { a / b }\nfn r(a: i64, b: i64) -> i64 { a % b }\nfn main() {}",
+        )
+        .print_to_string()
+        .to_string();
+        for (name, op) in [("d", "sdiv i64 %0, %1"), ("r", "srem i64 %0, %1")] {
+            let header = format!("define i64 @sisu.{name}(");
+            let body = ir
+                .split(&header)
+                .nth(1)
+                .and_then(|rest| rest.split("\n}").next())
+                .unwrap_or_else(|| panic!("no {header} in\n{ir}"));
+            // The zero guard, then the `MIN / -1` guard, then the operation itself.
+            let mut from = 0;
+            for wanted in [
+                "%cmp = icmp eq i64 %1, 0",
+                "br i1 %cmp, label %panic",
+                "icmp eq i64 %0, -9223372036854775808",
+                "icmp eq i64 %1, -1",
+                "%overflow = and i1",
+                "br i1 %overflow, label %panic",
+                op,
+            ] {
+                let at = body[from..]
+                    .find(wanted)
+                    .unwrap_or_else(|| panic!("missing {wanted:?} after byte {from} in\n{body}"));
+                from += at + wanted.len();
+            }
+            // Each guard's true edge goes to a panic block, its false edge on to `ok`.
+            let branches: Vec<_> = body.lines().filter(|l| l.contains("br i1 ")).collect();
+            assert_eq!(branches.len(), 2, "{body}");
+            for branch in branches {
+                let labels: Vec<_> = branch.split("label %").skip(1).collect();
+                assert!(
+                    matches!(labels.as_slice(), [t, f] if t.starts_with("panic") && f.starts_with("ok")),
+                    "{branch}"
+                );
+            }
+        }
+        for message in [
+            "test.sisu:1:31: division by zero",
+            "test.sisu:1:31: integer overflow",
+            "test.sisu:2:31: division by zero",
+            "test.sisu:2:31: integer overflow",
+        ] {
+            assert_panics_with(&ir, message);
+        }
+    }
+
     /// Asserts that `ir` has a `sisu_panic` call that passes `message` and its byte length.
     fn assert_panics_with(ir: &str, message: &str) {
         let constant = format!("c\"{message}\\00\"");

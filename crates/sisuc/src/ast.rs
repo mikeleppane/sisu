@@ -356,33 +356,6 @@ mod tests {
     }
 
     #[test]
-    fn operator_symbols() {
-        let binary = [
-            (BinaryOp::Add, "+"),
-            (BinaryOp::Sub, "-"),
-            (BinaryOp::Mul, "*"),
-            (BinaryOp::Div, "/"),
-            (BinaryOp::Rem, "%"),
-            (BinaryOp::And, "&&"),
-            (BinaryOp::Or, "||"),
-            (BinaryOp::Eq, "=="),
-            (BinaryOp::Ne, "!="),
-        ];
-        for (op, text) in binary {
-            assert_eq!(op.to_string(), text);
-        }
-        let compare = [
-            (CompareOp::Lt, "<"),
-            (CompareOp::Le, "<="),
-            (CompareOp::Gt, ">"),
-            (CompareOp::Ge, ">="),
-        ];
-        for (op, text) in compare {
-            assert_eq!(op.to_string(), text);
-        }
-    }
-
-    #[test]
     fn display_every_node() {
         let cmp = expr(ExprKind::Compare {
             operands: vec![name("a"), name("b"), name("c")],

@@ -118,3 +118,30 @@ fn check_error_exits_1() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
 }
+
+#[test]
+fn check_warning_and_error_exits_1() {
+    let out = check(
+        "check_warning_and_error_exits_1",
+        "fn f() { var x = 0 }\nfn main() { print(missing) }\n",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warning = stderr.find("warning: ").expect("a warning");
+    let error = stderr.find("error: ").expect("an error");
+    assert!(warning < error, "{stderr}");
+}
+
+#[test]
+fn unreadable_input_exits_1() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(env!("CARGO_TARGET_TMPDIR"))
+        .args(["--check", "no_such_dir/unreadable_input_exits_1.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .starts_with("sisuc: cannot read no_such_dir/unreadable_input_exits_1.sisu: ")
+    );
+}
