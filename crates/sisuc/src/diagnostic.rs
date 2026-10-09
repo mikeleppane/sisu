@@ -75,6 +75,17 @@ impl Diagnostic {
 
     /// Renders the diagnostic as `annotate-snippets` text; `path` is shown as given.
     pub(crate) fn render(&self, path: &str, source: &str) -> String {
+        for span in std::iter::once(&self.span).chain(self.secondary.iter().map(|(s, _)| s)) {
+            debug_assert!(
+                source.is_char_boundary(span.start) && source.is_char_boundary(span.end),
+                "span {span:?} does not sit on char boundaries"
+            );
+            // A span that swallows the line break underlines into the next line.
+            debug_assert!(
+                span.start == span.end || !source[..span.end].ends_with('\n'),
+                "span {span:?} ends with a line break"
+            );
+        }
         let level = match self.severity {
             Severity::Error => Level::ERROR,
             Severity::Warning => Level::WARNING,
@@ -116,6 +127,12 @@ mod tests {
         assert_eq!(line_col("ää x", 5), (1, 4));
         assert_eq!(line_col("ää\nx", 5), (2, 1));
         assert_eq!(line_col("", 0), (1, 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "ends with a line break")]
+    fn span_over_a_line_break_is_rejected() {
+        Diagnostic::error(Span::new(5, 6), "x").render("a.sisu", "let y\n}");
     }
 
     #[test]
