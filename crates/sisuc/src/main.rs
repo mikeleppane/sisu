@@ -10,8 +10,10 @@ mod parser;
 
 use std::ffi::OsString;
 use std::fs;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ast::Program;
 use diagnostic::{Diagnostic, Severity};
@@ -210,14 +212,89 @@ fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
 fn compile(program: &Program, path: &str, source: &str, output: &Path) -> Result<(), String> {
     let context = Context::create();
     let module = codegen::compile(&context, program, path, source);
-    // A name of its own, so a user's `<output>.o` is left alone.
-    let object = std::env::temp_dir().join(format!("sisuc-{}.o", std::process::id()));
     let machine = codegen::target_machine()?;
     codegen::run_mem2reg(&module, &machine)?;
-    codegen::write_object(&module, &machine, &object)?;
+    let code = codegen::object_code(&module, &machine)?;
+    // A name of its own, so a user's `<output>.o` is left alone; the nanoseconds pick a
+    // fresh name when one is taken.
+    let pid = std::process::id();
+    let names = (0..10).map(|_| {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        format!("sisuc-{pid}-{nanos}.o")
+    });
+    let object = create_object(&std::env::temp_dir(), code.as_slice(), names)?;
     // Remove the object file whether or not the link worked; a link error wins.
     let linked = link::link(&object, output);
     let removed =
         fs::remove_file(&object).map_err(|e| format!("cannot remove {}: {e}", object.display()));
     linked.and(removed)
+}
+
+/// Writes `bytes` to a new file in `dir`, under the first of `names` that is free, and
+/// returns its path.
+fn create_object(
+    dir: &Path,
+    bytes: &[u8],
+    names: impl IntoIterator<Item = String>,
+) -> Result<PathBuf, String> {
+    for name in names {
+        let path = dir.join(name);
+        // `create_new` is `O_CREAT | O_EXCL`: it fails on any existing path, a symlink included,
+        // so a name planted in a shared temp dir is never followed or overwritten.
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+        };
+        return match file.write_all(bytes) {
+            Ok(()) => Ok(path),
+            Err(e) => {
+                let message = format!("cannot write {}: {e}", path.display());
+                fs::remove_file(&path)
+                    .map_err(|e| format!("{message}; cannot remove it: {e}"))
+                    .and(Err(message))
+            }
+        };
+    }
+    Err(format!(
+        "cannot create a temporary object file in {}",
+        dir.display()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn object_file_never_follows_an_existing_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("sisuc-create-object-{}", std::process::id()));
+        // It is absent unless an earlier run failed, so a failure here is expected and harmless.
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).expect("creates the directory");
+        let target = dir.join("target");
+        fs::write(&target, "not sisuc's").expect("writes");
+        symlink(&target, dir.join("taken.o")).expect("links");
+        symlink(dir.join("absent"), dir.join("dangling.o")).expect("links");
+
+        let names = ["taken.o", "dangling.o", "free.o"].map(String::from);
+        let object = create_object(&dir, b"object", names).expect("`free.o` is free");
+        assert_eq!(object, dir.join("free.o"));
+        assert_eq!(fs::read(&object).expect("reads"), b"object");
+        assert_eq!(fs::read_to_string(&target).expect("reads"), "not sisuc's");
+        assert!(!dir.join("absent").exists());
+        // With every name taken, it gives up without writing.
+        assert!(create_object(&dir, b"object", ["taken.o".to_string()]).is_err());
+        assert_eq!(fs::read_to_string(&target).expect("reads"), "not sisuc's");
+        fs::remove_dir_all(&dir).expect("removes the directory");
+    }
 }

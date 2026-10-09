@@ -1,13 +1,13 @@
 //! Builds LLVM IR through inkwell and writes it out as a native object file.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
+use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
@@ -707,17 +707,16 @@ pub(crate) fn run_mem2reg(module: &Module<'_>, machine: &TargetMachine) -> Resul
         .map_err(|e| e.to_string())
 }
 
-/// Writes `module` to `path` as an object file for `machine`.
-pub(crate) fn write_object(
+/// Compiles `module` to object code for `machine`, in memory.
+pub(crate) fn object_code(
     module: &Module<'_>,
     machine: &TargetMachine,
-    path: &Path,
-) -> Result<(), String> {
+) -> Result<MemoryBuffer<'static>, String> {
     module.set_triple(&machine.get_triple());
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     module.verify().map_err(|e| e.to_string())?;
     machine
-        .write_to_file(module, FileType::Object, path)
+        .write_to_memory_buffer(module, FileType::Object)
         .map_err(|e| e.to_string())
 }
 
