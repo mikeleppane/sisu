@@ -54,6 +54,23 @@ fn lowers_compound_element_writes() {
     }
 }
 
+/// Distinct calls, so an index bound out of source order changes the lowering.
+#[test]
+fn binds_indexes_in_source_order() {
+    let printed = lowered(
+        "fn outer() -> i64 { 0 }\nfn inner() -> i64 { 0 }\nfn g() {\n    var grid = [[0]]\n    grid[outer()][inner()] += 1\n}\nfn main() {}",
+    );
+    assert!(
+        printed.contains(
+            "(block (let #1 (call outer)) (let #2 (call inner)) (= (index (index grid#0 #1) #2) (+ (index (index grid#0 #1) #2) 1)))"
+        ),
+        "{printed}"
+    );
+    for call in ["(call outer)", "(call inner)"] {
+        assert_eq!(printed.matches(call).count(), 1, "{call} in {printed}");
+    }
+}
+
 /// `a` is counted and the value can exit, so the place's operands are bound before it runs.
 #[test]
 fn spills_an_element_write() {
@@ -155,6 +172,18 @@ fn element_of_a_for_variable() {
 }
 
 #[test]
+fn element_of_a_while_let_binding() {
+    expect_error(
+        "fn f(m: [i64]?) { while let xs = m { xs[0] = 1 } }\nfn main() {}",
+        "cannot assign to an element of `xs`",
+        (1, 38, "xs[0] = 1"),
+        None,
+        &[(1, 29, "bound by `while let` here")],
+        None,
+    );
+}
+
+#[test]
 fn element_of_a_let_field() {
     expect_error(
         "class C {\n    let cells: [i64]\n    fn set(self) { self.cells[0] = 1 }\n}\nfn main() {}",
@@ -184,5 +213,38 @@ fn element_of_an_optional_array() {
         None,
         &[],
         Some("unwrap it with `if let`"),
+    );
+}
+
+#[test]
+fn element_of_a_non_array() {
+    expect_error(
+        "fn main() {\n    var n = 1\n    n[0] = 2\n}",
+        "cannot index `i64`",
+        (3, 5, "n"),
+        None,
+        &[],
+        Some("only arrays can be indexed"),
+    );
+}
+
+/// An unknown root is reported once, and nothing more about the write.
+#[test]
+fn element_of_an_unknown_name() {
+    errors(
+        "fn main() {\n    nope[0] = 1\n}",
+        &[("cannot find `nope` in this scope", (2, 5))],
+    );
+}
+
+#[test]
+fn element_index_of_the_wrong_type() {
+    expect_error(
+        "fn f(b: u8) {\n    var xs = [0]\n    xs[b] = 1\n}\nfn main() {}",
+        "expected `i64`, found `u8`",
+        (3, 8, "b"),
+        None,
+        &[],
+        Some("convert it: `i64(b)`"),
     );
 }
