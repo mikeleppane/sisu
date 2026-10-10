@@ -1,6 +1,7 @@
 //! Builds LLVM IR through inkwell and writes it out as a native object file.
 
 mod arith;
+mod array;
 mod rc;
 
 use std::cell::RefCell;
@@ -87,16 +88,16 @@ pub(crate) fn compile<'ctx>(
         None,
     );
     print_bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
-    // `sisu_panic(msg, len)` prints the message and exits; it never returns.
-    let panic = module.add_function(
-        "sisu_panic",
-        void.fn_type(&[ptr_type.into(), i64_type.into()], false),
-        None,
-    );
-    panic.add_attribute(
-        AttributeLoc::Function,
-        context.create_enum_attribute(Attribute::get_named_enum_kind_id("noreturn"), 0),
-    );
+    // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
+    // index, length)` prints a bounds panic and exits.
+    let panic = declare_noreturn(&module, "sisu_panic", &[ptr_type.into(), i64_type.into()]);
+    let bounds = [
+        ptr_type.into(),
+        i64_type.into(),
+        i64_type.into(),
+        i64_type.into(),
+    ];
+    let panic_bounds = declare_noreturn(&module, "sisu_panic_bounds", &bounds);
 
     let mut codegen = Codegen {
         context,
@@ -105,6 +106,7 @@ pub(crate) fn compile<'ctx>(
         print_int,
         print_bool,
         panic,
+        panic_bounds,
         alloc,
         free,
         rc_retain,
@@ -151,6 +153,21 @@ pub(crate) fn compile<'ctx>(
     codegen.module
 }
 
+/// Declares the runtime function `name`, which takes `params` and never returns.
+fn declare_noreturn<'ctx>(
+    module: &Module<'ctx>,
+    name: &str,
+    params: &[BasicMetadataTypeEnum<'ctx>],
+) -> FunctionValue<'ctx> {
+    let context = module.get_context();
+    let function = module.add_function(name, context.void_type().fn_type(params, false), None);
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("noreturn"), 0),
+    );
+    function
+}
+
 fn zeroext(context: &Context) -> Attribute {
     context.create_enum_attribute(Attribute::get_named_enum_kind_id("zeroext"), 0)
 }
@@ -180,6 +197,7 @@ struct Codegen<'ctx, 'src> {
     print_int: FunctionValue<'ctx>,
     print_bool: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
+    panic_bounds: FunctionValue<'ctx>,
     alloc: FunctionValue<'ctx>,
     free: FunctionValue<'ctx>,
     /// `@sisu_rc.retain`, which every counted type shares.
@@ -215,8 +233,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::U8 => Some(self.context.i8_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
-            Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
-            Type::Array(_) => panic!("arrays land in Task 8"),
+            // An object or an array is a pointer to its block.
+            Type::Class(_) | Type::Array(_) => {
+                Some(self.context.ptr_type(AddressSpace::default()).into())
+            }
             Type::Optional(payload) => match self
                 .llvm_type(payload)
                 .expect("the checker should reject an optional of `unit` or `never`, so its payload has a value type")
@@ -592,10 +612,12 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
-            ExprKind::ArrayLit(_)
-            | ExprKind::ArrayFill { .. }
-            | ExprKind::Index { .. }
-            | ExprKind::Len(_) => panic!("arrays land in Task 8"),
+            ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
+            ExprKind::ArrayFill { value, len } => {
+                return Some(self.array_fill(&e.ty, value, len).into());
+            }
+            ExprKind::Index { base, index } => return Some(self.index(&e.ty, base, index)),
+            ExprKind::Len(base) => self.len(base),
             ExprKind::Local(local) => {
                 let value = self.load_local(*local)?;
                 self.retain(value, &e.ty);
@@ -819,29 +841,50 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
-    /// Branches to a fresh panic block when `fails` holds, and continues in a fresh block
-    /// otherwise. The panic block calls `sisu_panic` with `<path>:<line>:<col>: <message>`
-    /// for the start of `span`.
+    /// Panics with `<path>:<line>:<col>: <message>`, for the start of `span`, when `fails`
+    /// holds; see `panic_with`.
     fn panic_if(&self, fails: IntValue<'ctx>, span: Span, message: &str) {
-        let function = self.current_function();
-        let panic_block = self.context.append_basic_block(function, "panic");
-        let ok = self.context.append_basic_block(function, "ok");
+        let text = format!("{}: {message}", self.location(span));
+        self.panic_with(fails, &text, self.panic, &[]);
+    }
+
+    /// `<path>:<line>:<col>` for the start of `span`.
+    fn location(&self, span: Span) -> String {
+        let (line, col) = line_col(self.source, span.start);
+        format!("{}:{line}:{col}", self.path)
+    }
+
+    /// Branches to a fresh panic block when `fails` holds, and continues in a fresh block
+    /// otherwise. The panic block calls `function`, which never returns, with `text` and its
+    /// length, then `extra`.
+    fn panic_with(
+        &self,
+        fails: IntValue<'ctx>,
+        text: &str,
+        function: FunctionValue<'ctx>,
+        extra: &[BasicMetadataValueEnum<'ctx>],
+    ) {
+        let current = self.current_function();
+        let panic_block = self.context.append_basic_block(current, "panic");
+        let ok = self.context.append_basic_block(current, "ok");
         self.builder
             .build_conditional_branch(fails, panic_block, ok)
             .expect(POSITIONED);
         self.builder.position_at_end(panic_block);
-        let (line, col) = line_col(self.source, span.start);
-        let text = format!("{}:{line}:{col}: {message}", self.path);
         let msg = self
             .builder
-            .build_global_string_ptr(&text, "panic.msg")
+            .build_global_string_ptr(text, "panic.msg")
             .expect(POSITIONED);
         let len = self.context.i64_type().const_int(
             u64::try_from(text.len()).expect("a panic message should be shorter than 2^64 bytes"),
             false,
         );
+        let args: Vec<BasicMetadataValueEnum> = [msg.as_pointer_value().into(), len.into()]
+            .into_iter()
+            .chain(extra.iter().copied())
+            .collect();
         self.builder
-            .build_call(self.panic, &[msg.as_pointer_value().into(), len.into()], "")
+            .build_call(function, &args, "")
             .expect(POSITIONED);
         self.builder.build_unreachable().expect(POSITIONED);
         self.builder.position_at_end(ok);

@@ -502,7 +502,7 @@ impl Program {
     }
 
     /// A type as `--emit tir` prints it: a class by its name.
-    fn type_name(&self, ty: &Type) -> String {
+    pub(crate) fn type_name(&self, ty: &Type) -> String {
         match ty {
             Type::Class(id) => self.classes[id.0].name.clone(),
             Type::Array(element) => format!("[{}]", self.type_name(element)),

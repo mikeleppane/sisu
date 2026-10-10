@@ -214,6 +214,16 @@ fn unsigned() {
     assert_prints_out_file("unsigned");
 }
 
+#[test]
+fn arrays() {
+    assert_prints_out_file("arrays");
+}
+
+#[test]
+fn empty_arrays() {
+    assert_prints_out_file("empty");
+}
+
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
     let exe = compile(Path::new(PROGRAMS), name, false);
@@ -365,6 +375,29 @@ fn panic_cases() {
             "u8(a)",
             "value does not fit in `u8`",
         ),
+        bounds_case("bounds_above", "7", "index 7 out of bounds for length 5"),
+        bounds_case("bounds_negative", "-1", "index -1 out of bounds for length 5"),
+        (
+            "length_negative",
+            "fn main() {\n    let n = -1\n    let xs = [0; n]\n    print(xs.len())\n}\n"
+                .to_string(),
+            "3:18: array length is negative".to_string(),
+        ),
+        // 16 + 9_223_372_036_854_775_791 bytes is exactly `i64::MAX`, above the largest
+        // size that rounds up to the alignment of 8 within it.
+        (
+            "length_too_large",
+            "fn main() {\n    let xs = [false; 9_223_372_036_854_775_791]\n    print(xs.len())\n}\n"
+                .to_string(),
+            "2:22: array is too large".to_string(),
+        ),
+        // 2^62 * 8 bytes overflows the multiply.
+        (
+            "length_overflows",
+            "fn main() {\n    let xs = [0; 4_611_686_018_427_387_904]\n    print(xs.len())\n}\n"
+                .to_string(),
+            "2:18: array is too large".to_string(),
+        ),
     ];
     for (name, source, position_and_message) in cases {
         for o2 in [false, true] {
@@ -391,6 +424,41 @@ fn u8_case(
         name,
         format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
         format!("3:11: {message}"),
+    )
+}
+
+/// The largest block the size checks allow, `i64::MAX` rounded down to the alignment of 8,
+/// passes them and reaches the allocator, which cannot provide it: `sisu_alloc` calls
+/// `handle_alloc_error` rather than aborting on an invalid layout, which prints nothing.
+#[test]
+fn largest_array_reaches_the_allocator() {
+    // 16 + 9_223_372_036_854_775_784 bytes is 9_223_372_036_854_775_800.
+    let source =
+        "fn main() {\n    let xs = [false; 9_223_372_036_854_775_784]\n    print(xs.len())\n}\n";
+    for o2 in [false, true] {
+        let out = Command::new(compile_tmp("largest_array", source, o2))
+            .output()
+            .expect("the program starts");
+        assert_eq!(out.status.signal(), Some(6), "{:?}", out.status);
+        // A backtrace note may follow, depending on `RUST_BACKTRACE`.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            stderr.lines().next(),
+            Some("memory allocation of 9223372036854775800 bytes failed"),
+            "{stderr}"
+        );
+    }
+}
+
+/// A `panic_cases` row that reads `xs[i]` from a 5-element `xs`, with `i` bound to `index`;
+/// the panic is at `i`, on line 4, column 14.
+fn bounds_case(name: &'static str, index: &str, message: &str) -> (&'static str, String, String) {
+    (
+        name,
+        format!(
+            "fn main() {{\n    let xs = [1, 2, 3, 4, 5]\n    let i = {index}\n    print(xs[i])\n}}\n"
+        ),
+        format!("4:14: {message}"),
     )
 }
 

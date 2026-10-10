@@ -20,7 +20,7 @@ pub(super) enum Helper {
 /// The type whose helpers a counted `ty` uses: a class or an array, with any `?` removed.
 fn counted_core(ty: &Type) -> Option<&Type> {
     match ty {
-        Type::Class(_) => Some(ty),
+        Type::Class(_) | Type::Array(_) => Some(ty),
         Type::Optional(payload) => counted_core(payload),
         _ => None,
     }
@@ -34,10 +34,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         if let Some(function) = self.helpers.borrow().get(&key) {
             return *function;
         }
-        let Type::Class(id) = ty else {
-            unreachable!("only a class has helpers")
-        };
-        let name = &self.program.classes[id.0].name;
+        let name = self.program.type_name(ty);
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let takes_object = self.context.void_type().fn_type(&[ptr_type.into()], false);
         let (prefix, fn_type) = match kind {
@@ -63,8 +60,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// calls `@sisu_rc.drop.<C>`, which releases each counted field, then frees the object.
     /// Both return at once on `null`. Drop does not release the chain field: it loads it,
     /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
-    /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`. Defining a body can declare
-    /// more helpers, so this runs until none is left to define.
+    /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`. An array's `drop` and `eq`
+    /// come from `define_array_helper`. Defining a body can declare more helpers, so this
+    /// runs until none is left to define.
     pub(super) fn define_helpers(&self) {
         let (object, done) = self.helper_entry(self.rc_retain);
         self.add_to_count(object, self.context.i64_type().const_int(1, false));
@@ -75,15 +73,16 @@ impl<'ctx> Codegen<'ctx, '_> {
                 break;
             };
             let function = self.helpers.borrow()[&(kind, ty.clone())];
-            match kind {
-                Helper::Release => self.define_release(function, &ty),
-                Helper::Drop => self.define_drop(function, &ty),
-                Helper::Eq => self.define_eq(function, &ty),
+            match (kind, &ty) {
+                (Helper::Release, _) => self.define_release(function, &ty),
+                (_, Type::Array(element)) => self.define_array_helper(kind, element, function),
+                (Helper::Drop, _) => self.define_drop(function, &ty),
+                (Helper::Eq, _) => self.define_eq(function, &ty),
             }
         }
     }
 
-    /// `@sisu_rc.release.<C>`: subtracts 1 from the count, and at 0 drops the object.
+    /// `@sisu_rc.release.<C>`: subtracts 1 from the count, and at 0 drops the object or array.
     fn define_release(&self, function: FunctionValue<'ctx>, ty: &Type) {
         let (object, done) = self.helper_entry(function);
         let drop_block = self.context.append_basic_block(function, "drop");
@@ -164,7 +163,43 @@ impl<'ctx> Codegen<'ctx, '_> {
             unreachable!("only a class has helpers")
         };
         let block = |name| self.context.append_basic_block(function, name);
-        let (entry, differ, objects) = (block("entry"), block("differ"), block("objects"));
+        let (a, b, equal, unequal) = self.eq_entry(function);
+        let branch = |cond, then, other| {
+            self.builder
+                .build_conditional_branch(cond, then, other)
+                .expect(POSITIONED);
+        };
+        for (index, field) in self.program.classes[id.0].fields.iter().enumerate() {
+            let llvm_ty = self.llvm_type(&field.ty).expect(
+                "the checker should give every class field a value type, never `unit` or `never`",
+            );
+            let load = |object| {
+                self.builder
+                    .build_load(llvm_ty, self.field_ptr(ty, object, index), "field")
+                    .expect(POSITIONED)
+            };
+            let next = block("next");
+            branch(self.equal(&field.ty, load(a), load(b)), next, unequal);
+            self.builder.position_at_end(next);
+        }
+        self.branch_to(equal);
+    }
+
+    /// Starts `eq` helper `function`: returns its two parameters and the blocks that return
+    /// `true` and `false`. It returns `true` at once for the same pointer (two `null`s
+    /// included) and `false` when one is `null`; the builder is left where both are real and
+    /// distinct.
+    pub(super) fn eq_entry(
+        &self,
+        function: FunctionValue<'ctx>,
+    ) -> (
+        PointerValue<'ctx>,
+        PointerValue<'ctx>,
+        BasicBlock<'ctx>,
+        BasicBlock<'ctx>,
+    ) {
+        let block = |name| self.context.append_basic_block(function, name);
+        let (entry, differ, distinct) = (block("entry"), block("differ"), block("distinct"));
         let (equal, unequal) = (block("equal"), block("unequal"));
         let bool_type = self.context.bool_type();
         for (at, value) in [(equal, 1), (unequal, 0)] {
@@ -176,7 +211,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let nth = |n| {
             function
                 .get_nth_param(n)
-                .expect("the generated `eq` helper should be declared with two object parameters")
+                .expect("the generated `eq` helper should be declared with two parameters")
                 .into_pointer_value()
         };
         let (a, b) = (nth(0), nth(1));
@@ -197,22 +232,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             .builder
             .build_or(null(a), null(b), "either_null")
             .expect(POSITIONED);
-        branch(either_null, unequal, objects);
-        self.builder.position_at_end(objects);
-        for (index, field) in self.program.classes[id.0].fields.iter().enumerate() {
-            let llvm_ty = self.llvm_type(&field.ty).expect(
-                "the checker should give every class field a value type, never `unit` or `never`",
-            );
-            let load = |object| {
-                self.builder
-                    .build_load(llvm_ty, self.field_ptr(ty, object, index), "field")
-                    .expect(POSITIONED)
-            };
-            let next = block("next");
-            branch(self.equal(&field.ty, load(a), load(b)), next, unequal);
-            self.builder.position_at_end(next);
-        }
-        self.branch_to(equal);
+        branch(either_null, unequal, distinct);
+        self.builder.position_at_end(distinct);
+        (a, b, equal, unequal)
     }
 
     /// Whether `lhs` and `rhs`, of type `ty`, are equal: `==` without releasing them.
@@ -341,8 +363,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 }
 
-/// The single parameter of a counting helper: the object.
-fn param(function: FunctionValue<'_>) -> PointerValue<'_> {
+/// The single parameter of a counting helper: the object or array.
+pub(super) fn param(function: FunctionValue<'_>) -> PointerValue<'_> {
     function
         .get_nth_param(0)
         .expect("a counting helper should be declared with one object parameter")
