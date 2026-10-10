@@ -159,8 +159,9 @@ impl Checker {
         }
     }
 
-    /// Checks `f`'s body against its own signature, `id`. The function, unless something in it
-    /// is `Error`.
+    /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
+    /// is `Error` or its body failed; an `Error` parameter still yields one, and `check` drops
+    /// it for the error behind it.
     fn function(&mut self, f: &ast::Function, id: tir::FuncId) -> Option<tir::Function> {
         let sig = &self.signatures[id.0];
         let (param_types, ret) = (sig.params.clone(), sig.ret.clone());
@@ -260,9 +261,11 @@ mod tests {
         program.expect("no errors").to_string()
     }
 
-    /// Asserts the diagnostics are exactly these errors, in order: `(message, (line, col))`.
+    /// Asserts the diagnostics are exactly these errors, in order: `(message, (line, col))`,
+    /// and that no `tir` comes out.
     fn errors(src: &str, expected: &[(&str, (usize, usize))]) {
-        let ds = diags(src);
+        let (program, ds) = checked(src);
+        assert!(program.is_none(), "an error yields no `tir`");
         let found: Vec<_> = ds
             .iter()
             .map(|d| (d.severity, d.message.as_str(), at(src, d.span)))
@@ -278,7 +281,8 @@ mod tests {
         line_col(src, span.start)
     }
 
-    /// Asserts exactly one error with these parts; `secondary` is `(line, col, text)` rows.
+    /// Asserts exactly one error with these parts, and no `tir`; `secondary` is
+    /// `(line, col, text)` rows.
     fn expect_error(
         src: &str,
         message: &str,
@@ -287,7 +291,8 @@ mod tests {
         secondary: &[(usize, usize, &str)],
         help: Option<&str>,
     ) {
-        let ds = diags(src);
+        let (program, ds) = checked(src);
+        assert!(program.is_none(), "an error yields no `tir`");
         assert_eq!(ds.len(), 1, "{ds:?}");
         let d = &ds[0];
         assert_eq!(d.severity, Severity::Error);
@@ -546,6 +551,83 @@ mod tests {
                 ("cannot find `nope` in this scope", (1, 16)),
             ],
         );
+    }
+
+    #[test]
+    fn duplicate_body_uses_own_return_type() {
+        errors(
+            "fn f() -> i64 { 1 }\nfn f() -> bool { true }\nfn main() {}",
+            &[("function `f` is defined twice", (2, 4))],
+        );
+    }
+
+    #[test]
+    fn if_with_failed_and_never_branches_is_error() {
+        errors(
+            "fn main() {\n    let c = true\n    let x = if c { nope } else { return }\n    print(1)\n}",
+            &[("cannot find `nope` in this scope", (3, 20))],
+        );
+    }
+
+    #[test]
+    fn failed_rule_makes_its_expression_error() {
+        errors(
+            "fn main() {\n    let x = -true\n    print(x == false)\n}",
+            &[("expected `i64`, found `bool`", (2, 14))],
+        );
+    }
+
+    #[test]
+    fn warning_only_program_lowers() {
+        let (program, ds) = checked("fn main() {\n    var x = 1\n    print(x)\n}");
+        assert!(program.is_some());
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        assert_eq!(ds[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn warning_and_error_in_position_order() {
+        // The warning is found when the scope closes, after the error.
+        let src = "fn main() {\n    var x = 1\n    print(nope)\n}";
+        let found: Vec<_> = diags(src)
+            .iter()
+            .map(|d| (d.severity, d.message.clone(), at(src, d.span)))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    Severity::Warning,
+                    "`x` is never reassigned".to_string(),
+                    (2, 9)
+                ),
+                (
+                    Severity::Error,
+                    "cannot find `nope` in this scope".to_string(),
+                    (3, 11)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn trailing_expression_is_the_block_value() {
+        let (program, ds) =
+            checked("fn f() -> i64 {\n    let x = 1\n    x\n}\nfn main() {\n    let y = f()\n}");
+        assert!(ds.is_empty(), "{ds:?}");
+        let program = program.expect("no errors");
+        let f = &program.functions[0].body;
+        assert!(matches!(f.stmts.as_slice(), [tir::Stmt::Let { .. }]));
+        assert!(matches!(
+            f.value.as_deref(),
+            Some(tir::Expr {
+                kind: tir::ExprKind::Local(_),
+                ..
+            })
+        ));
+        let main = &program.functions[1].body;
+        assert!(matches!(main.stmts.as_slice(), [tir::Stmt::Let { .. }]));
+        assert!(main.value.is_none());
     }
 
     #[test]
