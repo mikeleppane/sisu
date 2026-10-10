@@ -18,7 +18,7 @@ impl Checker {
         self.scopes.push(HashMap::new());
         let mut stmts = Vec::new();
         let mut ty = Some(Type::Unit);
-        let (mut failed, mut warned) = (false, false);
+        let (mut failed, mut warned, mut mismatch) = (false, false, false);
         for (i, stmt) in block.stmts.iter().enumerate() {
             if ty == Some(Type::Never) && !warned {
                 self.diagnostics
@@ -34,6 +34,7 @@ impl Checker {
                 }
                 Err(poisoned) => {
                     failed = true;
+                    mismatch = last && poisoned.mismatch;
                     poisoned.ty
                 }
             };
@@ -44,7 +45,11 @@ impl Checker {
         self.pop_scope();
         let ty = match ty {
             Some(ty) if !failed => ty,
-            ty => return Err(Poisoned { ty }),
+            // A tail that rejected `expected` fails the block, unless a `never` came first.
+            ty => {
+                let mismatch = mismatch && ty.is_none();
+                return Err(Poisoned { ty, mismatch });
+            }
         };
         let ends_in_expr = matches!(
             block.stmts.last(),
@@ -65,9 +70,7 @@ impl Checker {
 
     /// The statement, or its type when it failed. `expected` is for an expression statement.
     fn stmt(&mut self, stmt: &ast::Stmt, expected: Option<&Type>) -> Result<tir::Stmt, Poisoned> {
-        let unit = || Poisoned {
-            ty: Some(Type::Unit),
-        };
+        let unit = || Poisoned::typed(Type::Unit);
         match &stmt.kind {
             StmtKind::Let {
                 mutable,
@@ -177,9 +180,7 @@ impl Checker {
         span: Span,
         value: Option<&ast::Expr>,
     ) -> Result<tir::Stmt, Poisoned> {
-        let never = || Poisoned {
-            ty: Some(Type::Never),
-        };
+        let never = || Poisoned::typed(Type::Never);
         let value = match value {
             None => match &self.ret {
                 Some(ret) if *ret != Type::Unit => {
@@ -221,9 +222,7 @@ impl Checker {
                 span,
                 format!("`{keyword}` outside a loop"),
             ));
-            return Err(Poisoned {
-                ty: Some(Type::Never),
-            });
+            return Err(Poisoned::typed(Type::Never));
         }
         Ok(tir::Stmt::Expr(tir::Expr {
             kind,
@@ -280,9 +279,7 @@ impl Checker {
                 place: tir::Place::Local(local),
                 value,
             }),
-            _ => Err(Poisoned {
-                ty: Some(Type::Unit),
-            }),
+            _ => Err(Poisoned::typed(Type::Unit)),
         }
     }
 
@@ -306,9 +303,7 @@ impl Checker {
             (Ok(base), Some((_, index)), Ok(value)) if writable => {
                 Ok(self.field_assign(span, base, index, value))
             }
-            _ => Err(Poisoned {
-                ty: Some(Type::Unit),
-            }),
+            _ => Err(Poisoned::typed(Type::Unit)),
         }
     }
 
@@ -322,9 +317,7 @@ impl Checker {
         name: &ast::Ident,
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
-        let unit = || Poisoned {
-            ty: Some(Type::Unit),
-        };
+        let unit = || Poisoned::typed(Type::Unit);
         let receiver = base;
         let base = self.value(base, None);
         let Some((class, index)) = self.find_field(type_of(&base), receiver, name) else {
@@ -349,7 +342,7 @@ impl Checker {
                 ty,
                 span: target,
             }),
-            None => Err(Poisoned { ty: None }),
+            None => Err(Poisoned::error()),
         };
         let read = self.against(target, read, Some(&want));
         let value = self.arithmetic(span, op, want, read, value);

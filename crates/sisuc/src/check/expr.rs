@@ -30,10 +30,10 @@ impl Checker {
                     ..
                 }) => node(tir::ExprKind::Local(*local), ty.clone()),
                 // `Error`: its diagnostic was recorded where it was bound.
-                Some(_) => Err(Poisoned { ty: None }),
+                Some(_) => Err(Poisoned::error()),
                 None => {
                     self.diagnostics.push(not_found(name, e.span));
-                    Err(Poisoned { ty: None })
+                    Err(Poisoned::error())
                 }
             },
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
@@ -43,7 +43,7 @@ impl Checker {
                         e.span,
                         "`self` is only available in a method",
                     ));
-                    return Err(Poisoned { ty: None });
+                    return Err(Poisoned::error());
                 };
                 node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
             }
@@ -123,7 +123,7 @@ impl Checker {
             _ => return checked,
         };
         self.diagnostics.push(Diagnostic::error(e.span, message));
-        Err(Poisoned { ty: None })
+        Err(Poisoned::error())
     }
 
     /// A value of type `want`; `None` is `Error`, which every type matches. A `T` where `want`
@@ -136,9 +136,8 @@ impl Checker {
     /// that wants `want`, so that rule's expression is `Error`.
     fn operand(&mut self, e: &ast::Expr, want: Option<&Type>) -> (Checked, bool) {
         let checked = self.value(e, Some(want.unwrap_or(&UNKNOWN)));
-        // `none` has reported a `None` that `want` rejects: a mismatch, which `against` cannot
-        // tell from an `Error` operand.
-        if want.is_some() && matches!(e.kind, ExprKind::NoneLit) && checked.is_err() {
+        // `want` was rejected inside `e`, which `against` cannot tell from an `Error` operand.
+        if matches!(checked, Err(Poisoned { mismatch: true, .. })) {
             return (checked, true);
         }
         self.against(e.span, checked, want)
@@ -159,15 +158,13 @@ impl Checker {
             {
                 let wrapped = match checked {
                     Ok(e) => Ok(wrap(e, want)),
-                    Err(_) => Err(Poisoned {
-                        ty: Some(want.clone()),
-                    }),
+                    Err(_) => Err(Poisoned::typed(want.clone())),
                 };
                 return (wrapped, false);
             }
             let d = self.mismatch(span, want, got);
             self.diagnostics.push(d);
-            return (Err(Poisoned { ty: None }), true);
+            return (Err(Poisoned::error()), true);
         }
         (checked, false)
     }
@@ -220,7 +217,7 @@ impl Checker {
                 format!("cannot compare {} with {}", self.show(lt), self.show(rt))
             };
             self.diagnostics.push(Diagnostic::error(span, message));
-            return Err(Poisoned { ty: None });
+            return Err(Poisoned::error());
         }
         let kind = l.ok().zip(r.ok()).map(|(l, r)| tir::ExprKind::Equal {
             negated,
@@ -232,7 +229,7 @@ impl Checker {
 
     /// A `None`, of the optional type `expected`.
     fn none(&mut self, span: Span, expected: Option<&Type>) -> Checked {
-        let d = match expected {
+        let (d, mismatch) = match expected {
             Some(ty @ Type::Optional(_)) => {
                 return Ok(tir::Expr {
                     kind: tir::ExprKind::None,
@@ -240,15 +237,19 @@ impl Checker {
                     span,
                 });
             }
-            Some(Type::Never) => return Err(Poisoned { ty: None }),
-            Some(ty) => {
-                Diagnostic::error(span, format!("expected {}, found `None`", self.show(ty)))
-            }
-            None => Diagnostic::error(span, "cannot infer the type of `None`")
-                .help("write the type: `let x: Tree? = None`"),
+            Some(Type::Never) => return Err(Poisoned::error()),
+            Some(ty) => (
+                Diagnostic::error(span, format!("expected {}, found `None`", self.show(ty))),
+                true,
+            ),
+            None => (
+                Diagnostic::error(span, "cannot infer the type of `None`")
+                    .help("write the type: `let x: Tree? = None`"),
+                false,
+            ),
         };
         self.diagnostics.push(d);
-        Err(Poisoned { ty: None })
+        Err(Poisoned { ty: None, mismatch })
     }
 
     /// Without an `else`, `unit`. With one, the branches joined (see `branches`). A condition
@@ -265,8 +266,13 @@ impl Checker {
         let (then, other, ty) = self.branches(then_block, else_block, expected, |c, expected| {
             c.block(then_block, expected)
         });
-        match (cond, then, other.transpose(), ty.filter(|_| !mismatched)) {
-            (Ok(cond), Ok(then_block), Ok(else_block), Some(ty)) => Ok(tir::Expr {
+        let ty = if mismatched {
+            Err(Poisoned::error())
+        } else {
+            ty
+        };
+        match (cond, then, other.transpose(), ty) {
+            (Ok(cond), Ok(then_block), Ok(else_block), Ok(ty)) => Ok(tir::Expr {
                 kind: tir::ExprKind::If {
                     cond: Box::new(cond),
                     then_block,
@@ -275,7 +281,7 @@ impl Checker {
                 ty,
                 span,
             }),
-            (.., ty) => Err(Poisoned { ty }),
+            (.., ty) => Err(ty.map_or_else(|poisoned| poisoned, Poisoned::typed)),
         }
     }
 
@@ -298,13 +304,13 @@ impl Checker {
             block
         });
         let bind = bind.expect("`branches` checks the first block");
-        match (
-            scrutinee,
-            then,
-            other.transpose(),
-            ty.filter(|_| !mismatched),
-        ) {
-            (Ok(scrutinee), Ok(then_block), Ok(else_block), Some(ty)) => Ok(tir::Expr {
+        let ty = if mismatched {
+            Err(Poisoned::error())
+        } else {
+            ty
+        };
+        match (scrutinee, then, other.transpose(), ty) {
+            (Ok(scrutinee), Ok(then_block), Ok(else_block), Ok(ty)) => Ok(tir::Expr {
                 kind: tir::ExprKind::IfSome {
                     bind,
                     scrutinee: Box::new(scrutinee),
@@ -314,7 +320,7 @@ impl Checker {
                 ty,
                 span,
             }),
-            (.., ty) => Err(Poisoned { ty }),
+            (.., ty) => Err(ty.map_or_else(|poisoned| poisoned, Poisoned::typed)),
         }
     }
 
@@ -337,7 +343,7 @@ impl Checker {
                     format!("`{keyword}` needs an optional; this is {}", self.show(ty)),
                 );
                 self.diagnostics.push(d);
-                (Err(Poisoned { ty: None }), None, true)
+                (Err(Poisoned::error()), None, true)
             }
             None => (scrutinee, None, false),
         }
@@ -347,16 +353,17 @@ impl Checker {
     /// without an `else`. With no `expected` type, the branch whose value is not a bare `None`
     /// is checked first, and the other expects its type made optional. Then a `never` branch,
     /// and after it an `Error` one, takes the other's type; a `T` and a `T?` join to `T?`, the
-    /// `T` branch wrapped; other types that differ are reported.
+    /// `T` branch wrapped; other types that differ are reported. A join that fails for a
+    /// branch that rejected `expected` is a mismatch too.
     fn branches(
         &mut self,
         then_block: &ast::Block,
         else_block: Option<&ast::Block>,
         expected: Option<&Type>,
         then: impl FnOnce(&mut Self, Option<&Type>) -> CheckedBlock,
-    ) -> (CheckedBlock, Option<CheckedBlock>, Option<Type>) {
+    ) -> (CheckedBlock, Option<CheckedBlock>, Result<Type, Poisoned>) {
         let Some(else_block) = else_block else {
-            return (then(self, None), None, Some(Type::Unit));
+            return (then(self, None), None, Ok(Type::Unit));
         };
         let (mut first, mut other);
         if expected.is_none() && bare_none(then_block) && !bare_none(else_block) {
@@ -376,12 +383,18 @@ impl Checker {
             (Some(t), None) | (None, Some(t)) => Some(t),
             (Some(t), Some(o)) if t == o => Some(t),
             (Some(t), Some(o)) if after_branch(Some(&t)).as_ref() == Some(&o) => {
-                wrap_block(&mut first, &o);
-                Some(o)
+                let joined = self.optional_of(t, value_span(then_block));
+                if let Some(o) = &joined {
+                    wrap_block(&mut first, o);
+                }
+                joined
             }
             (Some(t), Some(o)) if after_branch(Some(&o)).as_ref() == Some(&t) => {
-                wrap_block(&mut other, &t);
-                Some(t)
+                let joined = self.optional_of(o, value_span(else_block));
+                if let Some(t) = &joined {
+                    wrap_block(&mut other, t);
+                }
+                joined
             }
             (Some(t), Some(o)) => {
                 let d = self.mismatch(value_span(else_block), &t, &o);
@@ -389,6 +402,10 @@ impl Checker {
                 None
             }
         };
+        let mismatch = [&first, &other]
+            .iter()
+            .any(|b| matches!(b, Err(Poisoned { mismatch: true, .. })));
+        let ty = ty.ok_or(Poisoned { ty: None, mismatch });
         (first, Some(other), ty)
     }
 
@@ -406,7 +423,7 @@ impl Checker {
             ));
             self.labels(args);
             self.stray(args);
-            return Err(Poisoned { ty: None });
+            return Err(Poisoned::error());
         };
         self.invoke(span, func, None, args)
     }
@@ -423,7 +440,7 @@ impl Checker {
         let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method) else {
             self.labels(args);
             self.stray(args);
-            return Err(Poisoned { ty: None });
+            return Err(Poisoned::error());
         };
         self.invoke(span, func, Some(receiver), args)
     }
@@ -450,7 +467,7 @@ impl Checker {
                 ),
             ));
             self.stray(args);
-            return Err(Poisoned { ty: None });
+            return Err(Poisoned::error());
         }
         let (checked, mismatched): (Vec<_>, Vec<_>) = args
             .iter()
@@ -462,9 +479,7 @@ impl Checker {
             (Ok(args), Some(ret)) if !failed => {
                 Ok(self.spilled(span, ret, args, |args| tir::ExprKind::Call { func, args }))
             }
-            (_, ret) => Err(Poisoned {
-                ty: ret.filter(|_| !failed),
-            }),
+            (_, ret) => Err(Poisoned::of(ret.filter(|_| !failed))),
         }
     }
 
@@ -538,9 +553,7 @@ impl Checker {
             Ok(args) if !failed => {
                 Ok(self.spilled(span, ty, args, |args| tir::ExprKind::New { class, args }))
             }
-            _ => Err(Poisoned {
-                ty: (!failed).then_some(ty),
-            }),
+            _ => Err(Poisoned::of((!failed).then_some(ty))),
         }
     }
 
@@ -549,7 +562,7 @@ impl Checker {
         let receiver = base;
         let base = self.value(base, None);
         let Some((class, index)) = self.find_field(type_of(&base), receiver, name) else {
-            return Err(Poisoned { ty: None });
+            return Err(Poisoned::error());
         };
         let ty = self.classes[class.0].fields[index].ty.clone();
         match (base, ty) {
@@ -561,7 +574,7 @@ impl Checker {
                 ty,
                 span,
             }),
-            (_, ty) => Err(Poisoned { ty }),
+            (_, ty) => Err(Poisoned::of(ty)),
         }
     }
 
@@ -643,7 +656,7 @@ impl Checker {
         let [arg] = args else {
             self.diagnostics.push(wrong());
             self.stray(args);
-            return Err(Poisoned { ty: None });
+            return Err(Poisoned::error());
         };
         let checked = self.expr(&arg.value, None);
         let error = match type_of(&checked) {
@@ -658,7 +671,7 @@ impl Checker {
             }
         };
         self.diagnostics.push(error);
-        Err(Poisoned { ty: None })
+        Err(Poisoned::error())
     }
 
     /// Checks the arguments of a call that cannot take them, for their own mistakes.
@@ -778,8 +791,6 @@ fn misplaced(
 fn typed(span: Span, ty: Type, mismatched: bool, kind: Option<tir::ExprKind>) -> Checked {
     match kind {
         Some(kind) => Ok(tir::Expr { kind, ty, span }),
-        None => Err(Poisoned {
-            ty: (!mismatched).then_some(ty),
-        }),
+        None => Err(Poisoned::of((!mismatched).then_some(ty))),
     }
 }

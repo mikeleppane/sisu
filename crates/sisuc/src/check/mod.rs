@@ -21,6 +21,29 @@ use crate::tir::{self, Type};
 /// excuse another.
 struct Poisoned {
     ty: Option<Type>,
+    /// Whether the expected type passed down was rejected (a `None` that is not optional, or
+    /// a block or `if` whose value is one): the rule that passed it failed, so its expression
+    /// is `Error` too, where an `Error` operand would excuse it.
+    mismatch: bool,
+}
+
+impl Poisoned {
+    /// `Error`.
+    fn error() -> Self {
+        Self::of(None)
+    }
+
+    /// A failed expression whose type is still known.
+    fn typed(ty: Type) -> Self {
+        Self::of(Some(ty))
+    }
+
+    fn of(ty: Option<Type>) -> Self {
+        Self {
+            ty,
+            mismatch: false,
+        }
+    }
 }
 
 type Checked = Result<tir::Expr, Poisoned>;
@@ -386,13 +409,18 @@ impl Checker {
         if !ty.optional {
             return Some(named);
         }
+        self.optional_of(named, ty.span)
+    }
+
+    /// `payload?`, as the type at `span` names it or the `if` join there infers it.
+    fn optional_of(&mut self, payload: Type, span: Span) -> Option<Type> {
         // Temporary: Task 22 deletes this message when codegen lowers scalar optionals.
-        if matches!(named, Type::I64 | Type::Bool) {
-            let message = format!("`{}?` is not supported yet", ty.name);
-            self.diagnostics.push(Diagnostic::error(ty.span, message));
+        if matches!(payload, Type::I64 | Type::Bool) {
+            let message = format!("`{payload}?` is not supported yet");
+            self.diagnostics.push(Diagnostic::error(span, message));
             return None;
         }
-        Some(Type::Optional(Box::new(named)))
+        Some(Type::Optional(Box::new(payload)))
     }
 
     /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
@@ -2385,7 +2413,8 @@ mod tests {
     }
 
     /// Temporary: Task 22 deletes this test when codegen lowers scalar optionals. The rejected
-    /// type is `Error`, so the `None` it would type draws nothing.
+    /// type is `Error`, so the `None` it would type draws nothing. An `if` that would join to
+    /// one is reported at its branch that is not `None`, and is `Error`: its use draws nothing.
     #[test]
     fn scalar_optional_is_not_supported_yet() {
         errors(
@@ -2395,6 +2424,37 @@ mod tests {
                 ("`i64?` is not supported yet", (2, 20)),
             ],
         );
+        let joins = [
+            (
+                "if c { 1 } else { None }",
+                "`i64?` is not supported yet",
+                20,
+            ),
+            (
+                "if c { None } else { 1 }",
+                "`i64?` is not supported yet",
+                34,
+            ),
+            (
+                "if c { true } else { None }",
+                "`bool?` is not supported yet",
+                20,
+            ),
+            (
+                "if c { None } else { false }",
+                "`bool?` is not supported yet",
+                34,
+            ),
+        ];
+        for (value, message, col) in joins {
+            error(
+                &format!(
+                    "fn f(c: bool) {{\n    let x = {value}\n    print(x.v)\n}}\nfn main() {{}}"
+                ),
+                message,
+                (2, col),
+            );
+        }
     }
 
     /// A `None` that its rule rejects fails that rule: what the rule makes is `Error`, so a
@@ -2425,6 +2485,33 @@ mod tests {
         ];
         for (src, message, pos) in cases {
             error(src, message, pos);
+        }
+        // Each `None` is its own mistake; the `if` that holds them fails the rule too.
+        let nested = [
+            (
+                "fn f(c: bool) {\n    let x = !(if c { None } else { None })\n    print(x + 1)\n}"
+                    .to_owned(),
+                [22, 36].as_slice(),
+                2,
+            ),
+            (
+                "fn f(c: bool) {\n    let x = !(if c { if c { None } else { None } } else { None })\n    print(x + 1)\n}"
+                    .to_owned(),
+                &[29, 43, 59],
+                2,
+            ),
+            (
+                format!("{T}fn f(n: T?) {{\n    let x = !(if let m = n {{ None }} else {{ None }})\n    print(x + 1)\n}}"),
+                &[30, 44],
+                6,
+            ),
+        ];
+        for (src, cols, line) in nested {
+            let expected: Vec<_> = cols
+                .iter()
+                .map(|&col| ("expected `bool`, found `None`", (line, col)))
+                .collect();
+            errors(&format!("{src}\nfn main() {{}}"), &expected);
         }
     }
 
