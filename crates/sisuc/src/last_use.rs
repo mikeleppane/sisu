@@ -217,7 +217,8 @@ impl Walk {
 
     /// A loop's head set is the fixed point of walking its body from that set. Liveness is a
     /// gen/kill problem, so walking once from the empty set already reaches it. Rewriting then
-    /// takes a second walk from the head set; each loop is walked at most twice at any depth.
+    /// takes a second walk from the head set. Each call walks its body at most twice; a loop
+    /// at depth d is walked d + 1 times in all, since only the outermost pass rewrites twice.
     fn looped(&mut self, body: &mut Block) {
         let exit = self.live.clone();
         let rewrite = mem::replace(&mut self.rewrite, false);
@@ -383,6 +384,59 @@ mod tests {
         let src = "class N {\n    let v: i64\n    fn get(self) -> i64 { self.v }\n}\nfn f(m: N?) -> i64 {\n    if let n = m { n.v } else { 0 }\n}";
         has(src, "N.get", &["(. (move self#0) v)"]);
         has(src, "f", &["(. (move n#1) v)"]);
+    }
+
+    /// A field assignment's base, a field root's base and an element write's index are reads
+    /// like any other: the last of them moves.
+    #[test]
+    fn place_operands() {
+        let src = "class O {\n    var n: i64\n}\nclass B {\n    var xs: [i64]\n}\n\
+             fn field(o: O) {\n    print(o.n)\n    o.n = 1\n}\n\
+             fn root(b: B) {\n    print(b.xs.len())\n    b.xs[0] = 1\n}\n\
+             fn index(xs: [i64]) {\n    var ys = [1, 2]\n    print(xs.len())\n    ys[xs.len() - 1] = 5\n}";
+        has(
+            src,
+            "field",
+            &["(print (. o#0 n))", "(= (. (move o#0) n) 1)"],
+        );
+        has(
+            src,
+            "root",
+            &[
+                "(print (len (. b#0 xs)))",
+                "(= (index (. (move b#0) xs) 0) 1)",
+            ],
+        );
+        has(
+            src,
+            "index",
+            &[
+                "(print (len xs#0))",
+                "(= (index ys#1 (- (len (move xs#0)) 1)) 5)",
+            ],
+        );
+    }
+
+    /// `break` leaves the loop with the set live after it, so a read before the loop stays live.
+    #[test]
+    fn read_after_break() {
+        let printed = marked(
+            "fn f(xs: [i64], c: bool) {\n    print(xs.len())\n    while c {\n        break\n    }\n    print(xs.len())\n}",
+        );
+        let f = function(&printed, "f");
+        assert_eq!(f.matches("(move xs#0)").count(), 1, "{f}");
+        assert!(f.ends_with("(print (len (move xs#0)))))"), "{f}");
+    }
+
+    /// A read in an inner loop stays live into both loops' next iterations.
+    #[test]
+    fn nested_loops() {
+        let printed = marked(
+            "fn f(xs: [i64], c: bool) {\n    while c {\n        while c {\n            print(xs.len())\n        }\n    }\n    print(xs.len())\n}",
+        );
+        let f = function(&printed, "f");
+        assert_eq!(f.matches("(move xs#0)").count(), 1, "{f}");
+        assert!(f.ends_with("(print (len (move xs#0)))))"), "{f}");
     }
 
     #[test]

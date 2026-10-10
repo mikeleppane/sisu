@@ -64,6 +64,12 @@ fn handover() {
     print(xs[0])                      // 6
 }
 
+// The base retains, because the index reads `xs` again; that read moves it.
+fn last_index() {
+    let xs = [1, 2, 9]
+    print(xs[xs.len() - 1])           // 9
+}
+
 fn moved_self() {
     let c = Counter(n: 7)
     print(c.get())                    // 7
@@ -77,4 +83,5 @@ fn main() {
     twice()
     handover()
     moved_self()
+    last_index()
 }

@@ -555,9 +555,10 @@ fn general_path_releases_base() {
     assert!(load < release, "{body}");
 }
 
-/// An index built only from whitelisted nodes keeps the fast path; one with a call takes the
-/// general path, which releases the base before the element is printed. `o` and `ys` are read
-/// again later, so the indexes read them without a move, which the whitelist excludes.
+/// An index built only from whitelisted nodes keeps the fast path; one with a call or a move
+/// takes the general path, which releases the base before the element is printed. `o` and
+/// `ys` are read again later in `field` and `length`, so those indexes read them without a
+/// move; in `moved` the index's read of `ys` is its last use, which the whitelist excludes.
 #[test]
 fn fast_path_follows_the_index_whitelist() {
     let context = Context::create();
@@ -568,7 +569,8 @@ fn fast_path_follows_the_index_whitelist() {
          fn convert(xs: [i64], b: u8) -> [i64] {\n    print(xs[i64(b)])\n    xs\n}\n\
          fn field(xs: [i64], o: O) -> [i64] {\n    print(xs[o.n])\n    print(o.n)\n    xs\n}\n\
          fn length(xs: [i64], ys: [bool]) -> [i64] {\n    print(xs[ys.len()])\n    print(ys.len())\n    xs\n}\n\
-         fn call(xs: [i64]) -> [i64] {\n    print(xs[1 + g()])\n    xs\n}\nfn main() {}",
+         fn call(xs: [i64]) -> [i64] {\n    print(xs[1 + g()])\n    xs\n}\n\
+         fn moved(xs: [i64], ys: [bool]) -> [i64] {\n    print(xs[ys.len()])\n    xs\n}\nfn main() {}",
     )
     .print_to_string()
     .to_string();
@@ -578,6 +580,7 @@ fn fast_path_follows_the_index_whitelist() {
         ("field", true),
         ("length", true),
         ("call", false),
+        ("moved", false),
     ] {
         let body = function_body(&ir, &format!("define ptr @sisu.{name}("));
         let (before, _) = body
@@ -628,5 +631,19 @@ fn move_stores_null() {
         .print_to_string()
         .to_string();
     let body = function_body(&ir, "@sisu.f(");
-    assert!(body.contains("store ptr null, ptr %xs"), "{body}");
+    let (param, _) = body
+        .split_once(')')
+        .unwrap_or_else(|| panic!("no parameter list in\n{body}"));
+    let param = param.trim_start_matches("ptr ");
+    // The slot is where the entry block stores the parameter.
+    let entry_store = format!("store ptr {param}, ptr ");
+    let slot = body
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(entry_store.as_str()))
+        .and_then(|rest| rest.split(',').next())
+        .unwrap_or_else(|| panic!("no store of {param} in\n{body}"));
+    assert!(
+        body.contains(&format!("store ptr null, ptr {slot},")),
+        "{body}"
+    );
 }
