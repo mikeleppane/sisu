@@ -187,9 +187,7 @@ impl Checker {
         let (element, d) = match type_of(&checked) {
             Some(Type::Array(element)) => (Some((**element).clone()), None),
             Some(Type::Optional(payload)) if matches!(**payload, Type::Array(_)) => {
-                let d = Diagnostic::error(base.span, format!("{} may be `None`", quoted(base)))
-                    .help("unwrap it with `if let`");
-                (None, Some(d))
+                (None, Some(optional_array(base)))
             }
             Some(ty) => {
                 let d = Diagnostic::error(base.span, format!("cannot index {}", self.show(ty)))
@@ -234,6 +232,12 @@ impl Checker {
         self.stray(args);
         Err(Poisoned::error())
     }
+}
+
+/// "`m` may be `None`", at the optional array `base` that an index or a `for` needs unwrapped.
+pub(super) fn optional_array(base: &ast::Expr) -> Diagnostic {
+    Diagnostic::error(base.span, format!("{} may be `None`", quoted(base)))
+        .help("unwrap it with `if let`")
 }
 
 /// `E`, when `expected` is `[E]` or `[E]?`.
