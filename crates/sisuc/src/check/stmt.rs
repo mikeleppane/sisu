@@ -106,8 +106,11 @@ impl Checker {
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
-            StmtKind::Assign { target, value } => self.assign(stmt.span, target, value),
+            StmtKind::Assign { target, value } => {
+                self.assign(stmt.span, &place_name(target), value)
+            }
             StmtKind::CompoundAssign { op, target, value } => {
+                let target = &place_name(target);
                 // `assign` already reports an unknown target; a synthetic read would repeat it.
                 if self.lookup(&target.name).is_none() {
                     return self.assign(stmt.span, target, value);
@@ -335,4 +338,15 @@ fn lower_while(cond: tir::Expr, body: tir::Block, span: Span) -> tir::Expr {
         ty,
     };
     expr(ExprKind::Loop(looped), Type::Unit)
+}
+
+/// The variable a place names; a field place lands in Task 10.
+fn place_name(place: &ast::Expr) -> ast::Ident {
+    match &place.kind {
+        ast::ExprKind::Name(name) => ast::Ident {
+            name: name.clone(),
+            span: place.span,
+        },
+        _ => panic!("classes land in Task 10"),
+    }
 }

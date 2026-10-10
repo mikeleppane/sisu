@@ -75,11 +75,18 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         ret: None,
         loop_depth: 0,
     };
-    checker.collect_signatures(program);
-    // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
-    let functions: Vec<_> = program
-        .functions
+    let declared: Vec<&ast::Function> = program
+        .items
         .iter()
+        .map(|item| match item {
+            ast::Item::Function(f) => f,
+            ast::Item::Class(_) => panic!("classes land in Task 10"),
+        })
+        .collect();
+    checker.collect_signatures(&declared);
+    // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
+    let functions: Vec<_> = declared
+        .into_iter()
         .enumerate()
         .map(|(i, f)| checker.function(f, tir::FuncId(i)))
         .collect();
@@ -116,8 +123,8 @@ fn block_type(checked: &CheckedBlock) -> Option<&Type> {
 
 impl Checker {
     /// Records each function's signature under a `FuncId` in source order, then checks `main`.
-    fn collect_signatures(&mut self, program: &ast::Program) {
-        for f in &program.functions {
+    fn collect_signatures(&mut self, functions: &[&ast::Function]) {
+        for f in functions {
             let name = &f.name;
             if name.name == "print" {
                 self.diagnostics
@@ -146,7 +153,7 @@ impl Checker {
                 .diagnostics
                 .push(Diagnostic::error(Span::new(0, 0), "no `main` function")),
             Some(id) => {
-                let main = &program.functions[id.0];
+                let main = functions[id.0];
                 if !main.params.is_empty() || main.ret.is_some() {
                     self.diagnostics.push(Diagnostic::error(
                         main.name.span,

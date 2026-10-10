@@ -6,12 +6,41 @@ use crate::diagnostic::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Program {
-    pub(crate) functions: Vec<Function>,
+    pub(crate) items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Item {
+    Function(Function),
+    Class(Class),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Class {
+    pub(crate) name: Ident,
+    pub(crate) members: Vec<Member>,
+    /// `class` through `}`.
+    pub(crate) span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Member {
+    Field(FieldDecl),
+    Method(Function),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FieldDecl {
+    pub(crate) mutable: bool,
+    pub(crate) name: Ident,
+    pub(crate) ty: TypeExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Function {
     pub(crate) name: Ident,
+    /// The `self` token of a method's first parameter.
+    pub(crate) self_param: Option<Span>,
     pub(crate) params: Vec<Param>,
     pub(crate) ret: Option<TypeExpr>,
     pub(crate) body: Block,
@@ -66,14 +95,15 @@ pub(crate) enum StmtKind {
     Return(Option<Expr>),
     Break,
     Continue,
+    /// `target` is a `Name` or a `Field`.
     Assign {
-        target: Ident,
+        target: Expr,
         value: Expr,
     },
     /// `target op= value`; the checker lowers it to `target = target op value`.
     CompoundAssign {
         op: BinaryOp,
-        target: Ident,
+        target: Expr,
         value: Expr,
     },
     Expr(Expr),
@@ -92,7 +122,17 @@ pub(crate) enum ExprKind {
     Name(String),
     Call {
         callee: Ident,
-        args: Vec<Expr>,
+        args: Vec<Arg>,
+    },
+    SelfValue,
+    Field {
+        base: Box<Expr>,
+        name: Ident,
+    },
+    MethodCall {
+        receiver: Box<Expr>,
+        method: Ident,
+        args: Vec<Arg>,
     },
     Unary {
         op: UnaryOp,
@@ -114,6 +154,13 @@ pub(crate) enum ExprKind {
         then_block: Block,
         else_block: Option<Block>,
     },
+}
+
+/// A call argument; the checker decides where a label belongs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Arg {
+    pub(crate) label: Option<Ident>,
+    pub(crate) value: Expr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,25 +240,58 @@ fn spaced<T: fmt::Display>(f: &mut fmt::Formatter<'_>, items: &[T]) -> fmt::Resu
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, function) in self.functions.iter().enumerate() {
+        for (i, item) in self.items.iter().enumerate() {
             if i > 0 {
                 f.write_str("\n")?;
             }
-            write!(f, "{function}")?;
+            match item {
+                Item::Function(function) => write!(f, "{function}")?,
+                Item::Class(class) => write!(f, "{class}")?,
+            }
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Class {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(class {}", self.name.name)?;
+        for member in &self.members {
+            match member {
+                Member::Field(field) => {
+                    let keyword = if field.mutable { "var" } else { "let" };
+                    write!(f, " ({keyword} {} {})", field.name.name, field.ty.name)?;
+                }
+                Member::Method(method) => write!(f, " {method}")?,
+            }
+        }
+        f.write_str(")")
+    }
+}
+
+impl fmt::Display for Arg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.label {
+            Some(label) => write!(f, "(: {} {})", label.name, self.value),
+            None => write!(f, "{}", self.value),
+        }
     }
 }
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "(fn {} (", self.name.name)?;
-        for (i, p) in self.params.iter().enumerate() {
-            if i > 0 {
-                f.write_str(" ")?;
-            }
-            write!(f, "({} {})", p.name.name, p.ty.name)?;
-        }
+        let params = self
+            .params
+            .iter()
+            .map(|p| format!("({} {})", p.name.name, p.ty.name));
+        let all: Vec<String> = self
+            .self_param
+            .map(|_| "self".to_string())
+            .into_iter()
+            .chain(params)
+            .collect();
+        f.write_str(&all.join(" "))?;
         let ret = self.ret.as_ref().map_or("unit", |t| &t.name);
         write!(f, ") {ret} {})", self.body)
     }
@@ -246,9 +326,9 @@ impl fmt::Display for Stmt {
             StmtKind::Return(Some(e)) => write!(f, "(return {e})"),
             StmtKind::Break => f.write_str("(break)"),
             StmtKind::Continue => f.write_str("(continue)"),
-            StmtKind::Assign { target, value } => write!(f, "(= {} {value})", target.name),
+            StmtKind::Assign { target, value } => write!(f, "(= {target} {value})"),
             StmtKind::CompoundAssign { op, target, value } => {
-                write!(f, "({op}= {} {value})", target.name)
+                write!(f, "({op}= {target} {value})")
             }
             StmtKind::Expr(e) => write!(f, "{e}"),
         }
@@ -263,6 +343,17 @@ impl fmt::Display for Expr {
             ExprKind::Name(name) => f.write_str(name),
             ExprKind::Call { callee, args } => {
                 write!(f, "(call {}", callee.name)?;
+                spaced(f, args)?;
+                f.write_str(")")
+            }
+            ExprKind::SelfValue => f.write_str("self"),
+            ExprKind::Field { base, name } => write!(f, "(. {base} {})", name.name),
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                write!(f, "(call (. {receiver} {})", method.name)?;
                 spaced(f, args)?;
                 f.write_str(")")
             }
@@ -336,6 +427,7 @@ mod tests {
     fn func(name: &str, params: Vec<Param>, ret: Option<TypeExpr>, body: Block) -> Function {
         Function {
             name: ident(name),
+            self_param: None,
             params,
             ret,
             body,
@@ -358,7 +450,10 @@ mod tests {
                 }),
                 stmt(StmtKind::Expr(expr(ExprKind::Call {
                     callee: ident("print"),
-                    args: vec![name("x")],
+                    args: vec![Arg {
+                        label: None,
+                        value: name("x"),
+                    }],
                 }))),
             ]),
         );
@@ -392,7 +487,7 @@ mod tests {
                     }),
                 }),
                 stmt(StmtKind::Assign {
-                    target: ident("d"),
+                    target: name("d"),
                     value: expr(ExprKind::Binary {
                         op: BinaryOp::Add,
                         lhs: Box::new(name("d")),
@@ -415,7 +510,7 @@ mod tests {
         );
         let second = func("g", vec![], None, block(vec![]));
         let program = Program {
-            functions: vec![is_prime, second],
+            items: vec![Item::Function(is_prime), Item::Function(second)],
         };
         assert_eq!(
             program.to_string(),

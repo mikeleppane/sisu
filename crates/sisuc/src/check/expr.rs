@@ -31,6 +31,9 @@ impl Checker {
                 }
             },
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
+            ExprKind::SelfValue | ExprKind::Field { .. } | ExprKind::MethodCall { .. } => {
+                panic!("classes land in Task 10")
+            }
             ExprKind::Unary { op, operand } => {
                 let want = match op {
                     UnaryOp::Neg => Type::I64,
@@ -210,7 +213,11 @@ impl Checker {
         }
     }
 
-    fn call(&mut self, span: Span, callee: &ast::Ident, args: &[ast::Expr]) -> Checked {
+    fn call(&mut self, span: Span, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
+        assert!(
+            args.iter().all(|a| a.label.is_none()),
+            "classes land in Task 10"
+        );
         if callee.name == "print" {
             return self.print(span, args);
         }
@@ -241,7 +248,7 @@ impl Checker {
         let (checked, mismatched): (Vec<_>, Vec<_>) = args
             .iter()
             .zip(&params)
-            .map(|(arg, param)| self.operand(arg, param.as_ref()))
+            .map(|(arg, param)| self.operand(&arg.value, param.as_ref()))
             .unzip();
         match (checked.into_iter().collect(), ret) {
             (Ok(args), Some(ret)) => Ok(tir::Expr {
@@ -255,7 +262,7 @@ impl Checker {
         }
     }
 
-    fn print(&mut self, span: Span, args: &[ast::Expr]) -> Checked {
+    fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
         // Not `value()`: a `unit` argument needs this message, not "expression has no value".
         let wrong = || Diagnostic::error(span, "`print` takes one `i64` or `bool`");
         let [arg] = args else {
@@ -263,10 +270,10 @@ impl Checker {
             self.stray(args);
             return Err(Poisoned { ty: None });
         };
-        let checked = self.expr(arg);
+        let checked = self.expr(&arg.value);
         let error = match type_of(&checked) {
             Some(Type::Unit) => wrong(),
-            Some(Type::Never) => Diagnostic::error(arg.span, "unreachable code"),
+            Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
             _ => {
                 let kind = checked.ok().map(|arg| tir::ExprKind::Print(Box::new(arg)));
                 return typed(span, Type::Unit, false, kind);
@@ -277,10 +284,10 @@ impl Checker {
     }
 
     /// Checks the arguments of a call that cannot take them, for their own mistakes.
-    fn stray(&mut self, args: &[ast::Expr]) {
+    fn stray(&mut self, args: &[ast::Arg]) {
         for arg in args {
             // Only its diagnostics matter.
-            let _ = self.expr(arg);
+            let _ = self.expr(&arg.value);
         }
     }
 }

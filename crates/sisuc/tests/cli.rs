@@ -128,10 +128,9 @@ fn parse_error_exits_1() {
         .output()
         .expect("sisuc starts");
     assert_eq!(out.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .starts_with("error: expected `fn`, found `let`\n --> parse_error_exits_1.sisu:1:1")
-    );
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with(
+        "error: expected `fn` or `class`, found `let`\n --> parse_error_exits_1.sisu:1:1"
+    ));
 }
 
 /// Runs `sisuc <flags> <name>.sisu` on `source`, saved as `<name>.sisu` in the target tmp dir.
