@@ -48,6 +48,7 @@ jobs:
         with:
           tool: cargo-nextest
       - uses: ./.github/actions/install-llvm
+      - run: sudo apt-get update && sudo apt-get install --yes valgrind
       - run: cargo nextest run --workspace --locked --profile ci
 
   deny:

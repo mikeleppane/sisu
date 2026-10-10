@@ -14,4 +14,15 @@ fn main() {
     x /= 4
     x %= 4
     print(x)
+    var pairs = 0
+    var a = 0
+    while a < 4 {
+        var b = 0
+        while b < a {
+            pairs += 1
+            b += 1
+        }
+        a += 1
+    }
+    print(pairs)
 }

@@ -68,6 +68,12 @@ pub(crate) enum StmtKind {
         target: Ident,
         value: Expr,
     },
+    /// `target op= value`; the checker lowers it to `target = target op value`.
+    CompoundAssign {
+        op: BinaryOp,
+        target: Ident,
+        value: Expr,
+    },
     Expr(Expr),
 }
 
@@ -237,6 +243,9 @@ impl fmt::Display for Stmt {
             StmtKind::Return(None) => f.write_str("(return)"),
             StmtKind::Return(Some(e)) => write!(f, "(return {e})"),
             StmtKind::Assign { target, value } => write!(f, "(= {} {value})", target.name),
+            StmtKind::CompoundAssign { op, target, value } => {
+                write!(f, "({op}= {} {value})", target.name)
+            }
             StmtKind::Expr(e) => write!(f, "{e}"),
         }
     }

@@ -7,6 +7,7 @@ mod diagnostic;
 mod lexer;
 mod link;
 mod parser;
+mod tir;
 
 use std::ffi::OsString;
 use std::fs;
@@ -15,12 +16,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ast::Program;
-use diagnostic::{Diagnostic, Severity};
+use diagnostic::Diagnostic;
 use inkwell::context::Context;
+use tir::Program;
 
-const USAGE: &str =
-    "usage: sisuc <input.sisu> <output> | --emit tokens|ast|ir <input.sisu> | --check <input.sisu>";
+const USAGE: &str = "usage: sisuc <input.sisu> <output> | --emit tokens|ast|tir|ir <input.sisu> | --check <input.sisu>";
 
 /// What the command line asks for.
 enum Mode {
@@ -32,6 +32,7 @@ enum Mode {
 enum Stage {
     Tokens,
     Ast,
+    Tir,
     Ir,
 }
 
@@ -41,6 +42,7 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
             let stage = match stage.to_str() {
                 Some("tokens") => Stage::Tokens,
                 Some("ast") => Stage::Ast,
+                Some("tir") => Stage::Tir,
                 Some("ir") => Stage::Ir,
                 _ => return Err(USAGE.to_string()),
             };
@@ -116,6 +118,13 @@ fn emit(stage: &Stage, input: &Path) -> ExitCode {
                 report(&path, &source, &[d]);
                 ExitCode::FAILURE
             }
+        },
+        Stage::Tir => match front_end(&path, &source) {
+            Some(program) => {
+                println!("{program}");
+                ExitCode::SUCCESS
+            }
+            None => ExitCode::FAILURE,
         },
         Stage::Ir => emit_ir(&path, &source),
     }
@@ -193,12 +202,9 @@ fn front_end(path: &str, source: &str) -> Option<Program> {
             return None;
         }
     };
-    let diagnostics = check::check(&program);
+    let (program, diagnostics) = check::check(&program);
     report(path, source, &diagnostics);
-    diagnostics
-        .iter()
-        .all(|d| d.severity != Severity::Error)
-        .then_some(program)
+    program
 }
 
 /// Prints each diagnostic to stderr, followed by a blank line.
