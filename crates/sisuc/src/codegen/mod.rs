@@ -216,6 +216,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
             Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
+            Type::Array(_) => panic!("arrays land in Task 8"),
             Type::Optional(payload) => match self
                 .llvm_type(payload)
                 .expect("the checker should reject an optional of `unit` or `never`, so its payload has a value type")
@@ -560,6 +561,15 @@ impl<'ctx> Codegen<'ctx, '_> {
         equal
     }
 
+    /// `lhs is rhs`; releases both operands after comparing them.
+    fn is_expr(&mut self, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
+        let (l, r) = (self.operand(lhs), self.operand(rhs));
+        let same = self.same_object(l.into_pointer_value(), r.into_pointer_value());
+        self.release(l, &lhs.ty);
+        self.release(r, &rhs.ty);
+        same
+    }
+
     /// An operand of `==` or `is`.
     fn operand(&mut self, e: &Expr) -> BasicValueEnum<'ctx> {
         self.expr(e)
@@ -582,6 +592,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
+            ExprKind::ArrayLit(_)
+            | ExprKind::ArrayFill { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Len(_) => panic!("arrays land in Task 8"),
             ExprKind::Local(local) => {
                 let value = self.load_local(*local)?;
                 self.retain(value, &e.ty);
@@ -623,13 +637,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
             ExprKind::Equal { negated, lhs, rhs } => self.equal_expr(*negated, lhs, rhs),
-            ExprKind::Is { lhs, rhs } => {
-                let (l, r) = (self.operand(lhs), self.operand(rhs));
-                let same = self.same_object(l.into_pointer_value(), r.into_pointer_value());
-                self.release(l, &lhs.ty);
-                self.release(r, &rhs.ty);
-                same
-            }
+            ExprKind::Is { lhs, rhs } => self.is_expr(lhs, rhs),
             ExprKind::If {
                 cond,
                 then_block,

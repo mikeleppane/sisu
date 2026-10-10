@@ -2,14 +2,6 @@
 
 use super::*;
 
-/// Asserts that `src` checks clean and its `tir` contains each of `parts`.
-fn contains(src: &str, parts: &[&str]) {
-    let printed = lowered(src);
-    for part in parts {
-        assert!(printed.contains(part), "{part} in {printed}");
-    }
-}
-
 /// The help of each diagnostic of `src`, in order.
 fn helps(src: &str) -> Vec<Option<String>> {
     diags(src).into_iter().map(|d| d.help).collect()
