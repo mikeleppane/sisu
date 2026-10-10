@@ -228,6 +228,17 @@ Each is small once its milestone's main feature exists:
   type, use a newtype (milestone 10). Also `echo x`, which prints `x` with its file
   and line and returns `x`, so it can wrap any expression while debugging.
   It needs the `Display`-like interface.
+- Milestone 8: `Hash` and `Ord` interfaces in the prelude. `Map` keys
+  (milestone 11) need `Hash`, and `sort` needs `Ord`. Built-in types
+  implement both.
+- Milestone 10: interfaces the compiler implements. A record or enum that
+  declares `Hash` or `Ord`, as in `record Point(x: i64, y: i64): Hash`, gets
+  the methods written by the compiler from its fields, in declaration order,
+  as Swift synthesizes `Hashable` and `Comparable`. It is a compile error on
+  the declaration when a field lacks the interface, not at a distant `Map`
+  that uses the type as a key. `==` and `print` need no declaration, because
+  every type has them. The list is fixed by the compiler: this replaces
+  derive macros, not user code generation.
 - Milestone 10: a copy of a record with some fields changed,
   `Point(..p, y: 0)`, as Gleam writes it and as Kotlin's `copy(y = 0)` does.
   Label shorthand, `area(width:, height:)`, passes the local variables of the
@@ -358,7 +369,13 @@ These do not make code nicer to write, so they wait:
   Rust and Go.
 - Zig-style `comptime`, with types as compile-time values, and macros.
   Generics and interfaces (milestone 8) cover the same ground, and errors
-  stay plain when type checking does not depend on running code.
+  stay plain when type checking does not depend on running code. Macros
+  hide code from error messages, the formatter and the language server. The
+  other jobs macros do have other answers: interfaces the compiler implements
+  (milestone 10), `const` initializers and attributes (later goals), and, for
+  serialization or bindings, a script that writes ordinary `.sisu` files
+  that are committed, as Go's `go generate` does. Runtime reflection is
+  avoided for the same reason, and because it costs at run time.
 - Formatter options. One style ends style debates.
 - A separate linter. Lints are compiler warnings.
 - `import *`. A reader must always see where a name comes from.
@@ -390,8 +407,11 @@ These do not make code nicer to write, so they wait:
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
   `a.plus(b)` or `a.value + b.value`, the same boilerplate Rust newtypes
   carry. An opt-in such as Haskell's `deriving` would let a newtype keep its
-  field's `+` and `<`. Decide in milestone 10, against the rule that rules
-  out unrestricted operator overloading.
+  field's `+` and `<`. One candidate reuses the interfaces the compiler
+  implements (milestone 10): `record Meters(value: f64): Add, Ord` forwards
+  `+` and `<` to the field. The operators come from a fixed list and the
+  compiler writes them, so this is not unrestricted operator overloading.
+  Decide in milestone 10.
 - **Attribute syntax.** A marker on a declaration, such as `@inline`, needs
   one general form: `@name` or `@name(args)` on the line before it, as in
   Swift and Kotlin. Decide the form before the first attribute lands, so `@`
