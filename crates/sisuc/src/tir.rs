@@ -79,7 +79,6 @@ pub(crate) enum Place {
 pub(crate) struct Expr {
     pub(crate) kind: ExprKind,
     pub(crate) ty: Type,
-    #[expect(dead_code, reason = "read by codegen from Task 3")]
     pub(crate) span: Span,
 }
 

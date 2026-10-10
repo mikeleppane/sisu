@@ -1,7 +1,5 @@
 //! Builds LLVM IR through inkwell and writes it out as a native object file.
 
-use std::collections::HashMap;
-
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -13,15 +11,14 @@ use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
-use inkwell::types::{BasicMetadataTypeEnum, IntType};
-use inkwell::values::{BasicValue, FunctionValue, IntValue, PointerValue};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
+use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
-use crate::ast::{
-    BinaryOp, Block, CompareOp, Expr, ExprKind, Function, Program, Stmt, StmtKind, TypeExpr,
-    UnaryOp,
-};
 use crate::diagnostic::{Span, line_col};
+use crate::tir::{
+    BinaryOp, Block, CompareOp, Expr, ExprKind, Function, Place, Program, Stmt, Type, UnaryOp,
+};
 
 /// Compiles a program that passed `check` into an LLVM module.
 pub(crate) fn compile<'ctx>(
@@ -73,14 +70,16 @@ pub(crate) fn compile<'ctx>(
         panic,
         path,
         source,
-        scopes: Vec::new(),
+        functions: Vec::new(),
+        locals: Vec::new(),
+        loops: Vec::new(),
     };
     // Declare every function first so that calls can refer to functions defined later.
     for f in &program.functions {
         codegen.declare(f);
     }
-    for f in &program.functions {
-        codegen.define(f);
+    for (f, function) in program.functions.iter().zip(codegen.functions.clone()) {
+        codegen.define(f, function);
     }
     codegen.c_main();
     codegen.module
@@ -90,13 +89,19 @@ fn zeroext(context: &Context) -> Attribute {
     context.create_enum_attribute(Attribute::get_named_enum_kind_id("zeroext"), 0)
 }
 
-/// What a name in scope stands for.
+/// Where a local's value lives.
 #[derive(Clone, Copy)]
-enum Local<'ctx> {
+enum Slot<'ctx> {
     /// A `let` binding or a parameter: an SSA value.
-    Value(IntValue<'ctx>),
+    Value(BasicValueEnum<'ctx>),
     /// A `var`: an `alloca` of this type, loaded and stored until `mem2reg` promotes it.
-    Slot(PointerValue<'ctx>, IntType<'ctx>),
+    Alloca(PointerValue<'ctx>, BasicTypeEnum<'ctx>),
+}
+
+/// An open `loop`: `Break` branches to `end`, a body that falls through back to `body`.
+struct LoopFrame<'ctx> {
+    body: BasicBlock<'ctx>,
+    end: BasicBlock<'ctx>,
 }
 
 struct Codegen<'ctx, 'src> {
@@ -109,55 +114,64 @@ struct Codegen<'ctx, 'src> {
     /// The input path as given, and its text: panic messages name a position in it.
     path: &'src str,
     source: &'src str,
-    scopes: Vec<HashMap<String, Local<'ctx>>>,
+    /// Indexed by `FuncId`.
+    functions: Vec<FunctionValue<'ctx>>,
+    /// The current function's locals, indexed by `LocalId`; `None` until bound, and for `unit`.
+    locals: Vec<Option<Slot<'ctx>>>,
+    loops: Vec<LoopFrame<'ctx>>,
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
-    fn int_type(&self, ty: &TypeExpr) -> IntType<'ctx> {
-        if ty.name == "bool" {
-            self.context.bool_type()
-        } else {
-            self.context.i64_type()
+    /// The LLVM type of a value of `ty`; `None` for `unit` and `never`, which have no value.
+    fn llvm_type(&self, ty: &Type) -> Option<BasicTypeEnum<'ctx>> {
+        match ty {
+            Type::I64 => Some(self.context.i64_type().into()),
+            Type::Bool => Some(self.context.bool_type().into()),
+            Type::Unit | Type::Never => None,
         }
     }
 
-    fn function(&self, name: &str) -> FunctionValue<'ctx> {
-        self.module
-            .get_function(&format!("sisu.{name}"))
-            .expect("checked: every called function is declared")
-    }
-
-    fn declare(&self, f: &Function) {
+    fn declare(&mut self, f: &Function) {
         let params: Vec<BasicMetadataTypeEnum> = f
             .params
             .iter()
-            .map(|p| self.int_type(&p.ty).into())
+            .map(|p| {
+                self.llvm_type(&f.locals[p.0].ty)
+                    .expect("checked: a parameter has a value type")
+                    .into()
+            })
             .collect();
-        let fn_type = match &f.ret {
-            Some(ret) => self.int_type(ret).fn_type(&params, false),
+        let fn_type = match self.llvm_type(&f.ret) {
+            Some(ret) => ret.fn_type(&params, false),
             None => self.context.void_type().fn_type(&params, false),
         };
-        self.module
-            .add_function(&format!("sisu.{}", f.name.name), fn_type, None);
+        let function = self
+            .module
+            .add_function(&format!("sisu.{}", f.name), fn_type, None);
+        self.functions.push(function);
     }
 
-    fn define(&mut self, f: &Function) {
-        let function = self.function(&f.name.name);
+    fn define(&mut self, f: &Function, function: FunctionValue<'ctx>) {
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
-        let params = f
-            .params
+        // Every `var` gets its `alloca` up front, in the entry block: see `entry_alloca`.
+        self.locals = f
+            .locals
             .iter()
-            .zip(function.get_param_iter())
-            .map(|(p, v)| (p.name.name.clone(), Local::Value(v.into_int_value())))
+            .map(|local| {
+                let ty = self.llvm_type(&local.ty).filter(|_| local.mutable)?;
+                let name = local.name.as_deref().unwrap_or("");
+                Some(Slot::Alloca(self.entry_alloca(ty, name), ty))
+            })
             .collect();
-        self.scopes = vec![params];
-        let value = self.block(&f.body, f.ret.is_some());
+        for (p, v) in f.params.iter().zip(function.get_param_iter()) {
+            self.locals[p.0] = Some(Slot::Value(v));
+        }
+        let value = self.block(&f.body);
         if !self.terminated() {
             // The declared return type picks the `ret`: a unit function discards any body value.
-            let value = f
-                .ret
-                .as_ref()
+            let value = self
+                .llvm_type(&f.ret)
                 .map(|_| value.expect("checked: a body that falls through has the return type"));
             self.builder
                 .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
@@ -173,8 +187,12 @@ impl<'ctx> Codegen<'ctx, '_> {
             .add_function("main", i32_type.fn_type(&[], false), None);
         self.builder
             .position_at_end(self.context.append_basic_block(main, "entry"));
+        let sisu_main = self
+            .module
+            .get_function("sisu.main")
+            .expect("checked: the program has a `main`");
         self.builder
-            .build_call(self.function("main"), &[], "")
+            .build_call(sisu_main, &[], "")
             .expect("builder is positioned");
         self.builder
             .build_return(Some(&i32_type.const_zero()))
@@ -203,97 +221,92 @@ impl<'ctx> Codegen<'ctx, '_> {
         (!self.terminated()).then(|| self.current_block())
     }
 
-    /// The block's value, `None` for `unit` or `never`. `used` says whether the caller needs
-    /// the value; only the last statement's value can be used.
-    fn block(&mut self, block: &Block, used: bool) -> Option<IntValue<'ctx>> {
-        self.scopes.push(HashMap::new());
-        let mut value = None;
-        for (i, stmt) in block.stmts.iter().enumerate() {
+    /// The block's value, `None` for `unit` or `never`.
+    fn block(&mut self, block: &Block) -> Option<BasicValueEnum<'ctx>> {
+        for stmt in &block.stmts {
             // A `never` statement ended the block; what follows is unreachable.
             if self.terminated() {
-                break;
+                return None;
             }
-            value = self.stmt(stmt, used && i + 1 == block.stmts.len());
+            self.stmt(stmt);
         }
-        self.scopes.pop();
-        value
+        let value = block.value.as_ref()?;
+        if self.terminated() {
+            return None;
+        }
+        self.expr(value)
     }
 
-    fn stmt(&mut self, stmt: &Stmt, used: bool) -> Option<IntValue<'ctx>> {
-        match &stmt.kind {
-            StmtKind::Let {
-                mutable,
-                name,
-                init,
-                ..
-            } => {
-                let value = self.value(init);
-                let local = if *mutable {
-                    let slot = self.entry_alloca(value.get_type(), &name.name);
-                    self.store(slot, value);
-                    Local::Slot(slot, value.get_type())
-                } else {
-                    Local::Value(value)
+    fn stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let { local, init } => {
+                let Some(value) = self.expr(init) else {
+                    return;
                 };
-                self.scopes
-                    .last_mut()
-                    .expect("a block pushed a scope")
-                    .insert(name.name.clone(), local);
-                None
+                match self.locals[local.0] {
+                    Some(Slot::Alloca(ptr, _)) => self.store(ptr, value),
+                    _ => self.locals[local.0] = Some(Slot::Value(value)),
+                }
             }
-            StmtKind::Assign { target, value } => {
-                let value = self.value(value);
-                let Local::Slot(slot, _) = self.local(&target.name) else {
+            Stmt::Assign {
+                place: Place::Local(local),
+                value,
+            } => {
+                let Some(value) = self.expr(value) else {
+                    return;
+                };
+                let Some(Slot::Alloca(ptr, _)) = self.locals[local.0] else {
                     unreachable!("checked: only a `var` is assigned")
                 };
-                self.store(slot, value);
-                None
+                self.store(ptr, value);
             }
-            StmtKind::While { cond, body } => {
-                self.while_stmt(cond, body);
-                None
+            Stmt::Expr(e) => {
+                self.expr(e);
             }
-            StmtKind::Return(value) => {
-                let value = value.as_ref().and_then(|e| self.expr(e));
-                // The checker rejects a `never` return value; this keeps codegen safe anyway.
-                if !self.terminated() {
-                    self.builder
-                        .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
-                        .expect("builder is positioned");
-                }
-                None
-            }
-            StmtKind::Expr(Expr {
-                kind:
-                    ExprKind::If {
-                        cond,
-                        then_block,
-                        else_block,
-                    },
-                ..
-            }) => self.if_expr(cond, then_block, else_block.as_ref(), used),
-            StmtKind::Expr(e) => self.expr(e),
         }
     }
 
     /// An expression the checker typed `i64` or `bool`.
     fn value(&mut self, e: &Expr) -> IntValue<'ctx> {
-        self.expr(e).expect("checked: the expression has a value")
+        self.expr(e)
+            .expect("checked: the expression has a value")
+            .into_int_value()
     }
 
-    fn expr(&mut self, e: &Expr) -> Option<IntValue<'ctx>> {
+    /// The expression's value, `None` for `unit` or `never`.
+    fn expr(&mut self, e: &Expr) -> Option<BasicValueEnum<'ctx>> {
         let value = match &e.kind {
             ExprKind::Int(n) => self.context.i64_type().const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
-            ExprKind::Name(name) => match self.local(name) {
-                Local::Value(value) => value,
-                Local::Slot(slot, ty) => self
+            ExprKind::Local(local) => {
+                return self.locals[local.0].map(|slot| match slot {
+                    Slot::Value(value) => value,
+                    Slot::Alloca(ptr, ty) => self
+                        .builder
+                        .build_load(ty, ptr, "load")
+                        .expect("builder is positioned"),
+                });
+            }
+            ExprKind::Call { func, args } => {
+                let args: Vec<_> = args
+                    .iter()
+                    .map(|a| {
+                        self.expr(a)
+                            .expect("checked: an argument has a value")
+                            .into()
+                    })
+                    .collect();
+                return self
                     .builder
-                    .build_load(ty, slot, name)
+                    .build_call(self.functions[func.0], &args, "call")
                     .expect("builder is positioned")
-                    .into_int_value(),
-            },
-            ExprKind::Call { callee, args } => return self.call(&callee.name, args),
+                    .try_as_basic_value()
+                    .basic();
+            }
+            ExprKind::Print(operand) => {
+                self.print(operand);
+                return None;
+            }
             ExprKind::Unary { op, operand } => {
                 let operand = self.value(operand);
                 match op {
@@ -309,28 +322,51 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
+            ExprKind::Equal { negated, lhs, rhs } => {
+                let (l, r) = (self.value(lhs), self.value(rhs));
+                let predicate = if *negated {
+                    IntPredicate::NE
+                } else {
+                    IntPredicate::EQ
+                };
+                self.int_compare(predicate, l, r)
+            }
             ExprKind::If {
                 cond,
                 then_block,
                 else_block,
-            } => return self.if_expr(cond, then_block, else_block.as_ref(), true),
+            } => return self.if_expr(cond, then_block, else_block.as_ref(), &e.ty),
+            ExprKind::Loop(body) => {
+                self.loop_expr(body);
+                return None;
+            }
+            ExprKind::Break => {
+                let end = self
+                    .loops
+                    .last()
+                    .expect("checked: `break` is in a loop")
+                    .end;
+                self.branch_to(end);
+                return None;
+            }
+            ExprKind::Return(value) => {
+                let value = value.as_ref().and_then(|e| self.expr(e));
+                // The checker rejects a `never` return value; this keeps codegen safe anyway.
+                if !self.terminated() {
+                    self.builder
+                        .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
+                        .expect("builder is positioned");
+                }
+                return None;
+            }
         };
-        Some(value)
-    }
-
-    fn local(&self, name: &str) -> Local<'ctx> {
-        *self
-            .scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name))
-            .expect("checked: every name is bound")
+        Some(value.into())
     }
 
     /// An `alloca` at the start of the function's entry block, wherever the `var` sits:
     /// `mem2reg` promotes only entry-block allocas, and one in a loop body would grow the
     /// stack on every iteration.
-    fn entry_alloca(&self, ty: IntType<'ctx>, name: &str) -> PointerValue<'ctx> {
+    fn entry_alloca(&self, ty: BasicTypeEnum<'ctx>, name: &str) -> PointerValue<'ctx> {
         let entry = self
             .current_function()
             .get_first_basic_block()
@@ -345,59 +381,47 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("builder is positioned")
     }
 
-    fn store(&self, slot: PointerValue<'ctx>, value: IntValue<'ctx>) {
+    fn store(&self, ptr: PointerValue<'ctx>, value: BasicValueEnum<'ctx>) {
         self.builder
-            .build_store(slot, value)
+            .build_store(ptr, value)
             .expect("builder is positioned");
     }
 
-    /// `while`: the condition block branches to the body or to the end, where codegen
-    /// continues; the body branches back to the condition unless it ended in a terminator.
-    fn while_stmt(&mut self, cond: &Expr, body: &Block) {
+    /// `loop`: the body block runs until a `Break` branches to the end block, where codegen
+    /// continues; a body that falls through branches back to its start.
+    fn loop_expr(&mut self, body: &Block) {
         let function = self.current_function();
-        let cond_block = self.context.append_basic_block(function, "while.cond");
-        let body_block = self.context.append_basic_block(function, "while.body");
-        let end = self.context.append_basic_block(function, "while.end");
-        self.branch_to(cond_block);
-        self.builder.position_at_end(cond_block);
-        let cond = self.value(cond);
-        self.builder
-            .build_conditional_branch(cond, body_block, end)
-            .expect("builder is positioned");
-        self.builder.position_at_end(body_block);
-        self.block(body, false);
+        let frame = LoopFrame {
+            body: self.context.append_basic_block(function, "loop.body"),
+            end: self.context.append_basic_block(function, "loop.end"),
+        };
+        let (start, end) = (frame.body, frame.end);
+        self.branch_to(start);
+        self.builder.position_at_end(start);
+        self.loops.push(frame);
+        self.block(body);
+        self.loops.pop();
         if !self.terminated() {
-            self.branch_to(cond_block);
+            self.branch_to(start);
         }
         self.builder.position_at_end(end);
     }
 
-    fn call(&mut self, callee: &str, args: &[Expr]) -> Option<IntValue<'ctx>> {
-        let args: Vec<IntValue> = args.iter().map(|a| self.value(a)).collect();
-        if callee == "print" {
-            let arg = args[0];
-            let is_bool = arg.get_type().get_bit_width() == 1;
-            let print = if is_bool {
-                self.print_bool
-            } else {
-                self.print_int
-            };
-            let call = self
-                .builder
-                .build_call(print, &[arg.into()], "")
-                .expect("builder is positioned");
-            if is_bool {
-                call.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
-            }
-            return None;
+    fn print(&mut self, operand: &Expr) {
+        let arg = self.value(operand);
+        let is_bool = operand.ty == Type::Bool;
+        let print = if is_bool {
+            self.print_bool
+        } else {
+            self.print_int
+        };
+        let call = self
+            .builder
+            .build_call(print, &[arg.into()], "")
+            .expect("builder is positioned");
+        if is_bool {
+            call.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
         }
-        let args: Vec<_> = args.into_iter().map(Into::into).collect();
-        self.builder
-            .build_call(self.function(callee), &args, "call")
-            .expect("builder is positioned")
-            .try_as_basic_value()
-            .basic()
-            .map(|v| v.into_int_value())
     }
 
     /// `span` is the operator expression's: arithmetic panics point at its start.
@@ -411,8 +435,6 @@ impl<'ctx> Codegen<'ctx, '_> {
             BinaryOp::Sub => self.checked("llvm.ssub.with.overflow", l, r, span),
             BinaryOp::Mul => self.checked("llvm.smul.with.overflow", l, r, span),
             BinaryOp::Div | BinaryOp::Rem => self.division(op == BinaryOp::Rem, l, r, span),
-            BinaryOp::Eq => self.int_compare(IntPredicate::EQ, l, r),
-            BinaryOp::Ne => self.int_compare(IntPredicate::NE, l, r),
             BinaryOp::And | BinaryOp::Or => unreachable!("handled above"),
         }
     }
@@ -547,6 +569,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.context.bool_type(),
             &[(decided, lhs_end), (rhs, rhs_end)],
         )
+        .into_int_value()
     }
 
     /// `a < b <= c` is `a < b && b <= c` with `b` computed once.
@@ -583,6 +606,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         incoming.push((holds, last_end));
         self.builder.position_at_end(merge);
         self.phi(self.context.bool_type(), &incoming)
+            .into_int_value()
     }
 
     fn compare_pair(
@@ -602,16 +626,16 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("builder is positioned")
     }
 
-    /// `if`/`else`. The merge block exists only if a branch falls through; its `phi` (built
-    /// only when the value is `used`) takes one edge per such branch, from the block where
-    /// that branch ended.
+    /// `if`/`else`. The merge block exists only if a branch falls through; its `phi`, built
+    /// when `ty` has a value, takes one edge per such branch, from the block where that
+    /// branch ended.
     fn if_expr(
         &mut self,
         cond: &Expr,
         then_block: &Block,
         else_block: Option<&Block>,
-        used: bool,
-    ) -> Option<IntValue<'ctx>> {
+        ty: &Type,
+    ) -> Option<BasicValueEnum<'ctx>> {
         let cond = self.value(cond);
         let function = self.current_function();
         let then_start = self.context.append_basic_block(function, "then");
@@ -620,7 +644,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .build_conditional_branch(cond, then_start, else_start)
             .expect("builder is positioned");
         self.builder.position_at_end(then_start);
-        let then_value = self.block(then_block, used);
+        let then_value = self.block(then_block);
         let then_end = self.open_block();
         self.builder.position_at_end(else_start);
         let Some(else_block) = else_block else {
@@ -632,7 +656,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             return None;
         };
-        let else_value = self.block(else_block, used);
+        let else_value = self.block(else_block);
         let else_end = self.open_block();
         let arms: Vec<_> = [(then_value, then_end), (else_value, else_end)]
             .into_iter()
@@ -648,14 +672,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.branch_to(merge);
         }
         self.builder.position_at_end(merge);
-        if !used {
-            return None;
-        }
+        let ty = self.llvm_type(ty)?;
         let incoming: Vec<_> = arms
             .into_iter()
-            .map(|(value, end)| (value.expect("checked: a used `if` has a value"), end))
+            .map(|(value, end)| (value.expect("checked: a branch has the `if`'s type"), end))
             .collect();
-        let ty = incoming[0].0.get_type();
         Some(self.phi(ty, &incoming))
     }
 
@@ -665,11 +686,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("builder is positioned");
     }
 
-    fn phi(
+    fn phi<V: BasicValue<'ctx>>(
         &self,
-        ty: IntType<'ctx>,
-        incoming: &[(IntValue<'ctx>, BasicBlock<'ctx>)],
-    ) -> IntValue<'ctx> {
+        ty: impl BasicType<'ctx>,
+        incoming: &[(V, BasicBlock<'ctx>)],
+    ) -> BasicValueEnum<'ctx> {
         let phi = self
             .builder
             .build_phi(ty, "phi")
@@ -677,7 +698,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         for (value, block) in incoming {
             phi.add_incoming(&[(value, *block)]);
         }
-        phi.as_basic_value().into_int_value()
+        phi.as_basic_value()
     }
 }
 
@@ -724,18 +745,13 @@ pub(crate) fn object_code(
 mod tests {
     use super::*;
     use crate::check::check;
-    use crate::diagnostic::Severity;
     use crate::lexer::lex;
     use crate::parser::parse;
 
     /// Lexes, parses, checks (no errors allowed) and compiles `src`, then verifies the module.
     fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
         let program = parse(&lex(src).expect("source lexes")).expect("source parses");
-        let diagnostics = check(&program).1;
-        assert!(
-            diagnostics.iter().all(|d| d.severity != Severity::Error),
-            "{diagnostics:?}"
-        );
+        let program = check(&program).0.expect("no errors");
         let module = compile(context, &program, "test.sisu", src);
         if let Err(e) = module.verify() {
             panic!("{e}\n{}", module.print_to_string());

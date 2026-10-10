@@ -213,3 +213,34 @@ fn emit_ir_warning_still_prints_ir() {
     );
     ir_sections(&String::from_utf8_lossy(&out.stdout));
 }
+
+#[test]
+fn emit_tir() {
+    let out = run_on(
+        "emit_tir",
+        "fn main() {\n    var i = 0\n    while i < 2 {\n        i = i + 1\n    }\n}\n",
+        &["--emit", "tir"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(fn main () unit (block (var i#0 0) (loop (block (if (< i#0 2) (block (= i#0 (+ i#0 1))) (block (break)))))))\n"
+    );
+}
+
+#[test]
+fn emit_tir_error_prints_no_tir() {
+    let out = run_on(
+        "emit_tir_error_prints_no_tir",
+        "fn main() {\n    let n = 0\n    n = 1\n}\n",
+        &["--emit", "tir"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
