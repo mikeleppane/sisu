@@ -199,15 +199,18 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ' ' | '\t' | '\r' => continue,
             '\n' => {
                 line_start = true;
-                let continuation = continues_line(&source[start..]).map(|gap| start + gap);
-                if let Some(target) = continuation {
-                    // Jump to the `.`/`?.`, so a long gap is scanned once, not at every newline.
-                    while chars.next_if(|&(i, _)| i < target).is_some() {}
-                } else if ends_statement(&tokens, &open) {
-                    // Empty, at the line end: a span over `\n` renders as a two-line range,
-                    // and one at `\n` after `\r` sits a column too far right.
-                    let end = start - usize::from(source[..start].ends_with('\r'));
-                    tokens.push(newline(Span::new(end, end)));
+                // Look ahead only where a `Newline` would be pushed: the next newlines of a
+                // blank run then find `Newline` last and skip it, so no gap is scanned twice.
+                if ends_statement(&tokens, &open) {
+                    if let Some(gap) = continues_line(&source[start..]) {
+                        // Jump to the `.`/`?.`, so a long gap is scanned once.
+                        while chars.next_if(|&(i, _)| i < start + gap).is_some() {}
+                    } else {
+                        // Empty, at the line end: a span over `\n` renders as a two-line range,
+                        // and one at `\n` after `\r` sits a column too far right.
+                        let end = start - usize::from(source[..start].ends_with('\r'));
+                        tokens.push(newline(Span::new(end, end)));
+                    }
                 }
                 continue;
             }
@@ -269,7 +272,8 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
 fn continues_line(rest: &str) -> Option<usize> {
     let mut code = rest;
     loop {
-        code = code.trim_start();
+        // Only what the main loop skips: `trim_start` would also take Unicode whitespace.
+        code = code.trim_start_matches([' ', '\t', '\r', '\n']);
         match code.strip_prefix("//") {
             Some(comment) => code = comment.split_once('\n').map_or("", |(_, after)| after),
             None => {
@@ -779,6 +783,33 @@ mod tests {
                 Span::new(11, 11)
             ]
         );
+    }
+
+    #[test]
+    fn long_gaps_lex_in_linear_time() {
+        use TokenKind::{Dot, Eof, Newline};
+        use std::time::Instant;
+        const LINES: usize = 200_000;
+        for gap in ["\n", "\n// c"] {
+            for (tail, expected) in [
+                ("b", vec![ident("a"), Newline, ident("b"), Newline, Eof]),
+                (".b", vec![ident("a"), Dot, ident("b"), Newline, Eof]),
+            ] {
+                let src = format!("a{}\n{tail}", gap.repeat(LINES));
+                let started = Instant::now();
+                let kinds = all_kinds(&src);
+                assert!(started.elapsed().as_secs() < 2, "gap {gap:?} then {tail}");
+                assert_eq!(kinds, expected, "gap {gap:?} then {tail}");
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_space_in_the_gap_is_unexpected() {
+        let src = "a\n\u{00a0}.b";
+        let d = lex(src).expect_err("U+00A0 is not Sisu whitespace");
+        assert_eq!(d.message, "unexpected character `\u{00a0}`");
+        assert_eq!(line_col(src, d.span.start), (2, 1));
     }
 
     fn all_kinds(src: &str) -> Vec<TokenKind> {
