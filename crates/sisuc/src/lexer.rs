@@ -609,7 +609,8 @@ mod tests {
     #[test]
     fn dot_and_question_dot_continue_a_line() {
         use TokenKind::{
-            Dot, Eof, Eq, LParen, Let, Newline, QuestionDot, QuestionQuestion, RParen,
+            Dot, Else, Eof, Eq, If, Int, LBrace, LParen, Let, Newline, QuestionDot,
+            QuestionQuestion, RBrace, RParen,
         };
         assert_eq!(
             all_kinds("let t = a\n    .sum()"),
@@ -651,6 +652,33 @@ mod tests {
             ]
         );
         assert_eq!(all_kinds("a\n."), [ident("a"), Dot, Eof]);
+        // Inside brackets: a block in parentheses, and parentheses alone.
+        assert_eq!(
+            all_kinds("f(if c {\n a\n .b\n } else { 0 })"),
+            [
+                ident("f"),
+                LParen,
+                If,
+                ident("c"),
+                LBrace,
+                ident("a"),
+                Dot,
+                ident("b"),
+                Newline,
+                RBrace,
+                Else,
+                LBrace,
+                Int(0),
+                RBrace,
+                RParen,
+                Newline,
+                Eof
+            ]
+        );
+        assert_eq!(
+            all_kinds("(a\n.b)"),
+            [LParen, ident("a"), Dot, ident("b"), RParen, Newline, Eof]
+        );
     }
 
     #[test]
@@ -785,6 +813,8 @@ mod tests {
         );
     }
 
+    /// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
+    /// update the override there.
     #[test]
     fn long_gaps_lex_correctly() {
         use TokenKind::{Dot, Eof, Newline};

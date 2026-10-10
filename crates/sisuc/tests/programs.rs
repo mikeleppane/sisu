@@ -199,9 +199,9 @@ fn run_in_small_stack(name: &str) -> Output {
         .expect("sh starts")
 }
 
-#[test]
-fn longlist_frees_in_constant_stack() {
-    let out = run_in_small_stack("longlist");
+/// Runs `<name>.sisu` under the small stack and checks that it exits 0 and prints `expected`.
+fn assert_small_stack_prints(name: &str, expected: &str) {
+    let out = run_in_small_stack(name);
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -209,20 +209,17 @@ fn longlist_frees_in_constant_stack() {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "1000000\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+}
+
+#[test]
+fn longlist_frees_in_constant_stack() {
+    assert_small_stack_prints("longlist", "1000000\n");
 }
 
 #[test]
 fn right_skewed_tree_frees_in_constant_stack() {
-    let out = run_in_small_stack("rightskew");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{:?}: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "1000000\n");
+    assert_small_stack_prints("rightskew", "1000000\n");
 }
 
 /// The control for `longlist_frees_in_constant_stack`: a drop that recurses once per object

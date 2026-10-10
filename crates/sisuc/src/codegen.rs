@@ -201,7 +201,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::Unit | Type::Never => None,
             // A class optional is the object's pointer, `null` for `None`.
             Type::Class(_) | Type::Optional(_) => {
-                class_optional(ty);
+                assert_class_optional(ty);
                 Some(self.context.ptr_type(AddressSpace::default()).into())
             }
         }
@@ -748,7 +748,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 else_block,
             } => {
                 let cond = self.value(cond);
-                return self.if_expr(cond, (then_block, None), else_block.as_ref(), &e.ty);
+                return self.if_expr(cond, then_block, None, else_block.as_ref(), &e.ty);
             }
             ExprKind::Loop(body) => {
                 self.loop_expr(body);
@@ -800,7 +800,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             // A class needs no wrapping: its pointer is never `null`.
             ExprKind::Wrap(operand) => {
-                class_optional(&e.ty);
+                assert_class_optional(&e.ty);
                 self.expr(operand)
             }
             ExprKind::IfSome {
@@ -809,7 +809,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 then_block,
                 else_block,
             } => {
-                class_optional(&scrutinee.ty);
+                assert_class_optional(&scrutinee.ty);
                 // The scrutinee's reference moves into `bind`. On the `None` path it is `null`,
                 // so it holds nothing to release.
                 let object = self
@@ -820,8 +820,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .builder
                     .build_is_not_null(object, "some")
                     .expect("builder is positioned");
-                let then_block = (then_block, Some((*bind, object.into())));
-                self.if_expr(some, then_block, else_block.as_ref(), &e.ty)
+                let bind = Some((*bind, object.into()));
+                self.if_expr(some, then_block, bind, else_block.as_ref(), &e.ty)
             }
             _ => unreachable!("`expr` passes only optional nodes"),
         }
@@ -1105,7 +1105,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn if_expr(
         &mut self,
         cond: IntValue<'ctx>,
-        (then_block, bind): (&Block, Option<(LocalId, BasicValueEnum<'ctx>)>),
+        then_block: &Block,
+        bind: Option<(LocalId, BasicValueEnum<'ctx>)>,
         else_block: Option<&Block>,
         ty: &Type,
     ) -> Option<BasicValueEnum<'ctx>> {
@@ -1182,11 +1183,12 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 }
 
-/// Guards codegen against `i64?` and `bool?`, which the checker rejects until Task 22.
-fn class_optional(ty: &Type) {
+/// Asserts that an optional is a class optional: the checker rejects `i64?` and `bool?` until
+/// Task 22.
+fn assert_class_optional(ty: &Type) {
     assert!(
         ty.is_counted(),
-        "codegen for `i64?` and `bool?` lands in Task 22"
+        "checked: `i64?` and `bool?` are rejected until Task 22"
     );
 }
 

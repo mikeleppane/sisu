@@ -556,10 +556,9 @@ impl Parser<'_> {
 
     fn if_expr(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.expect(&TokenKind::If)?.span;
-        // `Ok` is a plain condition, `Err` the `let name = value` of an `if let`.
         let head = match self.let_binding()? {
-            Some(binding) => Err(binding),
-            None => Ok(self.expr()?),
+            Some((name, value)) => Head::Let(name, value),
+            None => Head::Cond(self.expr()?),
         };
         let then_block = self.block()?;
         let mut end = then_block.span;
@@ -583,12 +582,12 @@ impl Parser<'_> {
             None
         };
         let kind = match head {
-            Ok(cond) => ExprKind::If {
+            Head::Cond(cond) => ExprKind::If {
                 cond: Box::new(cond),
                 then_block,
                 else_block,
             },
-            Err((name, value)) => ExprKind::IfLet {
+            Head::Let(name, value) => ExprKind::IfLet {
                 name,
                 value: Box::new(value),
                 then_block,
@@ -600,6 +599,12 @@ impl Parser<'_> {
             kind,
         })
     }
+}
+
+/// What follows `if`: a condition, or the `let name = value` of an `if let`.
+enum Head {
+    Cond(Expr),
+    Let(Ident, Expr),
 }
 
 #[cfg(test)]
@@ -1077,12 +1082,18 @@ error: expected `=`, found end of line
 
     #[test]
     fn let_pattern_needs_a_name() {
-        for src in ["if let 1 = x {}", "while let 1 = x {}"] {
-            assert_eq!(
-                expr_err(src).0,
+        let rows = [
+            ("if let 1 = x {}", "expected a variable name, found `1`", 20),
+            (
+                "while let 1 = x {}",
                 "expected a variable name, found `1`",
-                "{src}"
-            );
+                23,
+            ),
+            ("if let n x {}", "expected `=`, found `x`", 22),
+            ("if let = n {}", "expected a variable name, found `=`", 20),
+        ];
+        for (src, message, col) in rows {
+            assert_eq!(expr_err(src), (message.to_owned(), 1, col), "{src}");
         }
     }
 
