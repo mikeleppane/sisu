@@ -18,6 +18,40 @@ fn emit_tokens() {
 }
 
 #[test]
+fn emit_tokens_names_the_class_and_optional_tokens() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(
+        dir.join("emit_new_tokens.sisu"),
+        "class None is self . ? ?. ??",
+    )
+    .expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_new_tokens.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let names: Vec<&str> = stdout
+        .lines()
+        .map(|l| l.split(' ').nth(1).expect("name column"))
+        .collect();
+    assert_eq!(
+        names[..8],
+        [
+            "Class",
+            "NoneKw",
+            "Is",
+            "SelfKw",
+            "Dot",
+            "Question",
+            "QuestionDot",
+            "QuestionQuestion"
+        ]
+    );
+}
+
+#[test]
 fn lexer_error_exits_1() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(dir.join("lexer_error_exits_1.sisu"), "a & b\n").expect("writes");

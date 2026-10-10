@@ -602,6 +602,16 @@ mod tests {
     }
 
     #[test]
+    fn new_tokens_are_quoted_in_errors() {
+        for tok in ["class", "None", "is", "self", ".", "?", "?.", "??"] {
+            assert_eq!(
+                expr_err(tok).0,
+                format!("expected an expression, found `{tok}`")
+            );
+        }
+    }
+
+    #[test]
     fn expression_shapes() {
         let rows = [
             ("1 + 2 * 3", "(+ 1 (* 2 3))"),
