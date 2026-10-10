@@ -13,7 +13,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | --- | --- | --- | --- |
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
-| 3 | Arrays and a byte type | A prime sieve prints correct answers | Planned |
+| 3 | Arrays and `u8` | A prime sieve prints correct answers | Planned |
 | 4 | Strings | A program reverses and compares strings | Planned |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
@@ -49,6 +49,13 @@ These came out of the milestone 2 design and are now part of its spec:
 - The checker builds a typed, desugared tree (`tir`) and codegen reads only
   that.
 - Reference counting (ADR 0005).
+
+### Decided in milestone 3
+
+- Sisu has no comprehensions. Milestone 9's iterator methods are lazy:
+  `.filter(...).map(...).sum()` builds no intermediate array. A
+  `filter_some`-style method on `[T?]`, which keeps the present elements,
+  comes with them.
 
 ## Beyond milestone 6
 
@@ -188,7 +195,7 @@ so it does not wait for the later goals:
 | --- | --- | --- |
 | 7 | Enums with payloads, `match` with destructuring and an exhaustiveness check, `if let` with enum patterns | The shape sample above runs; a non-exhaustive `match` is a compile error |
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
-| 9 | Closures and iterator methods (`map`, `filter`, `count`, `sum`) | `words.filter(w => w.len() > 3).count()` runs |
+| 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
 | 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`, string builder) | A word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
@@ -245,6 +252,16 @@ These do not make code nicer to write, so they wait:
 - A mid-level IR between `tir` and LLVM IR, for optimizations such as
   reference-count elision. `tir` itself only records what the checker
   understood; it does not optimize.
+- Handing over an array held in a field or an element. The last-use rule
+  moves only locals, so `self.cells = step(self.cells)` and
+  `grid[i] = f(grid[i])` share the array with the call, and the first write
+  inside it copies the whole array. The compiler could take the array out of
+  the place for the call and store the result back, with no new syntax, so
+  ADR 0007 still holds. While the place is empty, the call must not reach it
+  another way, for example through a shared object: that needs an
+  exclusivity check, as Swift enforces for `inout`. Until then, copy the
+  field into a local, set the field to `[]`, and assign it back. `inout`
+  parameters stay out (ADR 0007).
 - Link-time optimization with the runtime. Build `sisu-runtime` as LLVM
   bitcode and link it into the program's module, so LLVM can inline runtime
   calls such as the reference-count increment and decrement.
