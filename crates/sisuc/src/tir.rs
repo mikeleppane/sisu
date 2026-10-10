@@ -23,6 +23,8 @@ pub(crate) enum Type {
     Unit,
     Never,
     Class(ClassId),
+    /// Holds `I64`, `Bool` or `Class`.
+    Optional(Box<Type>),
 }
 
 /// `==` and `!=` are `ExprKind::Equal`, comparisons are `ExprKind::Compare`.
@@ -109,6 +111,7 @@ pub(crate) struct Expr {
 pub(crate) enum ExprKind {
     Int(i64),
     Bool(bool),
+    None,
     Local(LocalId),
     Call {
         func: FuncId,
@@ -123,6 +126,8 @@ pub(crate) enum ExprKind {
         base: Box<Expr>,
         index: usize,
     },
+    /// A `T` where a `T?` is expected.
+    Wrap(Box<Expr>),
     Print(Box<Expr>),
     Unary {
         op: UnaryOp,
@@ -147,6 +152,13 @@ pub(crate) enum ExprKind {
         then_block: Block,
         else_block: Option<Block>,
     },
+    /// `if let bind = scrutinee { then } else { else }`; `bind` is in scope in `then_block`.
+    IfSome {
+        bind: LocalId,
+        scrutinee: Box<Expr>,
+        then_block: Block,
+        else_block: Option<Block>,
+    },
     Loop(Block),
     Break,
     Continue,
@@ -164,6 +176,7 @@ impl Type {
     pub(crate) fn counted_class(&self) -> Option<ClassId> {
         match self {
             Type::Class(id) => Some(*id),
+            Type::Optional(payload) => payload.counted_class(),
             _ => None,
         }
     }
@@ -173,13 +186,14 @@ impl Expr {
     /// Whether a `Return`, `Break` or `Continue` sits anywhere inside, a nested loop included.
     pub(crate) fn exits(&self) -> bool {
         match &self.kind {
-            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Local(_) => false,
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Local(_) => false,
             ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
             ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
                 args.iter().any(Expr::exits)
             }
             ExprKind::Compare { operands, .. } => operands.iter().any(Expr::exits),
             ExprKind::Field { base: operand, .. }
+            | ExprKind::Wrap(operand)
             | ExprKind::Print(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
             ExprKind::Binary { lhs, rhs, .. } | ExprKind::Equal { lhs, rhs, .. } => {
@@ -191,6 +205,16 @@ impl Expr {
                 else_block,
             } => {
                 cond.exits() || then_block.exits() || else_block.as_ref().is_some_and(Block::exits)
+            }
+            ExprKind::IfSome {
+                scrutinee,
+                then_block,
+                else_block,
+                ..
+            } => {
+                scrutinee.exits()
+                    || then_block.exits()
+                    || else_block.as_ref().is_some_and(Block::exits)
             }
             ExprKind::Loop(block) | ExprKind::Block(block) => block.exits(),
         }
@@ -223,6 +247,7 @@ impl fmt::Display for Type {
             Type::Never => "never",
             // A class's name lives in the program: `Program::type_name` prints it.
             Type::Class(id) => return write!(f, "class#{}", id.0),
+            Type::Optional(payload) => return write!(f, "{payload}?"),
         })
     }
 }
@@ -300,6 +325,7 @@ impl Printer<'_> {
         match &expr.kind {
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
+            ExprKind::None => f.write_str("None"),
             ExprKind::Local(id) => self.local(f, *id),
             ExprKind::Call { func, args } => {
                 write!(f, "(call {}", self.program.functions[func.0].name)?;
@@ -312,6 +338,7 @@ impl Printer<'_> {
                 f.write_str(")")
             }
             ExprKind::Field { base, index } => self.field(f, base, *index),
+            ExprKind::Wrap(operand) => self.unary(f, "wrap", operand),
             ExprKind::Print(operand) => self.unary(f, "print", operand),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
@@ -337,13 +364,19 @@ impl Printer<'_> {
             } => {
                 f.write_str("(if ")?;
                 self.expr(f, cond)?;
+                self.branches(f, then_block, else_block.as_ref())
+            }
+            ExprKind::IfSome {
+                bind,
+                scrutinee,
+                then_block,
+                else_block,
+            } => {
+                f.write_str("(if-some ")?;
+                self.local(f, *bind)?;
                 f.write_str(" ")?;
-                self.block(f, then_block)?;
-                if let Some(else_block) = else_block {
-                    f.write_str(" ")?;
-                    self.block(f, else_block)?;
-                }
-                f.write_str(")")
+                self.expr(f, scrutinee)?;
+                self.branches(f, then_block, else_block.as_ref())
             }
             ExprKind::Loop(body) => {
                 f.write_str("(loop ")?;
@@ -356,6 +389,20 @@ impl Printer<'_> {
             ExprKind::Return(Some(value)) => self.unary(f, "return", value),
             ExprKind::Block(block) => self.block(f, block),
         }
+    }
+
+    /// The blocks of an `if` or `if-some`, each after a space, and its closing `)`.
+    fn branches(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        then_block: &Block,
+        else_block: Option<&Block>,
+    ) -> fmt::Result {
+        for block in std::iter::once(then_block).chain(else_block) {
+            f.write_str(" ")?;
+            self.block(f, block)?;
+        }
+        f.write_str(")")
     }
 
     /// `(. base name)`.
@@ -398,10 +445,20 @@ impl Printer<'_> {
 }
 
 impl Program {
+    /// The field drop follows in a loop: the last, in declaration order, whose type is
+    /// `class` or `class?`.
+    pub(crate) fn chain_field(&self, class: ClassId) -> Option<usize> {
+        let own = Type::Class(class);
+        self.classes[class.0].fields.iter().rposition(|field| {
+            field.ty == own || matches!(&field.ty, Type::Optional(payload) if **payload == own)
+        })
+    }
+
     /// A type as `--emit tir` prints it: a class by its name.
     fn type_name(&self, ty: &Type) -> String {
         match ty {
             Type::Class(id) => self.classes[id.0].name.clone(),
+            Type::Optional(payload) => format!("{}?", self.type_name(payload)),
             ty => ty.to_string(),
         }
     }
@@ -693,6 +750,50 @@ mod tests {
             ty: Type::I64,
         };
         expr(ExprKind::Block(block), Type::I64)
+    }
+
+    #[test]
+    fn chain_field_is_the_last_own_type_field() {
+        let field = |name: &str, ty: Type| Field {
+            name: name.into(),
+            ty,
+            mutable: false,
+        };
+        let class = |name: &str, fields: Vec<Field>| Class {
+            name: name.into(),
+            fields,
+        };
+        let optional = |id: usize| Type::Optional(Box::new(Type::Class(ClassId(id))));
+        let program = Program {
+            classes: vec![
+                class(
+                    "Node",
+                    vec![field("value", Type::I64), field("next", optional(0))],
+                ),
+                class(
+                    "Tree",
+                    vec![
+                        field("left", optional(1)),
+                        field("right", optional(1)),
+                        field("v", Type::I64),
+                    ],
+                ),
+                class(
+                    "Rev",
+                    vec![
+                        field("next", optional(2)),
+                        field("value", Type::I64),
+                        field("tag", Type::Class(ClassId(3))),
+                    ],
+                ),
+                class("Tag", vec![]),
+                class("A", vec![field("b", optional(5))]),
+                class("B", vec![field("a", optional(4))]),
+            ],
+            functions: vec![],
+        };
+        let chains = [0, 1, 2, 4].map(|id| program.chain_field(ClassId(id)));
+        assert_eq!(chains, [Some(1), Some(1), Some(0), None]);
     }
 
     #[test]

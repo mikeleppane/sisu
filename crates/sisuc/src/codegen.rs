@@ -199,7 +199,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
-            Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
+            // A class optional is the object's pointer, `null` for `None`.
+            Type::Class(_) | Type::Optional(_) => {
+                assert_class_optional(ty);
+                Some(self.context.ptr_type(AddressSpace::default()).into())
+            }
         }
     }
 
@@ -247,7 +251,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Defines the counting helpers, which take their object without taking ownership:
     /// `@sisu_rc.retain` adds 1 to its count; `@sisu_rc.release.<C>` subtracts 1 and at 0
     /// calls `@sisu_rc.drop.<C>`, which releases each counted field, then frees the object.
-    /// Both return at once on `null`.
+    /// Both return at once on `null`. Drop does not release the chain field: it loads it,
+    /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
     fn define_helpers(&self, program: &Program, free: FunctionValue<'ctx>) {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let (object, done) = self.helper_entry(self.rc_retain);
@@ -260,33 +265,44 @@ impl<'ctx> Codegen<'ctx, '_> {
                 None,
             );
             let (object, done) = self.helper_entry(self.releases[i]);
-            let count = self.add_to_count(object, -1);
-            let zero = self.int_compare(
-                IntPredicate::EQ,
-                count,
-                self.context.i64_type().const_zero(),
-            );
             let drop_block = self.context.append_basic_block(self.releases[i], "drop");
-            self.builder
-                .build_conditional_branch(zero, drop_block, done)
-                .expect("builder is positioned");
+            self.decrement(object, drop_block, done);
             self.builder.position_at_end(drop_block);
             self.call(drop, &[object.into()]);
             self.branch_to(done);
 
-            self.builder
-                .position_at_end(self.context.append_basic_block(drop, "entry"));
-            let object = param(drop);
+            let entry = self.context.append_basic_block(drop, "entry");
+            self.builder.position_at_end(entry);
+            let chain = program.chain_field(ClassId(i));
+            // With a chain field, the body is a loop over the chain's objects, in one frame.
+            let looped = chain.map(|_| {
+                let body = self.context.append_basic_block(drop, "loop");
+                self.branch_to(body);
+                self.builder.position_at_end(body);
+                let object = self
+                    .builder
+                    .build_phi(ptr_type, "object")
+                    .expect("builder is positioned");
+                object.add_incoming(&[(&param(drop), entry)]);
+                (body, object)
+            });
+            let object = looped.map_or_else(
+                || param(drop),
+                |(_, phi)| phi.as_basic_value().into_pointer_value(),
+            );
             let ty = Type::Class(ClassId(i));
+            let load_field = |index| {
+                self.builder
+                    .build_load(ptr_type, self.field_ptr(&ty, object, index), "field")
+                    .expect("builder is positioned")
+            };
             for (index, field) in class.fields.iter().enumerate() {
-                if field.ty.is_counted() {
-                    let value = self
-                        .builder
-                        .build_load(ptr_type, self.field_ptr(&ty, object, index), "field")
-                        .expect("builder is positioned");
-                    self.release(value, &field.ty);
+                if field.ty.is_counted() && chain != Some(index) {
+                    self.release(load_field(index), &field.ty);
                 }
             }
+            // Loaded before the free, which ends the object.
+            let next = chain.map(|index| load_field(index).into_pointer_value());
             let (size, align) = self.class_layout(ClassId(i));
             let i64_type = self.context.i64_type();
             self.call(
@@ -297,10 +313,44 @@ impl<'ctx> Codegen<'ctx, '_> {
                     i64_type.const_int(u64::from(align), false).into(),
                 ],
             );
+            if let (Some(next), Some((body, phi))) = (next, looped) {
+                let done = self.context.append_basic_block(drop, "done");
+                let counted = self.context.append_basic_block(drop, "next");
+                let null = self
+                    .builder
+                    .build_is_null(next, "null")
+                    .expect("builder is positioned");
+                self.builder
+                    .build_conditional_branch(null, done, counted)
+                    .expect("builder is positioned");
+                self.builder.position_at_end(counted);
+                self.decrement(next, body, done);
+                phi.add_incoming(&[(&next, counted)]);
+                self.builder.position_at_end(done);
+            }
             self.builder
                 .build_return(None)
                 .expect("builder is positioned");
         }
+    }
+
+    /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to
+    /// `otherwise`.
+    fn decrement(
+        &self,
+        object: PointerValue<'ctx>,
+        at_zero: BasicBlock<'ctx>,
+        otherwise: BasicBlock<'ctx>,
+    ) {
+        let count = self.add_to_count(object, -1);
+        let zero = self.int_compare(
+            IntPredicate::EQ,
+            count,
+            self.context.i64_type().const_zero(),
+        );
+        self.builder
+            .build_conditional_branch(zero, at_zero, otherwise)
+            .expect("builder is positioned");
     }
 
     /// Starts helper `function`, which returns at once when its object is `null`. Leaves the
@@ -477,7 +527,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         for (p, v) in f.params.iter().zip(function.get_param_iter()) {
             self.locals[p.0] = Some(Slot::Value(v));
         }
-        let value = self.block(&f.body);
+        let value = self.block(&f.body, None);
         if !self.terminated() {
             // The declared return type picks the `ret`: a unit function discards any body value.
             let value = if self.llvm_type(&f.ret).is_some() {
@@ -536,9 +586,17 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// The block's value, `None` for `unit` or `never`. A block that falls through releases
-    /// the locals it bound after evaluating its value; either way they leave the stack.
-    fn block(&mut self, block: &Block) -> Option<BasicValueEnum<'ctx>> {
+    /// the locals it bound after evaluating its value; either way they leave the stack. `bind`
+    /// is an `IfSome`'s binding, which the block owns like its own locals.
+    fn block(
+        &mut self,
+        block: &Block,
+        bind: Option<(LocalId, BasicValueEnum<'ctx>)>,
+    ) -> Option<BasicValueEnum<'ctx>> {
         let start = self.live.len();
+        if let Some((local, value)) = bind {
+            self.bind(local, value);
+        }
         let mut value = None;
         // A `never` statement ends the block; what follows is unreachable.
         for stmt in &block.stmts {
@@ -562,15 +620,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { local, init } => {
-                let Some(value) = self.expr(init) else {
-                    return;
-                };
-                match self.locals[local.0] {
-                    Some(Slot::Alloca(ptr, _)) => self.store(ptr, value),
-                    _ => self.locals[local.0] = Some(Slot::Value(value)),
-                }
-                if self.types[local.0].is_counted() {
-                    self.live.push(*local);
+                if let Some(value) = self.expr(init) {
+                    self.bind(*local, value);
                 }
             }
             Stmt::Assign {
@@ -613,6 +664,17 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let value = self.expr(e);
                 self.discard(value, &e.ty);
             }
+        }
+    }
+
+    /// Gives `local` the owned `value`; a counted local joins the live-locals stack.
+    fn bind(&mut self, local: LocalId, value: BasicValueEnum<'ctx>) {
+        match self.locals[local.0] {
+            Some(Slot::Alloca(ptr, _)) => self.store(ptr, value),
+            _ => self.locals[local.0] = Some(Slot::Value(value)),
+        }
+        if self.types[local.0].is_counted() {
+            self.live.push(local);
         }
     }
 
@@ -684,7 +746,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 cond,
                 then_block,
                 else_block,
-            } => return self.if_expr(cond, then_block, else_block.as_ref(), &e.ty),
+            } => {
+                let cond = self.value(cond);
+                return self.if_expr(cond, then_block, None, else_block.as_ref(), &e.ty);
+            }
             ExprKind::Loop(body) => {
                 self.loop_expr(body);
                 return None;
@@ -705,7 +770,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
             ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
-            ExprKind::Block(block) => return self.block(block),
+            ExprKind::Block(block) => return self.block(block, None),
+            ExprKind::None | ExprKind::Wrap(_) | ExprKind::IfSome { .. } => {
+                return self.optional(e);
+            }
             ExprKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| self.expr(e));
                 // The checker rejects a `never` return value; this keeps codegen safe anyway.
@@ -719,6 +787,44 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
         };
         Some(value.into())
+    }
+
+    /// `None`, `Wrap` and `IfSome`, on class optionals.
+    fn optional(&mut self, e: &Expr) -> Option<BasicValueEnum<'ctx>> {
+        match &e.kind {
+            ExprKind::None => {
+                let ty = self
+                    .llvm_type(&e.ty)
+                    .expect("checked: `None` is an optional");
+                Some(ty.into_pointer_type().const_null().into())
+            }
+            // A class needs no wrapping: its pointer is never `null`.
+            ExprKind::Wrap(operand) => {
+                assert_class_optional(&e.ty);
+                self.expr(operand)
+            }
+            ExprKind::IfSome {
+                bind,
+                scrutinee,
+                then_block,
+                else_block,
+            } => {
+                assert_class_optional(&scrutinee.ty);
+                // The scrutinee's reference moves into `bind`. On the `None` path it is `null`,
+                // so it holds nothing to release.
+                let object = self
+                    .expr(scrutinee)
+                    .expect("checked: the scrutinee is an optional")
+                    .into_pointer_value();
+                let some = self
+                    .builder
+                    .build_is_not_null(object, "some")
+                    .expect("builder is positioned");
+                let bind = Some((*bind, object.into()));
+                self.if_expr(some, then_block, bind, else_block.as_ref(), &e.ty)
+            }
+            _ => unreachable!("`expr` passes only optional nodes"),
+        }
     }
 
     /// An `alloca` at the start of the function's entry block, wherever the `var` sits:
@@ -765,7 +871,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.branch_to(start);
         self.builder.position_at_end(start);
         self.loops.push(frame);
-        let value = self.block(body);
+        let value = self.block(body, None);
         self.loops.pop();
         if !self.terminated() {
             self.discard(value, &body.ty);
@@ -993,17 +1099,17 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("builder is positioned")
     }
 
-    /// `if`/`else`. The merge block exists only if a branch falls through; its `phi`, built
-    /// when `ty` has a value, takes one edge per such branch, from the block where that
-    /// branch ended.
+    /// `if`/`else` on `cond`, and `IfSome` with the binding its then block starts with. The
+    /// merge block exists only if a branch falls through; its `phi`, built when `ty` has a
+    /// value, takes one edge per such branch, from the block where that branch ended.
     fn if_expr(
         &mut self,
-        cond: &Expr,
+        cond: IntValue<'ctx>,
         then_block: &Block,
+        bind: Option<(LocalId, BasicValueEnum<'ctx>)>,
         else_block: Option<&Block>,
         ty: &Type,
     ) -> Option<BasicValueEnum<'ctx>> {
-        let cond = self.value(cond);
         let function = self.current_function();
         let then_start = self.context.append_basic_block(function, "then");
         let else_start = self.context.append_basic_block(function, "else");
@@ -1013,7 +1119,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         // A `unit` `if` discards its branches' values.
         let discards = *ty == Type::Unit;
         self.builder.position_at_end(then_start);
-        let then_value = self.block(then_block);
+        let then_value = self.block(then_block, bind);
         if discards && !self.terminated() {
             self.discard(then_value, &then_block.ty);
         }
@@ -1028,7 +1134,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             return None;
         };
-        let else_value = self.block(else_block);
+        let else_value = self.block(else_block, None);
         if discards && !self.terminated() {
             self.discard(else_value, &else_block.ty);
         }
@@ -1075,6 +1181,15 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
         phi.as_basic_value()
     }
+}
+
+/// Asserts that an optional is a class optional: the checker rejects `i64?` and `bool?` until
+/// Task 22.
+fn assert_class_optional(ty: &Type) {
+    assert!(
+        ty.is_counted(),
+        "checked: `i64?` and `bool?` are rejected until Task 22"
+    );
 }
 
 /// The single parameter of a counting helper: the object.
@@ -1447,6 +1562,27 @@ mod tests {
         ] {
             assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
         }
+    }
+
+    #[test]
+    fn drop_loops_on_the_chain_field() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class Node {\n    let value: i64\n    let next: Node?\n}\nclass Tree {\n    let left: Tree?\n    let right: Tree?\n    let v: i64\n}\nfn main() {}",
+        )
+        .print_to_string()
+        .to_string();
+        let node = function_body(&ir, "define void @sisu_rc.drop.Node(ptr");
+        assert!(node.contains("phi ptr"), "no loop in\n{node}");
+        assert_eq!(node.matches("@sisu_free(").count(), 1, "{node}");
+        for unwanted in ["@sisu_rc.drop.Node(", "@sisu_rc.release.Node("] {
+            assert!(!node.contains(unwanted), "{unwanted:?} in\n{node}");
+        }
+        // `right` is the chain field; only `left` is released, by recursion.
+        let tree = function_body(&ir, "define void @sisu_rc.drop.Tree(ptr");
+        assert_eq!(tree.matches("@sisu_rc.release.Tree(").count(), 1, "{tree}");
+        assert!(!tree.contains("@sisu_rc.drop.Tree("), "{tree}");
     }
 
     #[test]
