@@ -1,0 +1,182 @@
+// Each function is one case of unwrapping a class optional with `if let` and `while let`.
+// Valgrind checks that every object is freed exactly once on every path, early exits included.
+class E {}
+
+class Node {
+    let value: i64
+    var next: Node?
+}
+
+class Tree {
+    let value: i64
+    var left: Tree?
+    var right: Tree?
+
+    // Each store releases the subtree it replaces.
+    fn regrow(self, n: i64) {
+        var i = 0
+        while i < n {
+            i += 1
+            self.left = Tree(value: i, left: None, right: None)
+        }
+    }
+}
+
+// The list n, n - 1, ..., 1.
+fn list(n: i64) -> Node? {
+    var head: Node? = None
+    var i = 0
+    while i < n {
+        i += 1
+        head = Node(value: i, next: head)
+    }
+    head
+}
+
+fn sum(nodes: Node?) -> i64 {
+    var total = 0
+    var node = nodes
+    while let n = node {
+        total += n.value
+        node = n.next
+    }
+    total
+}
+
+// `return` inside `if let` releases the binding, the locals around it and the parameter.
+fn return_in_if_let(nodes: Node?) -> i64 {
+    let a = E()
+    if let n = nodes {
+        let b = E()
+        return n.value
+    }
+    0
+}
+
+fn return_in_while_let(nodes: Node?) -> i64 {
+    let a = E()
+    var node = nodes
+    while let n = node {
+        let b = E()
+        if n.value == 2 { return n.value * 10 }
+        node = n.next
+    }
+    0
+}
+
+fn break_in_while_let(nodes: Node?) {
+    let a = E()
+    var node = nodes
+    var seen = 0
+    while let n = node {
+        let b = E()
+        seen += 1
+        if n.value == 2 { break }
+        node = n.next
+    }
+    print(seen)
+}
+
+fn continue_in_while_let(nodes: Node?) {
+    let a = E()
+    var node = nodes
+    var odd = 0
+    while let n = node {
+        let b = E()
+        node = n.next
+        if n.value % 2 == 0 { continue }
+        odd += n.value
+    }
+    print(odd)
+}
+
+// `break` and `continue` inside an `if let` in a `while` loop.
+fn exits_in_if_let(nodes: Node?) {
+    let a = E()
+    var i = 0
+    while true {
+        let b = E()
+        i += 1
+        if let n = nodes {
+            let c = E()
+            if i == 1 { continue }
+            if i == n.value { break }
+        }
+    }
+    print(i)
+}
+
+// The inner loop's `break` releases its own binding, not the outer one.
+fn nested(nodes: Node?) -> i64 {
+    var total = 0
+    var outer = nodes
+    while let a = outer {
+        var inner = nodes
+        while let b = inner {
+            if b.value < a.value { break }
+            total += 1
+            inner = b.next
+        }
+        outer = a.next
+    }
+    total
+}
+
+// The unwrapped object leaves the function: by `return`, and as the block's value.
+fn first(nodes: Node?) -> Node {
+    if let n = nodes { return n }
+    Node(value: 0, next: None)
+}
+
+fn first_or(nodes: Node?, other: Node) -> Node {
+    if let n = nodes { n } else { other }
+}
+
+fn shadow(node: Node?) -> i64 {
+    if let node = node { node.value } else { -1 }
+}
+
+// An `if let` whose value is optional.
+fn second(nodes: Node?) -> Node? {
+    if let n = nodes { n.next } else { None }
+}
+
+fn regrow() {
+    let t = Tree(value: 0, left: None, right: None)
+    t.regrow(3)
+    t.right = Tree(value: 9, left: t.left, right: None)
+    t.regrow(2)
+    if let l = t.left { print(l.value) }
+    if let r = t.right {
+        if let rl = r.left { print(rl.value) }
+    }
+}
+
+// The scrutinee is a call's result: its reference moves into the binding, and a `None` needs
+// no release.
+fn temporaries() {
+    if let n = list(2) { print(n.value) } else { print(0) }
+    if let n = list(0) { print(n.value) } else { print(0) }
+}
+
+fn main() {
+    print(sum(list(4)))
+    print(return_in_if_let(list(3)))
+    print(return_in_if_let(None))
+    print(return_in_while_let(list(3)))
+    print(return_in_while_let(list(1)))
+    break_in_while_let(list(3))
+    continue_in_while_let(list(5))
+    exits_in_if_let(list(3))
+    print(nested(list(3)))
+    print(first(list(2)).value)
+    print(first(None).value)
+    print(first_or(list(3), Node(value: 7, next: None)).value)
+    print(first_or(None, Node(value: 7, next: None)).value)
+    print(shadow(list(4)))
+    print(shadow(None))
+    print(sum(second(list(3))))
+    print(sum(second(None)))
+    regrow()
+    temporaries()
+}

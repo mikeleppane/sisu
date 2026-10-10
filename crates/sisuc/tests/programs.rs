@@ -173,6 +173,11 @@ fn field_order() {
     assert_prints_out_file("field_order");
 }
 
+#[test]
+fn unwrap() {
+    assert_prints_out_file("unwrap");
+}
+
 /// Each panicking program with its expected stdout and panic line.
 const PANICS: [(&str, &str, &str); 3] = [
     (
@@ -269,6 +274,27 @@ fn panic_cases() {
             &format!("sisu: panic at {name}.sisu:{position_and_message}\n"),
         );
     }
+}
+
+/// Proves the harness catches a leak: an object that refers to itself is never freed.
+/// Building the cycle in a callee keeps the pointer out of `main`'s registers.
+#[test]
+fn valgrind_reports_a_cycle() {
+    let exe = compile_tmp(
+        "cycle",
+        "class Node {\n    var next: Node?\n}\n\nfn leak() {\n    let a = Node(next: None)\n    a.next = a\n}\n\nfn main() {\n    leak()\n    print(1)\n}\n",
+    );
+    let out = Command::new(&exe).output().expect("the program starts");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+    let checked = valgrind(&exe);
+    let stderr = String::from_utf8_lossy(&checked.stderr);
+    assert_eq!(checked.status.code(), Some(1), "{stderr}");
+    // A loss record, not the summary line, which also prints `definitely lost: 0 bytes`.
+    assert!(
+        stderr.contains("are definitely lost") || stderr.contains("are indirectly lost"),
+        "{stderr}"
+    );
 }
 
 #[test]
