@@ -1107,6 +1107,21 @@ mod tests {
         assert!(main.value.is_none());
     }
 
+    /// A `while` lowers to an expression statement, but it is not an expression in `ast`, so
+    /// a block that ends in one has no value.
+    #[test]
+    fn loop_tail_is_not_the_block_value() {
+        let (program, ds) =
+            checked("fn main() {\n    var i = 0\n    while i < 3 {\n        i += 1\n    }\n}");
+        assert!(ds.is_empty(), "{ds:?}");
+        let main = &program.expect("no errors").functions[0].body;
+        assert!(matches!(
+            main.stmts.as_slice(),
+            [tir::Stmt::Let { .. }, tir::Stmt::Expr(_)]
+        ));
+        assert!(main.value.is_none());
+    }
+
     #[test]
     fn lowers_while_to_loop() {
         assert_eq!(
@@ -1145,6 +1160,14 @@ mod tests {
     fn break_after_loop() {
         errors(
             "fn main() {\n    while true {}\n    break\n}",
+            &[("`break` outside a loop", (3, 5))],
+        );
+    }
+
+    #[test]
+    fn break_after_while_let() {
+        errors(
+            "fn f(n: i64?) {\n    while let x = n {}\n    break\n}\nfn main() {}",
             &[("`break` outside a loop", (3, 5))],
         );
     }
@@ -1793,6 +1816,32 @@ mod tests {
         );
     }
 
+    /// A class that only points into a cycle, declared first, does not hide the cycle.
+    #[test]
+    fn never_constructed_after_a_class_that_points_in() {
+        expect_error(
+            "class D {\n    let a: A\n}\nclass A {\n    let next: A\n}\nfn main() {}",
+            "`A` can never be constructed: field `next` needs a `A`",
+            (5, 9, "next"),
+            None,
+            &[],
+            Some("make it optional: `A?`"),
+        );
+    }
+
+    /// The field reported is the one into the cycle, not the first field of a class type.
+    #[test]
+    fn never_constructed_names_the_field_into_the_cycle() {
+        expect_error(
+            "class Tag {}\nclass A {\n    let tag: Tag\n    let next: A\n}\nfn main() {}",
+            "`A` can never be constructed: field `next` needs a `A`",
+            (4, 9, "next"),
+            None,
+            &[],
+            Some("make it optional: `A?`"),
+        );
+    }
+
     #[test]
     fn constructor_missing_label() {
         expect_error(
@@ -1867,6 +1916,34 @@ mod tests {
             "fn f(a: i64) {}\nfn main() { f(a: 1) }",
             "labels on arguments come in milestone 10",
             (2, 15),
+        );
+    }
+
+    /// A labeled argument fails the call: it is `Error`, so a later use draws nothing.
+    #[test]
+    fn labeled_call_is_error() {
+        error(
+            "fn f(a: i64) -> i64 { a }\nfn main() {\n    print(f(a: 1) + true)\n}",
+            "labels on arguments come in milestone 10",
+            (3, 13),
+        );
+    }
+
+    /// A constructor whose own rule fails is `Error`; one with an `Error` argument keeps its
+    /// class, so a later use is still checked.
+    #[test]
+    fn constructor_is_error_only_when_its_rule_fails() {
+        let class = "class P {\n    let x: i64\n    let y: i64\n}\n";
+        errors(
+            &format!("{class}fn main() {{\n    print(P(x: 1).x + true)\n}}"),
+            &[("missing field `y`", (6, 11))],
+        );
+        errors(
+            &format!("{class}fn main() {{\n    print(P(x: nope, y: 1).x + true)\n}}"),
+            &[
+                ("cannot find `nope` in this scope", (6, 16)),
+                ("expected `i64`, found `bool`", (6, 32)),
+            ],
         );
     }
 
@@ -2325,6 +2402,18 @@ mod tests {
     }
 
     #[test]
+    fn optional_self_field_is_named_by_its_path() {
+        expect_error(
+            "class N {\n    let next: N?\n    let v: i64\n    fn m(self) -> i64 { self.next.v }\n}\nfn main() {}",
+            "`self.next` may be `None`",
+            (4, 25, "self.next"),
+            None,
+            &[],
+            Some("use `?.`, or unwrap it with `if let`"),
+        );
+    }
+
+    #[test]
     fn if_let_needs_optional() {
         error(
             "fn main() {\n    if let x = 5 {}\n}",
@@ -2487,6 +2576,42 @@ mod tests {
                 ("expected `bool`, found `None`", (2, 30)),
                 ("expected `bool`, found `None`", (2, 44)),
             ],
+        );
+    }
+
+    /// An `if let` whose value is not optional fails: it is `Error`, so a later use draws
+    /// nothing.
+    #[test]
+    fn rejected_if_let_scrutinee_reports_once() {
+        error(
+            "fn main() {\n    let x = if let y = 5 { 1 } else { 2 }\n    print(x && true)\n}",
+            "`if let` needs an optional; this is `i64`",
+            (2, 24),
+        );
+    }
+
+    /// Branches that are `Error` by their own mistakes did not reject the type the `!` passed
+    /// down, so the `!` is still `bool`, and a later use is checked against it.
+    #[test]
+    fn error_branches_without_mismatch_keep_the_rule_type() {
+        errors(
+            "fn f(c: bool) {\n    let x = !(if c { nope } else { nope })\n    print(x + 1)\n}\nfn main() {}",
+            &[
+                ("cannot find `nope` in this scope", (2, 22)),
+                ("cannot find `nope` in this scope", (2, 36)),
+                ("expected `i64`, found `bool`", (3, 11)),
+            ],
+        );
+    }
+
+    /// A body whose tail failed keeps its type, so a `T?` function still wraps its `T` value
+    /// and nothing more is reported.
+    #[test]
+    fn failed_tail_of_an_optional_body_reports_once() {
+        error(
+            "fn f(c: bool) -> i64? {\n    let a = 1\n    if c { nope } else { a }\n}\nfn main() {}",
+            "cannot find `nope` in this scope",
+            (3, 12),
         );
     }
 
