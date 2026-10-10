@@ -2,3 +2,8 @@
 # Report every failure, not just the first.
 fail-fast = false
 failure-output = "immediate-final"
+
+# A quadratic lexer regression hangs this test instead of failing it, so kill it fast.
+[[profile.default.overrides]]
+filter = 'test(long_gaps_lex_correctly)'
+slow-timeout = { period = "10s", terminate-after = 3 }

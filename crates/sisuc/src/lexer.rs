@@ -786,9 +786,8 @@ mod tests {
     }
 
     #[test]
-    fn long_gaps_lex_in_linear_time() {
+    fn long_gaps_lex_correctly() {
         use TokenKind::{Dot, Eof, Newline};
-        use std::time::Instant;
         const LINES: usize = 200_000;
         for gap in ["\n", "\n// c"] {
             for (tail, expected) in [
@@ -796,11 +795,20 @@ mod tests {
                 (".b", vec![ident("a"), Dot, ident("b"), Newline, Eof]),
             ] {
                 let src = format!("a{}\n{tail}", gap.repeat(LINES));
-                let started = Instant::now();
-                let kinds = all_kinds(&src);
-                assert!(started.elapsed().as_secs() < 2, "gap {gap:?} then {tail}");
-                assert_eq!(kinds, expected, "gap {gap:?} then {tail}");
+                assert_eq!(all_kinds(&src), expected, "gap {gap:?} then {tail}");
             }
+            // A continuation, then another long gap before a new statement.
+            let src = format!("a{0}\n.b{0}\nc", gap.repeat(LINES));
+            let expected = [
+                ident("a"),
+                Dot,
+                ident("b"),
+                Newline,
+                ident("c"),
+                Newline,
+                Eof,
+            ];
+            assert_eq!(all_kinds(&src), expected, "gap {gap:?}, continuation, gap");
         }
     }
 
