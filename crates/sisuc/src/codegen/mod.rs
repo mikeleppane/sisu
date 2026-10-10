@@ -1,10 +1,15 @@
 //! Builds LLVM IR through inkwell and writes it out as a native object file.
 
+mod arith;
+mod rc;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
-use inkwell::intrinsics::Intrinsic;
 use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
@@ -17,10 +22,11 @@ use inkwell::values::{
 };
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
+use self::rc::Helper;
 use crate::diagnostic::{Span, line_col};
 use crate::tir::{
-    BinaryOp, Block, Class, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program,
-    Stmt, Type, UnaryOp,
+    Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt, Type,
+    UnaryOp,
 };
 
 /// Compiles a program that passed `check` into an LLVM module for `machine`.
@@ -57,24 +63,12 @@ pub(crate) fn compile<'ctx>(
         void.fn_type(&[ptr_type.into(), i64_type.into(), i64_type.into()], false),
         None,
     );
-    // The counting helpers each take one object; see `define_helpers`.
-    let helper =
-        |name: &str| module.add_function(name, void.fn_type(&[ptr_type.into()], false), None);
-    let rc_retain = helper("sisu_rc.retain");
-    let releases = program
-        .classes
-        .iter()
-        .map(|class| helper(&format!("sisu_rc.release.{}", class.name)))
-        .collect();
-    // Every eq helper exists before any body is set, so a field can compare any class.
-    let eq_type = context
-        .bool_type()
-        .fn_type(&[ptr_type.into(), ptr_type.into()], false);
-    let equals = program
-        .classes
-        .iter()
-        .map(|class| module.add_function(&format!("sisu_rc.eq.{}", class.name), eq_type, None))
-        .collect();
+    // `@sisu_rc.retain(object)`; see `define_helpers`.
+    let rc_retain = module.add_function(
+        "sisu_rc.retain",
+        void.fn_type(&[ptr_type.into()], false),
+        None,
+    );
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
     // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
@@ -108,9 +102,11 @@ pub(crate) fn compile<'ctx>(
         print_bool,
         panic,
         alloc,
+        free,
         rc_retain,
-        releases,
-        equals,
+        program,
+        helpers: RefCell::new(HashMap::new()),
+        pending: RefCell::new(Vec::new()),
         target_data,
         path,
         source,
@@ -132,7 +128,12 @@ pub(crate) fn compile<'ctx>(
             .collect();
         ty.set_body(&body, false);
     }
-    codegen.define_helpers(program, free);
+    // Every class gets its helpers, used or not, as in milestone 2.
+    for helper in [Helper::Release, Helper::Eq] {
+        for id in 0..program.classes.len() {
+            codegen.helper(helper, &Type::Class(ClassId(id)));
+        }
+    }
     // Declare every function first so that calls can refer to functions defined later.
     for f in &program.functions {
         codegen.declare(f);
@@ -142,6 +143,7 @@ pub(crate) fn compile<'ctx>(
         codegen.define(f, function);
     }
     codegen.c_main();
+    codegen.define_helpers();
     codegen.module
 }
 
@@ -175,11 +177,14 @@ struct Codegen<'ctx, 'src> {
     print_bool: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
     alloc: FunctionValue<'ctx>,
-    /// `@sisu_rc.retain`, and `@sisu_rc.release.<Class>` indexed by `ClassId`.
+    free: FunctionValue<'ctx>,
+    /// `@sisu_rc.retain`, which every counted type shares.
     rc_retain: FunctionValue<'ctx>,
-    releases: Vec<FunctionValue<'ctx>>,
-    /// `@sisu_rc.eq.<Class>`, indexed by `ClassId`.
-    equals: Vec<FunctionValue<'ctx>>,
+    program: &'src Program,
+    /// The helpers declared so far, by kind and counted type; see `rc::helper`.
+    helpers: RefCell<HashMap<(Helper, Type), FunctionValue<'ctx>>>,
+    /// The helpers declared but not yet defined; `define_helpers` empties it.
+    pending: RefCell<Vec<(Helper, Type)>>,
     /// The target's layout: the sizes and alignments of classes.
     target_data: TargetData,
     /// The input path as given, and its text: panic messages name a position in it.
@@ -262,152 +267,6 @@ impl<'ctx> Codegen<'ctx, '_> {
         value
     }
 
-    /// Defines the counting helpers, which take their object without taking ownership:
-    /// `@sisu_rc.retain` adds 1 to its count; `@sisu_rc.release.<C>` subtracts 1 and at 0
-    /// calls `@sisu_rc.drop.<C>`, which releases each counted field, then frees the object.
-    /// Both return at once on `null`. Drop does not release the chain field: it loads it,
-    /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
-    /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`.
-    fn define_helpers(&self, program: &Program, free: FunctionValue<'ctx>) {
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let (object, done) = self.helper_entry(self.rc_retain);
-        self.add_to_count(object, 1);
-        self.branch_to(done);
-        for (i, class) in program.classes.iter().enumerate() {
-            let drop = self.module.add_function(
-                &format!("sisu_rc.drop.{}", class.name),
-                self.context.void_type().fn_type(&[ptr_type.into()], false),
-                None,
-            );
-            let (object, done) = self.helper_entry(self.releases[i]);
-            let drop_block = self.context.append_basic_block(self.releases[i], "drop");
-            self.decrement(object, drop_block, done);
-            self.builder.position_at_end(drop_block);
-            self.call(drop, &[object.into()]);
-            self.branch_to(done);
-
-            let entry = self.context.append_basic_block(drop, "entry");
-            self.builder.position_at_end(entry);
-            let chain = program.chain_field(ClassId(i));
-            // With a chain field, the body is a loop over the chain's objects, in one frame.
-            let looped = chain.map(|_| {
-                let body = self.context.append_basic_block(drop, "loop");
-                self.branch_to(body);
-                self.builder.position_at_end(body);
-                let object = self
-                    .builder
-                    .build_phi(ptr_type, "object")
-                    .expect("builder is positioned");
-                object.add_incoming(&[(&param(drop), entry)]);
-                (body, object)
-            });
-            let object = looped.map_or_else(
-                || param(drop),
-                |(_, phi)| phi.as_basic_value().into_pointer_value(),
-            );
-            let ty = Type::Class(ClassId(i));
-            let load_field = |index| {
-                self.builder
-                    .build_load(ptr_type, self.field_ptr(&ty, object, index), "field")
-                    .expect("builder is positioned")
-            };
-            for (index, field) in class.fields.iter().enumerate() {
-                if field.ty.is_counted() && chain != Some(index) {
-                    self.release(load_field(index), &field.ty);
-                }
-            }
-            // Loaded before the free, which ends the object.
-            let next = chain.map(|index| load_field(index).into_pointer_value());
-            let (size, align) = self.class_layout(ClassId(i));
-            let i64_type = self.context.i64_type();
-            self.call(
-                free,
-                &[
-                    object.into(),
-                    i64_type.const_int(size, false).into(),
-                    i64_type.const_int(u64::from(align), false).into(),
-                ],
-            );
-            if let (Some(next), Some((body, phi))) = (next, looped) {
-                let done = self.context.append_basic_block(drop, "done");
-                let counted = self.context.append_basic_block(drop, "next");
-                let null = self
-                    .builder
-                    .build_is_null(next, "null")
-                    .expect("builder is positioned");
-                self.builder
-                    .build_conditional_branch(null, done, counted)
-                    .expect("builder is positioned");
-                self.builder.position_at_end(counted);
-                self.decrement(next, body, done);
-                phi.add_incoming(&[(&next, counted)]);
-                self.builder.position_at_end(done);
-            }
-            self.builder
-                .build_return(None)
-                .expect("builder is positioned");
-            self.define_eq(ClassId(i), class);
-        }
-    }
-
-    /// `@sisu_rc.eq.<C>(a, b)`: `true` when `a` and `b` are the same pointer (two `null`s
-    /// included), `false` when one is `null`, otherwise whether each pair of fields is equal,
-    /// compared in order up to the first difference. It neither retains nor releases.
-    fn define_eq(&self, id: ClassId, class: &Class) {
-        let function = self.equals[id.0];
-        let block = |name| self.context.append_basic_block(function, name);
-        let (entry, differ, objects) = (block("entry"), block("differ"), block("objects"));
-        let (equal, unequal) = (block("equal"), block("unequal"));
-        let bool_type = self.context.bool_type();
-        for (at, value) in [(equal, 1), (unequal, 0)] {
-            self.builder.position_at_end(at);
-            self.builder
-                .build_return(Some(&bool_type.const_int(value, false)))
-                .expect("builder is positioned");
-        }
-        let nth = |n| {
-            function
-                .get_nth_param(n)
-                .expect("eq takes two objects")
-                .into_pointer_value()
-        };
-        let (a, b) = (nth(0), nth(1));
-        let branch = |cond, then, other| {
-            self.builder
-                .build_conditional_branch(cond, then, other)
-                .expect("builder is positioned");
-        };
-        self.builder.position_at_end(entry);
-        branch(self.same_object(a, b), equal, differ);
-        self.builder.position_at_end(differ);
-        let null = |object| {
-            self.builder
-                .build_is_null(object, "null")
-                .expect("builder is positioned")
-        };
-        let either_null = self
-            .builder
-            .build_or(null(a), null(b), "either_null")
-            .expect("builder is positioned");
-        branch(either_null, unequal, objects);
-        self.builder.position_at_end(objects);
-        let ty = Type::Class(id);
-        for (index, field) in class.fields.iter().enumerate() {
-            let llvm_ty = self
-                .llvm_type(&field.ty)
-                .expect("checked: a field has a value type");
-            let load = |object| {
-                self.builder
-                    .build_load(llvm_ty, self.field_ptr(&ty, object, index), "field")
-                    .expect("builder is positioned")
-            };
-            let next = block("next");
-            branch(self.equal(&field.ty, load(a), load(b)), next, unequal);
-            self.builder.position_at_end(next);
-        }
-        self.branch_to(equal);
-    }
-
     /// `a is b`: whether two class or class-optional values are the same pointer.
     fn same_object(&self, a: PointerValue<'ctx>, b: PointerValue<'ctx>) -> IntValue<'ctx> {
         self.builder
@@ -415,132 +274,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("builder is positioned")
     }
 
-    /// Whether `lhs` and `rhs`, of type `ty`, are equal: `==` without releasing them.
-    fn equal(
-        &self,
-        ty: &Type,
-        lhs: BasicValueEnum<'ctx>,
-        rhs: BasicValueEnum<'ctx>,
-    ) -> IntValue<'ctx> {
-        if let Some(id) = ty.counted_class() {
-            return self
-                .builder
-                .build_call(self.equals[id.0], &[lhs.into(), rhs.into()], "eq")
-                .expect("builder is positioned")
-                .try_as_basic_value()
-                .basic()
-                .expect("eq returns a bool")
-                .into_int_value();
-        }
-        if !matches!(ty, Type::Optional(_)) {
-            return self.int_compare(IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value());
-        }
-        // `fa == fb && (!fa || va == vb)` on flags `f` and values `v`, with no branch.
-        let part = |pair: BasicValueEnum<'ctx>, index| {
-            self.builder
-                .build_extract_value(pair.into_struct_value(), index, "part")
-                .expect("a scalar optional is a pair")
-                .into_int_value()
-        };
-        let (fa, fb) = (part(lhs, 0), part(rhs, 0));
-        let flags = self.int_compare(IntPredicate::EQ, fa, fb);
-        let values = self.int_compare(IntPredicate::EQ, part(lhs, 1), part(rhs, 1));
-        let none = self
-            .builder
-            .build_not(fa, "none")
-            .expect("builder is positioned");
-        let values = self
-            .builder
-            .build_or(none, values, "values")
-            .expect("builder is positioned");
-        self.builder
-            .build_and(flags, values, "equal")
-            .expect("builder is positioned")
-    }
-
-    /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to
-    /// `otherwise`.
-    fn decrement(
-        &self,
-        object: PointerValue<'ctx>,
-        at_zero: BasicBlock<'ctx>,
-        otherwise: BasicBlock<'ctx>,
-    ) {
-        let count = self.add_to_count(object, -1);
-        let zero = self.int_compare(
-            IntPredicate::EQ,
-            count,
-            self.context.i64_type().const_zero(),
-        );
-        self.builder
-            .build_conditional_branch(zero, at_zero, otherwise)
-            .expect("builder is positioned");
-    }
-
-    /// Starts helper `function`, which returns at once when its object is `null`. Leaves the
-    /// builder in the block for a real object; returns the object and the returning block.
-    fn helper_entry(
-        &self,
-        function: FunctionValue<'ctx>,
-    ) -> (PointerValue<'ctx>, BasicBlock<'ctx>) {
-        let entry = self.context.append_basic_block(function, "entry");
-        let counted = self.context.append_basic_block(function, "object");
-        let done = self.context.append_basic_block(function, "done");
-        let object = param(function);
-        self.builder.position_at_end(entry);
-        let null = self
-            .builder
-            .build_is_null(object, "null")
-            .expect("builder is positioned");
-        self.builder
-            .build_conditional_branch(null, done, counted)
-            .expect("builder is positioned");
-        self.builder.position_at_end(done);
-        self.builder
-            .build_return(None)
-            .expect("builder is positioned");
-        self.builder.position_at_end(counted);
-        (object, done)
-    }
-
-    /// Adds `delta` to the count of `object`, element 0; returns the new count.
-    fn add_to_count(&self, object: PointerValue<'ctx>, delta: i64) -> IntValue<'ctx> {
-        let i64_type = self.context.i64_type();
-        let count = self
-            .builder
-            .build_load(i64_type, object, "count")
-            .expect("builder is positioned")
-            .into_int_value();
-        let count = self
-            .builder
-            .build_int_add(
-                count,
-                i64_type.const_int(delta.cast_unsigned(), false),
-                "count",
-            )
-            .expect("builder is positioned");
-        self.store(object, count.into());
-        count
-    }
-
     fn call(&self, function: FunctionValue<'ctx>, args: &[BasicMetadataValueEnum<'ctx>]) {
         self.builder
             .build_call(function, args, "")
             .expect("builder is positioned");
-    }
-
-    /// Adds 1 to the count of `value` when `ty` is counted.
-    fn retain(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
-        if ty.is_counted() {
-            self.call(self.rc_retain, &[value.into()]);
-        }
-    }
-
-    /// Releases the reference `value` holds when `ty` is counted.
-    fn release(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
-        if let Some(id) = ty.counted_class() {
-            self.call(self.releases[id.0], &[value.into()]);
-        }
     }
 
     /// Releases a value nobody keeps, if there is one.
@@ -1066,95 +803,6 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
-    /// `span` is the operator expression's: arithmetic panics point at its start.
-    fn binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr, span: Span) -> IntValue<'ctx> {
-        if matches!(op, BinaryOp::And | BinaryOp::Or) {
-            return self.short_circuit(op == BinaryOp::And, lhs, rhs);
-        }
-        let (l, r) = (self.value(lhs), self.value(rhs));
-        match op {
-            BinaryOp::Add => self.checked("llvm.sadd.with.overflow", l, r, span),
-            BinaryOp::Sub => self.checked("llvm.ssub.with.overflow", l, r, span),
-            BinaryOp::Mul => self.checked("llvm.smul.with.overflow", l, r, span),
-            BinaryOp::Div | BinaryOp::Rem => self.division(op == BinaryOp::Rem, l, r, span),
-            BinaryOp::And | BinaryOp::Or => unreachable!("handled above"),
-        }
-    }
-
-    fn int_compare(
-        &self,
-        predicate: IntPredicate,
-        lhs: IntValue<'ctx>,
-        rhs: IntValue<'ctx>,
-    ) -> IntValue<'ctx> {
-        self.builder
-            .build_int_compare(predicate, lhs, rhs, "cmp")
-            .expect("builder is positioned")
-    }
-
-    /// `lhs op rhs` through `intrinsic`, an `llvm.s*.with.overflow` that returns the wrapped
-    /// result and an overflow flag; the flag branches to an "integer overflow" panic.
-    fn checked(
-        &self,
-        intrinsic: &str,
-        lhs: IntValue<'ctx>,
-        rhs: IntValue<'ctx>,
-        span: Span,
-    ) -> IntValue<'ctx> {
-        let function = Intrinsic::find(intrinsic)
-            .expect("LLVM has the overflow intrinsics")
-            .get_declaration(&self.module, &[self.context.i64_type().into()])
-            .expect("the intrinsic is overloaded on i64");
-        let pair = self
-            .builder
-            .build_call(function, &[lhs.into(), rhs.into()], "checked")
-            .expect("builder is positioned")
-            .try_as_basic_value()
-            .basic()
-            .expect("the intrinsic returns a pair")
-            .into_struct_value();
-        let field = |index, name| {
-            self.builder
-                .build_extract_value(pair, index, name)
-                .expect("the pair has two fields")
-                .into_int_value()
-        };
-        let (result, overflow) = (field(0, "result"), field(1, "overflow"));
-        self.panic_if(overflow, span, "integer overflow");
-        result
-    }
-
-    /// `lhs / rhs` or `lhs % rhs`: panics on a zero divisor, then on `i64::MIN / -1`, whose
-    /// quotient does not fit (`sdiv` and `srem` are undefined for both).
-    fn division(
-        &self,
-        rem: bool,
-        lhs: IntValue<'ctx>,
-        rhs: IntValue<'ctx>,
-        span: Span,
-    ) -> IntValue<'ctx> {
-        let i64_type = self.context.i64_type();
-        let zero = self.int_compare(IntPredicate::EQ, rhs, i64_type.const_zero());
-        self.panic_if(zero, span, "division by zero");
-        let min = i64_type.const_int(i64::MIN.cast_unsigned(), false);
-        let minus_one = i64_type.const_int((-1_i64).cast_unsigned(), false);
-        let overflow = self
-            .builder
-            .build_and(
-                self.int_compare(IntPredicate::EQ, lhs, min),
-                self.int_compare(IntPredicate::EQ, rhs, minus_one),
-                "overflow",
-            )
-            .expect("builder is positioned");
-        self.panic_if(overflow, span, "integer overflow");
-        if rem {
-            self.builder.build_int_signed_rem(lhs, rhs, "rem")
-        } else {
-            self.builder.build_int_signed_div(lhs, rhs, "div")
-        }
-        .expect("builder is positioned")
-    }
-
     /// Branches to a fresh panic block when `fails` holds, and continues in a fresh block
     /// otherwise. The panic block calls `sisu_panic` with `<path>:<line>:<col>: <message>`
     /// for the start of `span`.
@@ -1251,23 +899,6 @@ impl<'ctx> Codegen<'ctx, '_> {
             .into_int_value()
     }
 
-    fn compare_pair(
-        &self,
-        op: CompareOp,
-        lhs: IntValue<'ctx>,
-        rhs: IntValue<'ctx>,
-    ) -> IntValue<'ctx> {
-        let predicate = match op {
-            CompareOp::Lt => IntPredicate::SLT,
-            CompareOp::Le => IntPredicate::SLE,
-            CompareOp::Gt => IntPredicate::SGT,
-            CompareOp::Ge => IntPredicate::SGE,
-        };
-        self.builder
-            .build_int_compare(predicate, lhs, rhs, "cmp")
-            .expect("builder is positioned")
-    }
-
     /// `if`/`else` on `cond`, and `IfSome` with the binding its then block starts with. The
     /// merge block exists only if a branch falls through; its `phi`, built when `ty` has a
     /// value, takes one edge per such branch, from the block where that branch ended.
@@ -1352,14 +983,6 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 }
 
-/// The single parameter of a counting helper: the object.
-fn param(function: FunctionValue<'_>) -> PointerValue<'_> {
-    function
-        .get_nth_param(0)
-        .expect("a helper takes one object")
-        .into_pointer_value()
-}
-
 /// A target machine for the host `sisuc` runs on.
 pub(crate) fn target_machine(o2: bool) -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())?;
@@ -1412,445 +1035,4 @@ pub(crate) fn object_code(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::check::check;
-    use crate::lexer::lex;
-    use crate::parser::parse;
-
-    /// Lexes, parses, checks (no errors allowed) and compiles `src`, then verifies the module.
-    fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
-        let program = parse(&lex(src).expect("source lexes")).expect("source parses");
-        let (program, diagnostics) = check(&program);
-        let program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
-        let machine = target_machine(false).expect("the host is a target");
-        let module = compile(context, &program, "test.sisu", src, &machine);
-        if let Err(e) = module.verify() {
-            panic!("{e}\n{}", module.print_to_string());
-        }
-        module
-    }
-
-    const FIB: &str = "fn fib(n: i64) -> i64 {\n    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }\n}\n\nfn main() {\n    print(fib(30))\n}\n";
-
-    #[test]
-    fn verifies_fib() {
-        compiled(&Context::create(), FIB);
-    }
-
-    #[test]
-    fn verifies_all_paths_return() {
-        compiled(
-            &Context::create(),
-            "fn sign(n: i64) -> i64 {\n    if n < 0 { return -1 } else { return 1 }\n}\nfn main() { print(sign(2)) }",
-        );
-    }
-
-    #[test]
-    fn verifies_chain_and_short_circuit() {
-        compiled(
-            &Context::create(),
-            "fn main() {\n    print(1 < 2 <= 3)\n    print(true && false || true)\n}",
-        );
-    }
-
-    #[test]
-    fn verifies_one_returning_branch() {
-        let context = Context::create();
-        let module = compiled(
-            &context,
-            "fn a(c: bool) -> i64 {\n    if c { return 1 } else { 2 }\n}\nfn b(c: bool) -> i64 {\n    if c { 1 } else { return 2 }\n}\nfn main() {\n    print(a(true))\n}",
-        );
-        let ir = module.print_to_string().to_string();
-        let phis: Vec<_> = ir.lines().filter(|l| l.contains(" = phi ")).collect();
-        assert_eq!(phis.len(), 2, "{ir}");
-        for phi in phis {
-            assert_eq!(phi.matches('[').count(), 1, "{phi}");
-        }
-    }
-
-    #[test]
-    fn verifies_loop_body_ending_in_return() {
-        compiled(
-            &Context::create(),
-            "fn f() -> i64 {\n    while true { return 1 }\n    2\n}\nfn main() { print(f()) }",
-        );
-    }
-
-    #[test]
-    fn verifies_early_return_in_main() {
-        compiled(
-            &Context::create(),
-            "fn main() {\n    if true { return }\n    print(1)\n}",
-        );
-    }
-
-    #[test]
-    fn verifies_discarded_body_value() {
-        compiled(
-            &Context::create(),
-            "fn g() { 1 }\nfn main() {\n    g()\n    if true { 1 } else { 2 }\n}",
-        );
-    }
-
-    #[test]
-    fn verifies_else_if_with_short_circuit_in_branch() {
-        compiled(
-            &Context::create(),
-            "fn f(a: i64) -> i64 {\n    if a < 0 { -1 } else if a == 0 && true { 0 } else { 1 }\n}\nfn main() { print(f(2)) }",
-        );
-    }
-
-    #[test]
-    fn print_bool_passes_a_zero_extended_i1() {
-        let context = Context::create();
-        let ir = compiled(&context, "fn main() { print(true) }")
-            .print_to_string()
-            .to_string();
-        for wanted in [
-            "declare void @sisu_print_bool(i1 zeroext)",
-            "call void @sisu_print_bool(i1 zeroext",
-        ] {
-            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
-        }
-    }
-
-    #[test]
-    fn arithmetic_calls_overflow_intrinsics() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "fn f(a: i64, b: i64) -> i64 { a * b - a / b }\n\nfn main() {\n    print(-f(1, 2))\n}",
-        )
-        .print_to_string()
-        .to_string();
-        for wanted in [
-            "@llvm.smul.with.overflow.i64",
-            "@llvm.ssub.with.overflow.i64",
-            "sdiv",
-            "call void @sisu_panic",
-        ] {
-            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
-        }
-        // `a * b` and `a * b - a / b` start at column 31, `a / b` at 39, `-f(1, 2)` at 4:11.
-        for message in [
-            "test.sisu:1:31: integer overflow",
-            "test.sisu:1:39: division by zero",
-            "test.sisu:1:39: integer overflow",
-            "test.sisu:4:11: integer overflow",
-        ] {
-            assert_panics_with(&ir, message);
-        }
-    }
-
-    #[test]
-    fn division_guards_precede_the_division() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "fn d(a: i64, b: i64) -> i64 { a / b }\nfn r(a: i64, b: i64) -> i64 { a % b }\nfn main() {}",
-        )
-        .print_to_string()
-        .to_string();
-        for (name, op) in [("d", "sdiv"), ("r", "srem")] {
-            let header = format!("define i64 @sisu.{name}(");
-            let body = function_body(&ir, &header);
-            let lines: Vec<&str> = body.lines().map(str::trim).collect();
-            let find = |wanted: &dyn Fn(&str) -> bool, what: &str| {
-                instruction(&lines, wanted).unwrap_or_else(|| panic!("no {what} in\n{body}"))
-            };
-            let (op_at, _, op_text) = find(&|t| t.starts_with(&format!("{op} i64 ")), op);
-            let (a, b) = op_text[op.len() + " i64 ".len()..]
-                .split_once(", ")
-                .unwrap_or_else(|| panic!("two operands in {op_text:?}"));
-            // The zero guard tests the divisor; the `MIN / -1` guard tests both operands.
-            let zero_test = format!("icmp eq i64 {b}, 0");
-            let min_test = format!("icmp eq i64 {a}, -9223372036854775808");
-            let neg_test = format!("icmp eq i64 {b}, -1");
-            let (zero_at, zero, _) = find(&|t| t == zero_test, &zero_test);
-            let (min_at, min, _) = find(&|t| t == min_test, &min_test);
-            let (neg_at, neg, _) = find(&|t| t == neg_test, &neg_test);
-            let (and_at, overflow, _) = find(
-                &|t| t == format!("and i1 {min}, {neg}") || t == format!("and i1 {neg}, {min}"),
-                "the `and` of the `MIN / -1` tests",
-            );
-            // Each guard branches on its own test: true to a panic block, false on to `ok`.
-            let branch = |cond: &str| {
-                let at = lines
-                    .iter()
-                    .position(|l| l.starts_with(&format!("br i1 {cond}, ")))
-                    .unwrap_or_else(|| panic!("no branch on {cond} in\n{body}"));
-                let labels: Vec<_> = lines[at].split("label %").skip(1).collect();
-                assert!(
-                    matches!(labels.as_slice(), [t, f] if t.starts_with("panic") && f.starts_with("ok")),
-                    "{}",
-                    lines[at]
-                );
-                at
-            };
-            // The zero guard, then the `MIN / -1` guard, then the operation itself.
-            let order = [
-                zero_at,
-                branch(zero),
-                min_at.min(neg_at),
-                min_at.max(neg_at),
-                and_at,
-                branch(overflow),
-                op_at,
-            ];
-            assert!(order.is_sorted(), "{order:?} in\n{body}");
-            assert_eq!(
-                lines.iter().filter(|l| l.starts_with("br i1 ")).count(),
-                2,
-                "{body}"
-            );
-        }
-        for message in [
-            "test.sisu:1:31: division by zero",
-            "test.sisu:1:31: integer overflow",
-            "test.sisu:2:31: division by zero",
-            "test.sisu:2:31: integer overflow",
-        ] {
-            assert_panics_with(&ir, message);
-        }
-    }
-
-    /// The body of the function `header` starts: up to its closing `}`.
-    fn function_body<'a>(ir: &'a str, header: &str) -> &'a str {
-        ir.split_once(header)
-            .and_then(|(_, rest)| rest.split("\n}").next())
-            .unwrap_or_else(|| panic!("no {header} in\n{ir}"))
-    }
-
-    /// The first instruction `<value> = <text>` in `lines` whose text is `wanted`: its line
-    /// index, the value it defines and its text.
-    fn instruction<'a>(
-        lines: &[&'a str],
-        wanted: &dyn Fn(&str) -> bool,
-    ) -> Option<(usize, &'a str, &'a str)> {
-        lines.iter().enumerate().find_map(|(i, line)| {
-            let (value, text) = line.split_once(" = ")?;
-            wanted(text).then_some((i, value, text))
-        })
-    }
-
-    /// Asserts that `ir` has a `sisu_panic` call that passes `message` and its byte length.
-    fn assert_panics_with(ir: &str, message: &str) {
-        let constant = format!("c\"{message}\\00\"");
-        let global = ir
-            .lines()
-            .find(|l| l.ends_with(&constant) || l.contains(&format!("{constant},")))
-            .and_then(|l| l.split(" = ").next())
-            .unwrap_or_else(|| panic!("no constant {constant} in\n{ir}"));
-        let call = format!("@sisu_panic(ptr {global}, i64 {})", message.len());
-        assert!(ir.contains(&call), "missing {call:?} in\n{ir}");
-    }
-
-    #[test]
-    fn class_layout_comes_from_the_data_layout() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "class Q {}\nclass P {\n    let x: i64\n    var y: bool\n    let q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    print(p.x)\n}",
-        )
-        .print_to_string()
-        .to_string();
-        for wanted in [
-            "%sisu.P = type { i64, i64, i1, ptr }",
-            "call ptr @sisu_alloc(i64 32, i64 8)",
-        ] {
-            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
-        }
-        // Element 0 is the count, so field `i` is element `i + 1`.
-        for element in 1..=3 {
-            let gep = format!("i32 0, i32 {element}");
-            assert!(
-                ir.lines().any(|l| l.contains("getelementptr")
-                    && l.contains("%sisu.P, ptr ")
-                    && l.ends_with(&gep)),
-                "no field GEP to element {element} in\n{ir}"
-            );
-        }
-    }
-
-    #[test]
-    fn empty_class_allocates_its_count() {
-        let context = Context::create();
-        let ir = compiled(&context, "class E {}\nfn main() { E() }")
-            .print_to_string()
-            .to_string();
-        let lines: Vec<&str> = ir.lines().map(str::trim).collect();
-        let (_, object, _) = instruction(&lines, &|t| t == "call ptr @sisu_alloc(i64 8, i64 8)")
-            .unwrap_or_else(|| panic!("no 8-byte allocation in\n{ir}"));
-        let count = format!("store i64 1, ptr {object},");
-        assert!(
-            lines.iter().any(|l| l.starts_with(&count)),
-            "missing {count:?} in\n{ir}"
-        );
-    }
-
-    #[test]
-    fn method_symbols() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "class P {\n    let x: i64\n\n    fn m(self) { print(self.x) }\n}\nfn main() { P(x: 1).m() }",
-        )
-        .print_to_string()
-        .to_string();
-        assert!(ir.contains("define void @sisu.P.m(ptr"), "{ir}");
-    }
-
-    #[test]
-    fn verifies_field_assignment_through_a_call() {
-        compiled(
-            &Context::create(),
-            "class C {\n    var n: i64\n}\nfn make() -> C { C(n: 0) }\nfn main() {\n    make().n = 1\n}",
-        );
-    }
-
-    #[test]
-    fn helpers_are_generated() {
-        let context = Context::create();
-        let ir = compiled(&context, "class P {}\nfn main() { P() }")
-            .print_to_string()
-            .to_string();
-        for wanted in [
-            "define void @sisu_rc.retain(ptr",
-            "define void @sisu_rc.release.P(ptr",
-            "define void @sisu_rc.drop.P(ptr",
-        ] {
-            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
-        }
-    }
-
-    #[test]
-    fn drop_loops_on_the_chain_field() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "class Node {\n    let value: i64\n    let next: Node?\n}\nclass Tree {\n    let left: Tree?\n    let right: Tree?\n    let v: i64\n}\nfn main() {}",
-        )
-        .print_to_string()
-        .to_string();
-        let node = function_body(&ir, "define void @sisu_rc.drop.Node(ptr");
-        assert!(node.contains("phi ptr"), "no loop in\n{node}");
-        assert_eq!(node.matches("@sisu_free(").count(), 1, "{node}");
-        for unwanted in ["@sisu_rc.drop.Node(", "@sisu_rc.release.Node("] {
-            assert!(!node.contains(unwanted), "{unwanted:?} in\n{node}");
-        }
-        // `right` is the chain field; only `left` is released, by recursion.
-        let tree = function_body(&ir, "define void @sisu_rc.drop.Tree(ptr");
-        assert_eq!(tree.matches("@sisu_rc.release.Tree(").count(), 1, "{tree}");
-        assert!(!tree.contains("@sisu_rc.drop.Tree("), "{tree}");
-    }
-
-    #[test]
-    fn helper_names_cannot_collide() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "fn retain() {}\nclass release {\n    fn Tree(self) {}\n}\nclass Tree {}\nfn main() {\n    retain()\n    release().Tree()\n}",
-        )
-        .print_to_string()
-        .to_string();
-        // The method `release.Tree` and the helper for class `Tree` must both keep their names:
-        // LLVM renames the second of two equal names with a numeric suffix.
-        for wanted in [
-            "define void @sisu.retain()",
-            "define void @sisu.release.Tree(ptr",
-            "define void @sisu_rc.release.Tree(ptr",
-        ] {
-            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
-        }
-        assert!(
-            !ir.contains("@sisu.release.Tree."),
-            "a renamed symbol in\n{ir}"
-        );
-    }
-
-    #[test]
-    fn scalar_optional_is_a_pair() {
-        let context = Context::create();
-        let ir = compiled(&context, "fn f(x: i64?) -> i64? { x }\nfn main() {}")
-            .print_to_string()
-            .to_string();
-        assert!(
-            ir.contains("define { i1, i64 } @sisu.f({ i1, i64 }"),
-            "{ir}"
-        );
-    }
-
-    /// `!=` on an `i64` or a `bool` is one `icmp ne`, not an `icmp eq` and a `not`.
-    #[test]
-    fn scalar_not_equal_is_one_icmp_ne() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "fn f(a: i64, b: i64) -> bool { a != b }\nfn g(a: bool, b: bool) -> bool { a != b }\nfn main() {}",
-        )
-        .print_to_string()
-        .to_string();
-        for (name, ty) in [("f", "i64"), ("g", "i1")] {
-            let body = function_body(&ir, &format!("define i1 @sisu.{name}("));
-            assert!(body.contains(&format!("icmp ne {ty} ")), "{body}");
-            assert!(!body.contains("icmp eq"), "{body}");
-            assert!(!body.contains("xor"), "{body}");
-        }
-    }
-
-    #[test]
-    fn eq_helper_per_class() {
-        let context = Context::create();
-        let ir = compiled(&context, "class T {}\nfn main() { print(T() == T()) }")
-            .print_to_string()
-            .to_string();
-        assert!(ir.contains("define i1 @sisu_rc.eq.T(ptr"), "{ir}");
-    }
-
-    #[test]
-    fn field_read_retains_before_releasing_base() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
-            "class N {}\nclass C {\n    let next: N\n}\nfn make() -> C { C(next: N()) }\nfn main() { make().next }",
-        )
-        .print_to_string()
-        .to_string();
-        let main = function_body(&ir, "define void @sisu.main()");
-        let lines: Vec<&str> = main.lines().map(str::trim).collect();
-        let at = |wanted: &dyn Fn(&str) -> bool, what: &str| {
-            lines
-                .iter()
-                .position(|l| wanted(l))
-                .unwrap_or_else(|| panic!("no {what} in\n{main}"))
-        };
-        let (_, next, _) = instruction(&lines, &|t| t.starts_with("load ptr, ptr "))
-            .unwrap_or_else(|| panic!("no load of `next` in\n{main}"));
-        let order = [
-            at(&|l| l.starts_with(&format!("{next} = load ptr")), "load"),
-            at(
-                &|l| l == format!("call void @sisu_rc.retain(ptr {next})"),
-                "retain of the field",
-            ),
-            at(
-                &|l| l.starts_with("call void @sisu_rc.release.C(ptr "),
-                "release of the base",
-            ),
-        ];
-        assert!(order.is_sorted(), "{order:?} in\n{main}");
-    }
-
-    #[test]
-    fn user_function_names_are_prefixed() {
-        let context = Context::create();
-        let ir = compiled(&context, FIB).print_to_string().to_string();
-        for wanted in [
-            "define i64 @sisu.fib(i64",
-            "define void @sisu.main()",
-            "define i32 @main()",
-        ] {
-            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
-        }
-    }
-}
+mod tests;

@@ -16,7 +16,7 @@ pub(crate) struct FuncId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ClassId(pub(crate) usize);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Type {
     I64,
     Bool,
@@ -174,15 +174,10 @@ pub(crate) enum ExprKind {
 impl Type {
     /// Whether a value of this type is an owned reference, which codegen counts.
     pub(crate) fn is_counted(&self) -> bool {
-        self.counted_class().is_some()
-    }
-
-    /// The class whose count a value of this type holds a reference to, if any.
-    pub(crate) fn counted_class(&self) -> Option<ClassId> {
         match self {
-            Type::Class(id) => Some(*id),
-            Type::Optional(payload) => payload.counted_class(),
-            _ => None,
+            Type::Class(_) => true,
+            Type::Optional(payload) => payload.is_counted(),
+            _ => false,
         }
     }
 }
