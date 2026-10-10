@@ -12,18 +12,27 @@ pub(crate) fn parse(tokens: &[Token]) -> Result<Program, Diagnostic> {
     Parser { tokens, pos: 0 }.program()
 }
 
-/// The level and operator of a binary operator token, except the comparisons of level 4.
-fn binary_op(kind: &TokenKind) -> Option<(u8, BinaryOp)> {
+/// An infix operator other than the comparisons of level 4.
+enum Infix {
+    Binary(BinaryOp),
+    Is,
+    Coalesce,
+}
+
+/// The level and operator of an infix operator token.
+fn infix_op(kind: &TokenKind) -> Option<(u8, Infix)> {
     Some(match kind {
-        TokenKind::OrOr => (1, BinaryOp::Or),
-        TokenKind::AndAnd => (2, BinaryOp::And),
-        TokenKind::EqEq => (3, BinaryOp::Eq),
-        TokenKind::NotEq => (3, BinaryOp::Ne),
-        TokenKind::Plus => (5, BinaryOp::Add),
-        TokenKind::Minus => (5, BinaryOp::Sub),
-        TokenKind::Star => (6, BinaryOp::Mul),
-        TokenKind::Slash => (6, BinaryOp::Div),
-        TokenKind::Percent => (6, BinaryOp::Rem),
+        TokenKind::OrOr => (1, Infix::Binary(BinaryOp::Or)),
+        TokenKind::AndAnd => (2, Infix::Binary(BinaryOp::And)),
+        TokenKind::EqEq => (3, Infix::Binary(BinaryOp::Eq)),
+        TokenKind::NotEq => (3, Infix::Binary(BinaryOp::Ne)),
+        TokenKind::Is => (3, Infix::Is),
+        TokenKind::QuestionQuestion => (5, Infix::Coalesce),
+        TokenKind::Plus => (6, Infix::Binary(BinaryOp::Add)),
+        TokenKind::Minus => (6, Infix::Binary(BinaryOp::Sub)),
+        TokenKind::Star => (7, Infix::Binary(BinaryOp::Mul)),
+        TokenKind::Slash => (7, Infix::Binary(BinaryOp::Div)),
+        TokenKind::Percent => (7, Infix::Binary(BinaryOp::Rem)),
         _ => return None,
     })
 }
@@ -344,6 +353,10 @@ impl Parser<'_> {
                 "cannot assign to this expression",
             ));
         }
+        if goes_through_safe_access(&target) {
+            return Err(Diagnostic::error(target.span, "cannot assign through `?.`")
+                .help("unwrap it with `if let`"));
+        }
         self.bump();
         let value = self.expr()?;
         Ok(match op {
@@ -356,7 +369,7 @@ impl Parser<'_> {
         self.binary(1)
     }
 
-    /// Precedence climbing over levels 1 to 6; `min` is the lowest level to accept.
+    /// Precedence climbing over levels 1 to 7; `min` is the lowest level to accept.
     fn binary(&mut self, min: u8) -> Result<Expr, Diagnostic> {
         let mut lhs = self.unary()?;
         loop {
@@ -366,26 +379,46 @@ impl Parser<'_> {
                     return Ok(lhs);
                 }
                 lhs = self.comparison_chain(lhs)?;
-            } else if let Some((level, op)) = binary_op(kind) {
+            } else if let Some((level, op)) = infix_op(kind) {
                 if level < min {
                     return Ok(lhs);
                 }
                 self.bump();
-                let rhs = self.binary(level + 1)?;
+                // `??` is right-associative: its right side starts at its own level.
+                let rhs = self.binary(if matches!(op, Infix::Coalesce) {
+                    level
+                } else {
+                    level + 1
+                })?;
+                let span = lhs.span.to(rhs.span);
+                let (lhs_box, rhs_box) = (Box::new(lhs), Box::new(rhs));
                 lhs = Expr {
-                    span: lhs.span.to(rhs.span),
-                    kind: ExprKind::Binary {
-                        op,
-                        lhs: Box::new(lhs),
-                        rhs: Box::new(rhs),
+                    span,
+                    kind: match op {
+                        Infix::Binary(op) => ExprKind::Binary {
+                            op,
+                            lhs: lhs_box,
+                            rhs: rhs_box,
+                        },
+                        Infix::Is => ExprKind::Is {
+                            lhs: lhs_box,
+                            rhs: rhs_box,
+                        },
+                        Infix::Coalesce => ExprKind::Coalesce {
+                            lhs: lhs_box,
+                            rhs: rhs_box,
+                        },
                     },
                 };
-                // Level 3 is non-associative: a second `==`/`!=` is an error, not a chain.
-                if level == 3 && matches!(self.peek().kind, TokenKind::EqEq | TokenKind::NotEq) {
-                    return Err(
-                        Diagnostic::error(self.peek().span, "`==` and `!=` do not chain")
-                            .help("join the comparisons with `&&`"),
-                    );
+                // Level 3 is non-associative: a second `==`/`!=`/`is` is an error, not a chain.
+                if level == 3 {
+                    let message = match self.peek().kind {
+                        TokenKind::Is => "`is` does not chain",
+                        TokenKind::EqEq | TokenKind::NotEq => "`==` and `!=` do not chain",
+                        _ => continue,
+                    };
+                    return Err(Diagnostic::error(self.peek().span, message)
+                        .help("join the comparisons with `&&`"));
                 }
             } else {
                 return Ok(lhs);
@@ -435,10 +468,15 @@ impl Parser<'_> {
         })
     }
 
-    /// `primary` followed by any number of `.field` and `.method(args)`.
+    /// `primary` followed by any number of `.field`, `.method(args)`, `?.field` and
+    /// `?.method(args)`.
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.primary()?;
-        while self.eat(&TokenKind::Dot).is_some() {
+        while let Some(access) = self
+            .eat(&TokenKind::Dot)
+            .or_else(|| self.eat(&TokenKind::QuestionDot))
+        {
+            let safe = access.kind == TokenKind::QuestionDot;
             let name = self.ident("a field or method name")?;
             expr = if self.at(&TokenKind::LParen) {
                 let (args, close) = self.args()?;
@@ -448,6 +486,7 @@ impl Parser<'_> {
                         receiver: Box::new(expr),
                         method: name,
                         args,
+                        safe,
                     },
                 }
             } else {
@@ -456,6 +495,7 @@ impl Parser<'_> {
                     kind: ExprKind::Field {
                         base: Box::new(expr),
                         name,
+                        safe,
                     },
                 }
             };
@@ -598,6 +638,15 @@ impl Parser<'_> {
             span: start.to(end),
             kind,
         })
+    }
+}
+
+/// Whether a `?.` sits anywhere in the chain of fields and calls that makes up `e`.
+fn goes_through_safe_access(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Field { base, safe, .. } => *safe || goes_through_safe_access(base),
+        ExprKind::MethodCall { receiver, safe, .. } => *safe || goes_through_safe_access(receiver),
+        _ => false,
     }
 }
 
@@ -823,6 +872,14 @@ mod tests {
             ("self.left = t", "(= (. self left) t)"),
             ("None", "None"),
             ("f(None)", "(call f None)"),
+            ("x ?? 0 < 5", "(< (?? x 0) 5)"),
+            ("x ?? 0 + 1", "(?? x (+ 0 1))"),
+            ("a ?? b ?? 0", "(?? a (?? b 0))"),
+            ("x ?? 0 == 1", "(== (?? x 0) 1)"),
+            ("a?.b?.c()", "(call (?. (?. a b) c))"),
+            ("a?.b.c", "(. (?. a b) c)"),
+            ("!(a is b)", "(! (is a b))"),
+            ("a == b && c is d", "(&& (== a b) (is c d))"),
         ];
         for (src, expected) in rows {
             assert_eq!(expr(src), expected, "{src}");
@@ -884,6 +941,44 @@ mod tests {
         assert_eq!(d.message, "`==` and `!=` do not chain");
         assert_eq!(d.help.as_deref(), Some("join the comparisons with `&&`"));
         assert_eq!(line_col(src, d.span.start), (1, 20));
+    }
+
+    #[test]
+    fn is_does_not_chain() {
+        let src = "fn main() { print(a is b is c) }";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.message, "`is` does not chain");
+        assert_eq!(d.help.as_deref(), Some("join the comparisons with `&&`"));
+        assert_eq!(line_col(src, d.span.start), (1, 26));
+    }
+
+    #[test]
+    fn mixed_is_and_equality_do_not_chain() {
+        assert_eq!(
+            expr_err("a is b == c"),
+            ("`==` and `!=` do not chain".to_string(), 1, 20)
+        );
+        assert_eq!(
+            expr_err("a == b is c"),
+            ("`is` does not chain".to_string(), 1, 20)
+        );
+    }
+
+    #[test]
+    fn cannot_assign_through_safe_access() {
+        for src in [
+            "a?.b = 1",
+            "a?.b.c = 1",
+            "a?.b += 1",
+            "a?.m().c = 1",
+            "a?.b.m().c = 1",
+        ] {
+            let full = format!("fn main() {{ {src} }}");
+            let d = parse_diagnostic(&full);
+            assert_eq!(d.message, "cannot assign through `?.`", "{src}");
+            assert_eq!(d.help.as_deref(), Some("unwrap it with `if let`"), "{src}");
+            assert_eq!(line_col(&full, d.span.start), (1, 13), "{src}");
+        }
     }
 
     #[test]

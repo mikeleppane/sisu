@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::expr::operator;
+use super::expr::{local, operator};
 use super::{
     Binding, BindingKind, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, not_found, type_of,
 };
@@ -146,13 +146,13 @@ impl Checker {
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
             StmtKind::Assign { target, value } => match &target.kind {
-                ast::ExprKind::Field { base, name } => {
+                ast::ExprKind::Field { base, name, .. } => {
                     self.assign_field(stmt.span, base, name, value)
                 }
                 _ => self.assign(stmt.span, &place_name(target), value),
             },
             StmtKind::CompoundAssign { op, target, value } => {
-                if let ast::ExprKind::Field { base, name } = &target.kind {
+                if let ast::ExprKind::Field { base, name, .. } = &target.kind {
                     return self.compound_field(stmt.span, *op, target.span, base, name, value);
                 }
                 let target = &place_name(target);
@@ -401,7 +401,7 @@ impl Checker {
     }
 
     /// A new local with no source name, for a value the lowering binds.
-    fn fresh(&mut self, ty: Type) -> tir::LocalId {
+    pub(super) fn fresh(&mut self, ty: Type) -> tir::LocalId {
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
             name: None,
@@ -429,14 +429,10 @@ impl Checker {
                 if i > last_exit {
                     return operand;
                 }
-                let local = self.fresh(operand.ty.clone());
-                let read = tir::Expr {
-                    kind: ExprKind::Local(local),
-                    ty: operand.ty.clone(),
-                    span: operand.span,
-                };
+                let bind = self.fresh(operand.ty.clone());
+                let read = local(bind, operand.ty.clone(), operand.span);
                 spills.push(tir::Stmt::Let {
-                    local,
+                    local: bind,
                     init: operand,
                 });
                 read

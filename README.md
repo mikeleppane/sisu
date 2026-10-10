@@ -28,18 +28,21 @@ fn main() {
 
 ## What works today
 
-Milestone 1 is done. `sisuc` compiles:
+Milestones 1 and 2 are done. `sisuc` compiles:
 
 - `i64` and `bool`, with `let` for immutable bindings, `var` for variables,
   and inferred types
 - functions and recursion
-- `if` as an expression, `while` and `return`
+- `if` as an expression, `while`, `break`, `continue` and `return`
 - comparison chains such as `0 <= i < n`, and short-circuit `&&` and `||`
 - integer arithmetic that panics on overflow and division by zero instead of
   wrapping
+- classes with fields and methods, whose objects are freed by reference
+  counting when the last reference goes away
+- `==` that compares objects field by field, and `is` that tests identity
+- optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
+  `while let`
 - error messages in the style of `rustc`, pointing at the code
-
-Milestone 2, in progress, adds classes, optionals and reference counting.
 
 ## Start here
 

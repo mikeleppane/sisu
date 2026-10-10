@@ -1,0 +1,197 @@
+// Each function is one case of scalar optionals, `?.`, `??`, `==` and `is`. Valgrind checks
+// that every object is freed exactly once on every path.
+class E {}
+
+class P {
+    var n: i64?
+    var b: bool?
+    let e: E?
+
+    fn get(self) -> i64? {
+        self.n
+    }
+
+    fn say(self, x: i64) {
+        print(x)
+    }
+
+    fn me(self) -> P {
+        self
+    }
+}
+
+// `Pt.tag` names a class declared later, so `@sisu_rc.eq.Pt` calls a helper defined after it.
+class Pt {
+    let x: i64
+    let y: i64?
+    let tag: Tag?
+}
+
+class Tag {
+    let k: i64
+}
+
+fn some(x: i64) -> i64? {
+    x
+}
+
+fn none() -> i64? {
+    None
+}
+
+fn flip(b: bool?) -> bool? {
+    if let v = b { !v } else { None }
+}
+
+// The first `n` from `from` whose square exceeds `limit`, or `None` past `to`. `-O2` folds
+// these calls away; `climb` and `toggle` keep `i64?` and `bool?` crossing a real call.
+fn root_above(from: i64, to: i64, limit: i64) -> i64? {
+    if from > to {
+        None
+    } else if from * from > limit {
+        from
+    } else {
+        root_above(from + 1, to, limit)
+    }
+}
+
+// Adds 1 to a present `x` once per level of `n`. The work after the recursive call keeps
+// `climb` a real call at `-O2`, so `i64?` crosses it as an argument and as a return.
+fn climb(x: i64?, n: i64) -> i64? {
+    if n == 0 { x } else if let v = climb(x, n - 1) { v + 1 } else { None }
+}
+
+// Negates a present `b` once per level of `n`: `climb` for `bool?`.
+fn toggle(b: bool?, n: i64) -> bool? {
+    if n == 0 { b } else if let v = toggle(b, n - 1) { !v } else { None }
+}
+
+fn countdown(n: i64) -> i64? {
+    if n > 0 { n - 1 } else { None }
+}
+
+// Prints `x` and returns it: it shows whether an operand ran.
+fn loud(x: i64) -> i64 {
+    print(x)
+    x
+}
+
+// Prints `x` and returns a new object.
+fn loud_object(x: i64) -> E {
+    print(x)
+    E()
+}
+
+// `i64?` and `bool?` in locals, fields, arguments and returns, `None` included.
+fn scalar_calls() {
+    let a = some(1)
+    let b = none()
+    var c: i64? = None
+    c = 3
+    print(a ?? 0)
+    print(b ?? -1)
+    print(c ?? 0)
+    let p = P(n: a, b: flip(true), e: None)
+    print(p.n ?? 0)
+    print(p.b ?? true)
+    p.n = None
+    print(p.get() ?? 7)
+    print(flip(None) == None)
+    print(root_above(1, 100, 50) ?? 0)
+    print(root_above(1, 5, 50) ?? 0)
+    print(climb(5, 3) ?? 0)
+    print(climb(None, 2) ?? -1)
+    print(toggle(true, 3) ?? true)
+    print(toggle(None, 2) == None)
+    var k: i64? = 3
+    while let v = k {
+        print(v)
+        k = countdown(v)
+    }
+}
+
+// `??` runs its right side only for `None`, on scalars and objects.
+fn coalesce() {
+    let a: i64? = 5
+    print(a ?? loud(100))
+    let b: i64? = None
+    print(b ?? loud(200))
+    print(b ?? b ?? 9)
+    let e: E? = E()
+    let f = e ?? loud_object(500)
+    let g: E? = None
+    let h = g ?? loud_object(600)
+}
+
+// `?.` evaluates its arguments only when the receiver holds a value.
+fn safe_calls() {
+    let none: P? = None
+    none?.say(loud(300))
+    let p: P? = P(n: 4, b: None, e: E())
+    p?.say(loud(400))
+    print(p?.n ?? 0)
+    print(none?.n ?? 0)
+    print(p?.get() == 4)
+    print(p?.e == None)
+    print(none?.e == None)
+    print(p?.me()?.n ?? 0)
+    print(none?.me() == None)
+    let o: Pt? = Pt(x: 6, y: None, tag: None)
+    print(o?.x ?? 0)
+}
+
+fn equality() {
+    let a: i64? = 1
+    let b: i64? = 1
+    let n: i64? = None
+    print(a == b)
+    print(a == n)
+    print(n == None)
+    print(a != None)
+    print(a == 1)
+    print(n != 2)
+    let t: bool? = true
+    print(t == false)
+    let p = Pt(x: 1, y: 2, tag: Tag(k: 1))
+    let q = Pt(x: 1, y: 2, tag: Tag(k: 1))
+    print(p == q)
+    print(p == Pt(x: 1, y: None, tag: Tag(k: 1)))
+    print(p != Pt(x: 1, y: 2, tag: None))
+    print(p == Pt(x: 2, y: 2, tag: Tag(k: 1)))
+    print(p == Pt(x: 1, y: 2, tag: Tag(k: 2)))
+    let o: Pt? = q
+    print(p == o)
+    let none: Pt? = None
+    print(none == None)
+    print(o == none)
+    print(p is p)
+    print(p is q)
+    print(o is q)
+    let m: Pt? = None
+    print(m is none)
+}
+
+// A class with no fields: two objects are equal, but not the same object.
+fn empty() {
+    print(E() == E())
+    print(E() is E())
+    print(E() != E())
+}
+
+// `==` and `is` interrupted by `return` after their counted left operand.
+fn spill_return(at: i64) -> i64 {
+    let same = E() == if at == 1 { return 1 } else { E() }
+    let ident = E() is if at == 2 { return 2 } else { E() }
+    if same && !ident { 3 } else { 4 }
+}
+
+fn main() {
+    scalar_calls()
+    coalesce()
+    safe_calls()
+    equality()
+    empty()
+    print(spill_return(1))
+    print(spill_return(2))
+    print(spill_return(0))
+}
