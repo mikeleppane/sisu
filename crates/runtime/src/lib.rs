@@ -45,12 +45,42 @@ pub unsafe extern "C" fn sisu_panic(msg: *const u8, len: usize) -> ! {
     // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
     // `from_raw_parts` requires for a `u8` slice.
     let bytes = unsafe { std::slice::from_raw_parts(msg, len) };
-    // `eprintln!` panics on a failed write, which would abort before exit code 101.
-    let _ = writeln!(
-        std::io::stderr(),
+    exit_with_panic(format_args!(
         "sisu: panic at {}",
         String::from_utf8_lossy(bytes)
-    );
+    ))
+}
+
+/// Prints `sisu: panic at <msg>: index <index> out of bounds for length <length>` to
+/// standard error and exits with code 101. Generated code calls this for a failed array
+/// index check; `msg` is the source location of the index expression.
+///
+/// # Safety
+///
+/// `msg` and `len` meet the same contract as for [`sisu_panic`].
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name and passes a raw pointer"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_panic_bounds(
+    msg: *const u8,
+    len: usize,
+    index: i64,
+    length: i64,
+) -> ! {
+    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
+    // `from_raw_parts` requires for a `u8` slice.
+    let bytes = unsafe { std::slice::from_raw_parts(msg, len) };
+    exit_with_panic(format_args!(
+        "sisu: panic at {}: index {index} out of bounds for length {length}",
+        String::from_utf8_lossy(bytes)
+    ))
+}
+
+fn exit_with_panic(message: std::fmt::Arguments<'_>) -> ! {
+    // `eprintln!` panics on a failed write, which would abort before exit code 101.
+    let _ = writeln!(std::io::stderr(), "{message}");
     std::process::exit(101)
 }
 
@@ -103,11 +133,12 @@ pub unsafe extern "C" fn sisu_free(ptr: *mut u8, size: usize, align: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sisu_alloc, sisu_free};
+    use super::{sisu_alloc, sisu_free, sisu_panic_bounds};
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
 
     const ABORT_CASE_VAR: &str = "SISU_RUNTIME_ABORT_CASE";
+    const PANIC_BOUNDS_VAR: &str = "SISU_RUNTIME_PANIC_BOUNDS";
     const SIGABRT: i32 = 6;
 
     #[expect(
@@ -157,6 +188,35 @@ mod tests {
         };
         sisu_alloc(size, align);
         // Reached only if `sisu_alloc` returned: exit normally so the parent sees no signal.
+    }
+
+    /// Child entry point for `panic_bounds_exits_101_when_stderr_fails`; a no-op unless the
+    /// parent set the env var.
+    #[expect(unsafe_code, reason = "the test calls an unsafe extern function")]
+    #[test]
+    fn panic_bounds_child() {
+        if std::env::var(PANIC_BOUNDS_VAR).is_err() {
+            return;
+        }
+        let msg = "f.sisu:3:7";
+        // SAFETY: `msg` is non-null, readable for `msg.len()` bytes, and not written to.
+        unsafe { sisu_panic_bounds(msg.as_ptr(), msg.len(), 7, 5) };
+    }
+
+    #[test]
+    fn panic_bounds_exits_101_when_stderr_fails() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .expect("/dev/full should exist on Linux");
+        let status = Command::new(exe)
+            .args(["--exact", "tests::panic_bounds_child", "--nocapture"])
+            .env(PANIC_BOUNDS_VAR, "1")
+            .stderr(full)
+            .status()
+            .expect("spawn child test");
+        assert_eq!(status.code(), Some(101), "child exited with {status:?}");
     }
 
     fn assert_child_aborts(case: &str) {
