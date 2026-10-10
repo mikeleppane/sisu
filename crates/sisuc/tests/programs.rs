@@ -359,7 +359,7 @@ fn fill_call_survives_o2() {
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
 const ALLOCATIONS: [(&str, &str, &str, i64); 3] = [
-    // `big = fill(big, i)` writes in place.
+    // `big = fill(big, i, 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
     ("copies", "499500\n1000\n", "0\n0\n", 1000),

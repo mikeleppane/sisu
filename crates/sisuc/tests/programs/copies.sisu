@@ -2,8 +2,10 @@ fn iterations() -> i64 { 1000 }
 
 // Same `fill` as `handover.sisu`, recursive so that the `-O2` build keeps the call.
 fn fill(xs: [i64], v: i64, depth: i64) -> [i64] {
-    if depth == 0 { return xs }
-    var ys = fill(xs, v, depth - 1)
+    var ys = xs
+    if depth > 0 {
+        ys = fill(ys, v, depth - 1)
+    }
     ys[0] = v
     ys
 }
