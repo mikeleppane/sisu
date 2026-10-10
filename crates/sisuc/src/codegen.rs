@@ -99,7 +99,8 @@ enum Slot<'ctx> {
     Alloca(PointerValue<'ctx>, BasicTypeEnum<'ctx>),
 }
 
-/// An open `loop`: `Break` branches to `end`, a body that falls through back to `body`.
+/// An open `loop`: `Break` branches to `end`, `Continue` and a body that falls through
+/// branch back to `body`.
 struct LoopFrame<'ctx> {
     body: BasicBlock<'ctx>,
     end: BasicBlock<'ctx>,

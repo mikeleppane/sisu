@@ -316,6 +316,23 @@ fn emit_ir_raw_parses_back() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains("; before"));
 }
 
+#[test]
+fn emit_ir_raw_is_the_ir_before_mem2reg() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
+    let emit = |stage| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(dir)
+            .args(["--emit", stage, "loops.sisu"])
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(out.status.code(), Some(0));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let (ir, raw) = (emit("ir"), emit("ir-raw"));
+    let (before, _) = ir_sections(&ir);
+    assert_eq!(raw.trim_end(), before.trim_end());
+}
+
 const SQUARE: &str =
     "fn sq(n: i64) -> i64 {\n    n * n\n}\n\nfn main() {\n    print(sq(3) + 4)\n}\n";
 

@@ -83,7 +83,12 @@ fn assert_prints_out_file(name: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 
-    for exe in [exe, compile(Path::new(PROGRAMS), name, true)] {
+    let o2 = compile(Path::new(PROGRAMS), name, true);
+    assert!(
+        fs::read(&exe).expect("reads plain build") != fs::read(&o2).expect("reads -O2 build"),
+        "{name}: -O2 build is identical to the plain build"
+    );
+    for exe in [exe, o2] {
         let checked = valgrind(&exe);
         let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
         assert_eq!(
@@ -153,40 +158,48 @@ fn bool_var() {
     assert_prints_out_file("bool_var");
 }
 
-#[test]
-fn overflow() {
-    assert_panics(
-        &run("overflow", false),
+/// Each panicking program with its expected stdout and panic line.
+const PANICS: [(&str, &str, &str); 3] = [
+    (
+        "overflow",
         "1\n",
         "sisu: panic at overflow.sisu:4:11: integer overflow\n",
-    );
-}
+    ),
+    (
+        "div_zero",
+        "",
+        "sisu: panic at div_zero.sisu:2:5: division by zero\n",
+    ),
+    (
+        "div_overflow",
+        "",
+        "sisu: panic at div_overflow.sisu:3:13: integer overflow\n",
+    ),
+];
 
 #[test]
-fn panics_survive_o2() {
-    assert_panics(
-        &run("overflow", true),
-        "1\n",
-        "sisu: panic at overflow.sisu:4:11: integer overflow\n",
-    );
+fn overflow() {
+    let (name, stdout, stderr) = PANICS[0];
+    assert_panics(&run(name, false), stdout, stderr);
 }
 
 #[test]
 fn div_zero() {
-    assert_panics(
-        &run("div_zero", false),
-        "",
-        "sisu: panic at div_zero.sisu:2:5: division by zero\n",
-    );
+    let (name, stdout, stderr) = PANICS[1];
+    assert_panics(&run(name, false), stdout, stderr);
 }
 
 #[test]
 fn div_overflow() {
-    assert_panics(
-        &run("div_overflow", false),
-        "",
-        "sisu: panic at div_overflow.sisu:3:13: integer overflow\n",
-    );
+    let (name, stdout, stderr) = PANICS[2];
+    assert_panics(&run(name, false), stdout, stderr);
+}
+
+#[test]
+fn panics_survive_o2() {
+    for (name, stdout, stderr) in PANICS {
+        assert_panics(&run(name, true), stdout, stderr);
+    }
 }
 
 /// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu` and compiles it from there.
