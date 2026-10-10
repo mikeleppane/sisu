@@ -25,4 +25,34 @@ fn main() {
         a += 1
     }
     print(pairs)
+    var c = 0
+    while if c >= 3 { break } else { c < 10 } {
+        c += 1
+    }
+    print(c)
+    var k = 0
+    var t = 0
+    while if k < 3 { k += 1
+        continue } else { k < 5 } {
+        k += 1
+        t += 10
+    }
+    print(k)
+    print(t)
+    var x = 0
+    var s = 0
+    while x < 4 {
+        x += 1
+        var y = 0
+        while y < 3 {
+            y += 1
+            if y == 2 { continue }
+            s += 1
+        }
+        if x == 2 { continue }
+        s += 100
+        if x == 3 { break }
+    }
+    print(s)
+    print(x)
 }
