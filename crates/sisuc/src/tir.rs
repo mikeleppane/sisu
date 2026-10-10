@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn prints_functions_joined_by_newline() {
         // fn first() { return }
-        // fn second(a: i64, ok: bool) -> bool { first(); ok && a == 3 && a < 4 }
+        // fn second(a: i64, ok: bool) -> bool { first(); ok && (a == 3 && a < 4) }
         let first = Function {
             name: "first".into(),
             params: vec![],

@@ -13,6 +13,12 @@ use crate::tir::{self, Type};
 /// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
 /// still known (an `if` with one failed branch takes the other's), else it is the poison
 /// type `Error`, which matches every type and draws no further diagnostic.
+///
+/// Poison spreads to sibling operands by one rule. For a homogeneous operator (`+ - * / %
+/// && ||`, comparison chains), once an operand is `Error` the later operands are still
+/// checked for their own errors but not against the operator's type. Call and constructor
+/// arguments are each checked against their own parameter, so one bad argument does not
+/// excuse another.
 struct Poisoned {
     ty: Option<Type>,
 }
@@ -82,6 +88,10 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         .collect::<Option<_>>()
         .filter(|_| !failed)
         .map(|functions| tir::Program { functions });
+    debug_assert!(
+        program.is_some() || failed,
+        "a missing program implies an error diagnostic"
+    );
     (program, diagnostics)
 }
 
@@ -532,6 +542,54 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_call_resolves_to_first() {
+        errors(
+            "fn f(a: i64) -> i64 { a }\nfn f(b: bool) -> bool { b }\nfn main() {\n    print(f(1))\n}",
+            &[("function `f` is defined twice", (2, 4))],
+        );
+    }
+
+    #[test]
+    fn duplicate_let_keeps_first() {
+        errors(
+            "fn main() {\n    let x = 1\n    let x = true\n    print(x + 1)\n}",
+            &[("`x` is already declared in this scope", (3, 9))],
+        );
+    }
+
+    #[test]
+    fn failed_call_still_checks_arguments() {
+        const MISMATCH: &str = "expected `i64`, found `bool`";
+        let rows = [
+            (
+                "unknown function",
+                "fn main() {\n    g(1 + true)\n}",
+                vec![("cannot find function `g`", (2, 5)), (MISMATCH, (2, 11))],
+            ),
+            (
+                "arity",
+                "fn f(a: i64) {}\nfn main() {\n    f(1 + true, 2)\n}",
+                vec![
+                    ("`f` takes 1 argument, found 2", (3, 5)),
+                    (MISMATCH, (3, 11)),
+                ],
+            ),
+            (
+                "print arity",
+                "fn main() {\n    print(1 + true, 2)\n}",
+                vec![
+                    ("`print` takes one `i64` or `bool`", (2, 5)),
+                    (MISMATCH, (2, 15)),
+                ],
+            ),
+        ];
+        for (name, src, expected) in rows {
+            println!("row: {name}");
+            errors(src, &expected);
+        }
+    }
+
+    #[test]
     fn duplicate_body_still_checked() {
         errors(
             "fn f() {}\nfn f() { print(nope) }\nfn main() {}",
@@ -575,7 +633,7 @@ mod tests {
     fn failed_rule_makes_its_expression_error() {
         const MISMATCH: &str = "expected `i64`, found `bool`";
         const F: &str = "fn f(a: i64) -> i64 { a }\n";
-        let rows: [(&str, String, &str, (usize, usize)); 11] = [
+        let rows: [(&str, String, &str, (usize, usize)); 12] = [
             (
                 "unary",
                 "fn main() {\n    let x = -true\n    print(x == false)\n}".into(),
@@ -629,6 +687,13 @@ mod tests {
                 "fn main() {\n    let x = print(print(1))\n    print(x)\n}".into(),
                 "`print` takes one `i64` or `bool`",
                 (2, 13),
+            ),
+            (
+                "if branches",
+                "fn main() {\n    let x = if true { 1 } else { false }\n    print(x == false)\n}"
+                    .into(),
+                MISMATCH,
+                (2, 34),
             ),
             (
                 "if condition with else",
