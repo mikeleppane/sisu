@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::expr::operator;
 use super::{
-    Binding, BindingKind, CheckedBlock, Checker, Poisoned, block_expr, not_found, type_of,
+    Binding, BindingKind, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, not_found, type_of,
 };
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{Diagnostic, Span};
@@ -13,19 +13,25 @@ use crate::tir::{self, ExprKind, Type};
 impl Checker {
     /// `never` once a statement is `never`, else the type of the last statement (`unit` when
     /// there is none). Warns "unreachable code" on the first statement after a `never` one.
-    /// Every statement is checked, also after one fails.
-    pub(super) fn block(&mut self, block: &ast::Block) -> CheckedBlock {
+    /// Every statement is checked, also after one fails. `expected` is for the block's value.
+    pub(super) fn block(&mut self, block: &ast::Block, expected: Option<&Type>) -> CheckedBlock {
         self.scopes.push(HashMap::new());
+        self.scoped_block(block, expected)
+    }
+
+    /// `block`, in the scope just opened for it, which it closes.
+    fn scoped_block(&mut self, block: &ast::Block, expected: Option<&Type>) -> CheckedBlock {
         let mut stmts = Vec::new();
         let mut ty = Some(Type::Unit);
-        let (mut failed, mut warned) = (false, false);
-        for stmt in &block.stmts {
+        let (mut failed, mut warned, mut mismatch) = (false, false, false);
+        for (i, stmt) in block.stmts.iter().enumerate() {
             if ty == Some(Type::Never) && !warned {
                 self.diagnostics
                     .push(Diagnostic::warning(stmt.span, "unreachable code"));
                 warned = true;
             }
-            let stmt_ty = match self.stmt(stmt) {
+            let last = i + 1 == block.stmts.len();
+            let stmt_ty = match self.stmt(stmt, expected.filter(|_| last)) {
                 Ok(stmt) => {
                     let ty = stmt_type(&stmt);
                     stmts.push(stmt);
@@ -33,6 +39,7 @@ impl Checker {
                 }
                 Err(poisoned) => {
                     failed = true;
+                    mismatch = last && poisoned.mismatch;
                     poisoned.ty
                 }
             };
@@ -43,7 +50,11 @@ impl Checker {
         self.pop_scope();
         let ty = match ty {
             Some(ty) if !failed => ty,
-            ty => return Err(Poisoned { ty }),
+            // A tail that rejected `expected` fails the block, unless a `never` came first.
+            ty => {
+                let mismatch = mismatch && ty.is_none();
+                return Err(Poisoned { ty, mismatch });
+            }
         };
         let ends_in_expr = matches!(
             block.stmts.last(),
@@ -62,11 +73,9 @@ impl Checker {
         Ok(tir::Block { stmts, value, ty })
     }
 
-    /// The statement, or its type when it failed.
-    fn stmt(&mut self, stmt: &ast::Stmt) -> Result<tir::Stmt, Poisoned> {
-        let unit = || Poisoned {
-            ty: Some(Type::Unit),
-        };
+    /// The statement, or its type when it failed. `expected` is for an expression statement.
+    fn stmt(&mut self, stmt: &ast::Stmt, expected: Option<&Type>) -> Result<tir::Stmt, Poisoned> {
+        let unit = || Poisoned::typed(Type::Unit);
         match &stmt.kind {
             StmtKind::Let {
                 mutable,
@@ -77,7 +86,7 @@ impl Checker {
                 let declared = ty.as_ref().map(|ty| self.resolve(ty));
                 let init = match &declared {
                     Some(declared) => self.expect(init, declared.as_ref()),
-                    None => self.value(init),
+                    None => self.value(init, None),
                 };
                 // The initializer's type, which a failed one keeps only while it is still
                 // known (`if` with one failed branch); an unknown declared type is `Error`.
@@ -99,12 +108,39 @@ impl Checker {
             StmtKind::While { cond, body } => {
                 self.loop_depth += 1;
                 let cond = self.expect(cond, Some(&Type::Bool));
-                let body = self.block(body);
+                let body = self.block(body, None);
                 self.loop_depth -= 1;
                 let (Ok(cond), Ok(body)) = (cond, body) else {
                     return Err(unit());
                 };
-                Ok(tir::Stmt::Expr(lower_while(cond, body, stmt.span)))
+                Ok(tir::Stmt::Expr(lower_loop(
+                    body,
+                    stmt.span,
+                    |then_block, exit| ExprKind::If {
+                        cond: Box::new(cond),
+                        then_block,
+                        else_block: Some(exit),
+                    },
+                )))
+            }
+            StmtKind::WhileLet { name, value, body } => {
+                self.loop_depth += 1;
+                let (scrutinee, bound, _) = self.unwrapped("while let", value);
+                let (bind, body) = self.unwrapping_block("while let", name, bound, body, None);
+                self.loop_depth -= 1;
+                let (Ok(scrutinee), Ok(body)) = (scrutinee, body) else {
+                    return Err(unit());
+                };
+                Ok(tir::Stmt::Expr(lower_loop(
+                    body,
+                    stmt.span,
+                    |then_block, exit| ExprKind::IfSome {
+                        bind,
+                        scrutinee: Box::new(scrutinee),
+                        then_block,
+                        else_block: Some(exit),
+                    },
+                )))
             }
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
@@ -139,7 +175,7 @@ impl Checker {
                 };
                 self.assign(stmt.span, target, &value)
             }
-            StmtKind::Expr(e) => self.expr(e).map(tir::Stmt::Expr),
+            StmtKind::Expr(e) => self.expr(e, expected).map(tir::Stmt::Expr),
         }
     }
 
@@ -149,9 +185,7 @@ impl Checker {
         span: Span,
         value: Option<&ast::Expr>,
     ) -> Result<tir::Stmt, Poisoned> {
-        let never = || Poisoned {
-            ty: Some(Type::Never),
-        };
+        let never = || Poisoned::typed(Type::Never);
         let value = match value {
             None => match &self.ret {
                 Some(ret) if *ret != Type::Unit => {
@@ -165,7 +199,7 @@ impl Checker {
                 _ => None,
             },
             Some(value) if self.ret == Some(Type::Unit) => {
-                if type_of(&self.value(value)).is_some() {
+                if type_of(&self.value(value, None)).is_some() {
                     self.diagnostics.push(Diagnostic::error(
                         value.span,
                         "this function returns no value",
@@ -193,9 +227,7 @@ impl Checker {
                 span,
                 format!("`{keyword}` outside a loop"),
             ));
-            return Err(Poisoned {
-                ty: Some(Type::Never),
-            });
+            return Err(Poisoned::typed(Type::Never));
         }
         Ok(tir::Stmt::Expr(tir::Expr {
             kind,
@@ -239,6 +271,9 @@ impl Checker {
                                 target.name
                             )),
                     ),
+                    BindingKind::Unwrapped(keyword) => self.diagnostics.push(
+                        cannot_assign().secondary(declared, format!("bound by `{keyword}` here")),
+                    ),
                 }
                 (Some(local), ty)
             }
@@ -249,9 +284,7 @@ impl Checker {
                 place: tir::Place::Local(local),
                 value,
             }),
-            _ => Err(Poisoned {
-                ty: Some(Type::Unit),
-            }),
+            _ => Err(Poisoned::typed(Type::Unit)),
         }
     }
 
@@ -263,8 +296,9 @@ impl Checker {
         name: &ast::Ident,
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
-        let base = self.value(base);
-        let field = self.find_field(type_of(&base), name);
+        let receiver = base;
+        let base = self.value(base, None);
+        let field = self.find_field(type_of(&base), receiver, name);
         let (want, writable) = match field {
             Some((class, index)) => self.assignable(span, class, index),
             None => (None, false),
@@ -274,9 +308,7 @@ impl Checker {
             (Ok(base), Some((_, index)), Ok(value)) if writable => {
                 Ok(self.field_assign(span, base, index, value))
             }
-            _ => Err(Poisoned {
-                ty: Some(Type::Unit),
-            }),
+            _ => Err(Poisoned::typed(Type::Unit)),
         }
     }
 
@@ -290,14 +322,12 @@ impl Checker {
         name: &ast::Ident,
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
-        let unit = || Poisoned {
-            ty: Some(Type::Unit),
-        };
-        let base_span = base.span;
-        let base = self.value(base);
-        let Some((class, index)) = self.find_field(type_of(&base), name) else {
+        let unit = || Poisoned::typed(Type::Unit);
+        let receiver = base;
+        let base = self.value(base, None);
+        let Some((class, index)) = self.find_field(type_of(&base), receiver, name) else {
             // Only its own mistakes are left to report.
-            let _ = self.expr(value);
+            let _ = self.expr(value, Some(&UNKNOWN));
             return Err(unit());
         };
         let (field_ty, writable) = self.assignable(span, class, index);
@@ -306,7 +336,7 @@ impl Checker {
         let temp_read = || tir::Expr {
             kind: ExprKind::Local(temp),
             ty: Type::Class(class),
-            span: base_span,
+            span: receiver.span,
         };
         let read = match field_ty {
             Some(ty) => Ok(tir::Expr {
@@ -317,7 +347,7 @@ impl Checker {
                 ty,
                 span: target,
             }),
-            None => Err(Poisoned { ty: None }),
+            None => Err(Poisoned::error()),
         };
         let read = self.against(target, read, Some(&want));
         let value = self.arithmetic(span, op, want, read, value);
@@ -332,6 +362,22 @@ impl Checker {
             self.field_assign(span, temp_read(), index, value),
         ];
         Ok(tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span)))
+    }
+
+    /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let` or
+    /// `while let`) binds it: the block cannot declare `name` again. The bound local, and the
+    /// block.
+    pub(super) fn unwrapping_block(
+        &mut self,
+        keyword: &'static str,
+        name: &ast::Ident,
+        ty: Option<Type>,
+        block: &ast::Block,
+        expected: Option<&Type>,
+    ) -> (tir::LocalId, CheckedBlock) {
+        self.scopes.push(HashMap::new());
+        let bind = self.declare(name, ty, BindingKind::Unwrapped(keyword));
+        (bind, self.scoped_block(block, expected))
     }
 
     /// The type of field `index` of `class`, which `span` assigns, and whether it may be
@@ -489,24 +535,22 @@ fn stmt_type(stmt: &tir::Stmt) -> Type {
     }
 }
 
-/// `while c { b }` is `Loop { If c { b } else { Break } }`.
-fn lower_while(cond: tir::Expr, body: tir::Block, span: Span) -> tir::Expr {
+/// `while c { b }` is `Loop { If c { b } else { Break } }`, and `while let` the same with an
+/// `IfSome`: `branch` makes that node of the body and the `Break` block.
+fn lower_loop(
+    body: tir::Block,
+    span: Span,
+    branch: impl FnOnce(tir::Block, tir::Block) -> ExprKind,
+) -> tir::Expr {
     let expr = |kind, ty| tir::Expr { kind, ty, span };
     let exit = tir::Block {
         stmts: vec![tir::Stmt::Expr(expr(ExprKind::Break, Type::Never))],
         value: None,
         ty: Type::Never,
     };
-    // The `else` branch is `never`, so the `if` has the body's type.
+    // The `else` branch is `never`, so the branch has the body's type.
     let ty = body.ty.clone();
-    let branch = expr(
-        ExprKind::If {
-            cond: Box::new(cond),
-            then_block: body,
-            else_block: Some(exit),
-        },
-        ty.clone(),
-    );
+    let branch = expr(branch(body, exit), ty.clone());
     let looped = tir::Block {
         stmts: Vec::new(),
         value: Some(Box::new(branch)),

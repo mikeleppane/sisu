@@ -2,6 +2,7 @@
 //! prints the right output or panics with the right message.
 
 use std::fs::{self, File};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -173,6 +174,64 @@ fn field_order() {
     assert_prints_out_file("field_order");
 }
 
+#[test]
+fn unwrap() {
+    assert_prints_out_file("unwrap");
+}
+
+#[test]
+fn list() {
+    assert_prints_out_file("list");
+}
+
+#[test]
+fn drops() {
+    assert_prints_out_file("drops");
+}
+
+/// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
+fn run_in_small_stack(name: &str) -> Output {
+    let exe = compile(Path::new(PROGRAMS), name, false);
+    Command::new("sh")
+        .args(["-c", r#"ulimit -c 0 && ulimit -s 256 && exec "$0""#])
+        .arg(exe)
+        .output()
+        .expect("sh starts")
+}
+
+/// Runs `<name>.sisu` under the small stack and checks that it exits 0 and prints `expected`.
+fn assert_small_stack_prints(name: &str, expected: &str) {
+    let out = run_in_small_stack(name);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{:?}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+}
+
+#[test]
+fn longlist_frees_in_constant_stack() {
+    assert_small_stack_prints("longlist", "1000000\n");
+}
+
+#[test]
+fn right_skewed_tree_frees_in_constant_stack() {
+    assert_small_stack_prints("rightskew", "1000000\n");
+}
+
+/// The control for `longlist_frees_in_constant_stack`: a drop that recurses once per object
+/// overflows the same stack, so the limit is in force.
+#[test]
+fn deepchain_overflows_the_same_stack() {
+    let out = run_in_small_stack("deepchain");
+    assert_eq!(out.status.signal(), Some(11), "{:?}", out.status);
+    // It dies in the drop, after `print`: stdout is line-buffered.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+}
+
 /// Each panicking program with its expected stdout and panic line.
 const PANICS: [(&str, &str, &str); 3] = [
     (
@@ -269,6 +328,27 @@ fn panic_cases() {
             &format!("sisu: panic at {name}.sisu:{position_and_message}\n"),
         );
     }
+}
+
+/// Proves the harness catches a leak: an object that refers to itself is never freed.
+/// Building the cycle in a callee keeps the pointer out of `main`'s registers.
+#[test]
+fn valgrind_reports_a_cycle() {
+    let exe = compile_tmp(
+        "cycle",
+        "class Node {\n    var next: Node?\n}\n\nfn leak() {\n    let a = Node(next: None)\n    a.next = a\n}\n\nfn main() {\n    leak()\n    print(1)\n}\n",
+    );
+    let out = Command::new(&exe).output().expect("the program starts");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+    let checked = valgrind(&exe);
+    let stderr = String::from_utf8_lossy(&checked.stderr);
+    assert_eq!(checked.status.code(), Some(1), "{stderr}");
+    // A loss record, not the summary line, which also prints `definitely lost: 0 bytes`.
+    assert!(
+        stderr.contains("are definitely lost") || stderr.contains("are indirectly lost"),
+        "{stderr}"
+    );
 }
 
 #[test]

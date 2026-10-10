@@ -1,0 +1,22 @@
+// A list of 1 000 000 nodes, run under a 256 KiB stack. Its drop follows `next` in a loop,
+// in one frame; a recursive drop needs a frame per node and overflows that stack.
+class Node {
+    let value: i64
+    let next: Node?
+}
+
+fn main() {
+    var head: Node? = None
+    var i = 0
+    while i < 1_000_000 {
+        i += 1
+        head = Node(value: i, next: head)
+    }
+    var length = 0
+    var node = head
+    while let n = node {
+        length += 1
+        node = n.next
+    }
+    print(length)
+}
