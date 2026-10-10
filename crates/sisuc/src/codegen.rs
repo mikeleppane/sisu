@@ -27,6 +27,10 @@ pub(crate) fn compile<'ctx>(
     path: &str,
     source: &str,
 ) -> Module<'ctx> {
+    assert!(
+        program.classes.is_empty(),
+        "codegen for classes lands in Task 13"
+    );
     let module = context.create_module("main");
     let i64_type = context.i64_type();
     let void = context.void_type();
@@ -130,6 +134,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
+            Type::Class(_) => panic!("codegen for classes lands in Task 13"),
         }
     }
 
@@ -262,6 +267,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 };
                 self.store(ptr, value);
             }
+            Stmt::Assign {
+                place: Place::Field { .. },
+                ..
+            } => panic!("codegen for classes lands in Task 13"),
             Stmt::Expr(e) => {
                 self.expr(e);
             }
@@ -362,6 +371,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .body;
                 self.branch_to(body);
                 return None;
+            }
+            ExprKind::New { .. } | ExprKind::Field { .. } | ExprKind::Block(_) => {
+                panic!("codegen for classes lands in Task 13")
             }
             ExprKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| self.expr(e));

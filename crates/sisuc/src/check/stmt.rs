@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use super::expr::operator;
 use super::{Binding, BindingKind, CheckedBlock, Checker, Poisoned, not_found, type_of};
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{Diagnostic, Span};
@@ -106,10 +107,16 @@ impl Checker {
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
-            StmtKind::Assign { target, value } => {
-                self.assign(stmt.span, &place_name(target), value)
-            }
+            StmtKind::Assign { target, value } => match &target.kind {
+                ast::ExprKind::Field { base, name } => {
+                    self.assign_field(stmt.span, base, name, value)
+                }
+                _ => self.assign(stmt.span, &place_name(target), value),
+            },
             StmtKind::CompoundAssign { op, target, value } => {
+                if let ast::ExprKind::Field { base, name } = &target.kind {
+                    return self.compound_field(stmt.span, *op, target.span, base, name, value);
+                }
                 let target = &place_name(target);
                 // `assign` already reports an unknown target; a synthetic read would repeat it.
                 if self.lookup(&target.name).is_none() {
@@ -246,6 +253,131 @@ impl Checker {
         }
     }
 
+    /// `base.name = value`; a `let` field is reported, and `value` still checked.
+    fn assign_field(
+        &mut self,
+        span: Span,
+        base: &ast::Expr,
+        name: &ast::Ident,
+        value: &ast::Expr,
+    ) -> Result<tir::Stmt, Poisoned> {
+        let base = self.value(base);
+        let field = self.find_field(type_of(&base), name);
+        let (want, writable) = match field {
+            Some((class, index)) => self.assignable(span, class, index),
+            None => (None, false),
+        };
+        let value = self.expect(value, want.as_ref());
+        match (base, field, value) {
+            (Ok(base), Some((_, index)), Ok(value)) if writable => Ok(tir::Stmt::Assign {
+                place: tir::Place::Field { base, index },
+                value,
+            }),
+            _ => Err(Poisoned {
+                ty: Some(Type::Unit),
+            }),
+        }
+    }
+
+    /// `a.f op= e` is `Block { let t = a; Assign { t.f, t.f op e } }`, so `a` runs once.
+    fn compound_field(
+        &mut self,
+        span: Span,
+        op: ast::BinaryOp,
+        target: Span,
+        base: &ast::Expr,
+        name: &ast::Ident,
+        value: &ast::Expr,
+    ) -> Result<tir::Stmt, Poisoned> {
+        let unit = || Poisoned {
+            ty: Some(Type::Unit),
+        };
+        let base_span = base.span;
+        let base = self.value(base);
+        let Some((class, index)) = self.find_field(type_of(&base), name) else {
+            // Only its own mistakes are left to report.
+            let _ = self.expr(value);
+            return Err(unit());
+        };
+        let (field_ty, writable) = self.assignable(span, class, index);
+        let (op, want) = operator(op).expect("the parser makes only arithmetic compound operators");
+        let temp = self.fresh(Type::Class(class));
+        let temp_read = || tir::Expr {
+            kind: ExprKind::Local(temp),
+            ty: Type::Class(class),
+            span: base_span,
+        };
+        let read = match field_ty {
+            Some(ty) => Ok(tir::Expr {
+                kind: ExprKind::Field {
+                    base: Box::new(temp_read()),
+                    index,
+                },
+                ty,
+                span: target,
+            }),
+            None => Err(Poisoned { ty: None }),
+        };
+        let read = self.against(target, read, Some(&want));
+        let value = self.arithmetic(span, op, want, read, value);
+        let (Ok(base), Ok(value), true) = (base, value, writable) else {
+            return Err(unit());
+        };
+        let block = tir::Block {
+            stmts: vec![
+                tir::Stmt::Let {
+                    local: temp,
+                    init: base,
+                },
+                tir::Stmt::Assign {
+                    place: tir::Place::Field {
+                        base: temp_read(),
+                        index,
+                    },
+                    value,
+                },
+            ],
+            value: None,
+            ty: Type::Unit,
+        };
+        Ok(tir::Stmt::Expr(tir::Expr {
+            kind: ExprKind::Block(block),
+            ty: Type::Unit,
+            span,
+        }))
+    }
+
+    /// The type of field `index` of `class`, which `span` assigns, and whether it may be
+    /// assigned: a `let` field is reported.
+    fn assignable(
+        &mut self,
+        span: Span,
+        class: tir::ClassId,
+        index: usize,
+    ) -> (Option<Type>, bool) {
+        let field = &self.classes[class.0].fields[index];
+        if !field.mutable {
+            let d = Diagnostic::error(span, format!("cannot assign to `{}`", field.name.name))
+                .secondary(field.name.span, "declared with `let` here")
+                .help("declare it with `var`");
+            let ty = field.ty.clone();
+            self.diagnostics.push(d);
+            return (ty, false);
+        }
+        (field.ty.clone(), true)
+    }
+
+    /// A new local with no source name, for a value the lowering binds.
+    fn fresh(&mut self, ty: Type) -> tir::LocalId {
+        let local = tir::LocalId(self.locals.len());
+        self.locals.push(tir::Local {
+            name: None,
+            ty,
+            mutable: false,
+        });
+        local
+    }
+
     /// Adds `name` to the innermost scope as a new local. A name already in that scope is
     /// reported and keeps its first binding.
     pub(super) fn declare(
@@ -340,13 +472,13 @@ fn lower_while(cond: tir::Expr, body: tir::Block, span: Span) -> tir::Expr {
     expr(ExprKind::Loop(looped), Type::Unit)
 }
 
-/// The variable a place names; a field place lands in Task 10.
+/// The variable a place names, when it is not a field.
 fn place_name(place: &ast::Expr) -> ast::Ident {
     match &place.kind {
         ast::ExprKind::Name(name) => ast::Ident {
             name: name.clone(),
             span: place.span,
         },
-        _ => panic!("classes land in Task 10"),
+        _ => unreachable!("the parser makes only a name or a field a place"),
     }
 }

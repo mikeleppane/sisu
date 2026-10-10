@@ -13,12 +13,16 @@ pub(crate) struct LocalId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FuncId(pub(crate) usize);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ClassId(pub(crate) usize);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Type {
     I64,
     Bool,
     Unit,
     Never,
+    Class(ClassId),
 }
 
 /// `==` and `!=` are `ExprKind::Equal`, comparisons are `ExprKind::Compare`.
@@ -35,7 +39,21 @@ pub(crate) enum BinaryOp {
 
 #[derive(Debug)]
 pub(crate) struct Program {
+    pub(crate) classes: Vec<Class>,
     pub(crate) functions: Vec<Function>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Class {
+    pub(crate) name: String,
+    pub(crate) fields: Vec<Field>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Field {
+    pub(crate) name: String,
+    pub(crate) ty: Type,
+    pub(crate) mutable: bool,
 }
 
 #[derive(Debug)]
@@ -73,6 +91,11 @@ pub(crate) enum Stmt {
 #[derive(Debug)]
 pub(crate) enum Place {
     Local(LocalId),
+    /// Field `index` of the class `base` has.
+    Field {
+        base: Expr,
+        index: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -90,6 +113,15 @@ pub(crate) enum ExprKind {
     Call {
         func: FuncId,
         args: Vec<Expr>,
+    },
+    New {
+        class: ClassId,
+        args: Vec<Expr>,
+    },
+    /// Field `index` of the class `base` has.
+    Field {
+        base: Box<Expr>,
+        index: usize,
     },
     Print(Box<Expr>),
     Unary {
@@ -119,6 +151,7 @@ pub(crate) enum ExprKind {
     Break,
     Continue,
     Return(Option<Box<Expr>>),
+    Block(Block),
 }
 
 impl fmt::Display for Type {
@@ -128,6 +161,8 @@ impl fmt::Display for Type {
             Type::Bool => "bool",
             Type::Unit => "unit",
             Type::Never => "never",
+            // A class's name lives in the program: `Program::type_name` prints it.
+            Type::Class(id) => return write!(f, "class#{}", id.0),
         })
     }
 }
@@ -187,12 +222,12 @@ impl Printer<'_> {
                 self.expr(f, init)?;
                 f.write_str(")")
             }
-            Stmt::Assign {
-                place: Place::Local(local),
-                value,
-            } => {
+            Stmt::Assign { place, value } => {
                 f.write_str("(= ")?;
-                self.local(f, *local)?;
+                match place {
+                    Place::Local(local) => self.local(f, *local)?,
+                    Place::Field { base, index } => self.field(f, base, *index)?,
+                }
                 f.write_str(" ")?;
                 self.expr(f, value)?;
                 f.write_str(")")
@@ -211,6 +246,12 @@ impl Printer<'_> {
                 self.each(f, args)?;
                 f.write_str(")")
             }
+            ExprKind::New { class, args } => {
+                write!(f, "(new {}", self.program.classes[class.0].name)?;
+                self.each(f, args)?;
+                f.write_str(")")
+            }
+            ExprKind::Field { base, index } => self.field(f, base, *index),
             ExprKind::Print(operand) => self.unary(f, "print", operand),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
@@ -253,7 +294,18 @@ impl Printer<'_> {
             ExprKind::Continue => f.write_str("(continue)"),
             ExprKind::Return(None) => f.write_str("(return)"),
             ExprKind::Return(Some(value)) => self.unary(f, "return", value),
+            ExprKind::Block(block) => self.block(f, block),
         }
+    }
+
+    /// `(. base name)`.
+    fn field(&self, f: &mut fmt::Formatter<'_>, base: &Expr, index: usize) -> fmt::Result {
+        let Type::Class(class) = base.ty else {
+            panic!("checked: a field's base is a class, not `{}`", base.ty)
+        };
+        f.write_str("(. ")?;
+        self.expr(f, base)?;
+        write!(f, " {})", self.program.classes[class.0].fields[index].name)
     }
 
     fn unary(&self, f: &mut fmt::Formatter<'_>, head: &str, operand: &Expr) -> fmt::Result {
@@ -285,12 +337,33 @@ impl Printer<'_> {
     }
 }
 
+impl Program {
+    /// A type as `--emit tir` prints it: a class by its name.
+    fn type_name(&self, ty: &Type) -> String {
+        match ty {
+            Type::Class(id) => self.classes[id.0].name.clone(),
+            ty => ty.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, function) in self.functions.iter().enumerate() {
-            if i > 0 {
-                f.write_str("\n")?;
+        // Classes first, then functions, one per line.
+        let mut separator = "";
+        for class in &self.classes {
+            write!(f, "{separator}(class {}", class.name)?;
+            for field in &class.fields {
+                let keyword = if field.mutable { "var" } else { "let" };
+                let ty = self.type_name(&field.ty);
+                write!(f, " ({keyword} {} {ty})", field.name)?;
             }
+            f.write_str(")")?;
+            separator = "\n";
+        }
+        for function in &self.functions {
+            f.write_str(separator)?;
+            separator = "\n";
             let printer = Printer {
                 program: self,
                 function,
@@ -302,9 +375,9 @@ impl fmt::Display for Program {
                 }
                 f.write_str("(")?;
                 printer.local(f, *param)?;
-                write!(f, " {})", function.locals[param.0].ty)?;
+                write!(f, " {})", self.type_name(&function.locals[param.0].ty))?;
             }
-            write!(f, ") {} ", function.ret)?;
+            write!(f, ") {} ", self.type_name(&function.ret))?;
             printer.block(f, &function.body)?;
             f.write_str(")")?;
         }
@@ -426,6 +499,7 @@ mod tests {
         let (if_stmt, looped) = if_and_loop();
         let ret = expr(ExprKind::Return(Some(Box::new(local(1)))), Type::Never);
         let program = Program {
+            classes: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
@@ -526,6 +600,7 @@ mod tests {
             },
         };
         let program = Program {
+            classes: vec![],
             functions: vec![first, second],
         };
         assert_eq!(
