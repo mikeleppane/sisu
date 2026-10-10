@@ -615,23 +615,32 @@ mod tests {
         line_col(src, span.start)
     }
 
-    /// Asserts exactly one error with these parts, and no `tir`; `secondary` is
-    /// `(line, col, text)` rows.
+    /// Asserts exactly one error and no `tir`, and returns it.
+    fn single_error(src: &str, message: &str) -> Diagnostic {
+        let (program, mut ds) = checked(src);
+        assert!(program.is_none(), "an error yields no `tir`");
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        let d = ds.remove(0);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.message, message);
+        d
+    }
+
+    /// Asserts exactly one error with these parts, and no `tir`; `pos` is `(line, col, text)`
+    /// of the whole primary span, `secondary` is `(line, col, text)` rows.
     fn expect_error(
         src: &str,
         message: &str,
-        pos: (usize, usize),
+        pos: (usize, usize, &str),
         label: Option<&str>,
         secondary: &[(usize, usize, &str)],
         help: Option<&str>,
     ) {
-        let (program, ds) = checked(src);
-        assert!(program.is_none(), "an error yields no `tir`");
-        assert_eq!(ds.len(), 1, "{ds:?}");
-        let d = &ds[0];
-        assert_eq!(d.severity, Severity::Error);
-        assert_eq!(d.message, message);
-        assert_eq!(at(src, d.span), pos);
+        let d = single_error(src, message);
+        assert_eq!(
+            (at(src, d.span), &src[d.span.start..d.span.end]),
+            ((pos.0, pos.1), pos.2)
+        );
         assert_eq!(d.label.as_deref(), label);
         let found: Vec<_> = d
             .secondary
@@ -647,7 +656,11 @@ mod tests {
 
     /// Asserts exactly one error with this message and position, and no label or help.
     fn error(src: &str, message: &str, pos: (usize, usize)) {
-        expect_error(src, message, pos, None, &[], None);
+        let d = single_error(src, message);
+        assert_eq!(at(src, d.span), pos);
+        assert_eq!(d.label, None);
+        assert!(d.secondary.is_empty(), "{:?}", d.secondary);
+        assert_eq!(d.help, None);
     }
 
     /// Asserts exactly one diagnostic: a warning with this message and position.
@@ -669,7 +682,7 @@ mod tests {
         expect_error(
             "fn main() {}\nfn main() {}",
             "function `main` is defined twice",
-            (2, 4),
+            (2, 4, "main"),
             None,
             &[(1, 4, "first defined here")],
             None,
@@ -681,7 +694,7 @@ mod tests {
         expect_error(
             "fn print() {}\nfn main() {}",
             "function `print` is defined twice",
-            (1, 4),
+            (1, 4, "print"),
             Some("`print` is built in"),
             &[],
             None,
@@ -691,7 +704,7 @@ mod tests {
     #[test]
     fn missing_main() {
         let src = "fn f() {}";
-        expect_error(src, "no `main` function", (1, 1), None, &[], None);
+        expect_error(src, "no `main` function", (1, 1, ""), None, &[], None);
         assert_eq!(diags(src)[0].span, Span::new(0, 0));
     }
 
@@ -700,7 +713,7 @@ mod tests {
         expect_error(
             "fn main(x: i64) {}",
             "`main` takes no parameters and returns no value",
-            (1, 4),
+            (1, 4, "main"),
             None,
             &[],
             None,
@@ -712,7 +725,7 @@ mod tests {
         expect_error(
             "fn main() -> i64 { 0 }",
             "`main` takes no parameters and returns no value",
-            (1, 4),
+            (1, 4, "main"),
             None,
             &[],
             None,
@@ -724,7 +737,7 @@ mod tests {
         expect_error(
             "fn main() { let x: str = 1 }",
             "unknown type `str`",
-            (1, 20),
+            (1, 20, "str"),
             None,
             &[],
             Some("the types are `i64`, `bool` and classes"),
@@ -736,7 +749,7 @@ mod tests {
         expect_error(
             "fn main() { print(y) }",
             "cannot find `y` in this scope",
-            (1, 19),
+            (1, 19, "y"),
             None,
             &[],
             None,
@@ -748,7 +761,7 @@ mod tests {
         expect_error(
             "fn main() { g() }",
             "cannot find function `g`",
-            (1, 13),
+            (1, 13, "g"),
             None,
             &[],
             None,
@@ -760,7 +773,7 @@ mod tests {
         expect_error(
             "fn main() {\n    let x = 1\n    let x = 2\n}",
             "`x` is already declared in this scope",
-            (3, 9),
+            (3, 9, "x"),
             None,
             &[(2, 9, "first declared here")],
             None,
@@ -772,7 +785,7 @@ mod tests {
         expect_error(
             "fn f(a: i64, a: i64) {}\nfn main() {}",
             "`a` is already declared in this scope",
-            (1, 14),
+            (1, 14, "a"),
             None,
             &[(1, 6, "first declared here")],
             None,
@@ -1176,7 +1189,7 @@ mod tests {
         expect_error(
             "fn f(a: str) {}\nfn main() {}",
             "unknown type `str`",
-            (1, 9),
+            (1, 9, "str"),
             None,
             &[],
             Some("the types are `i64`, `bool` and classes"),
@@ -1516,7 +1529,7 @@ mod tests {
         expect_error(
             src,
             "cannot assign to `n`",
-            (3, 5),
+            (3, 5, "n = 1"),
             Some("cannot assign twice"),
             &[(2, 9, "declared with `let` here")],
             Some("declare it with `var`"),
@@ -1539,7 +1552,7 @@ mod tests {
         expect_error(
             "fn main() {\n    let n = 0\n    n += 1\n}",
             "cannot assign to `n`",
-            (3, 5),
+            (3, 5, "n += 1"),
             Some("cannot assign twice"),
             &[(2, 9, "declared with `let` here")],
             Some("declare it with `var`"),
@@ -1551,7 +1564,7 @@ mod tests {
         expect_error(
             "fn f(n: i64) {\n    n = 1\n}\nfn main() {}",
             "cannot assign to `n`",
-            (2, 5),
+            (2, 5, "n = 1"),
             None,
             &[(1, 6, "declared as a parameter here")],
             Some("copy it into a `var`: `var n = n`"),
@@ -1563,7 +1576,7 @@ mod tests {
         expect_error(
             "fn f(n: i64) {\n    n += 1\n}\nfn main() {}",
             "cannot assign to `n`",
-            (2, 5),
+            (2, 5, "n += 1"),
             None,
             &[(1, 6, "declared as a parameter here")],
             Some("copy it into a `var`: `var n = n`"),
@@ -1654,7 +1667,7 @@ mod tests {
         expect_error(
             "class A {}\nfn A() {}\nfn main() {}",
             "function `A` is defined twice",
-            (2, 4),
+            (2, 4, "A"),
             None,
             &[(1, 7, "first defined here")],
             None,
@@ -1666,7 +1679,7 @@ mod tests {
         expect_error(
             "fn A() {}\nclass A {}\nfn main() {}",
             "class `A` is defined twice",
-            (2, 7),
+            (2, 7, "A"),
             None,
             &[(1, 4, "first defined here")],
             None,
@@ -1698,7 +1711,7 @@ mod tests {
         expect_error(
             "class print {}\nfn main() {}",
             "class `print` is defined twice",
-            (1, 7),
+            (1, 7, "print"),
             Some("`print` is built in"),
             &[],
             None,
@@ -1710,7 +1723,7 @@ mod tests {
         expect_error(
             "class A {\n    let x: i64\n    fn x(self) {}\n}\nfn main() {}",
             "method `x` is defined twice",
-            (3, 8),
+            (3, 8, "x"),
             None,
             &[(2, 9, "first defined here")],
             None,
@@ -1722,7 +1735,7 @@ mod tests {
         expect_error(
             "class A {\n    fn x(self) {}\n    var x: i64\n}\nfn main() {}",
             "field `x` is defined twice",
-            (3, 9),
+            (3, 9, "x"),
             None,
             &[(2, 8, "first defined here")],
             None,
@@ -1743,7 +1756,7 @@ mod tests {
         expect_error(
             "class Node {\n    let next: Node\n}\nfn main() {}",
             "`Node` can never be constructed: field `next` needs a `Node`",
-            (2, 9),
+            (2, 9, "next"),
             None,
             &[],
             Some("make it optional: `Node?`"),
@@ -1755,7 +1768,7 @@ mod tests {
         expect_error(
             "class A {\n    let b: B\n}\nclass B {\n    let a: A\n}\nfn main() {}",
             "`A` can never be constructed: field `b` needs a `B`",
-            (2, 9),
+            (2, 9, "b"),
             None,
             &[],
             Some("make it optional: `B?`"),
@@ -1785,7 +1798,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n}\nfn main() { P(1) }",
             "this argument needs a label",
-            (4, 15),
+            (4, 15, "1"),
             None,
             &[],
             Some("label it with its field: `x: ...`"),
@@ -1806,7 +1819,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(y: 1, x: 2) }",
             "expected field `x` here, found `y`",
-            (5, 15),
+            (5, 15, "y"),
             None,
             &[],
             Some("name the fields in declaration order: `x`, `y`"),
@@ -1818,7 +1831,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(x: 1) }",
             "missing field `y`",
-            (5, 13),
+            (5, 13, "P(x: 1)"),
             None,
             &[],
             Some("name the fields in declaration order: `x`, `y`"),
@@ -1953,7 +1966,7 @@ mod tests {
         expect_error(
             "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.m)\n}",
             "`m` is a method of `P`, not a field",
-            (6, 13),
+            (6, 13, "m"),
             None,
             &[],
             Some("call it: `m()`"),
@@ -2036,7 +2049,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = 2\n}",
             "cannot assign to `x`",
-            (6, 5),
+            (6, 5, "p.x = 2"),
             None,
             &[(2, 9, "declared with `let` here")],
             Some("declare it with `var`"),
@@ -2263,7 +2276,7 @@ mod tests {
         expect_error(
             "fn main() { let x = None }",
             "cannot infer the type of `None`",
-            (1, 21),
+            (1, 21, "None"),
             None,
             &[],
             Some("write the type: `let x: Tree? = None`"),
@@ -2292,7 +2305,7 @@ mod tests {
         expect_error(
             "class T {\n    let v: i64\n}\nfn f(node: T?) -> i64 { node.v }\nfn main() {}",
             "`node` may be `None`",
-            (4, 25),
+            (4, 25, "node"),
             None,
             &[],
             Some("use `?.`, or unwrap it with `if let`"),
@@ -2367,7 +2380,7 @@ mod tests {
                 "{T}fn f(n: T?) {{\n    if let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
             ),
             "cannot assign to `x`",
-            (7, 9),
+            (7, 9, "x = T(v: 1, next: None)"),
             None,
             &[(6, 12, "bound by `if let` here")],
             None,
@@ -2381,7 +2394,7 @@ mod tests {
                 "{T}fn f(n: T?) {{\n    while let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
             ),
             "cannot assign to `x`",
-            (7, 9),
+            (7, 9, "x = T(v: 1, next: None)"),
             None,
             &[(6, 15, "bound by `while let` here")],
             None,
@@ -2525,7 +2538,7 @@ mod tests {
             expect_error(
                 &format!("{T}fn f(n: T?) {{\n    {head} x = n {{ let x = 1 }}\n}}\nfn main() {{}}"),
                 "`x` is already declared in this scope",
-                (6, col),
+                (6, col, "x"),
                 None,
                 &[(6, x, "first declared here")],
                 None,
@@ -2644,7 +2657,7 @@ mod tests {
         expect_error(
             "class T {\n    let v: i64\n}\nfn f(t: T) -> i64? { t?.v }\nfn main() {}",
             "`t` is not optional",
-            (4, 22),
+            (4, 22, "t"),
             None,
             &[],
             Some("use `.`"),
@@ -2657,7 +2670,7 @@ mod tests {
         expect_error(
             "class A {\n    let b: B\n}\nclass B {\n    let c: i64\n}\nfn f(a: A?) -> i64? { a?.b.c }\nfn main() {}",
             "`a?.b` may be `None`",
-            (7, 23),
+            (7, 23, "a?.b"),
             None,
             &[],
             Some("use `?.`, or unwrap it with `if let`"),
@@ -2733,7 +2746,7 @@ mod tests {
         expect_error(
             "class T {}\nfn f(x: T?) -> bool { x is None }\nfn main() {}",
             "use `==` to test for `None`",
-            (2, 23),
+            (2, 23, "x is None"),
             None,
             &[],
             Some("`x == None`"),
@@ -2745,7 +2758,7 @@ mod tests {
         expect_error(
             "fn main() { print(1 is 1) }",
             "`is` needs objects; found `i64`",
-            (1, 19),
+            (1, 19, "1"),
             None,
             &[],
             Some("use `==` to compare values"),
@@ -2758,7 +2771,7 @@ mod tests {
         expect_error(
             "class T {}\nfn f(t: T) -> bool { t is 1 }\nfn main() {}",
             "`is` needs objects; found `i64`",
-            (2, 27),
+            (2, 27, "1"),
             None,
             &[],
             Some("use `==` to compare values"),
@@ -2771,7 +2784,7 @@ mod tests {
         expect_error(
             "class T {}\nfn make() -> T? { None }\nfn f() -> bool { make() is None }\nfn main() {}",
             "use `==` to test for `None`",
-            (3, 18),
+            (3, 18, "make() is None"),
             None,
             &[],
             None,
@@ -2784,7 +2797,7 @@ mod tests {
         expect_error(
             "class T {}\nfn f(t: T) -> bool { t is None }\nfn main() {}",
             "use `==` to test for `None`",
-            (2, 22),
+            (2, 22, "t is None"),
             None,
             &[],
             None,
