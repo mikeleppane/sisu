@@ -210,13 +210,25 @@ mod tests {
             .write(true)
             .open("/dev/full")
             .expect("/dev/full should exist on Linux");
-        let status = Command::new(exe)
+        let out = Command::new(exe)
             .args(["--exact", "tests::panic_bounds_child", "--nocapture"])
             .env(PANIC_BOUNDS_VAR, "1")
             .stderr(full)
-            .status()
+            .output()
             .expect("spawn child test");
-        assert_eq!(status.code(), Some(101), "child exited with {status:?}");
+        assert_eq!(
+            out.status.code(),
+            Some(101),
+            "child exited with {:?}",
+            out.status
+        );
+        // libtest also exits 101 for a failed test, but then it prints its summary; the
+        // runtime's own exit leaves before the test finishes.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("test result:"),
+            "libtest finished the child test, so the runtime did not exit: {stdout}"
+        );
     }
 
     fn assert_child_aborts(case: &str) {
