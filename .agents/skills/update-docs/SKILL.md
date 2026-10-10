@@ -90,7 +90,7 @@ gitignored, and the docs do not link to it.
 ## 5. Check
 
 ```console
-$ python3 .claude/skills/update-docs/scripts/check_links.py README.md CONTRIBUTING.md AGENTS.md GLOSSARY.md docs/*.md docs/adr/*.md docs/agents/*.md
+$ python3 .agents/skills/update-docs/scripts/check_links.py README.md CONTRIBUTING.md AGENTS.md GLOSSARY.md docs/*.md docs/adr/*.md docs/agents/*.md
 broken: 0
 $ awk '/^```/{n++;next} n==1' README.md | diff - crates/sisuc/tests/programs/fib.sisu
 $ prek run --files <each changed file>

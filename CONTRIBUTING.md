@@ -25,5 +25,5 @@ from the diff: which contract each new test proves, what was left out of
 scope, and what is known not to work yet.
 
 Before you open one, run the `update-docs` skill
-([.claude/skills/update-docs/SKILL.md](.claude/skills/update-docs/SKILL.md))
+([.agents/skills/update-docs/SKILL.md](.agents/skills/update-docs/SKILL.md))
 so the docs match the change.
