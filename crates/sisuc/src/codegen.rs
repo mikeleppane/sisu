@@ -1572,6 +1572,8 @@ mod tests {
         .print_to_string()
         .to_string();
         let node = function_body(&ir, "define void @sisu_rc.drop.Node(ptr");
+        assert!(node.contains("phi ptr"), "no loop in\n{node}");
+        assert_eq!(node.matches("@sisu_free(").count(), 1, "{node}");
         for unwanted in ["@sisu_rc.drop.Node(", "@sisu_rc.release.Node("] {
             assert!(!node.contains(unwanted), "{unwanted:?} in\n{node}");
         }
