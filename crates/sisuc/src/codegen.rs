@@ -78,7 +78,8 @@ pub(crate) fn compile<'ctx>(
     for f in &program.functions {
         codegen.declare(f);
     }
-    for (f, function) in program.functions.iter().zip(codegen.functions.clone()) {
+    for (i, f) in program.functions.iter().enumerate() {
+        let function = codegen.functions[i];
         codegen.define(f, function);
     }
     codegen.c_main();
@@ -281,10 +282,13 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Local(local) => {
                 return self.locals[local.0].map(|slot| match slot {
                     Slot::Value(value) => value,
-                    Slot::Alloca(ptr, ty) => self
-                        .builder
-                        .build_load(ty, ptr, "load")
-                        .expect("builder is positioned"),
+                    Slot::Alloca(ptr, ty) => {
+                        // Name the load after the local (the alloca carries its name).
+                        let name = ptr.get_name().to_string_lossy().into_owned();
+                        self.builder
+                            .build_load(ty, ptr, &name)
+                            .expect("builder is positioned")
+                    }
                 });
             }
             ExprKind::Call { func, args } => {
@@ -751,7 +755,8 @@ mod tests {
     /// Lexes, parses, checks (no errors allowed) and compiles `src`, then verifies the module.
     fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
         let program = parse(&lex(src).expect("source lexes")).expect("source parses");
-        let program = check(&program).0.expect("no errors");
+        let (program, diagnostics) = check(&program);
+        let program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
         let module = compile(context, &program, "test.sisu", src);
         if let Err(e) = module.verify() {
             panic!("{e}\n{}", module.print_to_string());
