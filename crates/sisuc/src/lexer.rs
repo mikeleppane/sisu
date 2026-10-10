@@ -1096,7 +1096,10 @@ mod tests {
                 Eof
             ]
         );
-        assert_eq!(kinds("[0; 3]")[2], Semicolon);
+        assert_eq!(
+            kinds("[0; 3]"),
+            [LBracket, Int(0), Semicolon, Int(3), RBracket, Eof]
+        );
         assert_eq!(kinds("for x in"), [For, ident("x"), In, Eof]);
         assert_eq!(kinds("0..n"), [Int(0), DotDot, ident("n"), Eof]);
         assert_eq!(kinds("a.b"), [ident("a"), TokenKind::Dot, ident("b"), Eof]);

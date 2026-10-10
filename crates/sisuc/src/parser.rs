@@ -81,18 +81,19 @@ impl Parser<'_> {
 
     /// What must follow a statement or a class member: a line break or the closing `}`.
     fn end_of_line(&self) -> Diagnostic {
-        if self.at(&TokenKind::Semicolon) {
-            return Diagnostic::error(
-                self.peek().span,
-                "Sisu has no `;`: statements end at the end of the line",
-            );
-        }
         self.expected("end of line")
     }
 
     /// "expected <what>, found <the next token>", pointing at the next token.
+    /// A stray `;` always gets the one `;` message, wherever it appears.
     fn expected(&self, what: &str) -> Diagnostic {
         let found = self.peek();
+        if found.kind == TokenKind::Semicolon {
+            return Diagnostic::error(
+                found.span,
+                "Sisu has no `;`: statements end at the end of the line",
+            );
+        }
         Diagnostic::error(
             found.span,
             format!("expected {what}, found {}", found.kind.describe()),
@@ -740,11 +741,12 @@ impl Parser<'_> {
     }
 }
 
-/// Whether a `?.` sits anywhere in the chain of fields and calls that makes up `e`.
+/// Whether a `?.` sits anywhere in the chain of fields, calls and indexes that makes up `e`.
 fn goes_through_safe_access(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Field { base, safe, .. } => *safe || goes_through_safe_access(base),
         ExprKind::MethodCall { receiver, safe, .. } => *safe || goes_through_safe_access(receiver),
+        ExprKind::Index { base, .. } => goes_through_safe_access(base),
         _ => false,
     }
 }
@@ -966,6 +968,7 @@ mod tests {
             ),
             ("-a.b", "(- (. a b))"),
             ("E()", "(call E)"),
+            ("a[i].f = v", "(= (. (index a i) f) v)"),
             ("make().count = 1", "(= (. (call make) count) 1)"),
             ("a.f += 1", "(+= (. a f) 1)"),
             ("self.left = t", "(= (. self left) t)"),
@@ -1071,6 +1074,8 @@ mod tests {
             "a?.b += 1",
             "a?.m().c = 1",
             "a?.b.m().c = 1",
+            "xs?.items[0].f = 1",
+            "xs?.items[0].f += 1",
         ] {
             let full = format!("fn main() {{ {src} }}");
             let d = parse_diagnostic(&full);
@@ -1375,6 +1380,7 @@ error: expected `=`, found end of line
 
     #[test]
     fn syntax_errors_for_arrays_and_for() {
+        const M: &str = "Sisu has no `;`: statements end at the end of the line";
         let rows = [
             (
                 "let x = 1; 2",
@@ -1387,11 +1393,27 @@ error: expected `=`, found end of line
             ("xs[0] = 1", "cannot assign to this expression", 13),
             ("xs[0] += 1", "cannot assign to this expression", 13),
             ("[1; 2, 3]", "expected `]`, found `,`", 18),
+            ("[1; 2; 3]", M, 18),
+            ("f(1; 2)", M, 16),
+            ("(1; 2)", M, 15),
+            (";", M, 13),
             ("a[]", "expected an expression, found `]`", 15),
         ];
         for (src, message, col) in rows {
             assert_eq!(expr_err(src), (message.to_owned(), 1, col), "{src}");
         }
+    }
+
+    #[test]
+    fn stray_semicolon_in_a_class_body() {
+        assert_eq!(
+            parse_err("class A {\n    let x: i64; let y: i64\n}"),
+            (
+                "Sisu has no `;`: statements end at the end of the line".to_owned(),
+                2,
+                15
+            )
+        );
     }
 
     #[test]
