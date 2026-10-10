@@ -7,6 +7,7 @@ mod diagnostic;
 mod lexer;
 mod link;
 mod parser;
+mod tir;
 
 use std::ffi::OsString;
 use std::fs;
@@ -193,7 +194,8 @@ fn front_end(path: &str, source: &str) -> Option<Program> {
             return None;
         }
     };
-    let diagnostics = check::check(&program);
+    // Codegen reads the `ast` until it reads `tir`.
+    let diagnostics = check::check(&program).1;
     report(path, source, &diagnostics);
     diagnostics
         .iter()

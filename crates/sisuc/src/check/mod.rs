@@ -1,39 +1,33 @@
-//! The checker: signatures, scopes, names and types.
+//! The checker: signatures, scopes, names and types. It lowers the program to `tir` as it
+//! checks, and records every error instead of stopping at the first.
+
+mod expr;
+mod stmt;
 
 use std::collections::HashMap;
-use std::fmt;
 
-use crate::ast::{
-    BinaryOp, Block, Expr, ExprKind, Function, Ident, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
-};
-use crate::diagnostic::{Diagnostic, Span};
+use crate::ast;
+use crate::diagnostic::{Diagnostic, Severity, Span};
+use crate::tir::{self, Type};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Type {
-    I64,
-    Bool,
-    Unit,
-    Never,
+/// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
+/// still known (an `if` with one failed branch takes the other's), else it is the poison
+/// type `Error`, which matches every type and draws no further diagnostic.
+struct Poisoned {
+    ty: Option<Type>,
 }
 
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Type::I64 => "`i64`",
-            Type::Bool => "`bool`",
-            Type::Unit => "`unit`",
-            Type::Never => "`never`",
-        })
-    }
-}
+type Checked = Result<tir::Expr, Poisoned>;
+type CheckedBlock = Result<tir::Block, Poisoned>;
 
+/// A type of `None` is `Error`: its error is reported where the signature names it.
 struct Signature {
-    params: Vec<Type>,
-    ret: Type,
+    params: Vec<Option<Type>>,
+    ret: Option<Type>,
     name_span: Span,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum BindingKind {
     Let,
     Var,
@@ -41,380 +35,203 @@ enum BindingKind {
 }
 
 struct Binding {
-    ty: Type,
+    local: tir::LocalId,
+    /// `None` is `Error`.
+    ty: Option<Type>,
     kind: BindingKind,
     span: Span,
     reassigned: bool,
 }
 
 struct Checker {
-    functions: HashMap<String, Signature>,
+    /// The first function of each name.
+    function_ids: HashMap<String, tir::FuncId>,
+    /// Indexed by `FuncId`, so a duplicate function has a signature of its own.
+    signatures: Vec<Signature>,
+    diagnostics: Vec<Diagnostic>,
+    // The rest is per body.
     scopes: Vec<HashMap<String, Binding>>,
-    warnings: Vec<Diagnostic>,
-    ret: Type,
+    locals: Vec<tir::Local>,
+    /// `None` is `Error`.
+    ret: Option<Type>,
 }
 
-/// Warnings sorted by span start, then at most one error.
-pub(crate) fn check(program: &Program) -> Vec<Diagnostic> {
+/// Diagnostics sorted by span start (stable); the program only when none is an error.
+pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagnostic>) {
     let mut checker = Checker {
-        functions: HashMap::new(),
+        function_ids: HashMap::new(),
+        signatures: Vec::new(),
+        diagnostics: Vec::new(),
         scopes: Vec::new(),
-        warnings: Vec::new(),
-        ret: Type::Unit,
+        locals: Vec::new(),
+        ret: None,
     };
-    let result = checker.collect_signatures(program).and_then(|()| {
-        program
-            .functions
-            .iter()
-            .try_for_each(|f| checker.function(f))
-    });
-    let mut diagnostics = checker.warnings;
-    diagnostics.sort_by_key(|w| w.span.start);
-    diagnostics.extend(result.err());
-    diagnostics
+    checker.collect_signatures(program);
+    // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
+    let functions: Vec<_> = program
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| checker.function(f, tir::FuncId(i)))
+        .collect();
+    let mut diagnostics = checker.diagnostics;
+    diagnostics.sort_by_key(|d| d.span.start);
+    let failed = diagnostics.iter().any(|d| d.severity == Severity::Error);
+    let program = functions
+        .into_iter()
+        .collect::<Option<_>>()
+        .filter(|_| !failed)
+        .map(|functions| tir::Program { functions });
+    (program, diagnostics)
 }
 
-fn resolve(ty: &TypeExpr) -> Result<Type, Diagnostic> {
-    match ty.name.as_str() {
-        "i64" => Ok(Type::I64),
-        "bool" => Ok(Type::Bool),
-        name => Err(Diagnostic::error(ty.span, format!("unknown type `{name}`"))
-            .help("the types are `i64` and `bool`")),
+/// The type of a checked expression; `None` is `Error`.
+fn type_of(checked: &Checked) -> Option<&Type> {
+    match checked {
+        Ok(e) => Some(&e.ty),
+        Err(p) => p.ty.as_ref(),
+    }
+}
+
+/// The type of a checked block; `None` is `Error`.
+fn block_type(checked: &CheckedBlock) -> Option<&Type> {
+    match checked {
+        Ok(b) => Some(&b.ty),
+        Err(p) => p.ty.as_ref(),
     }
 }
 
 impl Checker {
-    fn collect_signatures(&mut self, program: &Program) -> Result<(), Diagnostic> {
+    /// Records each function's signature under a `FuncId` in source order, then checks `main`.
+    fn collect_signatures(&mut self, program: &ast::Program) {
         for f in &program.functions {
             let name = &f.name;
             if name.name == "print" {
-                return Err(duplicate(name).label("`print` is built in"));
+                self.diagnostics
+                    .push(duplicate(name).label("`print` is built in"));
+            } else if let Some(first) = self.function_ids.get(&name.name) {
+                let first = self.signatures[first.0].name_span;
+                self.diagnostics
+                    .push(duplicate(name).secondary(first, "first defined here"));
+            } else {
+                let id = tir::FuncId(self.signatures.len());
+                self.function_ids.insert(name.name.clone(), id);
             }
-            if let Some(first) = self.functions.get(&name.name) {
-                return Err(duplicate(name).secondary(first.name_span, "first defined here"));
-            }
-            let params = f
-                .params
-                .iter()
-                .map(|p| resolve(&p.ty))
-                .collect::<Result<_, _>>()?;
-            let ret = f.ret.as_ref().map_or(Ok(Type::Unit), resolve)?;
-            self.functions.insert(
-                name.name.clone(),
-                Signature {
-                    params,
-                    ret,
-                    name_span: name.span,
-                },
-            );
+            let params = f.params.iter().map(|p| self.resolve(&p.ty)).collect();
+            let ret = f
+                .ret
+                .as_ref()
+                .map_or(Some(Type::Unit), |ty| self.resolve(ty));
+            self.signatures.push(Signature {
+                params,
+                ret,
+                name_span: name.span,
+            });
         }
-        let Some(main) = program.functions.iter().find(|f| f.name.name == "main") else {
-            return Err(Diagnostic::error(Span::new(0, 0), "no `main` function"));
-        };
-        if !main.params.is_empty() || main.ret.is_some() {
-            return Err(Diagnostic::error(
-                main.name.span,
-                "`main` takes no parameters and returns no value",
-            ));
-        }
-        Ok(())
-    }
-
-    fn function(&mut self, f: &Function) -> Result<(), Diagnostic> {
-        let sig = &self.functions[&f.name.name];
-        let (params, ret) = (sig.params.clone(), sig.ret);
-        self.ret = ret;
-        self.scopes.push(HashMap::new());
-        for (p, ty) in f.params.iter().zip(params) {
-            self.declare(&p.name, ty, BindingKind::Param)?;
-        }
-        let body = self.block(&f.body)?;
-        self.pop_scope();
-        match body {
-            _ if ret == Type::Unit || body == Type::Never || body == ret => Ok(()),
-            Type::Unit => {
-                let end = f.body.span.end;
-                Err(Diagnostic::error(
-                    Span::new(end - 1, end),
-                    format!(
-                        "function `{}` must return {ret}, but its body has no value",
-                        f.name.name
-                    ),
-                ))
-            }
-            _ => Err(mismatch(value_span(&f.body), ret, body)),
-        }
-    }
-
-    fn declare(&mut self, name: &Ident, ty: Type, kind: BindingKind) -> Result<(), Diagnostic> {
-        let scope = self.scopes.last_mut().expect("a scope is open");
-        if let Some(first) = scope.get(&name.name) {
-            return Err(Diagnostic::error(
-                name.span,
-                format!("`{}` is already declared in this scope", name.name),
-            )
-            .secondary(first.span, "first declared here"));
-        }
-        scope.insert(
-            name.name.clone(),
-            Binding {
-                ty,
-                kind,
-                span: name.span,
-                reassigned: false,
-            },
-        );
-        Ok(())
-    }
-
-    /// Closes the innermost scope, warning about each `var` that was never reassigned.
-    fn pop_scope(&mut self) {
-        let scope = self.scopes.pop().expect("a scope is open");
-        for (name, b) in scope {
-            if b.kind == BindingKind::Var && !b.reassigned {
-                self.warnings.push(
-                    Diagnostic::warning(b.span, format!("`{name}` is never reassigned"))
-                        .help("declare it with `let`"),
-                );
-            }
-        }
-    }
-
-    fn lookup(&mut self, name: &str, span: Span) -> Result<&mut Binding, Diagnostic> {
-        self.scopes
-            .iter_mut()
-            .rev()
-            .find_map(|scope| scope.get_mut(name))
-            .ok_or_else(|| Diagnostic::error(span, format!("cannot find `{name}` in this scope")))
-    }
-
-    /// `never` once a statement is `never`, else the type of the last statement (`unit` when
-    /// there is none). Warns "unreachable code" on the first statement after a `never` one.
-    fn block(&mut self, block: &Block) -> Result<Type, Diagnostic> {
-        self.scopes.push(HashMap::new());
-        let mut ty = Type::Unit;
-        let mut warned = false;
-        for stmt in &block.stmts {
-            if ty == Type::Never && !warned {
-                self.warnings
-                    .push(Diagnostic::warning(stmt.span, "unreachable code"));
-                warned = true;
-            }
-            let stmt_ty = self.stmt(stmt)?;
-            if ty != Type::Never {
-                ty = stmt_ty;
-            }
-        }
-        self.pop_scope();
-        Ok(ty)
-    }
-
-    fn stmt(&mut self, stmt: &Stmt) -> Result<Type, Diagnostic> {
-        match &stmt.kind {
-            StmtKind::Let {
-                mutable,
-                name,
-                ty,
-                init,
-            } => {
-                let ty = match ty {
-                    Some(ty) => {
-                        let declared = resolve(ty)?;
-                        self.expect(init, declared)?;
-                        declared
-                    }
-                    None => self.value(init)?,
-                };
-                let kind = if *mutable {
-                    BindingKind::Var
-                } else {
-                    BindingKind::Let
-                };
-                self.declare(name, ty, kind)?;
-                Ok(Type::Unit)
-            }
-            StmtKind::While { cond, body } => {
-                self.expect(cond, Type::Bool)?;
-                self.block(body)?;
-                Ok(Type::Unit)
-            }
-            StmtKind::Return(None) if self.ret != Type::Unit => Err(Diagnostic::error(
-                stmt.span,
-                format!("`return` needs a value of type {}", self.ret),
-            )),
-            StmtKind::Return(None) => Ok(Type::Never),
-            StmtKind::Return(Some(value)) => {
-                let ty = self.value(value)?;
-                if self.ret == Type::Unit {
-                    return Err(Diagnostic::error(
-                        value.span,
-                        "this function returns no value",
+        match self.function_ids.get("main") {
+            None => self
+                .diagnostics
+                .push(Diagnostic::error(Span::new(0, 0), "no `main` function")),
+            Some(id) => {
+                let main = &program.functions[id.0];
+                if !main.params.is_empty() || main.ret.is_some() {
+                    self.diagnostics.push(Diagnostic::error(
+                        main.name.span,
+                        "`main` takes no parameters and returns no value",
                     ));
                 }
-                if ty != self.ret {
-                    return Err(mismatch(value.span, self.ret, ty));
-                }
-                Ok(Type::Never)
             }
-            StmtKind::Assign { target, value } => {
-                let binding = self.lookup(&target.name, target.span)?;
-                let want = binding.ty;
-                let declared = binding.span;
-                match binding.kind {
-                    BindingKind::Var => binding.reassigned = true,
-                    BindingKind::Let => {
-                        return Err(cannot_assign(stmt.span, target)
-                            .label("cannot assign twice")
-                            .secondary(declared, "declared with `let` here")
-                            .help("declare it with `var`"));
-                    }
-                    BindingKind::Param => {
-                        return Err(cannot_assign(stmt.span, target)
-                            .secondary(declared, "declared as a parameter here")
-                            .help(format!(
-                                "copy it into a `var`: `var {0} = {0}`",
-                                target.name
-                            )));
-                    }
-                }
-                self.expect(value, want)?;
-                Ok(Type::Unit)
+        }
+    }
+
+    /// `None`, reported, for an unknown type.
+    fn resolve(&mut self, ty: &ast::TypeExpr) -> Option<Type> {
+        match ty.name.as_str() {
+            "i64" => Some(Type::I64),
+            "bool" => Some(Type::Bool),
+            name => {
+                self.diagnostics.push(
+                    Diagnostic::error(ty.span, format!("unknown type `{name}`"))
+                        .help("the types are `i64` and `bool`"),
+                );
+                None
             }
-            StmtKind::Expr(e) => self.expr(e),
         }
     }
 
-    /// The type of an expression whose value is used: `i64` or `bool`.
-    fn value(&mut self, expr: &Expr) -> Result<Type, Diagnostic> {
-        match self.expr(expr)? {
-            Type::Unit => Err(Diagnostic::error(expr.span, "expression has no value")),
-            Type::Never => Err(Diagnostic::error(expr.span, "unreachable code")),
-            ty => Ok(ty),
-        }
-    }
-
-    fn expect(&mut self, expr: &Expr, want: Type) -> Result<Type, Diagnostic> {
-        let ty = self.value(expr)?;
-        if ty == want {
-            Ok(ty)
-        } else {
-            Err(mismatch(expr.span, want, ty))
-        }
-    }
-
-    fn expr(&mut self, expr: &Expr) -> Result<Type, Diagnostic> {
-        match &expr.kind {
-            ExprKind::Int(_) => Ok(Type::I64),
-            ExprKind::Bool(_) => Ok(Type::Bool),
-            ExprKind::Name(name) => Ok(self.lookup(name, expr.span)?.ty),
-            ExprKind::Call { callee, args } => self.call(expr, callee, args),
-            ExprKind::Unary { op, operand } => self.expect(
-                operand,
-                match op {
-                    UnaryOp::Neg => Type::I64,
-                    UnaryOp::Not => Type::Bool,
-                },
-            ),
-            ExprKind::Binary { op, lhs, rhs } => {
-                let operand = match op {
-                    BinaryOp::Eq | BinaryOp::Ne => {
-                        let (l, r) = (self.value(lhs)?, self.value(rhs)?);
-                        if l != r {
-                            return Err(Diagnostic::error(
-                                expr.span,
-                                format!("cannot compare {l} with {r}"),
-                            ));
-                        }
-                        return Ok(Type::Bool);
-                    }
-                    BinaryOp::And | BinaryOp::Or => Type::Bool,
-                    BinaryOp::Add
-                    | BinaryOp::Sub
-                    | BinaryOp::Mul
-                    | BinaryOp::Div
-                    | BinaryOp::Rem => Type::I64,
+    /// Checks `f`'s body against its own signature, `id`. The function, unless something in it
+    /// is `Error`.
+    fn function(&mut self, f: &ast::Function, id: tir::FuncId) -> Option<tir::Function> {
+        let sig = &self.signatures[id.0];
+        let (param_types, ret) = (sig.params.clone(), sig.ret.clone());
+        self.ret.clone_from(&ret);
+        self.scopes.push(HashMap::new());
+        let params = f
+            .params
+            .iter()
+            .zip(param_types)
+            .map(|(p, ty)| self.declare(&p.name, ty, BindingKind::Param))
+            .collect();
+        let body = self.block(&f.body);
+        self.pop_scope();
+        let locals = std::mem::take(&mut self.locals);
+        match (&ret, block_type(&body)) {
+            (Some(want), Some(got))
+                if *want != Type::Unit && *got != Type::Never && got != want =>
+            {
+                let d = if *got == Type::Unit {
+                    let end = f.body.span.end;
+                    Diagnostic::error(
+                        Span::new(end - 1, end),
+                        format!(
+                            "function `{}` must return {}, but its body has no value",
+                            f.name.name,
+                            self.show(want)
+                        ),
+                    )
+                } else {
+                    self.mismatch(value_span(&f.body), want, got)
                 };
-                self.expect(lhs, operand)?;
-                self.expect(rhs, operand)
+                self.diagnostics.push(d);
             }
-            ExprKind::Compare { operands, .. } => {
-                for operand in operands {
-                    self.expect(operand, Type::I64)?;
-                }
-                Ok(Type::Bool)
-            }
-            ExprKind::If {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                self.expect(cond, Type::Bool)?;
-                let then_ty = self.block(then_block)?;
-                let Some(else_block) = else_block else {
-                    return Ok(Type::Unit);
-                };
-                match (then_ty, self.block(else_block)?) {
-                    (Type::Never, ty) => Ok(ty),
-                    (ty, else_ty) if else_ty == ty || else_ty == Type::Never => Ok(ty),
-                    (ty, else_ty) => Err(mismatch(value_span(else_block), ty, else_ty)),
-                }
-            }
+            _ => {}
         }
+        Some(tir::Function {
+            name: f.name.name.clone(),
+            params,
+            ret: ret?,
+            locals,
+            body: body.ok()?,
+        })
     }
 
-    fn call(&mut self, expr: &Expr, callee: &Ident, args: &[Expr]) -> Result<Type, Diagnostic> {
-        if callee.name == "print" {
-            // Not `value()`: a `unit` argument needs this message, not "expression has no value".
-            let wrong = || Diagnostic::error(expr.span, "`print` takes one `i64` or `bool`");
-            let [arg] = args else {
-                return Err(wrong());
-            };
-            return match self.expr(arg)? {
-                Type::Unit => Err(wrong()),
-                Type::Never => Err(Diagnostic::error(arg.span, "unreachable code")),
-                _ => Ok(Type::Unit),
-            };
-        }
-        let sig = self.functions.get(&callee.name).ok_or_else(|| {
-            Diagnostic::error(
-                callee.span,
-                format!("cannot find function `{}`", callee.name),
-            )
-        })?;
-        let (params, ret) = (sig.params.clone(), sig.ret);
-        if params.len() != args.len() {
-            let plural = if params.len() == 1 { "" } else { "s" };
-            return Err(Diagnostic::error(
-                expr.span,
-                format!(
-                    "`{}` takes {} argument{plural}, found {}",
-                    callee.name,
-                    params.len(),
-                    args.len()
-                ),
-            ));
-        }
-        for (arg, param) in args.iter().zip(params) {
-            self.expect(arg, param)?;
-        }
-        Ok(ret)
+    /// A type as messages quote it: "`i64`".
+    #[expect(
+        clippy::unused_self,
+        reason = "class names come from the checker from Task 10"
+    )]
+    fn show(&self, ty: &Type) -> String {
+        format!("`{ty}`")
     }
-}
 
-fn cannot_assign(span: Span, target: &Ident) -> Diagnostic {
-    Diagnostic::error(span, format!("cannot assign to `{}`", target.name))
-}
-
-fn mismatch(span: Span, want: Type, got: Type) -> Diagnostic {
-    Diagnostic::error(span, format!("expected {want}, found {got}"))
+    fn mismatch(&self, span: Span, want: &Type, got: &Type) -> Diagnostic {
+        Diagnostic::error(
+            span,
+            format!("expected {}, found {}", self.show(want), self.show(got)),
+        )
+    }
 }
 
 /// Where a block's value comes from: its last statement, or the block itself when empty.
-fn value_span(block: &Block) -> Span {
+fn value_span(block: &ast::Block) -> Span {
     block.stmts.last().map_or(block.span, |s| s.span)
 }
 
-fn duplicate(name: &Ident) -> Diagnostic {
+fn not_found(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(span, format!("cannot find `{name}` in this scope"))
+}
+
+fn duplicate(name: &ast::Ident) -> Diagnostic {
     Diagnostic::error(
         name.span,
         format!("function `{}` is defined twice", name.name),
@@ -424,12 +241,37 @@ fn duplicate(name: &Ident) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{Severity, Span, line_col};
+    use crate::diagnostic::line_col;
     use crate::lexer::lex;
     use crate::parser::parse;
 
-    fn diags(src: &str) -> Vec<Diagnostic> {
+    fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
         check(&parse(&lex(src).expect("source lexes")).expect("source parses"))
+    }
+
+    fn diags(src: &str) -> Vec<Diagnostic> {
+        checked(src).1
+    }
+
+    /// The typed tree of a program that checks without a diagnostic.
+    fn lowered(src: &str) -> String {
+        let (program, ds) = checked(src);
+        assert!(ds.is_empty(), "{ds:?}");
+        program.expect("no errors").to_string()
+    }
+
+    /// Asserts the diagnostics are exactly these errors, in order: `(message, (line, col))`.
+    fn errors(src: &str, expected: &[(&str, (usize, usize))]) {
+        let ds = diags(src);
+        let found: Vec<_> = ds
+            .iter()
+            .map(|d| (d.severity, d.message.as_str(), at(src, d.span)))
+            .collect();
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|&(message, pos)| (Severity::Error, message, pos))
+            .collect();
+        assert_eq!(found, expected);
     }
 
     fn at(src: &str, span: Span) -> (usize, usize) {
@@ -616,14 +458,119 @@ mod tests {
     }
 
     #[test]
-    fn one_error_per_run() {
-        expect_error(
-            "fn main() {\n    print(a)\n    print(b)\n}",
-            "cannot find `a` in this scope",
-            (2, 11),
-            None,
-            &[],
-            None,
+    fn every_error_in_one_run() {
+        errors(
+            "fn main() {\n    print(a)\n    let b: bool = 1\n    print(1 + true)\n}",
+            &[
+                ("cannot find `a` in this scope", (2, 11)),
+                ("expected `bool`, found `i64`", (3, 19)),
+                ("expected `i64`, found `bool`", (4, 15)),
+            ],
+        );
+    }
+
+    #[test]
+    fn poisoned_binding_reports_once() {
+        errors(
+            "fn main() {\n    let x = nope\n    print(x + 1)\n}",
+            &[("cannot find `nope` in this scope", (2, 13))],
+        );
+    }
+
+    #[test]
+    fn poisoned_operand_checks_siblings() {
+        errors(
+            "fn f(a: i64, b: i64) {}\nfn main() {\n    f(nope, 1 + true)\n}",
+            &[
+                ("cannot find `nope` in this scope", (3, 7)),
+                ("expected `i64`, found `bool`", (3, 17)),
+            ],
+        );
+    }
+
+    #[test]
+    fn if_with_failed_branch_takes_other_type() {
+        errors(
+            "fn main() {\n    let y = if true { nope } else { 1 }\n    print(y + true)\n}",
+            &[
+                ("cannot find `nope` in this scope", (2, 23)),
+                ("expected `i64`, found `bool`", (3, 15)),
+            ],
+        );
+    }
+
+    #[test]
+    fn unknown_let_type_poisons() {
+        errors(
+            "fn main() {\n    let x: str = 1\n    print(x + true)\n}",
+            &[("unknown type `str`", (2, 12))],
+        );
+    }
+
+    #[test]
+    fn unknown_param_type_still_checks_body() {
+        errors(
+            "fn f(a: str) -> i64 { true }\nfn main() { f(1) }",
+            &[
+                ("unknown type `str`", (1, 9)),
+                ("expected `i64`, found `bool`", (1, 23)),
+            ],
+        );
+    }
+
+    #[test]
+    fn duplicate_checked_against_own_signature() {
+        errors(
+            "fn f(a: i64) {}\nfn f(b: bool) -> bool { b }\nfn main() {}",
+            &[("function `f` is defined twice", (2, 4))],
+        );
+    }
+
+    #[test]
+    fn duplicate_body_still_checked() {
+        errors(
+            "fn f() {}\nfn f() { print(nope) }\nfn main() {}",
+            &[
+                ("function `f` is defined twice", (2, 4)),
+                ("cannot find `nope` in this scope", (2, 16)),
+            ],
+        );
+    }
+
+    #[test]
+    fn missing_main_and_body_error() {
+        errors(
+            "fn f() { print(nope) }",
+            &[
+                ("no `main` function", (1, 1)),
+                ("cannot find `nope` in this scope", (1, 16)),
+            ],
+        );
+    }
+
+    #[test]
+    fn lowers_while_to_loop() {
+        assert_eq!(
+            lowered("fn main() {\n    var i = 0\n    while i < 3 {\n        i = i + 1\n    }\n}"),
+            "(fn main () unit (block (var i#0 0) (loop (block (if (< i#0 3) (block (= i#0 (+ i#0 1))) (block (break)))))))"
+        );
+    }
+
+    #[test]
+    fn shadowing_makes_two_locals() {
+        assert_eq!(
+            lowered(
+                "fn main() {\n    let x = 1\n    if true {\n        let x = true\n        print(x)\n    }\n    print(x)\n}"
+            ),
+            "(fn main () unit (block (let x#0 1) (if true (block (let x#1 true) (print x#1))) (print x#0)))"
+        );
+    }
+
+    #[test]
+    fn lowers_not_equal() {
+        assert_eq!(
+            lowered("fn f(a: i64) -> bool { a != 1 }\nfn main() {}"),
+            "(fn f ((a#0 i64)) bool (block (!= a#0 1)))\n(fn main () unit (block))"
         );
     }
 

@@ -731,7 +731,7 @@ mod tests {
     /// Lexes, parses, checks (no errors allowed) and compiles `src`, then verifies the module.
     fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
         let program = parse(&lex(src).expect("source lexes")).expect("source parses");
-        let diagnostics = check(&program);
+        let diagnostics = check(&program).1;
         assert!(
             diagnostics.iter().all(|d| d.severity != Severity::Error),
             "{diagnostics:?}"
