@@ -208,7 +208,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn llvm_type(&self, ty: &Type) -> Option<BasicTypeEnum<'ctx>> {
         match ty {
             Type::I64 => Some(self.context.i64_type().into()),
-            Type::U8 => panic!("`u8` lands in Task 3"),
+            Type::U8 => Some(self.context.i8_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
             Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
@@ -544,7 +544,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn equal_expr(&mut self, negated: bool, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let equal = match lhs.ty {
-            Type::I64 | Type::Bool if negated => {
+            Type::I64 | Type::U8 | Type::Bool if negated => {
                 self.int_compare(IntPredicate::NE, l.into_int_value(), r.into_int_value())
             }
             _ if negated => {
@@ -575,7 +575,11 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// The expression's value, `None` for `unit` or `never`.
     fn expr(&mut self, e: &Expr) -> Option<BasicValueEnum<'ctx>> {
         let value = match &e.kind {
-            ExprKind::Int(n) => self.context.i64_type().const_int(n.cast_unsigned(), false),
+            ExprKind::Int(n) => self
+                .llvm_type(&e.ty)
+                .expect("an integer literal should have a value type")
+                .into_int_type()
+                .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
             ExprKind::Local(local) => {
                 let value = self.load_local(*local)?;
@@ -654,7 +658,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
             ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
             ExprKind::Block(block) => return self.block(block, None),
-            ExprKind::Convert(_) => panic!("Convert lands in Task 3"),
+            ExprKind::Convert(_) => self.convert(e),
             ExprKind::None | ExprKind::Wrap(_) | ExprKind::IfSome { .. } => {
                 return self.optional(e);
             }
@@ -789,7 +793,13 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     fn print(&mut self, operand: &Expr) {
-        let arg = self.value(operand);
+        let mut arg = self.value(operand);
+        if operand.ty == Type::U8 {
+            arg = self
+                .builder
+                .build_int_z_extend(arg, self.context.i64_type(), "widened")
+                .expect("builder is positioned");
+        }
         let is_bool = operand.ty == Type::Bool;
         let print = if is_bool {
             self.print_bool
@@ -869,17 +879,18 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (last_op, first_ops) = ops.split_last().expect("a chain has an operator");
         let function = self.current_function();
         let mut false_from = Vec::new();
+        let signed = operands[0].ty != Type::U8;
         let mut lhs = self.value(&operands[0]);
         for (op, operand) in first_ops.iter().zip(&operands[1..]) {
             let rhs = self.value(operand);
-            let holds = self.compare_pair(*op, lhs, rhs);
+            let holds = self.compare_pair(*op, signed, lhs, rhs);
             let next = self.context.append_basic_block(function, "chain.next");
             false_from.push((holds, self.current_block(), next));
             self.builder.position_at_end(next);
             lhs = rhs;
         }
         let rhs = self.value(operands.last().expect("a chain has operands"));
-        let holds = self.compare_pair(*last_op, lhs, rhs);
+        let holds = self.compare_pair(*last_op, signed, lhs, rhs);
         if false_from.is_empty() {
             return holds;
         }

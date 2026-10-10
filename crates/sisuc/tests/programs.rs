@@ -199,6 +199,11 @@ fn optionals() {
     assert_prints_out_file("optionals");
 }
 
+#[test]
+fn bytes() {
+    assert_prints_out_file("bytes");
+}
+
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
     let exe = compile(Path::new(PROGRAMS), name, false);
@@ -286,11 +291,12 @@ fn panics_survive_o2() {
     }
 }
 
-/// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu` and compiles it from there.
-fn compile_tmp(name: &str, source: &str) -> PathBuf {
+/// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu` and compiles it from there, at
+/// `-O2` if `o2`.
+fn compile_tmp(name: &str, source: &str, o2: bool) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(dir.join(format!("{name}.sisu")), source).expect("writes");
-    compile(dir, name, false)
+    compile(dir, name, o2)
 }
 
 #[test]
@@ -299,45 +305,77 @@ fn panic_cases() {
         (
             "sub_overflow",
             format!("fn main() {{\n{MIN}\n    print(min - 1)\n}}\n"),
-            "3:11: integer overflow",
+            "3:11: integer overflow".to_string(),
         ),
         (
             "mul_overflow",
             format!("fn main() {{\n{MAX}\n    print(big * 2)\n}}\n"),
-            "3:11: integer overflow",
+            "3:11: integer overflow".to_string(),
         ),
         (
             "neg_overflow",
             format!("fn main() {{\n{MIN}\n    print(-min)\n}}\n"),
-            "3:11: integer overflow",
+            "3:11: integer overflow".to_string(),
         ),
         (
             "rem_zero",
             "fn main() {\n    let z = 0\n    print(7 % z)\n}\n".to_string(),
-            "3:11: division by zero",
+            "3:11: division by zero".to_string(),
         ),
         (
             "rem_overflow",
             format!("fn main() {{\n{MIN}\n    print(min % -1)\n}}\n"),
-            "3:11: integer overflow",
+            "3:11: integer overflow".to_string(),
         ),
         (
             "compound_overflow",
             "fn main() {\n    var x = 9_223_372_036_854_775_807\n    x += 1\n    print(x)\n}\n"
                 .to_string(),
-            "3:5: integer overflow",
+            "3:5: integer overflow".to_string(),
+        ),
+        u8_case("u8_add", "let a: u8 = 255", "a + 1", "integer overflow"),
+        u8_case("u8_sub", "let a: u8 = 0", "a - 1", "integer overflow"),
+        u8_case("u8_mul", "let a: u8 = 16", "a * a", "integer overflow"),
+        u8_case("u8_div_zero", "let a: u8 = 0", "7 / a", "division by zero"),
+        u8_case(
+            "u8_convert",
+            "let a = 300",
+            "u8(a)",
+            "value does not fit in `u8`",
+        ),
+        u8_case(
+            "u8_convert_negative",
+            "let a = -1",
+            "u8(a)",
+            "value does not fit in `u8`",
         ),
     ];
     for (name, source, position_and_message) in cases {
-        let out = Command::new(compile_tmp(name, &source))
-            .output()
-            .expect("the program starts");
-        assert_panics(
-            &out,
-            "",
-            &format!("sisu: panic at {name}.sisu:{position_and_message}\n"),
-        );
+        for o2 in [false, true] {
+            let out = Command::new(compile_tmp(name, &source, o2))
+                .output()
+                .expect("the program starts");
+            assert_panics(
+                &out,
+                "",
+                &format!("sisu: panic at {name}.sisu:{position_and_message}\n"),
+            );
+        }
     }
+}
+
+/// A `panic_cases` row whose panic is at `print(<expr>)` on line 3, column 11.
+fn u8_case(
+    name: &'static str,
+    binding: &str,
+    expr: &str,
+    message: &str,
+) -> (&'static str, String, String) {
+    (
+        name,
+        format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
+        format!("3:11: {message}"),
+    )
 }
 
 /// Proves the harness catches a leak: an object that refers to itself is never freed.
@@ -347,6 +385,7 @@ fn valgrind_reports_a_cycle() {
     let exe = compile_tmp(
         "cycle",
         "class Node {\n    var next: Node?\n}\n\nfn leak() {\n    let a = Node(next: None)\n    a.next = a\n}\n\nfn main() {\n    leak()\n    print(1)\n}\n",
+        false,
     );
     let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(out.status.code(), Some(0));
@@ -371,6 +410,7 @@ fn panic_exits_101_when_stderr_write_fails() {
     let exe = compile_tmp(
         "stderr_full",
         "fn main() {\n    let z = 0\n    print(1 / z)\n}\n",
+        false,
     );
     let status = Command::new(exe)
         .stderr(Stdio::from(full))

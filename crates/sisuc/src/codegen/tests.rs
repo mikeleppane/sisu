@@ -438,3 +438,29 @@ fn user_function_names_are_prefixed() {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
 }
+
+#[test]
+fn u8_add_uses_unsigned_overflow() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(a: u8, b: u8) -> u8 { a + b }\nfn main() { print(f(1, 2)) }",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in ["define i8 @sisu.f(i8", "@llvm.uadd.with.overflow.i8"] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+}
+
+#[test]
+fn u8_compare_is_unsigned() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(a: u8, b: u8) -> bool { a < b }\nfn main() { print(f(1, 2)) }",
+    )
+    .print_to_string()
+    .to_string();
+    assert!(ir.contains("icmp ult i8"), "missing `icmp ult i8` in\n{ir}");
+}
