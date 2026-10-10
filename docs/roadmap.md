@@ -12,7 +12,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | # | Milestone | Done when | Status |
 | --- | --- | --- | --- |
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
-| 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | In progress |
+| 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and a byte type | A prime sieve prints correct answers | Planned |
 | 4 | Strings | A program reverses and compares strings | Planned |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
@@ -27,7 +27,8 @@ These came out of the review of the milestone 1 spec and are now part of it:
 - `if` is an expression.
 - No semicolons; statements end at newlines (ADR 0001).
 - One built-in `print(e)` for `i64` and `bool` instead of `print_int`.
-- Compound assignment `+= -= *= /= %=`, desugared by the parser.
+- Compound assignment `+= -= *= /= %=`, desugared by the checker (moved from
+  the parser in milestone 2).
 - Digit separators: `100_000`.
 - Diagnostics in the style of rustc: the code underlined, secondary labels
   such as "declared with `let` here", and a `help:` line.
@@ -114,7 +115,7 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 
 | Milestone | Add | Why |
 | --- | --- | --- |
-| 2 | Reserve `import` and `pub` as keywords | A program that names a variable `import` would break when modules land in milestone 11 |
+| Not scheduled | Reserve `import` and `pub` as keywords. Planned for milestone 2, it did not land. | A program that names a variable `import` would break when modules land in milestone 11 |
 | 3 | Array literals `[1, 2, 3]` | Data reads like data |
 | 3 | `for x in xs` and ranges `0..n` | Most loops stop needing indexes |
 | 3 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value | Named limits, such as a sieve size, without global variables |
@@ -139,10 +140,11 @@ that new targets stay cheap:
 These help you learn from the compiler and read Sisu code. Each one is small,
 so it does not wait for the later goals:
 
-- One `sisu` binary with subcommands, from milestone 2, as with the `go` and
-  `zig` commands. One binary means the compiler and the build tool can never
-  be different versions, unlike Cargo and `rustc`. Milestone 2 renames
-  `sisuc` to `sisu` and adds two subcommands:
+- One `sisu` binary with subcommands, as with the `go` and `zig` commands.
+  One binary means the compiler and the build tool can never be different
+  versions, unlike Cargo and `rustc`. Planned for milestone 2, it did not
+  land and is not scheduled yet. It renames `sisuc` to `sisu` and adds two
+  subcommands:
   - `sisu build` does what `sisuc` does today, with the same flags.
   - `sisu run file.si` compiles to a temporary executable and runs it.
 
@@ -150,13 +152,14 @@ so it does not wait for the later goals:
   `sisu test` and `sisu lsp`. No manifest at first: a single file, or a
   directory whose entry point is `main.si`, builds without one. A `sisu.toml`
   arrives only when a project needs dependencies.
-- A `-O2` flag, from milestone 2. It runs LLVM's `default<O2>` pass pipeline
-  after `mem2reg`, both for `--emit ir` and for the executable. Without the
-  flag, only `mem2reg` runs, as in milestone 1. Comparing the IR with and
-  without the flag shows what the optimizer removes.
-- `--emit ir-raw`, from milestone 2. It prints one module before any pass
+- A `-O2` flag, added in milestone 2. It runs LLVM's `default<O2>` pass
+  pipeline in place of `mem2reg`, both for `--emit ir` and for the
+  executable. Without the flag, only `mem2reg` runs, as in milestone 1.
+  Comparing the IR with and without the flag shows what the optimizer
+  removes.
+- `--emit ir-raw`, added in milestone 2. It prints one module before any pass
   runs, so the output is a valid `.ll` file for LLVM's `opt` tool. (`--emit ir`
-  prints two modules, before and after `mem2reg`.) With `opt` you can watch
+  prints two modules, before and after the pass pipeline.) With `opt` you can watch
   the optimizer one pass at a time, with no further compiler code:
   - `opt -S -passes='mem2reg,simplifycfg,instcombine' x.ll` runs the named
     passes in order.
