@@ -150,7 +150,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     #[expect(
         unsafe_code,
-        reason = "inkwell marks GEP unsafe; the callers keep the index within the block"
+        reason = "inkwell marks GEP unsafe for a wrong index list; each GEP here takes one `i64` index"
     )]
     pub(super) fn element_ptr(
         &self,
@@ -161,9 +161,11 @@ impl<'ctx> Codegen<'ctx, '_> {
         let layout = self.array_layout(element);
         let i64_type = self.context.i64_type();
         let offset = i64_type.const_int(layout.offset, false);
-        // SAFETY: the block holds the header and then its length's elements, `offset` is
-        // where the elements start, and every caller passes an index below the length:
-        // `check_bounds` proved it, or a loop counts up to it.
+        // SAFETY: each GEP takes one `i64` index, which steps over whole `i8` or element
+        // values and never indexes into an aggregate, so the index list is valid for its
+        // pointee type. `inbounds` is sound because the block holds the header and then its
+        // length's elements, `offset` is where the elements start, and every caller passes
+        // an index below the length: `check_bounds` proved it, or a loop counts up to it.
         unsafe {
             let elements = self
                 .builder
@@ -192,8 +194,8 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED)
     }
 
-    /// Panics at `span` with `sisu_panic_bounds` unless `0 <= index < len`. One unsigned
-    /// compare also catches a negative index.
+    /// Panics at `span` with `sisu_panic_bounds` when `index uge len`, which is
+    /// `0 <= index < len` negated: one unsigned compare also catches a negative index.
     pub(super) fn check_bounds(
         &self,
         array: PointerValue<'ctx>,

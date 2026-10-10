@@ -375,6 +375,7 @@ fn panic_cases() {
             "u8(a)",
             "value does not fit in `u8`",
         ),
+        bounds_case("bounds_at_length", "5", "index 5 out of bounds for length 5"),
         bounds_case("bounds_above", "7", "index 7 out of bounds for length 5"),
         bounds_case("bounds_negative", "-1", "index -1 out of bounds for length 5"),
         (
@@ -395,6 +396,13 @@ fn panic_cases() {
         (
             "length_overflows",
             "fn main() {\n    let xs = [0; 4_611_686_018_427_387_904]\n    print(xs.len())\n}\n"
+                .to_string(),
+            "2:18: array is too large".to_string(),
+        ),
+        // (2^61 - 1) * 8 bytes is 2^64 - 8, which fits; adding the 16-byte header wraps.
+        (
+            "header_overflows",
+            "fn main() {\n    let xs = [0; 2_305_843_009_213_693_951]\n    print(xs.len())\n}\n"
                 .to_string(),
             "2:18: array is too large".to_string(),
         ),
