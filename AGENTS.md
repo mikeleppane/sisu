@@ -46,3 +46,7 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Docs
+
+Before you open a pull request, and after one merges, run the `update-docs` skill to bring the docs in line with the code. An agent without skill support follows `.claude/skills/update-docs/SKILL.md` directly.
