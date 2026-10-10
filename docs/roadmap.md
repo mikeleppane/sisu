@@ -21,7 +21,7 @@ choice is checked against them:
 - Code reads top to bottom, without punctuation noise.
 - One obvious way to do a thing.
 - Errors speak in plain words and point at the code.
-- Memory is managed for you (reference counting, chosen in milestone 2).
+- Memory is managed for you (reference counting, ADR 0005).
 
 Sisu takes its syntax's readability from Python, its correctness from Rust,
 and its memory model and everyday ergonomics from Swift and Kotlin (ADR 0004).
@@ -75,24 +75,96 @@ These came out of the review of the milestone 1 spec and are now part of it:
 - From milestone 2, a line starting with `.` continues the previous line, so
   method chains can be written one call per line (ADR 0001).
 
+## Adopted in milestone 2
+
+These came out of the milestone 2 design and are now part of its spec:
+
+- Optionals for every type, `i64?` and `bool?` included, with `?.`, `??` and
+  `None` as the empty value. `None` becomes the `Option<T>` case in
+  milestone 8.
+- `if let` and `while let` for optionals, brought forward from milestone 7.
+- `==` compares classes structurally; `a is b` compares identity.
+- The checker reports every error in one run, using a poison type.
+- The checker builds a typed, desugared tree (`tir`) and codegen reads only
+  that.
+- Reference counting (ADR 0005).
+
 ## Fold into milestones 2 to 6
 
 Each item is cheap when its milestone lands and expensive to retrofit:
 
 | Milestone | Add | Why |
 | --- | --- | --- |
-| 2 | `?.` and `??` on optionals | No nested null checks |
-| 2 | The checker reports every error in one run, using a poison type so one mistake does not cascade | One compile shows every type error |
-| 2 | `==` on classes | Comparison without hand-written methods |
+| 2 | Reserve `import` and `pub` as keywords | A program that names a variable `import` would break when modules land in milestone 11 |
 | 3 | Array literals `[1, 2, 3]` | Data reads like data |
 | 3 | `for x in xs` and ranges `0..n` | Most loops stop needing indexes |
+| 3 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value | Named limits, such as a sieve size, without global variables |
 | 4 | String interpolation `"x = {x}"` | The biggest single win for real programs |
+
+### Portability rules
+
+`sisuc` already compiles for the machine it runs on: codegen asks LLVM for the
+host triple and takes the data layout from it. Two rules keep it that way, so
+that new targets stay cheap:
+
+- From milestone 2, take sizes and alignments from the target data layout.
+  Never write a pointer size as `8`.
+- Runtime functions take and return only integers, `bool`, floats and
+  pointers, never structs by value. How a struct is passed differs between
+  x86-64, ARM64 and Windows. Clang applies those rules for C, but LLVM does
+  not, so `sisuc` would have to implement them for each target.
+  `sisu_panic(msg, len)` already follows this rule.
+
+## Early tooling
+
+These help you learn from the compiler and read Sisu code. Each one is small,
+so it does not wait for the later goals:
+
+- One `sisu` binary with subcommands, from milestone 2, as with the `go` and
+  `zig` commands. One binary means the compiler and the build tool can never
+  be different versions, unlike Cargo and `rustc`. Milestone 2 renames
+  `sisuc` to `sisu` and adds two subcommands:
+  - `sisu build` does what `sisuc` does today, with the same flags.
+  - `sisu run file.si` compiles to a temporary executable and runs it.
+
+  Later subcommands are `sisu check` (type checking only), `sisu fmt`,
+  `sisu test` and `sisu lsp`. No manifest at first: a single file, or a
+  directory whose entry point is `main.si`, builds without one. A `sisu.toml`
+  arrives only when a project needs dependencies.
+- A `-O2` flag, from milestone 2. It runs LLVM's `default<O2>` pass pipeline
+  after `mem2reg`, both for `--emit ir` and for the executable. Without the
+  flag, only `mem2reg` runs, as in milestone 1. Comparing the IR with and
+  without the flag shows what the optimizer removes.
+- `--emit ir-raw`, from milestone 2. It prints one module before any pass
+  runs, so the output is a valid `.ll` file for LLVM's `opt` tool. (`--emit ir`
+  prints two modules, before and after `mem2reg`.) With `opt` you can watch
+  the optimizer one pass at a time, with no further compiler code:
+  - `opt -S -passes='mem2reg,simplifycfg,instcombine' x.ll` runs the named
+    passes in order.
+  - `--print-changed` prints the IR after each pass that changed it.
+  - `-passes=dot-cfg` writes each function's control-flow graph as a `.dot`
+    file for Graphviz.
+  - `--opt-bisect-limit=N` runs only the first N passes, to find the pass
+    that breaks a program.
+
+  `opt` must be version 22, because an older `opt` may not parse the IR.
+  `scripts/install-llvm.sh` does not keep `bin/opt`. Decide whether it should,
+  checking the GitHub Actions cache limit first.
+- A TextMate grammar for syntax highlighting in VS Code, from milestone 3,
+  once classes and arrays fix most of the syntax. It is one JSON file and
+  needs no compiler changes.
+- ARM64 Linux and macOS on ARM64 as hosts. LLVM publishes `Linux-ARM64` and
+  `macOS-ARM64` builds, so `scripts/install-llvm.sh` picks the download by
+  `uname -s` and `uname -m`, and CI gets a job for each. The compiler should
+  need no changes, but this is untested. On macOS, `cc` is Apple's clang, so
+  tests that assume GNU tools or ELF files break. LLVM publishes no build for
+  Intel Macs. Check which GitHub Actions runners the repository can use first.
 
 ## Proposed milestones 7 to 12
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 7 | Enums with payloads, `match` with destructuring and an exhaustiveness check, `if let` | The shape sample above runs; a non-exhaustive `match` is a compile error |
+| 7 | Enums with payloads, `match` with destructuring and an exhaustiveness check, `if let` with enum patterns | The shape sample above runs; a non-exhaustive `match` is a compile error |
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and iterator methods (`map`, `filter`, `count`, `sum`) | `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
@@ -110,6 +182,24 @@ Order matters in two places:
 - Milestone 5 I/O comes before `Result`, so its functions report failure
   with an optional or a panic. Milestone 12 changes those signatures.
 
+### Modules (milestone 11)
+
+- One file is one module, and its path names it: `src/geometry/shapes.si` is
+  `geometry.shapes`. A parent file needs no `mod shapes` declaration, as in
+  Rust. A directory is not a package either: in Go, a file uses names from
+  sibling files without importing them, so it cannot be read on its own.
+- `import geometry.shapes` lets code call `shapes.area(s)`.
+  `import geometry.shapes.{area, Shape}` brings those names in without a
+  prefix.
+- Names are private to their module unless marked `pub`.
+- Modules may import each other in a cycle. The checker sees the whole
+  program at once, so this costs nothing.
+- Codegen puts the whole program into one LLVM module. Each symbol is
+  prefixed with its module path; `main` keeps its name. Separate compilation
+  and build caching wait until builds are slow.
+- A small prelude is visible in every file without an import: `print`,
+  `Option` and `Result`.
+
 ## Later and stretch goals
 
 These do not make code nicer to write, so they wait:
@@ -118,12 +208,57 @@ These do not make code nicer to write, so they wait:
   doubly linked list or a parent-pointer tree leaks without one. Decide before
   milestone 11 grows data structures that create cycles.
 - C FFI: `extern fn` to call libc or a C library.
-- A test runner: `test` blocks and `sisuc test`.
-- Parser error recovery, so a syntax error does not hide the next one, and
-  more warnings, such as unused bindings.
+- A test runner: `test` blocks and `sisu test`.
+- Parser error recovery, so a syntax error does not hide the next one.
+- Lint checks as compiler warnings, as in Go's `vet` and `rustc`'s built-in
+  lints, with no separate tool and no configuration file:
+  - an unused variable or import;
+  - code after `return`, `break` or `continue`, which never runs;
+  - a `var` that is never reassigned ("use `let`"), as Swift and Kotlin warn;
+  - comparing a value that is not optional with `None`, which is always
+    `false`. Milestone 2 makes it an error until lints exist.
+
+  An attribute such as `@allow(unused)` could later silence one declaration.
 - Debug info (DWARF), so `gdb` steps through Sisu source.
 - A typed mid-level IR with reference-count elision and other optimizations.
-- A formatter (`sisuc fmt`) and a language server.
+- Link-time optimization with the runtime. Build `sisu-runtime` as LLVM
+  bitcode and link it into the program's module, so LLVM can inline runtime
+  calls such as the reference-count increment and decrement.
+- A formatter, `sisu fmt`, after milestone 7, once `enum` and `match` have
+  fixed most of the syntax. It has one style and no options, as with `gofmt`
+  and `zig fmt`. It must keep comments, but the lexer drops them today
+  (`crates/sisuc/src/lexer.rs`). As `gofmt` does, the lexer would record each
+  comment's span, and the formatter would write it back next to the nearest
+  syntax-tree node. It keeps single blank lines between statements, found
+  from the spans. Formatting twice must change nothing, and the formatted
+  file must parse to the same syntax tree.
+- A language server, `sisu lsp`, reusing the lexer, parser and checker.
+- Windows. There is no `cc`, so `sisuc` links with `link.exe` or `lld-link`.
+  Programs are `.exe` files in the COFF object format. LLVM ships for Windows
+  as an installer and a `clang+llvm` archive, so `llvm-sys` needs its own
+  setup.
+- Cross-compiling with `--target <triple>`. LLVM must initialize every target,
+  not only the native one. The runtime must be built for the target
+  (`cargo build --target`), and linking needs a cross linker and the target's
+  system libraries.
+- Calls to plain functions in a `const` initializer, for lookup tables. LLVM
+  already folds constant arithmetic, so this adds expressiveness, not speed.
+  Running the call through LLVM's JIT reuses codegen, so compile time and run
+  time cannot disagree; a tree-walking interpreter would be a second copy of
+  the semantics. Open points:
+  - The JIT runs on the host, which can differ from the `--target`.
+  - Only scalars at first, then strings. Heap objects would have to be
+    serialized into globals.
+  - No I/O at compile time, so builds stay reproducible.
+  - A step or time limit, so a loop that never ends cannot hang the compiler.
+- `@inline` and `@noinline` on functions. They set LLVM's `alwaysinline` and
+  `noinline` attributes, as codegen already sets `noreturn` on `sisu_panic`.
+  An attribute alone changes nothing: without `-O2`, `sisuc` must run
+  `always-inline` before `mem2reg`. `default<O2>` inlines `alwaysinline`
+  functions and respects `noinline`. Avoid an `inline fn` keyword, which in
+  Kotlin inlines lambda arguments. `@inline` on a recursive function is an
+  error. From milestone 9, calls through closures cannot be inlined. At
+  `-O2`, LLVM already inlines small functions, so this waits for a need.
 - Concurrency: threads, atomic reference counts, channels.
 - Self-hosting: the Sisu lexer and parser written in Sisu.
 
@@ -133,15 +268,37 @@ These do not make code nicer to write, so they wait:
   and Kotlin ergonomic camp.
 - Header files.
 - Unrestricted operator overloading.
+- Inheritance. A `class` is a reference type, not a hierarchy. Composition,
+  enums (milestone 7) and interfaces (milestone 8) cover polymorphism, as in
+  Rust and Go.
+- Zig-style `comptime`, with types as compile-time values, and macros.
+  Generics and interfaces (milestone 8) cover the same ground, and errors
+  stay plain when type checking does not depend on running code.
+- Formatter options. One style ends style debates.
+- A separate linter. Lints are compiler warnings.
+- `import *`. A reader must always see where a name comes from.
+- A package registry, for a long time. A registry means hosting, security
+  and name squatting. If dependencies come, path and Git dependencies come
+  first.
 
 ## Open decisions
 
-- **How the checker hands types to codegen.** Milestone 1 codegen reads types
-  from LLVM values, which works only for `i64` and `bool`. LLVM 22 pointers
-  are opaque, so from milestone 2 a `ptr` cannot say which class it points
-  to; the checker must record the types. A side table is enough at first; a
-  typed, desugared tree is likely needed once `match`, closures and
-  monomorphization land.
+- **Same-scope shadowing.** Milestone 1 allows redeclaring a name only in an
+  inner scope. Rust also allows `let n = n.trim()` in the same scope, which
+  pays off once strings change a value's type. Decide in milestone 4; lifting
+  the error breaks no program.
 - **Generic arguments and `<`.** `f(a < b, c > d)` reads as two comparisons
   or as one generic call. Decide the syntax in milestone 8.
 - **Weak references or a cycle collector** (see above).
+- **Attribute syntax.** A marker on a declaration, such as `@inline`, needs
+  one general form: `@name` or `@name(args)` on the line before it, as in
+  Swift and Kotlin. Decide the form before the first attribute lands, so `@`
+  is not taken for something else. Later uses could include `@noinline`,
+  `@deprecated("...")` and `@test`.
+- **What a string is.** LLVM sees only bytes, so Sisu decides this itself.
+  Milestone 1 already reads UTF-8 source with ASCII identifiers. Decide before
+  milestone 4:
+  - whether strings are stored as UTF-8;
+  - whether `len()` counts bytes or characters (Unicode scalars);
+  - whether `s[i]` exists at all. Swift has no integer indexing on strings,
+    because it is slow and misleading for text that is not ASCII.

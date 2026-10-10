@@ -28,7 +28,7 @@ and recursion to a native executable.
 | # | Milestone | Done when | Status |
 | --- | --- | --- | --- |
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
-| 2 | Classes, methods, heap, optionals, reference counting, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Planned |
+| 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Planned |
 | 3 | Arrays and a byte type | A prime sieve prints correct answers | Planned |
 | 4 | Strings | A program reverses and compares strings | Planned |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
