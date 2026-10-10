@@ -923,6 +923,18 @@ error: expected `=`, found end of line
     }
 
     #[test]
+    fn self_repeated() {
+        assert_eq!(
+            parse_err("class A {\n    fn f(self, self) {}\n}"),
+            (
+                "`self` is only the first parameter of a method".to_string(),
+                2,
+                16
+            )
+        );
+    }
+
+    #[test]
     fn self_outside_class() {
         assert_eq!(
             parse_err("fn f(self) {}"),
