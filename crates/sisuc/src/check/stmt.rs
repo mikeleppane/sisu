@@ -269,10 +269,9 @@ impl Checker {
         };
         let value = self.expect(value, want.as_ref());
         match (base, field, value) {
-            (Ok(base), Some((_, index)), Ok(value)) if writable => Ok(tir::Stmt::Assign {
-                place: tir::Place::Field { base, index },
-                value,
-            }),
+            (Ok(base), Some((_, index)), Ok(value)) if writable => {
+                Ok(self.field_assign(span, base, index, value))
+            }
             _ => Err(Poisoned {
                 ty: Some(Type::Unit),
             }),
@@ -329,13 +328,7 @@ impl Checker {
                     local: temp,
                     init: base,
                 },
-                tir::Stmt::Assign {
-                    place: tir::Place::Field {
-                        base: temp_read(),
-                        index,
-                    },
-                    value,
-                },
+                self.field_assign(span, temp_read(), index, value),
             ],
             value: None,
             ty: Type::Unit,
@@ -376,6 +369,71 @@ impl Checker {
             mutable: false,
         });
         local
+    }
+
+    /// When an operand exits and one before it is counted, binds every operand through the
+    /// last exiting one to a fresh local, in source order, so each read of them comes after
+    /// every exit. The bindings, and the operands with those reads in place.
+    pub(super) fn spill(&mut self, operands: Vec<tir::Expr>) -> (Vec<tir::Stmt>, Vec<tir::Expr>) {
+        let last_exit = operands.iter().rposition(tir::Expr::exits);
+        let first_counted = operands.iter().position(|e| e.ty.is_counted());
+        let Some(last_exit) = last_exit.filter(|&exit| first_counted.is_some_and(|c| c < exit))
+        else {
+            return (Vec::new(), operands);
+        };
+        let mut spills = Vec::new();
+        let operands = operands
+            .into_iter()
+            .enumerate()
+            .map(|(i, operand)| {
+                if i > last_exit {
+                    return operand;
+                }
+                let local = self.fresh(operand.ty.clone());
+                let read = tir::Expr {
+                    kind: ExprKind::Local(local),
+                    ty: operand.ty.clone(),
+                    span: operand.span,
+                };
+                spills.push(tir::Stmt::Let {
+                    local,
+                    init: operand,
+                });
+                read
+            })
+            .collect();
+        (spills, operands)
+    }
+
+    /// `base.index = value`, after `spill` binds what it must.
+    fn field_assign(
+        &mut self,
+        span: Span,
+        base: tir::Expr,
+        index: usize,
+        value: tir::Expr,
+    ) -> tir::Stmt {
+        let (mut stmts, operands) = self.spill(vec![base, value]);
+        let [base, value] = <[tir::Expr; 2]>::try_from(operands)
+            .expect("`spill` returns as many operands as it takes");
+        let assign = tir::Stmt::Assign {
+            place: tir::Place::Field { base, index },
+            value,
+        };
+        if stmts.is_empty() {
+            return assign;
+        }
+        stmts.push(assign);
+        let block = tir::Block {
+            stmts,
+            value: None,
+            ty: Type::Unit,
+        };
+        tir::Stmt::Expr(tir::Expr {
+            kind: ExprKind::Block(block),
+            ty: Type::Unit,
+            span,
+        })
     }
 
     /// Adds `name` to the innermost scope as a new local. A name already in that scope is

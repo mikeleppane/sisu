@@ -154,6 +154,58 @@ pub(crate) enum ExprKind {
     Block(Block),
 }
 
+impl Type {
+    /// Whether a value of this type is an owned reference, which codegen counts.
+    pub(crate) fn is_counted(&self) -> bool {
+        matches!(self, Type::Class(_))
+    }
+}
+
+impl Expr {
+    /// Whether a `Return`, `Break` or `Continue` sits anywhere inside, a nested loop included.
+    pub(crate) fn exits(&self) -> bool {
+        match &self.kind {
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Local(_) => false,
+            ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
+            ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
+                args.iter().any(Expr::exits)
+            }
+            ExprKind::Compare { operands, .. } => operands.iter().any(Expr::exits),
+            ExprKind::Field { base: operand, .. }
+            | ExprKind::Print(operand)
+            | ExprKind::Unary { operand, .. } => operand.exits(),
+            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Equal { lhs, rhs, .. } => {
+                lhs.exits() || rhs.exits()
+            }
+            ExprKind::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                cond.exits() || then_block.exits() || else_block.as_ref().is_some_and(Block::exits)
+            }
+            ExprKind::Loop(block) | ExprKind::Block(block) => block.exits(),
+        }
+    }
+}
+
+impl Block {
+    fn exits(&self) -> bool {
+        self.stmts.iter().any(Stmt::exits) || self.value.as_ref().is_some_and(|v| v.exits())
+    }
+}
+
+impl Stmt {
+    fn exits(&self) -> bool {
+        match self {
+            Stmt::Let { init: e, .. } | Stmt::Expr(e) => e.exits(),
+            Stmt::Assign { place, value } => {
+                matches!(place, Place::Field { base, .. } if base.exits()) || value.exits()
+            }
+        }
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -624,5 +676,47 @@ mod tests {
         for (op, symbol) in ops {
             assert_eq!(op.to_string(), symbol);
         }
+    }
+
+    #[test]
+    fn only_a_class_is_counted() {
+        assert!(Type::Class(ClassId(0)).is_counted());
+        for ty in [Type::I64, Type::Bool, Type::Unit, Type::Never] {
+            assert!(!ty.is_counted(), "{ty}");
+        }
+    }
+
+    fn block_expr(stmts: Vec<Stmt>, value: Option<Expr>) -> Expr {
+        let block = Block {
+            stmts,
+            value: value.map(Box::new),
+            ty: Type::I64,
+        };
+        expr(ExprKind::Block(block), Type::I64)
+    }
+
+    #[test]
+    fn exits_finds_a_jump_at_any_depth() {
+        let (if_stmt, looped) = if_and_loop();
+        // A `break` in a loop in a block's statement, and in a block's value.
+        assert!(block_expr(vec![Stmt::Expr(looped)], None).exits());
+        let (_, looped) = if_and_loop();
+        assert!(block_expr(vec![], Some(looped)).exits());
+        // A `continue` in a `let` initializer, and a `return` in an argument of a call.
+        let cont = expr(ExprKind::Continue, Type::Never);
+        let let_cont = Stmt::Let {
+            local: LocalId(0),
+            init: block_expr(vec![Stmt::Expr(cont)], None),
+        };
+        assert!(block_expr(vec![let_cont], Some(int(1))).exits());
+        let ret = expr(ExprKind::Return(None), Type::Never);
+        let call = ExprKind::Call {
+            func: FuncId(0),
+            args: vec![int(1), ret],
+        };
+        assert!(expr(call, Type::Unit).exits());
+        // An `if`, a comparison chain and a print with no jump in them.
+        assert!(!if_stmt.exits());
+        assert!(!block_expr(vec![Stmt::Expr(if_stmt)], Some(int(1))).exits());
     }
 }

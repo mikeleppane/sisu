@@ -306,14 +306,41 @@ impl Checker {
             .unzip();
         let failed = labeled || mismatched.contains(&true);
         match (receiver.into_iter().chain(checked).collect(), ret) {
-            (Ok(args), Some(ret)) if !failed => Ok(tir::Expr {
-                kind: tir::ExprKind::Call { func, args },
-                ty: ret,
-                span,
-            }),
+            (Ok(args), Some(ret)) if !failed => {
+                Ok(self.spilled(span, ret, args, |args| tir::ExprKind::Call { func, args }))
+            }
             (_, ret) => Err(Poisoned {
                 ty: ret.filter(|_| !failed),
             }),
+        }
+    }
+
+    /// The node `kind` makes of `operands`, in a block after the bindings `spill` makes of them.
+    fn spilled(
+        &mut self,
+        span: Span,
+        ty: Type,
+        operands: Vec<tir::Expr>,
+        kind: impl FnOnce(Vec<tir::Expr>) -> tir::ExprKind,
+    ) -> tir::Expr {
+        let (stmts, operands) = self.spill(operands);
+        let node = tir::Expr {
+            kind: kind(operands),
+            ty: ty.clone(),
+            span,
+        };
+        if stmts.is_empty() {
+            return node;
+        }
+        let block = tir::Block {
+            stmts,
+            value: Some(Box::new(node)),
+            ty: ty.clone(),
+        };
+        tir::Expr {
+            kind: tir::ExprKind::Block(block),
+            ty,
+            span,
         }
     }
 
@@ -364,11 +391,9 @@ impl Checker {
         }
         let ty = Type::Class(class);
         match checked.into_iter().collect() {
-            Ok(args) if !failed => Ok(tir::Expr {
-                kind: tir::ExprKind::New { class, args },
-                ty,
-                span,
-            }),
+            Ok(args) if !failed => {
+                Ok(self.spilled(span, ty, args, |args| tir::ExprKind::New { class, args }))
+            }
             _ => Err(Poisoned {
                 ty: (!failed).then_some(ty),
             }),

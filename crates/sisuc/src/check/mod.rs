@@ -1991,4 +1991,104 @@ mod tests {
             (2, 11),
         );
     }
+
+    /// The printed `g` of `g` between the spill tests' shared classes and functions and an
+    /// empty `main`.
+    fn spilled(g: &str) -> String {
+        let src = format!(
+            "class B {{}}\nclass P {{\n    var b: B\n    let n: i64\n}}\nfn make() -> B {{ B() }}\nfn f(b: B, n: i64) {{}}\n{g}\nfn main() {{}}"
+        );
+        lowered(&src)
+            .lines()
+            .find(|line| line.starts_with("(fn g "))
+            .expect("`g` is lowered")
+            .to_owned()
+    }
+
+    #[test]
+    fn spills_call_argument() {
+        assert_eq!(
+            spilled(
+                "fn g(c: bool) -> i64 {\n    f(make(), if c { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (block (let #1 (call make)) (let #2 (if c#0 (block (return 0)) (block 1))) (call f #1 #2)) 2))"
+        );
+    }
+
+    #[test]
+    fn spills_keep_source_order() {
+        assert_eq!(
+            spilled(
+                "fn one() -> i64 { 1 }\nfn h(a: i64, b: B, n: i64) {}\nfn g(c: bool) -> i64 {\n    h(one(), make(), if c { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (block (let #1 (call one)) (let #2 (call make)) (let #3 (if c#0 (block (return 0)) (block 1))) (call h #1 #2 #3)) 2))"
+        );
+    }
+
+    #[test]
+    fn spills_constructor_argument() {
+        assert_eq!(
+            spilled(
+                "fn g(c: bool) -> P {\n    P(b: make(), n: if c { return P(b: B(), n: 0) } else { 1 })\n}"
+            ),
+            "(fn g ((c#0 bool)) P (block (block (let #1 (call make)) (let #2 (if c#0 (block (return (new P (new B) 0))) (block 1))) (new P #1 #2))))"
+        );
+    }
+
+    #[test]
+    fn spills_field_assignment_base() {
+        assert_eq!(
+            spilled(
+                "fn g(c: bool, p: P) {\n    while true {\n        p.b = if c { break } else { make() }\n    }\n}"
+            ),
+            "(fn g ((c#0 bool) (p#1 P)) unit (block (loop (block (if true (block (block (let #2 p#1) (let #3 (if c#0 (block (break)) (block (call make)))) (= (. #2 b) #3))) (block (break)))))))"
+        );
+    }
+
+    #[test]
+    fn no_spill_without_exit() {
+        assert_eq!(
+            spilled("fn g() {\n    f(make(), 1)\n}"),
+            "(fn g () unit (block (call f (call make) 1)))"
+        );
+    }
+
+    #[test]
+    fn no_spill_without_earlier_reference() {
+        assert_eq!(
+            spilled(
+                "fn g(c: bool) -> i64 {\n    f(if c { return 0 } else { make() }, 1)\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (call f (if c#0 (block (return 0)) (block (call make))) 1) 2))"
+        );
+    }
+
+    #[test]
+    fn nested_loop_break_still_spills() {
+        assert_eq!(
+            spilled("fn g() {\n    f(make(), if true { while true { break }\n 1 } else { 1 })\n}"),
+            "(fn g () unit (block (block (let #0 (call make)) (let #1 (if true (block (loop (block (if true (block (break)) (block (break))))) 1) (block 1))) (call f #0 #1))))"
+        );
+    }
+
+    #[test]
+    fn spills_method_receiver() {
+        assert_eq!(
+            spilled(
+                "class Q {\n    fn m(self, n: i64) {}\n}\nfn q() -> Q { Q() }\nfn g(c: bool) -> i64 {\n    q().m(if c { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (block (let #1 (call q)) (let #2 (if c#0 (block (return 0)) (block 1))) (call Q.m #1 #2)) 2))"
+        );
+    }
+
+    /// `a.f op= e` reads its bound `a` as the assignment's base before `e` runs.
+    #[test]
+    fn spills_compound_field_assignment_base() {
+        assert_eq!(
+            spilled(
+                "class Q {\n    var k: i64\n}\nfn g(c: bool, q: Q) {\n    while true {\n        q.k += if c { break } else { 1 }\n    }\n}"
+            ),
+            "(fn g ((c#0 bool) (q#1 Q)) unit (block (loop (block (if true (block (block (let #2 q#1) (block (let #3 #2) (let #4 (+ (. #2 k) (if c#0 (block (break)) (block 1)))) (= (. #3 k) #4)))) (block (break)))))))"
+        );
+    }
 }
