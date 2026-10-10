@@ -40,6 +40,8 @@ name = "typos"
 language = "system"
 entry = "typos --force-exclude"
 types = ["text"]
+# Exported diagrams embed font data that reads as misspellings.
+exclude = '\.svg$'
 
 # Preinstalled on GitHub's Ubuntu runners.
 [[repos.hooks]]

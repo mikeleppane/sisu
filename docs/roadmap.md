@@ -1,12 +1,30 @@
-# Roadmap beyond milestone 6
+# Roadmap
 
-Status: proposal, 2026-10-09. Nothing here is decided until it lands in a
-milestone spec or an ADR.
+Sisu grows one milestone at a time. Each milestone ends with a program that
+proves it works, and its design is fixed in a spec before work starts.
 
-The README lists milestones 1 to 6. They give Sisu a working imperative core:
-`i64`, `bool`, functions, classes, reference counting, arrays, strings, I/O and
-floats. This document collects what comes after, and the ergonomic features
-that should be folded into milestones 2 to 6 while they are still cheap.
+## Milestones 1 to 6
+
+These are adopted. Together they give Sisu a working imperative core.
+
+| # | Milestone | Done when | Status |
+| --- | --- | --- | --- |
+| 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
+| 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | In progress |
+| 3 | Arrays and a byte type | A prime sieve prints correct answers | Planned |
+| 4 | Strings | A program reverses and compares strings | Planned |
+| 5 | Input and output | A word-count tool reads standard input | Planned |
+| 6 | Floats | A Mandelbrot set prints as text | Planned |
+
+## Beyond milestone 6
+
+Status: proposal, 2026-10-09. The two "adopted" sections record decisions
+already in the milestone 1 and 2 specs. Nothing else from here on is decided
+until it lands in a milestone spec or an ADR.
+
+The rest of this document collects what comes after milestone 6, and the
+ergonomic features that should be folded into milestones 2 to 6 while they
+are still cheap.
 
 ## Guiding goal: ergonomic and readable
 
@@ -220,7 +238,9 @@ These do not make code nicer to write, so they wait:
 
   An attribute such as `@allow(unused)` could later silence one declaration.
 - Debug info (DWARF), so `gdb` steps through Sisu source.
-- A typed mid-level IR with reference-count elision and other optimizations.
+- A mid-level IR between `tir` and LLVM IR, for optimizations such as
+  reference-count elision. `tir` itself only records what the checker
+  understood; it does not optimize.
 - Link-time optimization with the runtime. Build `sisu-runtime` as LLVM
   bitcode and link it into the program's module, so LLVM can inline runtime
   calls such as the reference-count increment and decrement.

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/sisu-logo.png" alt="Sisu logo: a steel letter S with glowing orange seams" width="160">
+</p>
+
 # Sisu
 
 [![CI](https://github.com/mikeleppane/sisu/actions/workflows/ci.yml/badge.svg)](https://github.com/mikeleppane/sisu/actions/workflows/ci.yml)
@@ -20,42 +24,28 @@ fn main() {
 }
 ```
 
-## Status
+## What works today
 
-Milestone 1 is done: `sisuc` compiles `i64`, `bool`, functions, `if`, `while`
-and recursion to a native executable.
+Milestone 1 is done. `sisuc` compiles:
 
-| # | Milestone | Done when | Status |
-| --- | --- | --- | --- |
-| 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
-| 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Planned |
-| 3 | Arrays and a byte type | A prime sieve prints correct answers | Planned |
-| 4 | Strings | A program reverses and compares strings | Planned |
-| 5 | Input and output | A word-count tool reads standard input | Planned |
-| 6 | Floats | A Mandelbrot set prints as text | Planned |
+- `i64` and `bool`, with `let` for immutable bindings, `var` for variables,
+  and inferred types
+- functions and recursion
+- `if` as an expression, `while` and `return`
+- comparison chains such as `0 <= i < n`, and short-circuit `&&` and `||`
+- integer arithmetic that panics on overflow and division by zero instead of
+  wrapping
+- error messages in the style of `rustc`, pointing at the code
 
-## Development
+Classes, optionals and reference counting come next, in milestone 2.
 
-You need the Rust toolchain pinned in `rust-toolchain.toml` (rustup installs it
-on first use), and `libzstd-dev`, `libxml2-dev` and `zlib1g-dev` on Ubuntu.
-LLVM 22 lives inside the repo: `scripts/install-llvm.sh` downloads the official
-release (1.9 GB) and keeps only what the build needs in `.llvm/22` (about
-360 MB). `.cargo/config.toml` points the build at it. Any system LLVM is left
-alone.
+## Start here
 
-```console
-$ ./scripts/install-llvm.sh  # once per clone: LLVM 22 into .llvm/
-$ cargo build --workspace
-$ cargo nextest run --workspace
-$ prek install            # once per clone: run the checks on every commit
-$ prek run --all-files    # fmt, clippy, typos, file hygiene, as in CI
-$ cargo deny check        # advisories, licenses, sources
-```
-
-## Repository layout
-
-| Path | What it is |
+| You want to | Read |
 | --- | --- |
-| `crates/sisuc` | The compiler: lexer, parser, type checker, LLVM IR generation, linking. |
-| `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
-| `docs` | Project and agent documentation. |
+| Build Sisu and compile a program | [Developing Sisu](docs/development.md) |
+| See how the compiler is put together | [Architecture](docs/architecture.md) |
+| See what is planned | [Roadmap](docs/roadmap.md) |
+| Change the code | [Contributing](CONTRIBUTING.md) |
+| Look up a term | [Glossary](GLOSSARY.md) |
+| Read why a design choice was made | [Decisions](docs/adr) |
