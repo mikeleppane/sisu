@@ -1565,7 +1565,7 @@ mod tests {
     }
 
     #[test]
-    fn class_defined_twice() {
+    fn class_after_function_of_same_name() {
         expect_error(
             "fn A() {}\nclass A {}\nfn main() {}",
             "class `A` is defined twice",
@@ -1574,6 +1574,26 @@ mod tests {
             &[(1, 4, "first defined here")],
             None,
         );
+    }
+
+    #[test]
+    fn class_defined_twice() {
+        // The `bool` argument shows that `X` still names the first class.
+        let src =
+            "class X {\n    let a: i64\n}\nclass X {\n    let a: bool\n}\nfn main() { X(a: true) }";
+        errors(
+            src,
+            &[
+                ("class `X` is defined twice", (4, 7)),
+                ("expected `i64`, found `bool`", (7, 18)),
+            ],
+        );
+        let secondary: Vec<_> = diags(src)[0]
+            .secondary
+            .iter()
+            .map(|(span, text)| (at(src, *span), text.clone()))
+            .collect();
+        assert_eq!(secondary, [((1, 7), "first defined here".to_owned())]);
     }
 
     #[test]
@@ -1642,6 +1662,24 @@ mod tests {
             None,
             &[],
             Some("make it optional: `B?`"),
+        );
+    }
+
+    #[test]
+    fn never_constructed_once_per_strongly_connected_component() {
+        // `A`, `B` and `C` form one component of two cycles, `E` another; `D` only points in.
+        errors(
+            "class A {\n    let b: B\n    let c: C\n}\nclass B {\n    let a: A\n}\nclass C {\n    let a: A\n}\nclass D {\n    let a: A\n}\nclass E {\n    let e: E\n}\nfn main() {}",
+            &[
+                (
+                    "`A` can never be constructed: field `b` needs a `B`",
+                    (2, 9),
+                ),
+                (
+                    "`E` can never be constructed: field `e` needs a `E`",
+                    (15, 9),
+                ),
+            ],
         );
     }
 
@@ -1719,6 +1757,79 @@ mod tests {
             "fn f(a: i64) {}\nfn main() { f(a: 1) }",
             "labels on arguments come in milestone 10",
             (2, 15),
+        );
+    }
+
+    #[test]
+    fn constructor_reports_its_first_mistake_and_later_expression_errors() {
+        let class = "class P {\n    let x: i64\n    let y: i64\n}\n";
+        errors(
+            &format!("{class}fn main() {{ P(1, nope) }}"),
+            &[
+                ("this argument needs a label", (5, 15)),
+                ("cannot find `nope` in this scope", (5, 18)),
+            ],
+        );
+        errors(
+            &format!("{class}fn main() {{ P(1, 2) }}"),
+            &[("this argument needs a label", (5, 15))],
+        );
+    }
+
+    #[test]
+    fn each_label_on_a_call_is_reported() {
+        errors(
+            "fn f(a: i64, b: i64) {}\nfn main() { f(a: 1, b: 2) }",
+            &[
+                ("labels on arguments come in milestone 10", (2, 15)),
+                ("labels on arguments come in milestone 10", (2, 21)),
+            ],
+        );
+    }
+
+    #[test]
+    fn labels_on_unknown_calls_are_reported() {
+        errors(
+            "class P {}\nfn main() { P().missing(x: 1 + true) }",
+            &[
+                ("`P` has no method `missing`", (2, 17)),
+                ("labels on arguments come in milestone 10", (2, 25)),
+                ("expected `i64`, found `bool`", (2, 32)),
+            ],
+        );
+        errors(
+            "fn main() { nope(x: 1 + true) }",
+            &[
+                ("cannot find function `nope`", (1, 13)),
+                ("labels on arguments come in milestone 10", (1, 18)),
+                ("expected `i64`, found `bool`", (1, 25)),
+            ],
+        );
+        errors(
+            "fn main() { nope.m(x: 1 + true) }",
+            &[
+                ("cannot find `nope` in this scope", (1, 13)),
+                ("labels on arguments come in milestone 10", (1, 20)),
+                ("expected `i64`, found `bool`", (1, 27)),
+            ],
+        );
+    }
+
+    #[test]
+    fn print_reports_labels_and_still_checks_its_arguments() {
+        errors(
+            "fn main() { print(z: 1, 2) }",
+            &[
+                ("`print` takes one `i64` or `bool`", (1, 13)),
+                ("labels on arguments come in milestone 10", (1, 19)),
+            ],
+        );
+        errors(
+            "class E {}\nfn main() { print(z: E()) }",
+            &[
+                ("`print` takes one `i64` or `bool`", (2, 13)),
+                ("labels on arguments come in milestone 10", (2, 19)),
+            ],
         );
     }
 
@@ -1847,6 +1958,28 @@ mod tests {
             "(class C (var n i64))\n\
              (fn C.bump ((self#0 C) (by#1 i64)) unit (block (block (let #2 self#0) (= (. #2 n) (+ (. #2 n) by#1)))))\n\
              (fn main () unit (block (let c#0 (new C 1)) (call C.bump c#0 2) (print (. c#0 n))))"
+        );
+    }
+
+    #[test]
+    fn lowers_field_assignments() {
+        assert_eq!(
+            lowered(
+                "class B {\n    var f: i64\n}\nclass A {\n    var b: B\n}\nfn mk(a: A) -> A { a }\nfn main() {\n    let a = A(b: B(f: 1))\n    a.b.f = 2\n    mk(a).b = B(f: 3)\n}"
+            ),
+            "(class B (var f i64))\n\
+             (class A (var b B))\n\
+             (fn mk ((a#0 A)) A (block a#0))\n\
+             (fn main () unit (block (let a#0 (new A (new B 1))) (= (. (. a#0 b) f) 2) (= (. (call mk a#0) b) (new B 3))))"
+        );
+    }
+
+    #[test]
+    fn assign_field_type() {
+        error(
+            "class P {\n    var x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = true\n}",
+            "expected `i64`, found `bool`",
+            (6, 11),
         );
     }
 

@@ -252,6 +252,7 @@ impl Checker {
                 callee.span,
                 format!("cannot find function `{}`", callee.name),
             ));
+            self.labels(args);
             self.stray(args);
             return Err(Poisoned { ty: None });
         };
@@ -267,6 +268,7 @@ impl Checker {
     ) -> Checked {
         let receiver = self.value(receiver);
         let Some(func) = self.find_method(type_of(&receiver), method) else {
+            self.labels(args);
             self.stray(args);
             return Err(Poisoned { ty: None });
         };
@@ -459,10 +461,7 @@ impl Checker {
     fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
         // Not `value()`: a `unit` argument needs this message, not "expression has no value".
         let wrong = || Diagnostic::error(span, "`print` takes one `i64` or `bool`");
-        if self.labels(args) {
-            self.stray(args);
-            return Err(Poisoned { ty: None });
-        }
+        let labeled = self.labels(args);
         let [arg] = args else {
             self.diagnostics.push(wrong());
             self.stray(args);
@@ -473,8 +472,11 @@ impl Checker {
             Some(Type::Unit | Type::Class(_)) => wrong(),
             Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
             _ => {
-                let kind = checked.ok().map(|arg| tir::ExprKind::Print(Box::new(arg)));
-                return typed(span, Type::Unit, false, kind);
+                let kind = checked
+                    .ok()
+                    .filter(|_| !labeled)
+                    .map(|arg| tir::ExprKind::Print(Box::new(arg)));
+                return typed(span, Type::Unit, labeled, kind);
             }
         };
         self.diagnostics.push(error);

@@ -100,7 +100,8 @@ pub(crate) enum StmtKind {
         target: Expr,
         value: Expr,
     },
-    /// `target op= value`; the checker lowers it to `target = target op value`.
+    /// `target op= value`; the checker lowers a name to `target = target op value`, and a
+    /// field `a.f` to `Block { let t = a; Assign { t.f, t.f op value } }`.
     CompoundAssign {
         op: BinaryOp,
         target: Expr,
