@@ -293,8 +293,9 @@ impl Checker {
         self.signatures.push(Signature { name, params, ret });
     }
 
-    /// Reports each cycle of class fields once, on its first class in source order, at that
-    /// class's first field into the cycle: no first object of such a class can exist.
+    /// Reports each strongly connected component of non-optional class fields once
+    /// (overlapping cycles share one error), on the component's first class in source order,
+    /// at its first field into the component: no first object of such a class can exist.
     fn never_constructed(&mut self) {
         let reach: Vec<Vec<bool>> = (0..self.classes.len()).map(|c| self.reachable(c)).collect();
         for (c, class) in self.classes.iter().enumerate() {
@@ -462,6 +463,20 @@ impl Checker {
 /// Where a block's value comes from: its last statement, or the block itself when empty.
 fn value_span(block: &ast::Block) -> Span {
     block.stmts.last().map_or(block.span, |s| s.span)
+}
+
+/// A `Block` expression of `stmts` then `value`, of type `ty`.
+fn block_expr(stmts: Vec<tir::Stmt>, value: Option<tir::Expr>, ty: Type, span: Span) -> tir::Expr {
+    let block = tir::Block {
+        stmts,
+        value: value.map(Box::new),
+        ty: ty.clone(),
+    };
+    tir::Expr {
+        kind: tir::ExprKind::Block(block),
+        ty,
+        span,
+    }
 }
 
 fn not_found(name: &str, span: Span) -> Diagnostic {
@@ -1128,6 +1143,18 @@ mod tests {
             "fn main() { print(1 == true) }",
             "cannot compare `i64` with `bool`",
             (1, 19),
+        );
+    }
+
+    /// Temporary: Task 21 deletes this test with its diagnostic.
+    #[test]
+    fn equality_on_classes_not_supported_yet() {
+        errors(
+            "class E {}\nfn main() {\n    print(E() == E())\n    print(1 != E())\n}",
+            &[
+                ("`==` on classes is not supported yet", (3, 11)),
+                ("`!=` on classes is not supported yet", (4, 11)),
+            ],
         );
     }
 
@@ -1869,6 +1896,23 @@ mod tests {
             "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.nope())\n}",
             "`P` has no method `nope`",
             (6, 13),
+        );
+    }
+
+    #[test]
+    fn method_through_class_name() {
+        error(
+            "class Tree {\n    fn sum(self) -> i64 { 0 }\n}\nfn main() {\n    print(Tree.sum(Tree()))\n}",
+            "cannot find `Tree` in this scope",
+            (5, 11),
+        );
+    }
+
+    #[test]
+    fn unknown_field_type_poisons() {
+        errors(
+            "class T {\n    var x: Nope\n}\nfn main() { print(T(x: 1).x + true) }",
+            &[("unknown type `Nope`", (2, 12))],
         );
     }
 

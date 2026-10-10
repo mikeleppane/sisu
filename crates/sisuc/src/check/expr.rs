@@ -1,6 +1,8 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
-use super::{Binding, Checked, Checker, Poisoned, block_type, not_found, type_of, value_span};
+use super::{
+    Binding, Checked, Checker, Poisoned, block_expr, block_type, not_found, type_of, value_span,
+};
 use crate::ast::{self, ExprKind, UnaryOp};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::tir::{self, Type};
@@ -174,9 +176,15 @@ impl Checker {
     fn equal(&mut self, span: Span, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         let (l, r) = (self.value(lhs), self.value(rhs));
         if let (Some(lt), Some(rt)) = (type_of(&l), type_of(&r))
-            && lt != rt
+            && (lt != rt || lt.is_counted())
         {
-            let message = format!("cannot compare {} with {}", self.show(lt), self.show(rt));
+            // Temporary: Task 21 deletes this message when it checks `==` on classes.
+            let message = if lt.is_counted() || rt.is_counted() {
+                let op = if negated { "!=" } else { "==" };
+                format!("`{op}` on classes is not supported yet")
+            } else {
+                format!("cannot compare {} with {}", self.show(lt), self.show(rt))
+            };
             self.diagnostics.push(Diagnostic::error(span, message));
             return Err(Poisoned { ty: None });
         }
@@ -332,16 +340,7 @@ impl Checker {
         if stmts.is_empty() {
             return node;
         }
-        let block = tir::Block {
-            stmts,
-            value: Some(Box::new(node)),
-            ty: ty.clone(),
-        };
-        tir::Expr {
-            kind: tir::ExprKind::Block(block),
-            ty,
-            span,
-        }
+        block_expr(stmts, Some(node), ty, span)
     }
 
     /// Reports each labeled argument, as only a constructor takes labels. Whether there was one.

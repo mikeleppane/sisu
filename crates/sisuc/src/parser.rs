@@ -118,7 +118,7 @@ impl Parser<'_> {
     }
 
     fn class(&mut self) -> Result<Class, Diagnostic> {
-        let start = self.expect(&TokenKind::Class)?.span;
+        self.expect(&TokenKind::Class)?;
         let name = self.ident("a class name")?;
         self.expect(&TokenKind::LBrace)?;
         let mut members = Vec::new();
@@ -130,12 +130,8 @@ impl Parser<'_> {
             }
             self.skip_newlines();
         }
-        let close = self.bump();
-        Ok(Class {
-            name,
-            members,
-            span: start.to(close.span),
-        })
+        self.bump();
+        Ok(Class { name, members })
     }
 
     fn member(&mut self) -> Result<Member, Diagnostic> {
@@ -980,14 +976,5 @@ error: expected `=`, found end of line
             parse_err("class A { let x: i64 let y: i64 }"),
             ("expected end of line, found `let`".to_string(), 1, 22)
         );
-    }
-
-    #[test]
-    fn class_span() {
-        let tree = parsed("class E {\n}\n");
-        let Item::Class(class) = &tree.items[0] else {
-            panic!("a class");
-        };
-        assert_eq!(class.span, Span::new(0, 11));
     }
 }

@@ -20,6 +20,10 @@ class T {
     fn me(self) -> T {
         self
     }
+
+    fn reset(self) {
+        self.e = E()
+    }
 }
 
 fn fields_and_methods() {
@@ -77,10 +81,19 @@ fn in_a_loop() {
     print(sum)
 }
 
+// A field assigned through `self` releases its old object on each call.
+fn reset_twice() {
+    let t = T(count: 4, e: E())
+    t.reset()
+    t.reset()
+    print(t.count)
+}
+
 fn main() {
     fields_and_methods()
     returns_self()
     discarded(true)
     discarded(false)
     in_a_loop()
+    reset_twice()
 }

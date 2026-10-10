@@ -19,8 +19,6 @@ pub(crate) enum Item {
 pub(crate) struct Class {
     pub(crate) name: Ident,
     pub(crate) members: Vec<Member>,
-    /// `class` through `}`.
-    pub(crate) span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

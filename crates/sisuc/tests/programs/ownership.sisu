@@ -5,6 +5,10 @@ class E {}
 class T {
     var count: i64
     var e: E
+
+    fn add(self, n: i64) -> i64 {
+        self.count + n
+    }
 }
 
 class Holder {
@@ -87,13 +91,16 @@ fn early_return(c: bool) {
     print(2)
 }
 
-// A call, a constructor and a field assignment, each interrupted by `return` at `at`.
+// A call, a constructor, a field assignment, a method's receiver and a compound field
+// assignment, each interrupted by `return` at `at`.
 fn spill_return(at: i64) -> i64 {
     let t = T(count: 0, e: E())
     let a = take(E(), if at == 1 { return 1 } else { 10 })
     let b = P(e: E(), x: if at == 2 { return 2 } else { 20 }).x
     pick(t).e = if at == 3 { return 3 } else { E() }
-    a + b
+    let c = t.add(if at == 4 { return 4 } else { 100 })
+    t.count += if at == 5 { return 5 } else { 1000 }
+    a + b + c + t.count
 }
 
 // The same spills interrupted by `break` at `at`.
@@ -105,7 +112,8 @@ fn spill_break(at: i64) {
         let a = take(E(), if at == 1 { break } else { i })
         let b = P(e: E(), x: if at == 2 { break } else { i }).x
         t.e = if at == 3 { break } else { E() }
-        t.count += a + b
+        let c = t.add(if at == 4 { break } else { i })
+        t.count += if at == 5 { break } else { a + b + c }
     }
     print(t.count)
 }
@@ -191,10 +199,14 @@ fn main() {
     print(spill_return(1))
     print(spill_return(2))
     print(spill_return(3))
+    print(spill_return(4))
+    print(spill_return(5))
     print(spill_return(0))
     spill_break(1)
     spill_break(2)
     spill_break(3)
+    spill_break(4)
+    spill_break(5)
     spill_break(0)
     new_exits_first(true)
     new_exits_first(false)

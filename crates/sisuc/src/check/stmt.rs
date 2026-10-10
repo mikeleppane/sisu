@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use super::expr::operator;
-use super::{Binding, BindingKind, CheckedBlock, Checker, Poisoned, not_found, type_of};
+use super::{
+    Binding, BindingKind, CheckedBlock, Checker, Poisoned, block_expr, not_found, type_of,
+};
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::tir::{self, ExprKind, Type};
@@ -322,22 +324,14 @@ impl Checker {
         let (Ok(base), Ok(value), true) = (base, value, writable) else {
             return Err(unit());
         };
-        let block = tir::Block {
-            stmts: vec![
-                tir::Stmt::Let {
-                    local: temp,
-                    init: base,
-                },
-                self.field_assign(span, temp_read(), index, value),
-            ],
-            value: None,
-            ty: Type::Unit,
-        };
-        Ok(tir::Stmt::Expr(tir::Expr {
-            kind: ExprKind::Block(block),
-            ty: Type::Unit,
-            span,
-        }))
+        let stmts = vec![
+            tir::Stmt::Let {
+                local: temp,
+                init: base,
+            },
+            self.field_assign(span, temp_read(), index, value),
+        ];
+        Ok(tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span)))
     }
 
     /// The type of field `index` of `class`, which `span` assigns, and whether it may be
@@ -424,16 +418,7 @@ impl Checker {
             return assign;
         }
         stmts.push(assign);
-        let block = tir::Block {
-            stmts,
-            value: None,
-            ty: Type::Unit,
-        };
-        tir::Stmt::Expr(tir::Expr {
-            kind: ExprKind::Block(block),
-            ty: Type::Unit,
-            span,
-        })
+        tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span))
     }
 
     /// Adds `name` to the innermost scope as a new local. A name already in that scope is

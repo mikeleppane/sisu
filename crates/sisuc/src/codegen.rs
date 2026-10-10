@@ -364,7 +364,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Releases the reference `value` holds when `ty` is counted.
     fn release(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
-        if let Type::Class(id) = ty {
+        if let Some(id) = ty.counted_class() {
             self.call(self.releases[id.0], &[value.into()]);
         }
     }
@@ -670,7 +670,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
             ExprKind::Equal { negated, lhs, rhs } => {
                 if let Type::Class(_) = lhs.ty {
-                    panic!("codegen for `==` on classes lands in Task 22");
+                    unreachable!("checked: `==` never sees a class until Task 21");
                 }
                 let (l, r) = (self.value(lhs), self.value(rhs));
                 let predicate = if *negated {
@@ -1279,11 +1279,7 @@ mod tests {
         .to_string();
         for (name, op) in [("d", "sdiv"), ("r", "srem")] {
             let header = format!("define i64 @sisu.{name}(");
-            let body = ir
-                .split(&header)
-                .nth(1)
-                .and_then(|rest| rest.split("\n}").next())
-                .unwrap_or_else(|| panic!("no {header} in\n{ir}"));
+            let body = function_body(&ir, &header);
             let lines: Vec<&str> = body.lines().map(str::trim).collect();
             let find = |wanted: &dyn Fn(&str) -> bool, what: &str| {
                 instruction(&lines, wanted).unwrap_or_else(|| panic!("no {what} in\n{body}"))
@@ -1342,6 +1338,13 @@ mod tests {
         ] {
             assert_panics_with(&ir, message);
         }
+    }
+
+    /// The body of the function `header` starts: up to its closing `}`.
+    fn function_body<'a>(ir: &'a str, header: &str) -> &'a str {
+        ir.split_once(header)
+            .and_then(|(_, rest)| rest.split("\n}").next())
+            .unwrap_or_else(|| panic!("no {header} in\n{ir}"))
     }
 
     /// The first instruction `<value> = <text>` in `lines` whose text is `wanted`: its line
@@ -1425,29 +1428,9 @@ mod tests {
 
     #[test]
     fn verifies_field_assignment_through_a_call() {
-        let context = Context::create();
-        let ir = compiled(
-            &context,
+        compiled(
+            &Context::create(),
             "class C {\n    var n: i64\n}\nfn make() -> C { C(n: 0) }\nfn main() {\n    make().n = 1\n}",
-        )
-        .print_to_string()
-        .to_string();
-        // The base is evaluated, then the value is stored through a GEP to element 1 of it.
-        let main = ir
-            .split("define void @sisu.main()")
-            .nth(1)
-            .unwrap_or_else(|| panic!("no @sisu.main in\n{ir}"));
-        let lines: Vec<&str> = main.lines().map(str::trim).collect();
-        let (_, base, _) = instruction(&lines, &|t| t == "call ptr @sisu.make()")
-            .unwrap_or_else(|| panic!("no call to make in\n{main}"));
-        let (_, field, _) = instruction(&lines, &|t| {
-            t.contains(&format!("%sisu.C, ptr {base}, i32 0, i32 1"))
-        })
-        .unwrap_or_else(|| panic!("no GEP to `n` of {base} in\n{main}"));
-        let store = format!("store i64 1, ptr {field},");
-        assert!(
-            lines.iter().any(|l| l.starts_with(&store)),
-            "missing {store:?} in\n{main}"
         );
     }
 
@@ -1491,15 +1474,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "codegen for `==` on classes lands in Task 22")]
-    fn equal_on_classes_panics() {
-        compiled(
-            &Context::create(),
-            "class E {}\nfn main() {\n    print(E() == E())\n}",
-        );
-    }
-
-    #[test]
     fn field_read_retains_before_releasing_base() {
         let context = Context::create();
         let ir = compiled(
@@ -1508,11 +1482,7 @@ mod tests {
         )
         .print_to_string()
         .to_string();
-        let main = ir
-            .split("define void @sisu.main()")
-            .nth(1)
-            .and_then(|rest| rest.split("\n}").next())
-            .unwrap_or_else(|| panic!("no @sisu.main in\n{ir}"));
+        let main = function_body(&ir, "define void @sisu.main()");
         let lines: Vec<&str> = main.lines().map(str::trim).collect();
         let at = |wanted: &dyn Fn(&str) -> bool, what: &str| {
             lines

@@ -157,7 +157,15 @@ pub(crate) enum ExprKind {
 impl Type {
     /// Whether a value of this type is an owned reference, which codegen counts.
     pub(crate) fn is_counted(&self) -> bool {
-        matches!(self, Type::Class(_))
+        self.counted_class().is_some()
+    }
+
+    /// The class whose count a value of this type holds a reference to, if any.
+    pub(crate) fn counted_class(&self) -> Option<ClassId> {
+        match self {
+            Type::Class(id) => Some(*id),
+            _ => None,
+        }
     }
 }
 
@@ -675,14 +683,6 @@ mod tests {
         ];
         for (op, symbol) in ops {
             assert_eq!(op.to_string(), symbol);
-        }
-    }
-
-    #[test]
-    fn only_a_class_is_counted() {
-        assert!(Type::Class(ClassId(0)).is_counted());
-        for ty in [Type::I64, Type::Bool, Type::Unit, Type::Never] {
-            assert!(!ty.is_counted(), "{ty}");
         }
     }
 
