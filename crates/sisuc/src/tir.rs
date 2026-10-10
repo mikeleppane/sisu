@@ -416,7 +416,10 @@ impl Printer<'_> {
     /// `(. base name)`.
     fn field(&self, f: &mut fmt::Formatter<'_>, base: &Expr, index: usize) -> fmt::Result {
         let Type::Class(class) = base.ty else {
-            panic!("checked: a field's base is a class, not `{}`", base.ty)
+            panic!(
+                "the checker should only emit a field access on a class-typed base, not `{}`",
+                base.ty
+            )
         };
         f.write_str("(. ")?;
         self.expr(f, base)?;

@@ -108,10 +108,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             let body = self.context.append_basic_block(drop, "loop");
             self.branch_to(body);
             self.builder.position_at_end(body);
-            let object = self
-                .builder
-                .build_phi(ptr_type, "object")
-                .expect("builder is positioned");
+            let object = self.builder.build_phi(ptr_type, "object").expect(
+                "the builder should be positioned in a block while a function body is emitted",
+            );
             object.add_incoming(&[(&param(drop), entry)]);
             (body, object)
         });
@@ -122,7 +121,9 @@ impl<'ctx> Codegen<'ctx, '_> {
         let load_field = |index| {
             self.builder
                 .build_load(ptr_type, self.field_ptr(ty, object, index), "field")
-                .expect("builder is positioned")
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                )
         };
         for (index, field) in self.program.classes[id.0].fields.iter().enumerate() {
             if field.ty.is_counted() && chain != Some(index) {
@@ -144,13 +145,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         if let (Some(next), Some((body, phi))) = (next, looped) {
             let done = self.context.append_basic_block(drop, "done");
             let counted = self.context.append_basic_block(drop, "next");
-            let null = self
-                .builder
-                .build_is_null(next, "null")
-                .expect("builder is positioned");
+            let null = self.builder.build_is_null(next, "null").expect(
+                "the builder should be positioned in a block while a function body is emitted",
+            );
             self.builder
                 .build_conditional_branch(null, done, counted)
-                .expect("builder is positioned");
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                );
             self.builder.position_at_end(counted);
             self.decrement(next, body, done);
             phi.add_incoming(&[(&next, counted)]);
@@ -158,7 +160,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
         self.builder
             .build_return(None)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
     }
 
     /// `@sisu_rc.eq.<C>(a, b)`: `true` when `a` and `b` are the same pointer (two `null`s
@@ -176,42 +178,46 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder.position_at_end(at);
             self.builder
                 .build_return(Some(&bool_type.const_int(value, false)))
-                .expect("builder is positioned");
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                );
         }
         let nth = |n| {
             function
                 .get_nth_param(n)
-                .expect("eq takes two objects")
+                .expect("the generated `eq` helper should be declared with two object parameters")
                 .into_pointer_value()
         };
         let (a, b) = (nth(0), nth(1));
         let branch = |cond, then, other| {
             self.builder
                 .build_conditional_branch(cond, then, other)
-                .expect("builder is positioned");
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                );
         };
         self.builder.position_at_end(entry);
         branch(self.same_object(a, b), equal, differ);
         self.builder.position_at_end(differ);
         let null = |object| {
-            self.builder
-                .build_is_null(object, "null")
-                .expect("builder is positioned")
+            self.builder.build_is_null(object, "null").expect(
+                "the builder should be positioned in a block while a function body is emitted",
+            )
         };
         let either_null = self
             .builder
             .build_or(null(a), null(b), "either_null")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         branch(either_null, unequal, objects);
         self.builder.position_at_end(objects);
         for (index, field) in self.program.classes[id.0].fields.iter().enumerate() {
-            let llvm_ty = self
-                .llvm_type(&field.ty)
-                .expect("checked: a field has a value type");
+            let llvm_ty = self.llvm_type(&field.ty).expect(
+                "the checker should give every class field a value type, never `unit` or `never`",
+            );
             let load = |object| {
                 self.builder
                     .build_load(llvm_ty, self.field_ptr(ty, object, index), "field")
-                    .expect("builder is positioned")
+                    .expect("the builder should be positioned in a block while a function body is emitted")
             };
             let next = block("next");
             branch(self.equal(&field.ty, load(a), load(b)), next, unequal);
@@ -235,10 +241,12 @@ impl<'ctx> Codegen<'ctx, '_> {
                     &[lhs.into(), rhs.into()],
                     "eq",
                 )
-                .expect("builder is positioned")
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                )
                 .try_as_basic_value()
                 .basic()
-                .expect("eq returns a bool")
+                .expect("the generated `eq` helper should return a `bool`")
                 .into_int_value();
         }
         if !matches!(ty, Type::Optional(_)) {
@@ -248,7 +256,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let part = |pair: BasicValueEnum<'ctx>, index| {
             self.builder
                 .build_extract_value(pair.into_struct_value(), index, "part")
-                .expect("a scalar optional is a pair")
+                .expect("a scalar optional should be lowered to a `{ flag, value }` pair")
                 .into_int_value()
         };
         let (fa, fb) = (part(lhs, 0), part(rhs, 0));
@@ -257,14 +265,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         let none = self
             .builder
             .build_not(fa, "none")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         let values = self
             .builder
             .build_or(none, values, "values")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder
             .build_and(flags, values, "equal")
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
     }
 
     /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to
@@ -287,7 +295,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         );
         self.builder
             .build_conditional_branch(zero, at_zero, otherwise)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
     }
 
     /// Starts helper `function`, which returns at once when its object is `null`. Leaves the
@@ -304,14 +312,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         let null = self
             .builder
             .build_is_null(object, "null")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder
             .build_conditional_branch(null, done, counted)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder.position_at_end(done);
         self.builder
             .build_return(None)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder.position_at_end(counted);
         (object, done)
     }
@@ -326,12 +334,12 @@ impl<'ctx> Codegen<'ctx, '_> {
         let count = self
             .builder
             .build_load(i64_type, object, "count")
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
             .into_int_value();
         let count = self
             .builder
             .build_int_add(count, delta, "count")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.store(object, count.into());
         count
     }
@@ -355,6 +363,6 @@ impl<'ctx> Codegen<'ctx, '_> {
 fn param(function: FunctionValue<'_>) -> PointerValue<'_> {
     function
         .get_nth_param(0)
-        .expect("a helper takes one object")
+        .expect("a counting helper should be declared with one object parameter")
         .into_pointer_value()
 }

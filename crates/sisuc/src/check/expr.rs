@@ -220,7 +220,7 @@ impl Checker {
         let (checked, ty, mismatched) = self.integers(&[lhs, rhs], expected);
         let [l, r]: [Checked; 2] = checked
             .try_into()
-            .unwrap_or_else(|_| panic!("`integers` returns one result per operand"));
+            .unwrap_or_else(|_| panic!("`integers` should return one result per operand"));
         let kind = l.ok().zip(r.ok()).map(|(l, r)| tir::ExprKind::Binary {
             op: tir_op,
             lhs: Box::new(l),
@@ -384,7 +384,9 @@ impl Checker {
         };
         match (l, r) {
             (Ok(l), Ok(r)) => Ok(self.spilled(span, Type::Bool, vec![l, r], |operands| {
-                let [lhs, rhs]: [tir::Expr; 2] = operands.try_into().expect("two operands");
+                let [lhs, rhs]: [tir::Expr; 2] = operands.try_into().expect(
+                    "`spilled` should hand its closure one operand per input, and there are two",
+                );
                 kind(Box::new(lhs), Box::new(rhs))
             })),
             _ => Err(Poisoned::typed(Type::Bool)),
@@ -552,7 +554,7 @@ impl Checker {
             bind = Some(local);
             block
         });
-        let bind = bind.expect("`branches` checks the first block");
+        let bind = bind.expect("`branches` should check the first block, which sets `bind`");
         // A failed join keeps its own `mismatch`.
         let ty = match ty {
             Ok(_) if mismatched => Err(Poisoned::error()),

@@ -332,7 +332,9 @@ impl Checker {
             return Err(unit());
         };
         let (field_ty, writable) = self.assignable(span, class, index);
-        let (op, _) = operator(op).expect("the parser makes only arithmetic compound operators");
+        let (op, _) = operator(op).expect(
+            "the parser should produce only arithmetic operators for a compound assignment",
+        );
         let want = literal_type(field_ty.as_ref());
         let temp = self.fresh(Type::Class(class));
         let temp_read = || tir::Expr {
@@ -453,7 +455,7 @@ impl Checker {
     ) -> tir::Stmt {
         let (mut stmts, operands) = self.spill(vec![base, value]);
         let [base, value] = <[tir::Expr; 2]>::try_from(operands)
-            .expect("`spill` returns as many operands as it takes");
+            .expect("`spill` should return one operand per input");
         let assign = tir::Stmt::Assign {
             place: tir::Place::Field { base, index },
             value,
@@ -480,7 +482,10 @@ impl Checker {
             ty: ty.clone().unwrap_or(Type::Unit),
             mutable: kind == BindingKind::Var,
         });
-        let scope = self.scopes.last_mut().expect("a scope is open");
+        let scope = self
+            .scopes
+            .last_mut()
+            .expect("a scope should be open while a block is checked");
         if let Some(first) = scope.get(&name.name) {
             self.diagnostics.push(
                 Diagnostic::error(
@@ -506,7 +511,10 @@ impl Checker {
 
     /// Closes the innermost scope, warning about each `var` that was never reassigned.
     pub(super) fn pop_scope(&mut self) {
-        let scope = self.scopes.pop().expect("a scope is open");
+        let scope = self
+            .scopes
+            .pop()
+            .expect("a scope should be open while a block is checked");
         for (name, b) in scope {
             if b.kind == BindingKind::Var && !b.reassigned {
                 self.diagnostics.push(

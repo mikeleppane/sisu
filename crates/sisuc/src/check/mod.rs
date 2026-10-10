@@ -349,7 +349,9 @@ impl Checker {
                     Some(Type::Class(d)) if in_cycle(d.0) => Some((f, d)),
                     _ => None,
                 })
-                .expect("a class on a cycle has a field into it");
+                .expect(
+                    "a class on a reference cycle should have a field that leads into the cycle",
+                );
             let target = &self.classes[target.0].name.name;
             self.diagnostics.push(
                 Diagnostic::error(
@@ -608,7 +610,7 @@ fn wrap_block(block: &mut CheckedBlock, ty: &Type) {
             let value = block
                 .value
                 .take()
-                .expect("a block of a value type ends in its value");
+                .expect("a block checked as a value type should end in its value");
             block.value = Some(Box::new(wrap(*value, ty)));
             block.ty = ty.clone();
         }

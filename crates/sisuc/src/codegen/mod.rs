@@ -123,7 +123,7 @@ pub(crate) fn compile<'ctx>(
             .chain(class.fields.iter().map(|field| {
                 codegen
                     .llvm_type(&field.ty)
-                    .expect("checked: a field has a value type")
+                    .expect("the checker should give every class field a value type, never `unit` or `never`")
             }))
             .collect();
         ty.set_body(&body, false);
@@ -214,7 +214,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
             Type::Optional(payload) => match self
                 .llvm_type(payload)
-                .expect("checked: an optional holds a value")
+                .expect("the checker should reject an optional of `unit` or `never`, so its payload has a value type")
             {
                 // A class optional is the object's pointer, `null` for `None`.
                 ptr @ BasicTypeEnum::PointerType(_) => Some(ptr),
@@ -242,26 +242,28 @@ impl<'ctx> Codegen<'ctx, '_> {
             unreachable!("checked: only an object has fields")
         };
         // Element 0 is the count.
-        let element = u32::try_from(index + 1).expect("a class has fewer than 2^32 fields");
+        let element = u32::try_from(index + 1).expect(
+            "a class should have fewer than 2^32 fields, since field indexes are `u32` in LLVM",
+        );
         self.builder
             .build_struct_gep(self.classes[id.0], object, element, "field")
-            .expect("the class has the field")
+            .expect("the checker should only emit a field index that the class has")
     }
 
     /// Field `index` of the object `base`, whose type is `ty`.
     fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
         let object = self
             .expr(base)
-            .expect("checked: the base is an object")
+            .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
             .into_pointer_value();
         let field = self.field_ptr(&base.ty, object, index);
-        let llvm_ty = self
-            .llvm_type(ty)
-            .expect("checked: a field has a value type");
+        let llvm_ty = self.llvm_type(ty).expect(
+            "the checker should give every class field a value type, never `unit` or `never`",
+        );
         let value = self
             .builder
             .build_load(llvm_ty, field, "load")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
         self.release(object.into(), &base.ty);
@@ -272,13 +274,13 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn same_object(&self, a: PointerValue<'ctx>, b: PointerValue<'ctx>) -> IntValue<'ctx> {
         self.builder
             .build_int_compare(IntPredicate::EQ, a, b, "same")
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
     }
 
     fn call(&self, function: FunctionValue<'ctx>, args: &[BasicMetadataValueEnum<'ctx>]) {
         self.builder
             .build_call(function, args, "")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
     }
 
     /// Releases a value nobody keeps, if there is one.
@@ -291,9 +293,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Releases the locals `live[depth..]`, newest first, without popping them.
     fn release_to(&self, depth: usize) {
         for local in self.live[depth..].iter().rev() {
-            let value = self
-                .load_local(*local)
-                .expect("a counted local has a value");
+            let value = self.load_local(*local).expect(
+                "a counted local should have a value, since only initialised locals are released",
+            );
             self.release(value, &self.types[local.0]);
         }
     }
@@ -305,9 +307,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             Slot::Alloca(ptr, ty) => {
                 // Name the load after the local (the alloca carries its name).
                 let name = ptr.get_name().to_string_lossy().into_owned();
-                self.builder
-                    .build_load(ty, ptr, &name)
-                    .expect("builder is positioned")
+                self.builder.build_load(ty, ptr, &name).expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                )
             }
         })
     }
@@ -317,7 +319,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         // Arguments run first: one that returns early then leaves no object behind.
         let args: Vec<_> = args
             .iter()
-            .map(|a| self.expr(a).expect("checked: an argument has a value"))
+            .map(|a| self.expr(a).expect("the checker should reject a `unit` or `never` argument, so each argument has a value"))
             .collect();
         let i64_type = self.context.i64_type();
         let (size, align) = self.class_layout(class);
@@ -331,10 +333,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 ],
                 "object",
             )
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
             .try_as_basic_value()
             .basic()
-            .expect("`sisu_alloc` returns a pointer")
+            .expect("the runtime declares `sisu_alloc` as returning a pointer")
             .into_pointer_value();
         self.store(object, i64_type.const_int(1, false).into());
         let ty = Type::Class(class);
@@ -351,7 +353,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .iter()
             .map(|p| {
                 self.llvm_type(&f.locals[p.0].ty)
-                    .expect("checked: a parameter has a value type")
+                    .expect("the checker should reject a `unit` or `never` parameter, so each parameter has a value type")
                     .into()
             })
             .collect();
@@ -393,7 +395,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         if !self.terminated() {
             // The declared return type picks the `ret`: a unit function discards any body value.
             let value = if self.llvm_type(&f.ret).is_some() {
-                Some(value.expect("checked: a body that falls through has the return type"))
+                Some(value.expect("the checker should give a body that falls through a value of the function's return type"))
             } else {
                 self.discard(value, &f.body.ty);
                 None
@@ -401,7 +403,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.release_to(0);
             self.builder
                 .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
-                .expect("builder is positioned");
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                );
         }
     }
 
@@ -416,25 +420,25 @@ impl<'ctx> Codegen<'ctx, '_> {
         let sisu_main = self
             .module
             .get_function("sisu.main")
-            .expect("checked: the program has a `main`");
+            .expect("the checker should reject a program without a `main` function");
         self.builder
             .build_call(sisu_main, &[], "")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder
             .build_return(Some(&i32_type.const_zero()))
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
     }
 
     fn current_block(&self) -> BasicBlock<'ctx> {
         self.builder
             .get_insert_block()
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
     }
 
     fn current_function(&self) -> FunctionValue<'ctx> {
         self.current_block()
             .get_parent()
-            .expect("the block belongs to a function")
+            .expect("the block the builder is positioned in should belong to a function")
     }
 
     /// Whether the current block already ends in a terminator, so nothing more can follow.
@@ -510,7 +514,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 // of the old value, then of the base, which keeps the object alive until then.
                 let object = self
                     .expr(base)
-                    .expect("checked: the base is an object")
+                    .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
                     .into_pointer_value();
                 let ty = &value.ty;
                 let Some(value) = self.expr(value) else {
@@ -549,9 +553,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             _ if negated => {
                 let equal = self.equal(&lhs.ty, l, r);
-                self.builder
-                    .build_not(equal, "not")
-                    .expect("builder is positioned")
+                self.builder.build_not(equal, "not").expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                )
             }
             _ => self.equal(&lhs.ty, l, r),
         };
@@ -562,13 +566,14 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// An operand of `==` or `is`.
     fn operand(&mut self, e: &Expr) -> BasicValueEnum<'ctx> {
-        self.expr(e).expect("checked: an operand has a value")
+        self.expr(e)
+            .expect("the checker should reject a `unit` or `never` operand, so it has a value")
     }
 
     /// An expression the checker typed `i64` or `bool`.
     fn value(&mut self, e: &Expr) -> IntValue<'ctx> {
         self.expr(e)
-            .expect("checked: the expression has a value")
+            .expect("the checker should type this expression `i64` or `bool`, so it has a value")
             .into_int_value()
     }
 
@@ -577,7 +582,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let value = match &e.kind {
             ExprKind::Int(n) => self
                 .llvm_type(&e.ty)
-                .expect("an integer literal should have a value type")
+                .expect("the checker should type an integer literal as an integer type, which has an LLVM type")
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
@@ -591,14 +596,14 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .iter()
                     .map(|a| {
                         self.expr(a)
-                            .expect("checked: an argument has a value")
+                            .expect("the checker should reject a `unit` or `never` argument, so each argument has a value")
                             .into()
                     })
                     .collect();
                 return self
                     .builder
                     .build_call(self.functions[func.0], &args, "call")
-                    .expect("builder is positioned")
+                    .expect("the builder should be positioned in a block while a function body is emitted")
                     .try_as_basic_value()
                     .basic();
             }
@@ -616,7 +621,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     UnaryOp::Not => self
                         .builder
                         .build_not(operand, "not")
-                        .expect("builder is positioned"),
+                        .expect("the builder should be positioned in a block while a function body is emitted"),
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
@@ -642,14 +647,14 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return None;
             }
             ExprKind::Break => {
-                let frame = self.loops.last().expect("checked: `break` is in a loop");
+                let frame = self.loops.last().expect("the checker should reject `break` outside a loop");
                 let (end, depth) = (frame.end, frame.depth);
                 self.release_to(depth);
                 self.branch_to(end);
                 return None;
             }
             ExprKind::Continue => {
-                let frame = self.loops.last().expect("checked: `continue` is in a loop");
+                let frame = self.loops.last().expect("the checker should reject `continue` outside a loop");
                 let (body, depth) = (frame.body, frame.depth);
                 self.release_to(depth);
                 self.branch_to(body);
@@ -669,7 +674,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     self.release_to(0);
                     self.builder
                         .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
-                        .expect("builder is positioned");
+                        .expect("the builder should be positioned in a block while a function body is emitted");
                 }
                 return None;
             }
@@ -683,7 +688,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             // `null`, or `{ false, 0 }`.
             ExprKind::None => Some(
                 self.llvm_type(&e.ty)
-                    .expect("checked: `None` is an optional")
+                    .expect("the checker should type `None` as an optional, which has an LLVM type")
                     .const_zero(),
             ),
             ExprKind::Wrap(operand) => {
@@ -694,17 +699,17 @@ impl<'ctx> Codegen<'ctx, '_> {
                 }
                 let pair = self
                     .llvm_type(&e.ty)
-                    .expect("checked: `Wrap` makes an optional")
+                    .expect("the checker should type `Wrap` as an optional, which has an LLVM type")
                     .into_struct_type();
                 let some = self.context.bool_type().const_int(1, false);
                 let pair = self
                     .builder
                     .build_insert_value(pair.const_zero(), some, 0, "some")
-                    .expect("a scalar optional is a pair");
+                    .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
                 let pair = self
                     .builder
                     .build_insert_value(pair, value, 1, "wrap")
-                    .expect("a scalar optional is a pair");
+                    .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
                 Some(pair.as_basic_value_enum())
             }
             ExprKind::IfSome {
@@ -717,18 +722,20 @@ impl<'ctx> Codegen<'ctx, '_> {
                 // `null`, so it holds nothing to release. A scalar pair binds its value.
                 let value = self
                     .expr(scrutinee)
-                    .expect("checked: the scrutinee is an optional");
+                    .expect("the checker should reject an `if let` scrutinee that is not an optional, so it has a value");
                 let (some, bound) = if scrutinee.ty.is_counted() {
                     let some = self
                         .builder
                         .build_is_not_null(value.into_pointer_value(), "some")
-                        .expect("builder is positioned");
+                        .expect("the builder should be positioned in a block while a function body is emitted");
                     (some, value)
                 } else {
                     let part = |index, name| {
                         self.builder
                             .build_extract_value(value.into_struct_value(), index, name)
-                            .expect("a scalar optional is a pair")
+                            .expect(
+                                "a scalar optional should be lowered to a `{ flag, value }` pair",
+                            )
                     };
                     (part(0, "some").into_int_value(), part(1, "value"))
                 };
@@ -743,10 +750,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `mem2reg` promotes only entry-block allocas, and one in a loop body would grow the
     /// stack on every iteration.
     fn entry_alloca(&self, ty: BasicTypeEnum<'ctx>, name: &str) -> PointerValue<'ctx> {
-        let entry = self
-            .current_function()
-            .get_first_basic_block()
-            .expect("the function has an entry block");
+        let entry = self.current_function().get_first_basic_block().expect(
+            "a function with a body should have an entry block before any alloca is emitted",
+        );
         let builder = self.context.create_builder();
         match entry.get_first_instruction() {
             Some(first) => builder.position_before(&first),
@@ -754,20 +760,20 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
         builder
             .build_alloca(ty, name)
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
     }
 
     /// The value a place held before an assignment.
     fn load(&self, ty: BasicTypeEnum<'ctx>, ptr: PointerValue<'ctx>) -> BasicValueEnum<'ctx> {
         self.builder
             .build_load(ty, ptr, "old")
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
     }
 
     fn store(&self, ptr: PointerValue<'ctx>, value: BasicValueEnum<'ctx>) {
         self.builder
             .build_store(ptr, value)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
     }
 
     /// `loop`: the body block runs until a `Break` branches to the end block, where codegen
@@ -798,7 +804,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             arg = self
                 .builder
                 .build_int_z_extend(arg, self.context.i64_type(), "widened")
-                .expect("builder is positioned");
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                );
         }
         let is_bool = operand.ty == Type::Bool;
         let print = if is_bool {
@@ -809,7 +817,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let call = self
             .builder
             .build_call(print, &[arg.into()], "")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         if is_bool {
             call.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
         }
@@ -824,24 +832,24 @@ impl<'ctx> Codegen<'ctx, '_> {
         let ok = self.context.append_basic_block(function, "ok");
         self.builder
             .build_conditional_branch(fails, panic_block, ok)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder.position_at_end(panic_block);
         let (line, col) = line_col(self.source, span.start);
         let text = format!("{}:{line}:{col}: {message}", self.path);
         let msg = self
             .builder
             .build_global_string_ptr(&text, "panic.msg")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         let len = self.context.i64_type().const_int(
-            u64::try_from(text.len()).expect("a message fits in u64"),
+            u64::try_from(text.len()).expect("a panic message should be shorter than 2^64 bytes"),
             false,
         );
         self.builder
             .build_call(self.panic, &[msg.as_pointer_value().into(), len.into()], "")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder
             .build_unreachable()
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder.position_at_end(ok);
     }
 
@@ -859,7 +867,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         self.builder
             .build_conditional_branch(lhs, on_true, on_false)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.builder.position_at_end(rhs_block);
         let rhs = self.value(rhs);
         let rhs_end = self.current_block();
@@ -876,7 +884,9 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `a < b <= c` is `a < b && b <= c` with `b` computed once.
     fn compare(&mut self, operands: &[Expr], ops: &[CompareOp]) -> IntValue<'ctx> {
-        let (last_op, first_ops) = ops.split_last().expect("a chain has an operator");
+        let (last_op, first_ops) = ops
+            .split_last()
+            .expect("a comparison chain should have at least one operator");
         let function = self.current_function();
         let mut false_from = Vec::new();
         let signed = operands[0].ty != Type::U8;
@@ -889,7 +899,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder.position_at_end(next);
             lhs = rhs;
         }
-        let rhs = self.value(operands.last().expect("a chain has operands"));
+        let rhs = self.value(
+            operands
+                .last()
+                .expect("a comparison chain should have at least two operands"),
+        );
         let holds = self.compare_pair(*last_op, signed, lhs, rhs);
         if false_from.is_empty() {
             return holds;
@@ -903,7 +917,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder.position_at_end(block);
             self.builder
                 .build_conditional_branch(holds, next, merge)
-                .expect("builder is positioned");
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                );
             incoming.push((no, block));
         }
         incoming.push((holds, last_end));
@@ -928,7 +944,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let else_start = self.context.append_basic_block(function, "else");
         self.builder
             .build_conditional_branch(cond, then_start, else_start)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         // A `unit` `if` discards its branches' values.
         let discards = *ty == Type::Unit;
         self.builder.position_at_end(then_start);
@@ -969,7 +985,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let ty = self.llvm_type(ty)?;
         let incoming: Vec<_> = arms
             .into_iter()
-            .map(|(value, end)| (value.expect("checked: a branch has the `if`'s type"), end))
+            .map(|(value, end)| (value.expect("the checker should give every non-diverging `if` branch a value of the `if`'s type"), end))
             .collect();
         Some(self.phi(ty, &incoming))
     }
@@ -977,7 +993,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn branch_to(&self, block: BasicBlock<'ctx>) {
         self.builder
             .build_unconditional_branch(block)
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
     }
 
     fn phi<V: BasicValue<'ctx>>(
@@ -988,7 +1004,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let phi = self
             .builder
             .build_phi(ty, "phi")
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         for (value, block) in incoming {
             phi.add_incoming(&[(value, *block)]);
         }

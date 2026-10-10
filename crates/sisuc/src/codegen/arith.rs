@@ -46,7 +46,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     ) -> IntValue<'ctx> {
         self.builder
             .build_int_compare(predicate, lhs, rhs, "cmp")
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
     }
 
     /// `lhs op rhs` through `intrinsic`, an `llvm.{s,u}*.with.overflow` overloaded on the
@@ -60,21 +60,21 @@ impl<'ctx> Codegen<'ctx, '_> {
         span: Span,
     ) -> IntValue<'ctx> {
         let function = Intrinsic::find(intrinsic)
-            .expect("LLVM should have the overflow intrinsics")
+            .expect("LLVM should provide the `llvm.*.with.overflow` intrinsics by name")
             .get_declaration(&self.module, &[lhs.get_type().into()])
             .expect("the overflow intrinsics should be overloaded on any integer width");
         let pair = self
             .builder
             .build_call(function, &[lhs.into(), rhs.into()], "checked")
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
             .try_as_basic_value()
             .basic()
-            .expect("the intrinsic returns a pair")
+            .expect("an overflow intrinsic should return a `{ value, overflow }` pair")
             .into_struct_value();
         let field = |index, name| {
             self.builder
                 .build_extract_value(pair, index, name)
-                .expect("the pair has two fields")
+                .expect("the overflow pair should have a value at index 0 and a flag at index 1")
                 .into_int_value()
         };
         let (result, overflow) = (field(0, "result"), field(1, "overflow"));
@@ -102,7 +102,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             } else {
                 self.builder.build_int_unsigned_div(lhs, rhs, "div")
             }
-            .expect("builder is positioned");
+            .expect(
+                "the builder should be positioned in a block while a function body is emitted",
+            );
         }
         let min = i64_type.const_int(i64::MIN.cast_unsigned(), false);
         let minus_one = i64_type.const_int((-1_i64).cast_unsigned(), false);
@@ -113,14 +115,14 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.int_compare(IntPredicate::EQ, rhs, minus_one),
                 "overflow",
             )
-            .expect("builder is positioned");
+            .expect("the builder should be positioned in a block while a function body is emitted");
         self.panic_if(overflow, span, "integer overflow");
         if rem {
             self.builder.build_int_signed_rem(lhs, rhs, "rem")
         } else {
             self.builder.build_int_signed_div(lhs, rhs, "div")
         }
-        .expect("builder is positioned")
+        .expect("the builder should be positioned in a block while a function body is emitted")
     }
 
     pub(super) fn compare_pair(
@@ -154,7 +156,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             return self
                 .builder
                 .build_int_z_extend(value, self.context.i64_type(), "widened")
-                .expect("builder is positioned");
+                .expect(
+                    "the builder should be positioned in a block while a function body is emitted",
+                );
         }
         let too_big = self.int_compare(
             IntPredicate::UGT,
@@ -164,6 +168,6 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.panic_if(too_big, e.span, "value does not fit in `u8`");
         self.builder
             .build_int_truncate(value, self.context.i8_type(), "narrowed")
-            .expect("builder is positioned")
+            .expect("the builder should be positioned in a block while a function body is emitted")
     }
 }

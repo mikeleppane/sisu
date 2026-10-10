@@ -380,10 +380,11 @@ pub(crate) fn dump(source: &str, tokens: &[Token]) -> String {
     let mut out = String::new();
     for t in tokens {
         let (line, col) = line_col(source, t.span.start);
-        write!(out, "{line}:{col} {}", t.kind.name()).expect("writing to a String cannot fail");
+        write!(out, "{line}:{col} {}", t.kind.name())
+            .expect("writing to a `String` should never fail");
         if !matches!(t.kind, TokenKind::Newline | TokenKind::Eof) {
             write!(out, " {}", &source[t.span.start..t.span.end])
-                .expect("writing to a String cannot fail");
+                .expect("writing to a `String` should never fail");
         }
         out.push('\n');
     }
