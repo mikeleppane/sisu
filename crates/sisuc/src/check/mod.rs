@@ -569,20 +569,95 @@ mod tests {
         );
     }
 
+    /// A rule that fails makes its expression `Error`. Each row binds the failed expression
+    /// and uses it where a typed result would cascade into a second error.
     #[test]
     fn failed_rule_makes_its_expression_error() {
-        errors(
-            "fn main() {\n    let x = -true\n    print(x == false)\n}",
-            &[("expected `i64`, found `bool`", (2, 14))],
-        );
+        const MISMATCH: &str = "expected `i64`, found `bool`";
+        const F: &str = "fn f(a: i64) -> i64 { a }\n";
+        let rows: [(&str, String, &str, (usize, usize)); 11] = [
+            (
+                "unary",
+                "fn main() {\n    let x = -true\n    print(x == false)\n}".into(),
+                MISMATCH,
+                (2, 14),
+            ),
+            (
+                "binary lhs",
+                "fn main() {\n    let x = true + 1\n    print(x == false)\n}".into(),
+                MISMATCH,
+                (2, 13),
+            ),
+            (
+                "binary rhs",
+                "fn main() {\n    let x = 1 + true\n    print(x == false)\n}".into(),
+                MISMATCH,
+                (2, 17),
+            ),
+            (
+                "compare",
+                "fn main() {\n    let x = 1 < true\n    print(x + 1)\n}".into(),
+                MISMATCH,
+                (2, 17),
+            ),
+            (
+                "equal",
+                "fn main() {\n    let x = 1 == true\n    print(x + 1)\n}".into(),
+                "cannot compare `i64` with `bool`",
+                (2, 13),
+            ),
+            (
+                "call arity",
+                format!("{F}fn main() {{\n    let x = f()\n    print(x == false)\n}}"),
+                "`f` takes 1 argument, found 0",
+                (3, 13),
+            ),
+            (
+                "call argument",
+                format!("{F}fn main() {{\n    let x = f(true)\n    print(x == false)\n}}"),
+                MISMATCH,
+                (3, 15),
+            ),
+            (
+                "print arity",
+                "fn main() {\n    let x = print(1, 2)\n    print(x)\n}".into(),
+                "`print` takes one `i64` or `bool`",
+                (2, 13),
+            ),
+            (
+                "print unit argument",
+                "fn main() {\n    let x = print(print(1))\n    print(x)\n}".into(),
+                "`print` takes one `i64` or `bool`",
+                (2, 13),
+            ),
+            (
+                "if condition with else",
+                "fn main() {\n    let x = if 1 { 2 } else { 3 }\n    print(x == false)\n}".into(),
+                "expected `bool`, found `i64`",
+                (2, 16),
+            ),
+            (
+                "if condition without else",
+                "fn main() {\n    let x = if 1 { print(2) }\n    print(x)\n}".into(),
+                "expected `bool`, found `i64`",
+                (2, 16),
+            ),
+        ];
+        for (name, src, message, pos) in rows {
+            println!("row: {name}");
+            errors(&src, &[(message, pos)]);
+        }
     }
 
     #[test]
     fn warning_only_program_lowers() {
-        let (program, ds) = checked("fn main() {\n    var x = 1\n    print(x)\n}");
+        let src = "fn main() {\n    var x = 1\n    print(x)\n}";
+        let (program, ds) = checked(src);
         assert!(program.is_some());
         assert_eq!(ds.len(), 1, "{ds:?}");
         assert_eq!(ds[0].severity, Severity::Warning);
+        assert_eq!(ds[0].message, "`x` is never reassigned");
+        assert_eq!(at(src, ds[0].span), (2, 9));
     }
 
     #[test]
