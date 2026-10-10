@@ -1,0 +1,45 @@
+// Task 14 moves this under Valgrind. Until then the objects leak, so it runs unchecked.
+class P {
+    var x: i64
+    var y: bool
+    var n: i64
+
+    fn bump(self, by: i64) -> i64 {
+        self.n += by
+        self.x = self.n + self.x
+        self.x
+    }
+}
+
+class C {
+    var n: i64
+}
+
+// `target` prints 1 and `next` prints 2, so the output shows which ran first.
+fn target(c: C) -> C {
+    print(1)
+    c
+}
+
+fn next() -> i64 {
+    print(2)
+    5
+}
+
+fn main() {
+    let p = P(x: 7, y: true, n: 42)
+    print(p.x)
+    print(p.y)
+    print(p.n)
+    p.x = 9
+    p.y = false
+    print(p.x)
+    print(p.y)
+    print(p.n)
+    print(p.bump(8))
+    print(p.x)
+    print(p.n)
+    let c = C(n: 0)
+    target(c).n = next()
+    print(c.n)
+}
