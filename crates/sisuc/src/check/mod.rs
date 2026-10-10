@@ -3,6 +3,7 @@
 
 mod array;
 mod expr;
+mod place;
 mod stmt;
 
 use std::collections::HashMap;

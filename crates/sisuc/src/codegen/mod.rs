@@ -545,6 +545,12 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.discard(old, ty);
                 self.release(object.into(), &base.ty);
             }
+            Stmt::Assign {
+                place: Place::Index { .. },
+                ..
+            } => panic!(
+                "element writes should land in Task 10; the checker accepts them from Task 9"
+            ),
             Stmt::Expr(e) => {
                 let value = self.expr(e);
                 self.discard(value, &e.ty);

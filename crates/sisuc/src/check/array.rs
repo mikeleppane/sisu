@@ -184,19 +184,7 @@ impl Checker {
     /// `base[index]`: `base` is an array, not an optional one, and `index` an `i64`.
     pub(super) fn index(&mut self, span: Span, base: &ast::Expr, index: &ast::Expr) -> Checked {
         let checked = self.value(base, None);
-        let (element, d) = match type_of(&checked) {
-            Some(Type::Array(element)) => (Some((**element).clone()), None),
-            Some(Type::Optional(payload)) if matches!(**payload, Type::Array(_)) => {
-                (None, Some(optional_array(base)))
-            }
-            Some(ty) => {
-                let d = Diagnostic::error(base.span, format!("cannot index {}", self.show(ty)))
-                    .help("only arrays can be indexed");
-                (None, Some(d))
-            }
-            None => (None, None),
-        };
-        self.diagnostics.extend(d);
+        let element = self.element(base, type_of(&checked));
         let (index, mismatched) = self.operand(index, Some(&Type::I64));
         match (checked, index, element) {
             (Ok(base), Ok(index), Some(element)) => {
@@ -207,6 +195,19 @@ impl Checker {
             }
             (.., element) => Err(Poisoned::of(element.filter(|_| !mismatched))),
         }
+    }
+
+    /// The element type of `base`, which is indexed and has type `ty` (`None` is `Error`). An
+    /// optional array, or a value that is no array, is reported and gives `Error`.
+    pub(super) fn element(&mut self, base: &ast::Expr, ty: Option<&Type>) -> Option<Type> {
+        let d = match ty? {
+            Type::Array(element) => return Some((**element).clone()),
+            Type::Optional(payload) if matches!(**payload, Type::Array(_)) => optional_array(base),
+            ty => Diagnostic::error(base.span, format!("cannot index {}", self.show(ty)))
+                .help("only arrays can be indexed"),
+        };
+        self.diagnostics.push(d);
+        None
     }
 
     /// `receiver.method(args)` on `receiver`, an array of type `ty`. The methods: `len()`.

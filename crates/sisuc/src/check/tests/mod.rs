@@ -5,6 +5,7 @@ use crate::parser::parse;
 
 mod arrays;
 mod for_loops;
+mod places;
 mod u8;
 
 fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
