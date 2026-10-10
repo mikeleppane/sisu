@@ -13,7 +13,9 @@ people and agents alike. This page is the route through them.
 4. Use the words in [GLOSSARY.md](GLOSSARY.md), and read the decisions in
    [docs/adr](docs/adr) that touch your change.
 5. Finish with `cargo nextest run --workspace`, `prek run --all-files` and
-   `cargo deny check` passing, as CI requires.
+   `cargo deny check` passing, as CI requires. Then run `cargo mutants` on
+   your diff, as [AGENTS.md](AGENTS.md) shows, and kill or explain each
+   surviving mutant.
 
 Work is tracked as local Markdown issues under `.scratch/`, as
 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) describes.

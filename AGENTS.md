@@ -13,8 +13,9 @@ Sisu is a small, statically typed language compiled to native x86-64 Linux code 
 | Test | `cargo nextest run --workspace` |
 | Lint and format check (the same hooks CI runs) | `prek run --all-files` |
 | Dependency audit | `cargo deny check` |
+| Mutation test a branch's changes | `LLVM_SYS_221_PREFIX=$PWD/.llvm/22 cargo mutants --in-diff <(git diff $(git merge-base main HEAD))` |
 
-Once per clone, run `scripts/install-llvm.sh` and `prek install`. The script installs LLVM 22 into `.llvm/22`; `.cargo/config.toml` sets `LLVM_SYS_221_PREFIX` to it. Do not build against a system LLVM. The `prek install` step enables the Git pre-commit hook. The toolchain is pinned in `rust-toolchain.toml`.
+Once per clone, run `scripts/install-llvm.sh`, `prek install` and `cargo install --locked cargo-mutants`. The script installs LLVM 22 into `.llvm/22`; `.cargo/config.toml` sets `LLVM_SYS_221_PREFIX` to it. Do not build against a system LLVM. The `prek install` step enables the Git pre-commit hook. The toolchain is pinned in `rust-toolchain.toml`.
 
 ## Code rules
 

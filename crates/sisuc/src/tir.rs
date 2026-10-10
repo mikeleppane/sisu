@@ -147,6 +147,11 @@ pub(crate) enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// `lhs is rhs`.
+    Is {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     If {
         cond: Box<Expr>,
         then_block: Block,
@@ -196,9 +201,9 @@ impl Expr {
             | ExprKind::Wrap(operand)
             | ExprKind::Print(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
-            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Equal { lhs, rhs, .. } => {
-                lhs.exits() || rhs.exits()
-            }
+            ExprKind::Binary { lhs, rhs, .. }
+            | ExprKind::Equal { lhs, rhs, .. }
+            | ExprKind::Is { lhs, rhs } => lhs.exits() || rhs.exits(),
             ExprKind::If {
                 cond,
                 then_block,
@@ -357,6 +362,7 @@ impl Printer<'_> {
             ExprKind::Equal { negated, lhs, rhs } => {
                 self.binary(f, if *negated { "!=" } else { "==" }, lhs, rhs)
             }
+            ExprKind::Is { lhs, rhs } => self.binary(f, "is", lhs, rhs),
             ExprKind::If {
                 cond,
                 then_block,
@@ -816,6 +822,12 @@ mod tests {
             args: vec![int(1), ret],
         };
         assert!(expr(call, Type::Unit).exits());
+        // A `return` in an operand of `is`.
+        let is = ExprKind::Is {
+            lhs: Box::new(local(0)),
+            rhs: Box::new(expr(ExprKind::Return(None), Type::Never)),
+        };
+        assert!(expr(is, Type::Bool).exits());
         // An `if`, a comparison chain and a print with no jump in them.
         assert!(!if_stmt.exits());
         assert!(!block_expr(vec![Stmt::Expr(if_stmt)], Some(int(1))).exits());
