@@ -632,6 +632,8 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             ExprKind::Index { base, index } => return Some(self.index(&e.ty, base, index)),
             ExprKind::Len(base) => self.len(base),
+            ExprKind::Sum(base) => self.sum(base, e.span),
+            ExprKind::Contains { base, value } => self.contains(base, value),
             ExprKind::Local(local) => {
                 let value = self.load_local(*local)?;
                 self.retain(value, &e.ty);

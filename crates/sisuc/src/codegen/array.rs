@@ -359,6 +359,72 @@ impl<'ctx> Codegen<'ctx, '_> {
         len
     }
 
+    /// `Sum`: the elements of `base`, an `[i64]`, added in order with the checked add of `+`,
+    /// which panics at `span`; then the base is released.
+    pub(super) fn sum(&mut self, base: &Expr, span: Span) -> IntValue<'ctx> {
+        let array = self
+            .expr(base)
+            .expect("the checker should only call `sum` on an array, which lowers to a pointer")
+            .into_pointer_value();
+        let i64_type = self.context.i64_type();
+        let total = self.entry_alloca(i64_type.into(), "total");
+        self.store(total, i64_type.const_zero().into());
+        self.count_loop(self.array_len(array), |index| {
+            let element = self.load_element(&Type::I64, array, index).into_int_value();
+            let so_far = self.load(i64_type.into(), total).into_int_value();
+            self.store(
+                total,
+                self.checked("llvm.sadd.with.overflow", so_far, element, span)
+                    .into(),
+            );
+        });
+        let sum = self.load(i64_type.into(), total).into_int_value();
+        self.release(array.into(), &base.ty);
+        sum
+    }
+
+    /// `Contains`: `base`, then `value`; whether some element of `base` is `==` to `value`,
+    /// stopping at the first that is. Then both are released.
+    pub(super) fn contains(&mut self, base: &Expr, value: &Expr) -> IntValue<'ctx> {
+        let element = element_of(&base.ty);
+        let array = self
+            .expr(base)
+            .expect(
+                "the checker should only call `contains` on an array, which lowers to a pointer",
+            )
+            .into_pointer_value();
+        let needle = self.operand(value);
+        let function = self.current_function();
+        let found = self.context.append_basic_block(function, "contains.found");
+        let end = self.context.append_basic_block(function, "contains.end");
+        self.count_loop(self.array_len(array), |index| {
+            let same = self.equal(element, self.load_element(element, array, index), needle);
+            let next = self.context.append_basic_block(function, "contains.next");
+            self.builder
+                .build_conditional_branch(same, found, next)
+                .expect(POSITIONED);
+            self.builder.position_at_end(next);
+        });
+        let missed = self.current_block();
+        self.branch_to(end);
+        self.builder.position_at_end(found);
+        self.branch_to(end);
+        self.builder.position_at_end(end);
+        let bool_type = self.context.bool_type();
+        let hit = self
+            .phi(
+                bool_type,
+                &[
+                    (bool_type.const_zero(), missed),
+                    (bool_type.const_int(1, false), found),
+                ],
+            )
+            .into_int_value();
+        self.release(array.into(), &base.ty);
+        self.release(needle, &value.ty);
+        hit
+    }
+
     /// `Assign { place: Index { .. }, value }`. The place's own operands come first, left to
     /// right: a field root's base, then each index from the root outwards. Then `value`, so
     /// that a value which stores the array elsewhere makes the walk copy it. Then the walk from

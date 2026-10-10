@@ -239,6 +239,11 @@ fn moves() {
     assert_prints_out_file("moves");
 }
 
+#[test]
+fn methods() {
+    assert_prints_out_file("methods");
+}
+
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
     let exe = compile(Path::new(PROGRAMS), name, false);
@@ -368,31 +373,39 @@ fn panic_cases() {
                 .to_string(),
             "3:5: integer overflow".to_string(),
         ),
-        u8_case("u8_add", "let a: u8 = 255", "a + 1", "integer overflow"),
-        u8_case("u8_sub", "let a: u8 = 0", "a - 1", "integer overflow"),
-        u8_case("u8_mul", "let a: u8 = 16", "a * a", "integer overflow"),
-        u8_case("u8_div_zero", "let a: u8 = 0", "7 / a", "division by zero"),
-        u8_case(
+        print_case("u8_add", "let a: u8 = 255", "a + 1", "integer overflow"),
+        print_case("u8_sub", "let a: u8 = 0", "a - 1", "integer overflow"),
+        print_case("u8_mul", "let a: u8 = 16", "a * a", "integer overflow"),
+        print_case("u8_div_zero", "let a: u8 = 0", "7 / a", "division by zero"),
+        print_case(
             "u8_convert",
             "let a = 300",
             "u8(a)",
             "value does not fit in `u8`",
         ),
-        u8_case(
+        print_case(
             "u8_convert_256",
             "let a = 256",
             "u8(a)",
             "value does not fit in `u8`",
         ),
-        u8_case(
+        print_case(
             "u8_convert_negative",
             "let a = -1",
             "u8(a)",
             "value does not fit in `u8`",
         ),
-        bounds_case("bounds_at_length", "5", "index 5 out of bounds for length 5"),
+        bounds_case(
+            "bounds_at_length",
+            "5",
+            "index 5 out of bounds for length 5",
+        ),
         bounds_case("bounds_above", "7", "index 7 out of bounds for length 5"),
-        bounds_case("bounds_negative", "-1", "index -1 out of bounds for length 5"),
+        bounds_case(
+            "bounds_negative",
+            "-1",
+            "index -1 out of bounds for length 5",
+        ),
         // The inner index is checked at its own level, after the outer one.
         (
             "write_bounds",
@@ -408,26 +421,17 @@ fn panic_cases() {
         ),
         // 16 + 9_223_372_036_854_775_791 bytes is exactly `i64::MAX`, above the largest
         // size that rounds up to the alignment of 8 within it.
-        (
-            "length_too_large",
-            "fn main() {\n    let xs = [false; 9_223_372_036_854_775_791]\n    print(xs.len())\n}\n"
-                .to_string(),
-            "2:22: array is too large".to_string(),
+        fill_case("length_too_large", "false", "9_223_372_036_854_775_791", 22),
+        print_case(
+            "sum_overflow",
+            "let xs = [9_223_372_036_854_775_807, 1]",
+            "xs.sum()",
+            "integer overflow",
         ),
         // 2^62 * 8 bytes overflows the multiply.
-        (
-            "length_overflows",
-            "fn main() {\n    let xs = [0; 4_611_686_018_427_387_904]\n    print(xs.len())\n}\n"
-                .to_string(),
-            "2:18: array is too large".to_string(),
-        ),
+        fill_case("length_overflows", "0", "4_611_686_018_427_387_904", 18),
         // (2^61 - 1) * 8 bytes is 2^64 - 8, which fits; adding the 16-byte header wraps.
-        (
-            "header_overflows",
-            "fn main() {\n    let xs = [0; 2_305_843_009_213_693_951]\n    print(xs.len())\n}\n"
-                .to_string(),
-            "2:18: array is too large".to_string(),
-        ),
+        fill_case("header_overflows", "0", "2_305_843_009_213_693_951", 18),
     ];
     for (name, source, position_and_message) in cases {
         for o2 in [false, true] {
@@ -444,7 +448,7 @@ fn panic_cases() {
 }
 
 /// A `panic_cases` row whose panic is at `print(<expr>)` on line 3, column 11.
-fn u8_case(
+fn print_case(
     name: &'static str,
     binding: &str,
     expr: &str,
@@ -454,6 +458,20 @@ fn u8_case(
         name,
         format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
         format!("3:11: {message}"),
+    )
+}
+
+/// A `panic_cases` row for `[value; len]` on line 2, whose panic is at `len`, in column `col`.
+fn fill_case(
+    name: &'static str,
+    value: &str,
+    len: &str,
+    col: usize,
+) -> (&'static str, String, String) {
+    (
+        name,
+        format!("fn main() {{\n    let xs = [{value}; {len}]\n    print(xs.len())\n}}\n"),
+        format!("2:{col}: array is too large"),
     )
 }
 

@@ -155,6 +155,13 @@ pub(crate) enum ExprKind {
     },
     /// `base.len()`.
     Len(Box<Expr>),
+    /// `base.sum()`, on an `[i64]`.
+    Sum(Box<Expr>),
+    /// `base.contains(value)`, by `==`.
+    Contains {
+        base: Box<Expr>,
+        value: Box<Expr>,
+    },
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,
@@ -226,6 +233,7 @@ impl Expr {
             }
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
+            | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
             | ExprKind::Print(operand)
@@ -240,6 +248,10 @@ impl Expr {
             | ExprKind::Index {
                 base: lhs,
                 index: rhs,
+            }
+            | ExprKind::Contains {
+                base: lhs,
+                value: rhs,
             } => lhs.exits() || rhs.exits(),
             ExprKind::If {
                 cond,
@@ -404,6 +416,8 @@ impl Printer<'_> {
             ExprKind::ArrayFill { value, len } => self.binary(f, "array-fill", value, len),
             ExprKind::Index { base, index } => self.binary(f, "index", base, index),
             ExprKind::Len(base) => self.unary(f, "len", base),
+            ExprKind::Sum(base) => self.unary(f, "sum", base),
+            ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
             ExprKind::Compare { operands, ops } => {

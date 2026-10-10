@@ -1,0 +1,51 @@
+// `sum` and `contains`. Valgrind checks that each releases its base, and `contains` its value.
+class Node {
+    let v: i64
+}
+
+// The value exits before `contains` runs: the spilled base is released by the `return`.
+fn exits(rows: [[i64]], c: bool) -> bool {
+    rows.contains(if c { return false } else { [1] })
+}
+
+fn total(xs: [i64]) -> i64 {
+    xs.sum()                                  // a last use: the base is moved
+}
+
+fn main() {
+    let xs = [1, 2, 3]
+    print(xs.sum())                           // 6
+    let none: [i64] = []
+    print(none.sum())                         // 0
+    print([-7, 5].sum())                      // -2
+    print(total([4, 5]))                      // 9
+
+    print(xs.contains(3))                     // true
+    print(xs.contains(4))                     // false
+    print(none.contains(1))                   // false
+
+    // Objects are compared by structure, not identity.
+    let nodes = [Node(v: 1), Node(v: 2)]
+    print(nodes.contains(Node(v: 2)))         // true
+    print(nodes.contains(Node(v: 3)))         // false
+
+    let maybe: [i64?] = [1, None]
+    print(maybe.contains(None))               // true
+    print(maybe.contains(1))                  // true
+    print(maybe.contains(2))                  // false
+    let full: [i64?] = [1, 2]
+    print(full.contains(None))                // false
+
+    let rows = [[1, 2], [3]]
+    print(rows.contains([3]))                 // true
+    print(rows.contains([1]))                 // false
+    print(rows.contains([]))                  // false
+
+    let missing: [i64]? = None
+    print(missing?.contains(1) == None)       // true
+    let present: [i64]? = [1, 2]
+    print(present?.contains(2) == true)       // true
+
+    print(exits(rows, true))                  // false
+    print(exits([[0], [1]], false))           // true
+}

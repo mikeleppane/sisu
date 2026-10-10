@@ -5,7 +5,8 @@
 //! The walk goes backward through each function, in the order codegen evaluates nodes, with
 //! the set of locals live after the current point. It must match codegen exactly:
 //! - `Call`, `New` and `ArrayLit` evaluate their arguments left to right; `Index` evaluates
-//!   base then index; `ArrayFill` value then length; `Equal`, `Is` and arithmetic lhs then rhs.
+//!   base then index; `Contains` base then value; `ArrayFill` value then length; `Equal`,
+//!   `Is` and arithmetic lhs then rhs.
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
@@ -113,6 +114,7 @@ impl Walk {
             }
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
+            | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
             | ExprKind::Print(operand)
@@ -137,22 +139,15 @@ impl Walk {
             | ExprKind::Index {
                 base: lhs,
                 index: rhs,
+            }
+            | ExprKind::Contains {
+                base: lhs,
+                value: rhs,
             } => {
                 self.expr(rhs);
                 self.expr(lhs);
             }
-            ExprKind::Compare { operands, .. } => {
-                // After each operand but the first, a failed pair skips to the chain's end.
-                let after = self.live.clone();
-                let (first, rest) = operands
-                    .split_first_mut()
-                    .expect("a comparison chain should have at least two operands");
-                for operand in rest.iter_mut().rev() {
-                    self.join(&after);
-                    self.expr(operand);
-                }
-                self.expr(first);
-            }
+            ExprKind::Compare { operands, .. } => self.compare(operands),
             ExprKind::If {
                 cond,
                 then_block,
@@ -193,6 +188,20 @@ impl Walk {
             }
             ExprKind::Block(block) => self.block(block),
         }
+    }
+
+    /// A comparison chain. After each operand but the first, a failed pair skips to the
+    /// chain's end.
+    fn compare(&mut self, operands: &mut [Expr]) {
+        let after = self.live.clone();
+        let (first, rest) = operands
+            .split_first_mut()
+            .expect("a comparison chain should have at least two operands");
+        for operand in rest.iter_mut().rev() {
+            self.join(&after);
+            self.expr(operand);
+        }
+        self.expr(first);
     }
 
     /// Both branches from the set live after them, joined. `bind` is an `IfSome`'s binding,
@@ -311,6 +320,16 @@ mod tests {
             "fn g(a: [i64], b: [i64]) {}\nfn f(x: [i64]) { g(x, x) }",
             "f",
             &["(call g x#0 (move x#0))"],
+        );
+    }
+
+    /// `Contains` evaluates its base, then its value: only the value's read may move.
+    #[test]
+    fn contains_base_then_value() {
+        has(
+            "fn f(xs: [[i64]]) -> bool { xs.contains(xs[0]) }",
+            "f",
+            &["(contains xs#0 (index (move xs#0) 0))"],
         );
     }
 
