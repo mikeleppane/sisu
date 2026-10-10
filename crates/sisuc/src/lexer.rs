@@ -199,7 +199,11 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ' ' | '\t' | '\r' => continue,
             '\n' => {
                 line_start = true;
-                if ends_statement(&tokens, &open) && !continues_line(&source[start..]) {
+                let continuation = continues_line(&source[start..]).map(|gap| start + gap);
+                if let Some(target) = continuation {
+                    // Jump to the `.`/`?.`, so a long gap is scanned once, not at every newline.
+                    while chars.next_if(|&(i, _)| i < target).is_some() {}
+                } else if ends_statement(&tokens, &open) {
                     // Empty, at the line end: a span over `\n` renders as a two-line range,
                     // and one at `\n` after `\r` sits a column too far right.
                     let end = start - usize::from(source[..start].ends_with('\r'));
@@ -259,15 +263,19 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     Ok(tokens)
 }
 
-/// Whether the code after the line break at the start of `rest` begins with `.` or
-/// `?.`, past whitespace, blank lines and `//` comments.
-fn continues_line(rest: &str) -> bool {
-    let mut rest = rest;
+/// The offset in `rest` of the `.` or `?.` that continues the line break at the start
+/// of `rest`, past whitespace, blank lines and `//` comments; `None` if code of another
+/// kind follows.
+fn continues_line(rest: &str) -> Option<usize> {
+    let mut code = rest;
     loop {
-        rest = rest.trim_start();
-        match rest.strip_prefix("//") {
-            Some(comment) => rest = comment.split_once('\n').map_or("", |(_, after)| after),
-            None => return rest.starts_with('.') || rest.starts_with("?."),
+        code = code.trim_start();
+        match code.strip_prefix("//") {
+            Some(comment) => code = comment.split_once('\n').map_or("", |(_, after)| after),
+            None => {
+                return (code.starts_with('.') || code.starts_with("?."))
+                    .then(|| rest.len() - code.len());
+            }
         }
     }
 }
@@ -596,11 +604,33 @@ mod tests {
 
     #[test]
     fn dot_and_question_dot_continue_a_line() {
-        use TokenKind::{Dot, Eof, Eq, Let, Newline, QuestionDot, QuestionQuestion};
+        use TokenKind::{
+            Dot, Eof, Eq, LParen, Let, Newline, QuestionDot, QuestionQuestion, RParen,
+        };
         assert_eq!(
-            all_kinds("let t = a\n    .sum()")[..6],
-            [Let, ident("t"), Eq, ident("a"), Dot, ident("sum")]
+            all_kinds("let t = a\n    .sum()"),
+            [
+                Let,
+                ident("t"),
+                Eq,
+                ident("a"),
+                Dot,
+                ident("sum"),
+                LParen,
+                RParen,
+                Newline,
+                Eof
+            ]
         );
+        assert_eq!(
+            all_kinds("a\r\n.b"),
+            [ident("a"), Dot, ident("b"), Newline, Eof]
+        );
+        assert_eq!(
+            all_kinds("a\r\n\r\n.b"),
+            [ident("a"), Dot, ident("b"), Newline, Eof]
+        );
+        assert_eq!(all_kinds("a\n// c"), [ident("a"), Newline, Eof]);
         assert_eq!(
             all_kinds("a\n\n    // c\n    ?.b"),
             [ident("a"), QuestionDot, ident("b"), Newline, Eof]
@@ -716,6 +746,37 @@ mod tests {
                 Span::new(9, 11),
                 Span::new(12, 14),
                 Span::new(14, 14)
+            ]
+        );
+    }
+
+    #[test]
+    fn continuation_spans_skip_the_gap() {
+        let spans = |src| -> Vec<Span> {
+            lex(src)
+                .expect("source lexes")
+                .into_iter()
+                .map(|t| t.span)
+                .collect()
+        };
+        assert_eq!(
+            spans("a\n  .b"),
+            [
+                Span::new(0, 1),
+                Span::new(4, 5),
+                Span::new(5, 6),
+                Span::new(6, 6),
+                Span::new(6, 6)
+            ]
+        );
+        assert_eq!(
+            spans("a\n// c\n  .b"),
+            [
+                Span::new(0, 1),
+                Span::new(9, 10),
+                Span::new(10, 11),
+                Span::new(11, 11),
+                Span::new(11, 11)
             ]
         );
     }
