@@ -58,10 +58,12 @@ pub(crate) struct Param {
     pub(crate) ty: TypeExpr,
 }
 
-/// A name only in milestone 1.
+/// A type name, and whether a `?` follows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeExpr {
     pub(crate) name: String,
+    pub(crate) optional: bool,
+    /// The name through the `?`, if any.
     pub(crate) span: Span,
 }
 
@@ -88,6 +90,12 @@ pub(crate) enum StmtKind {
     },
     While {
         cond: Expr,
+        body: Block,
+    },
+    /// `while let name = value { body }`.
+    WhileLet {
+        name: Ident,
+        value: Expr,
         body: Block,
     },
     Return(Option<Expr>),
@@ -124,6 +132,7 @@ pub(crate) enum ExprKind {
         args: Vec<Arg>,
     },
     SelfValue,
+    NoneLit,
     Field {
         base: Box<Expr>,
         name: Ident,
@@ -150,6 +159,14 @@ pub(crate) enum ExprKind {
     /// `else if` is an `else_block` holding one `Expr` statement with the inner `if`.
     If {
         cond: Box<Expr>,
+        then_block: Block,
+        else_block: Option<Block>,
+    },
+    /// `if let name = value { then } else { else }`; `else if` and `else if let` fold into
+    /// `else_block` as for `If`.
+    IfLet {
+        name: Ident,
+        value: Box<Expr>,
         then_block: Block,
         else_block: Option<Block>,
     },
@@ -232,6 +249,16 @@ impl fmt::Display for CompareOp {
     }
 }
 
+impl fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)?;
+        if self.optional {
+            f.write_str("?")?;
+        }
+        Ok(())
+    }
+}
+
 /// Writes each item after a space.
 fn spaced<T: fmt::Display>(f: &mut fmt::Formatter<'_>, items: &[T]) -> fmt::Result {
     items.iter().try_for_each(|item| write!(f, " {item}"))
@@ -259,7 +286,7 @@ impl fmt::Display for Class {
             match member {
                 Member::Field(field) => {
                     let keyword = if field.mutable { "var" } else { "let" };
-                    write!(f, " ({keyword} {} {})", field.name.name, field.ty.name)?;
+                    write!(f, " ({keyword} {} {})", field.name.name, field.ty)?;
                 }
                 Member::Method(method) => write!(f, " {method}")?,
             }
@@ -283,7 +310,7 @@ impl fmt::Display for Function {
         let params = self
             .params
             .iter()
-            .map(|p| format!("({} {})", p.name.name, p.ty.name));
+            .map(|p| format!("({} {})", p.name.name, p.ty));
         let all: Vec<String> = self
             .self_param
             .map(|_| "self".to_string())
@@ -291,7 +318,10 @@ impl fmt::Display for Function {
             .chain(params)
             .collect();
         f.write_str(&all.join(" "))?;
-        let ret = self.ret.as_ref().map_or("unit", |t| &t.name);
+        let ret = self
+            .ret
+            .as_ref()
+            .map_or("unit".to_string(), ToString::to_string);
         write!(f, ") {ret} {})", self.body)
     }
 }
@@ -316,11 +346,14 @@ impl fmt::Display for Stmt {
                 let keyword = if *mutable { "var" } else { "let" };
                 write!(f, "({keyword} {}", name.name)?;
                 if let Some(ty) = ty {
-                    write!(f, " {}", ty.name)?;
+                    write!(f, " {ty}")?;
                 }
                 write!(f, " {init})")
             }
             StmtKind::While { cond, body } => write!(f, "(while {cond} {body})"),
+            StmtKind::WhileLet { name, value, body } => {
+                write!(f, "(while-let {} {value} {body})", name.name)
+            }
             StmtKind::Return(None) => f.write_str("(return)"),
             StmtKind::Return(Some(e)) => write!(f, "(return {e})"),
             StmtKind::Break => f.write_str("(break)"),
@@ -346,6 +379,7 @@ impl fmt::Display for Expr {
                 f.write_str(")")
             }
             ExprKind::SelfValue => f.write_str("self"),
+            ExprKind::NoneLit => f.write_str("None"),
             ExprKind::Field { base, name } => write!(f, "(. {base} {})", name.name),
             ExprKind::MethodCall {
                 receiver,
@@ -377,6 +411,18 @@ impl fmt::Display for Expr {
                 }
                 f.write_str(")")
             }
+            ExprKind::IfLet {
+                name,
+                value,
+                then_block,
+                else_block,
+            } => {
+                write!(f, "(if-let {} {value} {then_block}", name.name)?;
+                if let Some(else_block) = else_block {
+                    write!(f, " {else_block}")?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }
@@ -399,6 +445,7 @@ mod tests {
     fn ty(name: &str) -> TypeExpr {
         TypeExpr {
             name: name.to_string(),
+            optional: false,
             span: sp(),
         }
     }
