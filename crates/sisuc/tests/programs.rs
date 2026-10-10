@@ -158,6 +158,21 @@ fn bool_var() {
     assert_prints_out_file("bool_var");
 }
 
+#[test]
+fn objects() {
+    assert_prints_out_file("objects");
+}
+
+#[test]
+fn ownership() {
+    assert_prints_out_file("ownership");
+}
+
+#[test]
+fn field_order() {
+    assert_prints_out_file("field_order");
+}
+
 /// Each panicking program with its expected stdout and panic line.
 const PANICS: [(&str, &str, &str); 3] = [
     (

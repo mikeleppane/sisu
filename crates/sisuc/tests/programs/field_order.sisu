@@ -1,0 +1,20 @@
+// `pick(t).count = next()` evaluates the base, then the value: `pick` prints 1, `next` 2.
+class C {
+    var count: i64
+}
+
+fn pick(c: C) -> C {
+    print(1)
+    c
+}
+
+fn next() -> i64 {
+    print(2)
+    5
+}
+
+fn main() {
+    let t = C(count: 0)
+    pick(t).count = next()
+    print(t.count)
+}

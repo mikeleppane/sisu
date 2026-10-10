@@ -13,12 +13,16 @@ pub(crate) struct LocalId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FuncId(pub(crate) usize);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ClassId(pub(crate) usize);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Type {
     I64,
     Bool,
     Unit,
     Never,
+    Class(ClassId),
 }
 
 /// `==` and `!=` are `ExprKind::Equal`, comparisons are `ExprKind::Compare`.
@@ -35,7 +39,21 @@ pub(crate) enum BinaryOp {
 
 #[derive(Debug)]
 pub(crate) struct Program {
+    pub(crate) classes: Vec<Class>,
     pub(crate) functions: Vec<Function>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Class {
+    pub(crate) name: String,
+    pub(crate) fields: Vec<Field>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Field {
+    pub(crate) name: String,
+    pub(crate) ty: Type,
+    pub(crate) mutable: bool,
 }
 
 #[derive(Debug)]
@@ -73,6 +91,11 @@ pub(crate) enum Stmt {
 #[derive(Debug)]
 pub(crate) enum Place {
     Local(LocalId),
+    /// Field `index` of the class `base` has.
+    Field {
+        base: Expr,
+        index: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -90,6 +113,15 @@ pub(crate) enum ExprKind {
     Call {
         func: FuncId,
         args: Vec<Expr>,
+    },
+    New {
+        class: ClassId,
+        args: Vec<Expr>,
+    },
+    /// Field `index` of the class `base` has.
+    Field {
+        base: Box<Expr>,
+        index: usize,
     },
     Print(Box<Expr>),
     Unary {
@@ -119,6 +151,67 @@ pub(crate) enum ExprKind {
     Break,
     Continue,
     Return(Option<Box<Expr>>),
+    Block(Block),
+}
+
+impl Type {
+    /// Whether a value of this type is an owned reference, which codegen counts.
+    pub(crate) fn is_counted(&self) -> bool {
+        self.counted_class().is_some()
+    }
+
+    /// The class whose count a value of this type holds a reference to, if any.
+    pub(crate) fn counted_class(&self) -> Option<ClassId> {
+        match self {
+            Type::Class(id) => Some(*id),
+            _ => None,
+        }
+    }
+}
+
+impl Expr {
+    /// Whether a `Return`, `Break` or `Continue` sits anywhere inside, a nested loop included.
+    pub(crate) fn exits(&self) -> bool {
+        match &self.kind {
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Local(_) => false,
+            ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
+            ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
+                args.iter().any(Expr::exits)
+            }
+            ExprKind::Compare { operands, .. } => operands.iter().any(Expr::exits),
+            ExprKind::Field { base: operand, .. }
+            | ExprKind::Print(operand)
+            | ExprKind::Unary { operand, .. } => operand.exits(),
+            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Equal { lhs, rhs, .. } => {
+                lhs.exits() || rhs.exits()
+            }
+            ExprKind::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                cond.exits() || then_block.exits() || else_block.as_ref().is_some_and(Block::exits)
+            }
+            ExprKind::Loop(block) | ExprKind::Block(block) => block.exits(),
+        }
+    }
+}
+
+impl Block {
+    fn exits(&self) -> bool {
+        self.stmts.iter().any(Stmt::exits) || self.value.as_ref().is_some_and(|v| v.exits())
+    }
+}
+
+impl Stmt {
+    fn exits(&self) -> bool {
+        match self {
+            Stmt::Let { init: e, .. } | Stmt::Expr(e) => e.exits(),
+            Stmt::Assign { place, value } => {
+                matches!(place, Place::Field { base, .. } if base.exits()) || value.exits()
+            }
+        }
+    }
 }
 
 impl fmt::Display for Type {
@@ -128,6 +221,8 @@ impl fmt::Display for Type {
             Type::Bool => "bool",
             Type::Unit => "unit",
             Type::Never => "never",
+            // A class's name lives in the program: `Program::type_name` prints it.
+            Type::Class(id) => return write!(f, "class#{}", id.0),
         })
     }
 }
@@ -187,12 +282,12 @@ impl Printer<'_> {
                 self.expr(f, init)?;
                 f.write_str(")")
             }
-            Stmt::Assign {
-                place: Place::Local(local),
-                value,
-            } => {
+            Stmt::Assign { place, value } => {
                 f.write_str("(= ")?;
-                self.local(f, *local)?;
+                match place {
+                    Place::Local(local) => self.local(f, *local)?,
+                    Place::Field { base, index } => self.field(f, base, *index)?,
+                }
                 f.write_str(" ")?;
                 self.expr(f, value)?;
                 f.write_str(")")
@@ -211,6 +306,12 @@ impl Printer<'_> {
                 self.each(f, args)?;
                 f.write_str(")")
             }
+            ExprKind::New { class, args } => {
+                write!(f, "(new {}", self.program.classes[class.0].name)?;
+                self.each(f, args)?;
+                f.write_str(")")
+            }
+            ExprKind::Field { base, index } => self.field(f, base, *index),
             ExprKind::Print(operand) => self.unary(f, "print", operand),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
@@ -253,7 +354,18 @@ impl Printer<'_> {
             ExprKind::Continue => f.write_str("(continue)"),
             ExprKind::Return(None) => f.write_str("(return)"),
             ExprKind::Return(Some(value)) => self.unary(f, "return", value),
+            ExprKind::Block(block) => self.block(f, block),
         }
+    }
+
+    /// `(. base name)`.
+    fn field(&self, f: &mut fmt::Formatter<'_>, base: &Expr, index: usize) -> fmt::Result {
+        let Type::Class(class) = base.ty else {
+            panic!("checked: a field's base is a class, not `{}`", base.ty)
+        };
+        f.write_str("(. ")?;
+        self.expr(f, base)?;
+        write!(f, " {})", self.program.classes[class.0].fields[index].name)
     }
 
     fn unary(&self, f: &mut fmt::Formatter<'_>, head: &str, operand: &Expr) -> fmt::Result {
@@ -285,12 +397,33 @@ impl Printer<'_> {
     }
 }
 
+impl Program {
+    /// A type as `--emit tir` prints it: a class by its name.
+    fn type_name(&self, ty: &Type) -> String {
+        match ty {
+            Type::Class(id) => self.classes[id.0].name.clone(),
+            ty => ty.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, function) in self.functions.iter().enumerate() {
-            if i > 0 {
-                f.write_str("\n")?;
+        // Classes first, then functions, one per line.
+        let mut separator = "";
+        for class in &self.classes {
+            write!(f, "{separator}(class {}", class.name)?;
+            for field in &class.fields {
+                let keyword = if field.mutable { "var" } else { "let" };
+                let ty = self.type_name(&field.ty);
+                write!(f, " ({keyword} {} {ty})", field.name)?;
             }
+            f.write_str(")")?;
+            separator = "\n";
+        }
+        for function in &self.functions {
+            f.write_str(separator)?;
+            separator = "\n";
             let printer = Printer {
                 program: self,
                 function,
@@ -302,9 +435,9 @@ impl fmt::Display for Program {
                 }
                 f.write_str("(")?;
                 printer.local(f, *param)?;
-                write!(f, " {})", function.locals[param.0].ty)?;
+                write!(f, " {})", self.type_name(&function.locals[param.0].ty))?;
             }
-            write!(f, ") {} ", function.ret)?;
+            write!(f, ") {} ", self.type_name(&function.ret))?;
             printer.block(f, &function.body)?;
             f.write_str(")")?;
         }
@@ -426,6 +559,7 @@ mod tests {
         let (if_stmt, looped) = if_and_loop();
         let ret = expr(ExprKind::Return(Some(Box::new(local(1)))), Type::Never);
         let program = Program {
+            classes: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
@@ -526,6 +660,7 @@ mod tests {
             },
         };
         let program = Program {
+            classes: vec![],
             functions: vec![first, second],
         };
         assert_eq!(
@@ -549,5 +684,39 @@ mod tests {
         for (op, symbol) in ops {
             assert_eq!(op.to_string(), symbol);
         }
+    }
+
+    fn block_expr(stmts: Vec<Stmt>, value: Option<Expr>) -> Expr {
+        let block = Block {
+            stmts,
+            value: value.map(Box::new),
+            ty: Type::I64,
+        };
+        expr(ExprKind::Block(block), Type::I64)
+    }
+
+    #[test]
+    fn exits_finds_a_jump_at_any_depth() {
+        let (if_stmt, looped) = if_and_loop();
+        // A `break` in a loop in a block's statement, and in a block's value.
+        assert!(block_expr(vec![Stmt::Expr(looped)], None).exits());
+        let (_, looped) = if_and_loop();
+        assert!(block_expr(vec![], Some(looped)).exits());
+        // A `continue` in a `let` initializer, and a `return` in an argument of a call.
+        let cont = expr(ExprKind::Continue, Type::Never);
+        let let_cont = Stmt::Let {
+            local: LocalId(0),
+            init: block_expr(vec![Stmt::Expr(cont)], None),
+        };
+        assert!(block_expr(vec![let_cont], Some(int(1))).exits());
+        let ret = expr(ExprKind::Return(None), Type::Never);
+        let call = ExprKind::Call {
+            func: FuncId(0),
+            args: vec![int(1), ret],
+        };
+        assert!(expr(call, Type::Unit).exits());
+        // An `if`, a comparison chain and a print with no jump in them.
+        assert!(!if_stmt.exits());
+        assert!(!block_expr(vec![Stmt::Expr(if_stmt)], Some(int(1))).exits());
     }
 }
