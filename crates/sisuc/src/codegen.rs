@@ -9,31 +9,52 @@ use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
-    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
 };
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use crate::diagnostic::{Span, line_col};
 use crate::tir::{
-    BinaryOp, Block, CompareOp, Expr, ExprKind, Function, Place, Program, Stmt, Type, UnaryOp,
+    BinaryOp, Block, ClassId, CompareOp, Expr, ExprKind, Function, Place, Program, Stmt, Type,
+    UnaryOp,
 };
 
-/// Compiles a program that passed `check` into an LLVM module.
+/// Compiles a program that passed `check` into an LLVM module for `machine`.
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
     program: &Program,
     path: &str,
     source: &str,
+    machine: &TargetMachine,
 ) -> Module<'ctx> {
-    assert!(
-        program.classes.is_empty(),
-        "codegen for classes lands in Task 13"
-    );
     let module = context.create_module("main");
+    // The passes and the object file both read the target from the module.
+    let target_data = machine.get_target_data();
+    module.set_triple(&machine.get_triple());
+    module.set_data_layout(&target_data.get_data_layout());
     let i64_type = context.i64_type();
+    let ptr_type = context.ptr_type(AddressSpace::default());
     let void = context.void_type();
+
+    // Every class type exists before any body is set, so a field can name any class.
+    let classes: Vec<StructType> = program
+        .classes
+        .iter()
+        .map(|class| context.opaque_struct_type(&format!("sisu.{}", class.name)))
+        .collect();
+    // `sisu_alloc(size, align)` and `sisu_free(ptr, size, align)`, from the runtime.
+    let alloc = module.add_function(
+        "sisu_alloc",
+        ptr_type.fn_type(&[i64_type.into(), i64_type.into()], false),
+        None,
+    );
+    module.add_function(
+        "sisu_free",
+        void.fn_type(&[ptr_type.into(), i64_type.into(), i64_type.into()], false),
+        None,
+    );
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
     // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
@@ -72,12 +93,26 @@ pub(crate) fn compile<'ctx>(
         print_int,
         print_bool,
         panic,
+        alloc,
+        target_data,
         path,
         source,
+        classes,
         functions: Vec::new(),
         locals: Vec::new(),
         loops: Vec::new(),
     };
+    // A class is `{ i64 count, fields... }`: field `i` is element `i + 1`.
+    for (class, ty) in program.classes.iter().zip(&codegen.classes) {
+        let body: Vec<BasicTypeEnum> = std::iter::once(i64_type.into())
+            .chain(class.fields.iter().map(|field| {
+                codegen
+                    .llvm_type(&field.ty)
+                    .expect("checked: a field has a value type")
+            }))
+            .collect();
+        ty.set_body(&body, false);
+    }
     // Declare every function first so that calls can refer to functions defined later.
     for f in &program.functions {
         codegen.declare(f);
@@ -117,9 +152,14 @@ struct Codegen<'ctx, 'src> {
     print_int: FunctionValue<'ctx>,
     print_bool: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
+    alloc: FunctionValue<'ctx>,
+    /// The target's layout: the sizes and alignments of classes.
+    target_data: TargetData,
     /// The input path as given, and its text: panic messages name a position in it.
     path: &'src str,
     source: &'src str,
+    /// `%sisu.<Class>`, indexed by `ClassId`.
+    classes: Vec<StructType<'ctx>>,
     /// Indexed by `FuncId`.
     functions: Vec<FunctionValue<'ctx>>,
     /// The current function's locals, indexed by `LocalId`; `None` until bound, and for `unit`.
@@ -134,8 +174,77 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
-            Type::Class(_) => panic!("codegen for classes lands in Task 13"),
+            Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
         }
+    }
+
+    /// The ABI size and alignment of an object of class `id`, from the target's data layout.
+    fn class_layout(&self, id: ClassId) -> (u64, u32) {
+        let ty = &self.classes[id.0];
+        (
+            self.target_data.get_abi_size(ty),
+            self.target_data.get_abi_alignment(ty),
+        )
+    }
+
+    /// A pointer to field `index` of `object`, whose type is `ty`.
+    fn field_ptr(&self, ty: &Type, object: PointerValue<'ctx>, index: usize) -> PointerValue<'ctx> {
+        let Type::Class(id) = ty else {
+            unreachable!("checked: only an object has fields")
+        };
+        // Element 0 is the count.
+        let element = u32::try_from(index + 1).expect("a class has fewer than 2^32 fields");
+        self.builder
+            .build_struct_gep(self.classes[id.0], object, element, "field")
+            .expect("the class has the field")
+    }
+
+    /// Field `index` of the object `base`, whose type is `ty`.
+    fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
+        let object = self
+            .expr(base)
+            .expect("checked: the base is an object")
+            .into_pointer_value();
+        let field = self.field_ptr(&base.ty, object, index);
+        let ty = self
+            .llvm_type(ty)
+            .expect("checked: a field has a value type");
+        self.builder
+            .build_load(ty, field, "load")
+            .expect("builder is positioned")
+    }
+
+    /// `New`: allocates the object, then stores its count, 1, and each argument.
+    fn new_object(&mut self, class: ClassId, args: &[Expr]) -> PointerValue<'ctx> {
+        // Arguments run first: one that returns early then leaves no object behind.
+        let args: Vec<_> = args
+            .iter()
+            .map(|a| self.expr(a).expect("checked: an argument has a value"))
+            .collect();
+        let i64_type = self.context.i64_type();
+        let (size, align) = self.class_layout(class);
+        let object = self
+            .builder
+            .build_call(
+                self.alloc,
+                &[
+                    i64_type.const_int(size, false).into(),
+                    i64_type.const_int(u64::from(align), false).into(),
+                ],
+                "object",
+            )
+            .expect("builder is positioned")
+            .try_as_basic_value()
+            .basic()
+            .expect("`sisu_alloc` returns a pointer")
+            .into_pointer_value();
+        self.store(object, i64_type.const_int(1, false).into());
+        let ty = Type::Class(class);
+        for (index, arg) in args.into_iter().enumerate() {
+            let field = self.field_ptr(&ty, object, index);
+            self.store(field, arg);
+        }
+        object
     }
 
     fn declare(&mut self, f: &Function) {
@@ -268,9 +377,20 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.store(ptr, value);
             }
             Stmt::Assign {
-                place: Place::Field { .. },
-                ..
-            } => panic!("codegen for classes lands in Task 13"),
+                place: Place::Field { base, index },
+                value,
+            } => {
+                // Left to right: the base, then the value, then the store.
+                let object = self
+                    .expr(base)
+                    .expect("checked: the base is an object")
+                    .into_pointer_value();
+                let Some(value) = self.expr(value) else {
+                    return;
+                };
+                let field = self.field_ptr(&base.ty, object, *index);
+                self.store(field, value);
+            }
             Stmt::Expr(e) => {
                 self.expr(e);
             }
@@ -372,9 +492,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.branch_to(body);
                 return None;
             }
-            ExprKind::New { .. } | ExprKind::Field { .. } | ExprKind::Block(_) => {
-                panic!("codegen for classes lands in Task 13")
-            }
+            ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
+            ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
+            ExprKind::Block(block) => return self.block(block),
             ExprKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| self.expr(e));
                 // The checker rejects a `never` return value; this keeps codegen safe anyway.
@@ -773,8 +893,6 @@ pub(crate) fn object_code(
     module: &Module<'_>,
     machine: &TargetMachine,
 ) -> Result<MemoryBuffer<'static>, String> {
-    module.set_triple(&machine.get_triple());
-    module.set_data_layout(&machine.get_target_data().get_data_layout());
     module.verify().map_err(|e| e.to_string())?;
     machine
         .write_to_memory_buffer(module, FileType::Object)
@@ -793,7 +911,8 @@ mod tests {
         let program = parse(&lex(src).expect("source lexes")).expect("source parses");
         let (program, diagnostics) = check(&program);
         let program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
-        let module = compile(context, &program, "test.sisu", src);
+        let machine = target_machine(false).expect("the host is a target");
+        let module = compile(context, &program, "test.sisu", src, &machine);
         if let Err(e) = module.verify() {
             panic!("{e}\n{}", module.print_to_string());
         }
@@ -1010,6 +1129,89 @@ mod tests {
             .unwrap_or_else(|| panic!("no constant {constant} in\n{ir}"));
         let call = format!("@sisu_panic(ptr {global}, i64 {})", message.len());
         assert!(ir.contains(&call), "missing {call:?} in\n{ir}");
+    }
+
+    #[test]
+    fn class_layout_comes_from_the_data_layout() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class Q {}\nclass P {\n    let x: i64\n    var y: bool\n    let q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    print(p.x)\n}",
+        )
+        .print_to_string()
+        .to_string();
+        for wanted in [
+            "%sisu.P = type { i64, i64, i1, ptr }",
+            "call ptr @sisu_alloc(i64 32, i64 8)",
+        ] {
+            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+        }
+        // Element 0 is the count, so field `i` is element `i + 1`.
+        for element in 1..=3 {
+            let gep = format!("i32 0, i32 {element}");
+            assert!(
+                ir.lines().any(|l| l.contains("getelementptr")
+                    && l.contains("%sisu.P, ptr ")
+                    && l.ends_with(&gep)),
+                "no field GEP to element {element} in\n{ir}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_class_allocates_its_count() {
+        let context = Context::create();
+        let ir = compiled(&context, "class E {}\nfn main() { E() }")
+            .print_to_string()
+            .to_string();
+        let lines: Vec<&str> = ir.lines().map(str::trim).collect();
+        let (_, object, _) = instruction(&lines, &|t| t == "call ptr @sisu_alloc(i64 8, i64 8)")
+            .unwrap_or_else(|| panic!("no 8-byte allocation in\n{ir}"));
+        let count = format!("store i64 1, ptr {object},");
+        assert!(
+            lines.iter().any(|l| l.starts_with(&count)),
+            "missing {count:?} in\n{ir}"
+        );
+    }
+
+    #[test]
+    fn method_symbols() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class P {\n    let x: i64\n\n    fn m(self) { print(self.x) }\n}\nfn main() { P(x: 1).m() }",
+        )
+        .print_to_string()
+        .to_string();
+        assert!(ir.contains("define void @sisu.P.m(ptr"), "{ir}");
+    }
+
+    #[test]
+    fn verifies_field_assignment_through_a_call() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class C {\n    var n: i64\n}\nfn make() -> C { C(n: 0) }\nfn main() {\n    make().n = 1\n}",
+        )
+        .print_to_string()
+        .to_string();
+        // The base is evaluated, then the value is stored through a GEP to element 1 of it.
+        let main = ir
+            .split("define void @sisu.main()")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no @sisu.main in\n{ir}"));
+        let lines: Vec<&str> = main.lines().map(str::trim).collect();
+        let (_, base, _) = instruction(&lines, &|t| t == "call ptr @sisu.make()")
+            .unwrap_or_else(|| panic!("no call to make in\n{main}"));
+        let (_, field, _) = instruction(&lines, &|t| {
+            t.contains(&format!("%sisu.C, ptr {base}, i32 0, i32 1"))
+        })
+        .unwrap_or_else(|| panic!("no GEP to `n` of {base} in\n{main}"));
+        let store = format!("store i64 1, ptr {field},");
+        assert!(
+            lines.iter().any(|l| l.starts_with(&store)),
+            "missing {store:?} in\n{main}"
+        );
     }
 
     #[test]

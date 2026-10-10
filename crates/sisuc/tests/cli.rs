@@ -388,3 +388,22 @@ fn emit_ir_o2() {
     assert!(!after.contains("call i64 @sisu.sq"), "{after}");
     assert!(after.contains("@sisu_print_int(i64 13)"), "{after}");
 }
+
+#[test]
+fn emit_ir_o2_optimizes_for_the_target() {
+    let out = run_on("emit_ir_o2_target", SQUARE, &["-O2", "--emit", "ir"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (_, after) = stdout
+        .split_once("\n; after default<O2>\n")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    // The passes see the target's triple and data layout, as the object file does.
+    for wanted in ["\ntarget datalayout = \"", "\ntarget triple = \""] {
+        assert!(after.contains(wanted), "missing {wanted:?} in\n{after}");
+    }
+}
