@@ -142,6 +142,7 @@ impl Checker {
                     },
                 )))
             }
+            StmtKind::For { .. } => panic!("for lands in Task 6"),
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),

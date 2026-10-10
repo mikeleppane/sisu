@@ -1,8 +1,8 @@
 //! The parser: tokens to the syntax tree.
 
 use crate::ast::{
-    Arg, BinaryOp, Block, Class, CompareOp, Expr, ExprKind, FieldDecl, Function, Ident, Item,
-    Member, Param, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
+    Arg, BinaryOp, Block, Class, CompareOp, Expr, ExprKind, FieldDecl, ForSource, Function, Ident,
+    Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -79,6 +79,17 @@ impl Parser<'_> {
         while self.eat(&TokenKind::Newline).is_some() {}
     }
 
+    /// What must follow a statement or a class member: a line break or the closing `}`.
+    fn end_of_line(&self) -> Diagnostic {
+        if self.at(&TokenKind::Semicolon) {
+            return Diagnostic::error(
+                self.peek().span,
+                "Sisu has no `;`: statements end at the end of the line",
+            );
+        }
+        self.expected("end of line")
+    }
+
     /// "expected <what>, found <the next token>", pointing at the next token.
     fn expected(&self, what: &str) -> Diagnostic {
         let found = self.peek();
@@ -105,8 +116,15 @@ impl Parser<'_> {
 
     /// The only place that reads a type; later milestones extend it.
     fn parse_type(&mut self) -> Result<TypeExpr, Diagnostic> {
-        let ident = self.ident("a type")?;
-        let mut span = ident.span;
+        let start = self.peek().span;
+        let (kind, mut span) = if self.eat(&TokenKind::LBracket).is_some() {
+            let element = self.parse_type()?;
+            let close = self.expect(&TokenKind::RBracket)?;
+            (TypeKind::Array(Box::new(element)), start.to(close.span))
+        } else {
+            let ident = self.ident("a type")?;
+            (TypeKind::Name(ident.name), ident.span)
+        };
         let optional = self.eat(&TokenKind::Question).is_some();
         if optional {
             span = span.to(self.last_span());
@@ -116,14 +134,19 @@ impl Parser<'_> {
             self.peek().kind,
             TokenKind::Question | TokenKind::QuestionQuestion
         ) {
+            let base = TypeExpr {
+                kind,
+                optional: false,
+                span,
+            };
             return Err(Diagnostic::error(
-                ident.span.to(self.peek().span),
-                format!("`{}??` is not a type", ident.name),
+                start.to(self.peek().span),
+                format!("`{base}??` is not a type"),
             )
             .help("optionals do not nest"));
         }
         Ok(TypeExpr {
-            name: ident.name,
+            kind,
             optional,
             span,
         })
@@ -152,7 +175,7 @@ impl Parser<'_> {
         while !self.at(&TokenKind::RBrace) {
             members.push(self.member()?);
             if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
-                return Err(self.expected("end of line"));
+                return Err(self.end_of_line());
             }
             self.skip_newlines();
         }
@@ -243,7 +266,7 @@ impl Parser<'_> {
         while !self.at(&TokenKind::RBrace) {
             stmts.push(self.stmt()?);
             if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
-                return Err(self.expected("end of line"));
+                return Err(self.end_of_line());
             }
             self.skip_newlines();
         }
@@ -272,6 +295,26 @@ impl Parser<'_> {
                         cond,
                         body: self.block()?,
                     }
+                }
+            }
+            TokenKind::For => {
+                self.bump();
+                let name = self.ident("a variable name")?;
+                self.expect(&TokenKind::In)?;
+                // A range is only valid here, so the header reads its two sides itself.
+                let first = self.binary(1)?;
+                let source = if self.eat(&TokenKind::DotDot).is_some() {
+                    ForSource::Range {
+                        start: first,
+                        end: self.binary(1)?,
+                    }
+                } else {
+                    ForSource::Array(first)
+                };
+                StmtKind::For {
+                    name,
+                    source,
+                    body: self.block()?,
                 }
             }
             TokenKind::Return => {
@@ -366,7 +409,14 @@ impl Parser<'_> {
     }
 
     fn expr(&mut self) -> Result<Expr, Diagnostic> {
-        self.binary(1)
+        let e = self.binary(1)?;
+        if self.at(&TokenKind::DotDot) {
+            return Err(Diagnostic::error(
+                self.peek().span,
+                "ranges are only allowed in `for`",
+            ));
+        }
+        Ok(e)
     }
 
     /// Precedence climbing over levels 1 to 7; `min` is the lowest level to accept.
@@ -468,14 +518,29 @@ impl Parser<'_> {
         })
     }
 
-    /// `primary` followed by any number of `.field`, `.method(args)`, `?.field` and
-    /// `?.method(args)`.
+    /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
+    /// `?.method(args)` and `[index]`.
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.primary()?;
-        while let Some(access) = self
-            .eat(&TokenKind::Dot)
-            .or_else(|| self.eat(&TokenKind::QuestionDot))
-        {
+        loop {
+            if self.eat(&TokenKind::LBracket).is_some() {
+                let index = self.expr()?;
+                let close = self.expect(&TokenKind::RBracket)?;
+                expr = Expr {
+                    span: expr.span.to(close.span),
+                    kind: ExprKind::Index {
+                        base: Box::new(expr),
+                        index: Box::new(index),
+                    },
+                };
+                continue;
+            }
+            let Some(access) = self
+                .eat(&TokenKind::Dot)
+                .or_else(|| self.eat(&TokenKind::QuestionDot))
+            else {
+                return Ok(expr);
+            };
             let safe = access.kind == TokenKind::QuestionDot;
             let name = self.ident("a field or method name")?;
             expr = if self.at(&TokenKind::LParen) {
@@ -500,7 +565,37 @@ impl Parser<'_> {
                 }
             };
         }
-        Ok(expr)
+    }
+
+    /// `[` after the opening bracket: `]`, `value; len]` or `a, b, …]`.
+    fn array(&mut self, open: Span) -> Result<Expr, Diagnostic> {
+        let mut elements = Vec::new();
+        let mut fill = None;
+        while !self.at(&TokenKind::RBracket) {
+            elements.push(self.expr()?);
+            if elements.len() == 1 && self.eat(&TokenKind::Semicolon).is_some() {
+                fill = Some(self.expr()?);
+                break;
+            }
+            if self.eat(&TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        let close = self.expect(&TokenKind::RBracket)?;
+        let kind = match (fill, elements.pop()) {
+            (Some(len), Some(value)) => ExprKind::ArrayFill {
+                value: Box::new(value),
+                len: Box::new(len),
+            },
+            (_, last) => {
+                elements.extend(last);
+                ExprKind::ArrayLit(elements)
+            }
+        };
+        Ok(Expr {
+            kind,
+            span: open.to(close.span),
+        })
     }
 
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
@@ -548,6 +643,10 @@ impl Parser<'_> {
                     span: token.span.to(close.span),
                     ..inner
                 });
+            }
+            TokenKind::LBracket => {
+                self.bump();
+                return self.array(token.span);
             }
             TokenKind::If => return self.if_expr(),
             _ => return Err(self.expected("an expression")),
@@ -1210,5 +1309,97 @@ error: expected `=`, found end of line
             assert_eq!(d.span, span, "{src}");
             assert_eq!(line_col(src, d.span.start), position, "{src}");
         }
+    }
+
+    #[test]
+    fn array_literals() {
+        let rows = [
+            ("[]", "(array)"),
+            ("[1]", "(array 1)"),
+            ("[1, 2,]", "(array 1 2)"),
+            ("[\n        1,\n        2,\n    ]", "(array 1 2)"),
+            ("[0; n]", "(array-fill 0 n)"),
+            ("[[1], []]", "(array (array 1) (array))"),
+        ];
+        for (src, want) in rows {
+            assert_eq!(expr(src), want, "{src}");
+        }
+    }
+
+    #[test]
+    fn indexing_chains_and_binds_like_a_postfix() {
+        let rows = [
+            ("a[i][j]", "(index (index a i) j)"),
+            ("a.b[0].c", "(. (index (. a b) 0) c)"),
+            ("[1, 2][0]", "(index (array 1 2) 0)"),
+            ("-a[0]", "(- (index a 0))"),
+            ("a[i + 1]", "(index a (+ i 1))"),
+        ];
+        for (src, want) in rows {
+            assert_eq!(expr(src), want, "{src}");
+        }
+    }
+
+    #[test]
+    fn for_loops() {
+        let rows = [
+            ("for x in xs {}", "(for x xs (block))"),
+            ("for i in 2..n + 1 {}", "(for i (.. 2 (+ n 1)) (block))"),
+            (
+                "for i in 0..xs.len() {}",
+                "(for i (.. 0 (call (. xs len))) (block))",
+            ),
+            (
+                "for x in [1, 2] { f(x) }",
+                "(for x (array 1 2) (block (call f x)))",
+            ),
+        ];
+        for (src, want) in rows {
+            assert_eq!(expr(src), want, "{src}");
+        }
+    }
+
+    #[test]
+    fn array_types_round_trip() {
+        assert_eq!(
+            program("fn f(a: [i64], b: [Node]?, c: [Node?], d: [[bool]]) {}"),
+            "(fn f ((a [i64]) (b [Node]?) (c [Node?]) (d [[bool]])) unit (block))"
+        );
+    }
+
+    #[test]
+    fn array_type_spans() {
+        let f = first_fn("fn f(a: [[i64]?]?) {}");
+        assert_eq!(f.params[0].ty.span, Span::new(8, 17));
+    }
+
+    #[test]
+    fn syntax_errors_for_arrays_and_for() {
+        let rows = [
+            (
+                "let x = 1; 2",
+                "Sisu has no `;`: statements end at the end of the line",
+                22,
+            ),
+            ("let r = 0..3", "ranges are only allowed in `for`", 22),
+            ("f(0..3)", "ranges are only allowed in `for`", 16),
+            ("for i in 0..1..2 {}", "expected `{`, found `..`", 26),
+            ("xs[0] = 1", "cannot assign to this expression", 13),
+            ("xs[0] += 1", "cannot assign to this expression", 13),
+            ("[1; 2, 3]", "expected `]`, found `,`", 18),
+            ("a[]", "expected an expression, found `]`", 15),
+        ];
+        for (src, message, col) in rows {
+            assert_eq!(expr_err(src), (message.to_owned(), 1, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn optional_array_types_do_not_nest() {
+        let src = "fn f(x: [Node]??) {}";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.message, "`[Node]??` is not a type");
+        assert_eq!(d.help.as_deref(), Some("optionals do not nest"));
+        assert_eq!(line_col(src, d.span.start), (1, 9));
     }
 }

@@ -58,13 +58,20 @@ pub(crate) struct Param {
     pub(crate) ty: TypeExpr,
 }
 
-/// A type name, and whether a `?` follows it.
+/// A type as written, and whether a `?` follows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeExpr {
-    pub(crate) name: String,
+    pub(crate) kind: TypeKind,
     pub(crate) optional: bool,
-    /// The name through the `?`, if any.
+    /// The name, or `[` through `]`, then through the `?`, if any.
     pub(crate) span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TypeKind {
+    Name(String),
+    /// `[T]`; the element type may itself be optional or an array.
+    Array(Box<TypeExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +105,12 @@ pub(crate) enum StmtKind {
         value: Expr,
         body: Block,
     },
+    /// `for name in source { body }`.
+    For {
+        name: Ident,
+        source: ForSource,
+        body: Block,
+    },
     Return(Option<Expr>),
     Break,
     Continue,
@@ -114,6 +127,17 @@ pub(crate) enum StmtKind {
         value: Expr,
     },
     Expr(Expr),
+}
+
+/// What a `for` walks; a range belongs to the `for` and is not an expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ForSource {
+    Array(Expr),
+    /// `start..end`.
+    Range {
+        start: Expr,
+        end: Expr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +188,18 @@ pub(crate) enum ExprKind {
     Coalesce {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
+    },
+    /// `[a, b]`.
+    ArrayLit(Vec<Expr>),
+    /// `[value; len]`.
+    ArrayFill {
+        value: Box<Expr>,
+        len: Box<Expr>,
+    },
+    /// `base[index]`.
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     /// `lhs is rhs`.
     Is {
@@ -265,7 +301,10 @@ impl fmt::Display for CompareOp {
 
 impl fmt::Display for TypeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.name)?;
+        match &self.kind {
+            TypeKind::Name(name) => f.write_str(name)?,
+            TypeKind::Array(element) => write!(f, "[{element}]")?,
+        }
         if self.optional {
             f.write_str("?")?;
         }
@@ -368,6 +407,12 @@ impl fmt::Display for Stmt {
             StmtKind::WhileLet { name, value, body } => {
                 write!(f, "(while-let {} {value} {body})", name.name)
             }
+            StmtKind::For { name, source, body } => match source {
+                ForSource::Array(e) => write!(f, "(for {} {e} {body})", name.name),
+                ForSource::Range { start, end } => {
+                    write!(f, "(for {} (.. {start} {end}) {body})", name.name)
+                }
+            },
             StmtKind::Return(None) => f.write_str("(return)"),
             StmtKind::Return(Some(e)) => write!(f, "(return {e})"),
             StmtKind::Break => f.write_str("(break)"),
@@ -424,6 +469,13 @@ impl fmt::Display for Expr {
                 }
                 f.write_str(")")
             }
+            ExprKind::ArrayLit(elements) => {
+                f.write_str("(array")?;
+                spaced(f, elements)?;
+                f.write_str(")")
+            }
+            ExprKind::ArrayFill { value, len } => write!(f, "(array-fill {value} {len})"),
+            ExprKind::Index { base, index } => write!(f, "(index {base} {index})"),
             ExprKind::If {
                 cond,
                 then_block,
@@ -468,7 +520,7 @@ mod tests {
 
     fn ty(name: &str) -> TypeExpr {
         TypeExpr {
-            name: name.to_string(),
+            kind: TypeKind::Name(name.to_string()),
             optional: false,
             span: sp(),
         }

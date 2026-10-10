@@ -403,7 +403,9 @@ impl Checker {
 
     /// `None`, reported at the name without its `?`, for an unknown type.
     fn resolve(&mut self, ty: &ast::TypeExpr) -> Option<Type> {
-        let name = ty.name.as_str();
+        let ast::TypeKind::Name(name) = &ty.kind else {
+            panic!("arrays land in Task 5");
+        };
         let named = if let Some(named) = built_in_type(name) {
             named
         } else if let Some(&id) = self.class_ids.get(name) {

@@ -31,6 +31,9 @@ impl Checker {
                 node(tir::ExprKind::Int(*n), ty)
             }
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
+            ExprKind::ArrayLit(_) | ExprKind::ArrayFill { .. } | ExprKind::Index { .. } => {
+                panic!("arrays land in Task 5")
+            }
             ExprKind::NoneLit => self.none(e.span, expected),
             ExprKind::Name(name) => match self.lookup(name) {
                 Some(Binding {

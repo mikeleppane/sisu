@@ -16,6 +16,8 @@ pub(crate) enum TokenKind {
     If,
     Else,
     While,
+    For,
+    In,
     Return,
     Break,
     Continue,
@@ -53,6 +55,10 @@ pub(crate) enum TokenKind {
     Colon,
     Arrow,
     Dot,
+    DotDot,
+    LBracket,
+    RBracket,
+    Semicolon,
     Question,
     QuestionDot,
     QuestionQuestion,
@@ -78,6 +84,8 @@ impl TokenKind {
             TokenKind::If => "If",
             TokenKind::Else => "Else",
             TokenKind::While => "While",
+            TokenKind::For => "For",
+            TokenKind::In => "In",
             TokenKind::Return => "Return",
             TokenKind::Break => "Break",
             TokenKind::Continue => "Continue",
@@ -115,6 +123,10 @@ impl TokenKind {
             TokenKind::Colon => "Colon",
             TokenKind::Arrow => "Arrow",
             TokenKind::Dot => "Dot",
+            TokenKind::DotDot => "DotDot",
+            TokenKind::LBracket => "LBracket",
+            TokenKind::RBracket => "RBracket",
+            TokenKind::Semicolon => "Semicolon",
             TokenKind::Question => "Question",
             TokenKind::QuestionDot => "QuestionDot",
             TokenKind::QuestionQuestion => "QuestionQuestion",
@@ -136,6 +148,8 @@ impl TokenKind {
             TokenKind::If => "if",
             TokenKind::Else => "else",
             TokenKind::While => "while",
+            TokenKind::For => "for",
+            TokenKind::In => "in",
             TokenKind::Return => "return",
             TokenKind::Break => "break",
             TokenKind::Continue => "continue",
@@ -173,6 +187,10 @@ impl TokenKind {
             TokenKind::Colon => ":",
             TokenKind::Arrow => "->",
             TokenKind::Dot => ".",
+            TokenKind::DotDot => "..",
+            TokenKind::LBracket => "[",
+            TokenKind::RBracket => "]",
+            TokenKind::Semicolon => ";",
             TokenKind::Question => "?",
             TokenKind::QuestionDot => "?.",
             TokenKind::QuestionQuestion => "??",
@@ -185,7 +203,7 @@ impl TokenKind {
 
 type Chars<'a> = Peekable<CharIndices<'a>>;
 
-/// An open bracket: its char (`(` or `{`) and where it stands.
+/// An open bracket: its char (`(`, `[` or `{`) and where it stands.
 type Open = (char, Span);
 
 /// Lexes `source`; the tokens always end with `Eof`. Stops at the first error.
@@ -277,8 +295,10 @@ fn continues_line(rest: &str) -> Option<usize> {
         match code.strip_prefix("//") {
             Some(comment) => code = comment.split_once('\n').map_or("", |(_, after)| after),
             None => {
-                return (code.starts_with('.') || code.starts_with("?."))
-                    .then(|| rest.len() - code.len());
+                // `..` starts a range, not a continuation.
+                return ((code.starts_with('.') && !code.starts_with(".."))
+                    || code.starts_with("?."))
+                .then(|| rest.len() - code.len());
             }
         }
     }
@@ -300,7 +320,8 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 /// Whether `token` can end a statement (Go's rule).
 fn can_end_statement(token: Option<&Token>) -> bool {
     use TokenKind::{
-        Break, Continue, False, Ident, Int, NoneKw, Question, RBrace, RParen, Return, SelfKw, True,
+        Break, Continue, False, Ident, Int, NoneKw, Question, RBrace, RBracket, RParen, Return,
+        SelfKw, True,
     };
     token.is_some_and(|t| {
         matches!(
@@ -316,6 +337,7 @@ fn can_end_statement(token: Option<&Token>) -> bool {
                 | SelfKw
                 | Question
                 | RParen
+                | RBracket
                 | RBrace
         )
     })
@@ -324,8 +346,9 @@ fn can_end_statement(token: Option<&Token>) -> bool {
 /// Layout rules 2 and 3 where the parser cannot see them; `kind` starts a line.
 /// A `{` only ever follows `fn …`, `if …`, `else` or `while …` on its own line, so a
 /// line-initial `{` after a token that could end a statement, or after `else`, breaks
-/// rule 2 at any depth. Inside `( )`, where no `Newline` reaches the parser, so does a
-/// line-initial `else` (rule 3).
+/// rule 2 at any depth. Inside `( )` and `[ ]`, where no `Newline` reaches the parser, so does
+/// a line-initial `else` (rule 3), and a line-initial `[` after a token that could end a
+/// statement, which would silently index the line above.
 fn check_line_start(
     tokens: &[Token],
     open: &[Open],
@@ -343,8 +366,14 @@ fn check_line_start(
             }
             Ok(())
         }
+        TokenKind::LBracket
+            if open.last().is_some_and(|&(c, _)| c != '{') && can_end_statement(tokens.last()) =>
+        {
+            Err(Diagnostic::error(span, "`[` cannot start a line here")
+                .help("add a comma, or put `[` on the line of its array"))
+        }
         TokenKind::Else
-            if open.last().is_some_and(|&(c, _)| c == '(') && can_end_statement(tokens.last()) =>
+            if open.last().is_some_and(|&(c, _)| c != '{') && can_end_statement(tokens.last()) =>
         {
             Err(Diagnostic::error(
                 span,
@@ -358,12 +387,17 @@ fn check_line_start(
 /// Pushes an opening bracket onto `open`, or checks that a closing one matches the top.
 fn track_bracket(open: &mut Vec<Open>, kind: &TokenKind, span: Span) -> Result<(), Diagnostic> {
     let (closes, c) = match kind {
-        TokenKind::LParen | TokenKind::LBrace => {
-            let c = if *kind == TokenKind::LParen { '(' } else { '{' };
+        TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
+            let c = match kind {
+                TokenKind::LParen => '(',
+                TokenKind::LBracket => '[',
+                _ => '{',
+            };
             open.push((c, span));
             return Ok(());
         }
         TokenKind::RParen => ('(', ')'),
+        TokenKind::RBracket => ('[', ']'),
         TokenKind::RBrace => ('{', '}'),
         _ => return Ok(()),
     };
@@ -405,6 +439,8 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "if" => TokenKind::If,
         "else" => TokenKind::Else,
         "while" => TokenKind::While,
+        "for" => TokenKind::For,
+        "in" => TokenKind::In,
         "return" => TokenKind::Return,
         "break" => TokenKind::Break,
         "continue" => TokenKind::Continue,
@@ -442,9 +478,9 @@ fn int_literal(source: &str, start: usize, end: usize) -> Result<i64, Diagnostic
 /// The operator or punctuation starting with `c`, consuming a second char when it has one.
 fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
     use TokenKind::{
-        AndAnd, Arrow, Bang, Colon, Comma, Dot, Eq, EqEq, Ge, Gt, LBrace, LParen, Le, Lt, Minus,
-        MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq, QuestionDot, QuestionQuestion,
-        RBrace, RParen, Slash, SlashEq, Star, StarEq,
+        AndAnd, Arrow, Bang, Colon, Comma, Dot, DotDot, Eq, EqEq, Ge, Gt, LBrace, LBracket, LParen,
+        Le, Lt, Minus, MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq, QuestionDot,
+        QuestionQuestion, RBrace, RBracket, RParen, Semicolon, Slash, SlashEq, Star, StarEq,
     };
     let mut eat = |want| chars.next_if(|&(_, n)| n == want).is_some();
     Some(match c {
@@ -475,7 +511,11 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
         '}' => RBrace,
         ',' => Comma,
         ':' => Colon,
+        '.' if eat('.') => DotDot,
         '.' => Dot,
+        '[' => LBracket,
+        ']' => RBracket,
+        ';' => Semicolon,
         '?' if eat('.') => QuestionDot,
         '?' if eat('?') => QuestionQuestion,
         '?' => TokenKind::Question,
@@ -1036,6 +1076,102 @@ mod tests {
         assert_eq!(
             all_kinds("a -\n- b"),
             [ident("a"), Minus, Minus, ident("b"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn bracket_tokens_and_keywords() {
+        use TokenKind::{DotDot, Eof, For, In, Int, LBracket, RBracket, Semicolon};
+        assert_eq!(
+            kinds("[1, 2][0]"),
+            [
+                LBracket,
+                Int(1),
+                TokenKind::Comma,
+                Int(2),
+                RBracket,
+                LBracket,
+                Int(0),
+                RBracket,
+                Eof
+            ]
+        );
+        assert_eq!(kinds("[0; 3]")[2], Semicolon);
+        assert_eq!(kinds("for x in"), [For, ident("x"), In, Eof]);
+        assert_eq!(kinds("0..n"), [Int(0), DotDot, ident("n"), Eof]);
+        assert_eq!(kinds("a.b"), [ident("a"), TokenKind::Dot, ident("b"), Eof]);
+    }
+
+    #[test]
+    fn brackets_suppress_newlines() {
+        use TokenKind::{Comma, Eof, Int, LBracket, Newline, RBracket};
+        assert_eq!(
+            all_kinds("[\n1,\n2\n]"),
+            [LBracket, Int(1), Comma, Int(2), RBracket, Newline, Eof]
+        );
+        // The only `Newline` is the one after the closing `]`.
+        let nested = all_kinds("[\n    [1],\n    [2],\n]");
+        assert_eq!(nested.iter().filter(|k| **k == Newline).count(), 1);
+        assert_eq!(nested[nested.len() - 2], Newline);
+    }
+
+    #[test]
+    fn block_inside_brackets_separates_statements() {
+        let kinds = all_kinds("[\n    if c {\n        let n = 1\n        n\n    } else { 0 },\n]");
+        let one = kinds.iter().position(|k| *k == TokenKind::Int(1));
+        assert_eq!(
+            one.map(|i| &kinds[i + 1]),
+            Some(&TokenKind::Newline),
+            "a `Newline` should follow `1` inside the block"
+        );
+    }
+
+    #[test]
+    fn bracket_line_start_outside_brackets_is_a_new_statement() {
+        use TokenKind::{Eof, Int, LBracket, Newline, RBracket};
+        assert_eq!(
+            all_kinds("a\n[0]"),
+            [
+                ident("a"),
+                Newline,
+                LBracket,
+                Int(0),
+                RBracket,
+                Newline,
+                Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn range_is_not_a_continuation() {
+        use TokenKind::{DotDot, Eof, Newline};
+        assert_eq!(
+            all_kinds("a\n..b"),
+            [ident("a"), Newline, DotDot, ident("b"), Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn bracket_on_new_line_inside_brackets() {
+        let d = lex("fn main() { (a\n[0]) }").expect_err("source fails to lex");
+        assert_eq!(d.message, "`[` cannot start a line here");
+        assert_eq!(d.span, Span::new(15, 16));
+        assert_eq!(
+            d.help.as_deref(),
+            Some("add a comma, or put `[` on the line of its array")
+        );
+    }
+
+    #[test]
+    fn else_on_new_line_inside_brackets() {
+        assert_eq!(
+            err("fn main() { [if c { 1 }\nelse { 2 }] }"),
+            (
+                "`else` must be on the same line as the closing `}`".to_string(),
+                2,
+                1
+            )
         );
     }
 
