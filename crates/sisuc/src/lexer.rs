@@ -199,7 +199,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ' ' | '\t' | '\r' => continue,
             '\n' => {
                 line_start = true;
-                if ends_statement(&tokens, &open) {
+                if ends_statement(&tokens, &open) && !continues_line(&source[start..]) {
                     // Empty, at the line end: a span over `\n` renders as a two-line range,
                     // and one at `\n` after `\r` sits a column too far right.
                     let end = start - usize::from(source[..start].ends_with('\r'));
@@ -257,6 +257,19 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         span: Span::new(after_code, after_code),
     });
     Ok(tokens)
+}
+
+/// Whether the code after the line break at the start of `rest` begins with `.` or
+/// `?.`, past whitespace, blank lines and `//` comments.
+fn continues_line(rest: &str) -> bool {
+    let mut rest = rest;
+    loop {
+        rest = rest.trim_start();
+        match rest.strip_prefix("//") {
+            Some(comment) => rest = comment.split_once('\n').map_or("", |(_, after)| after),
+            None => return rest.starts_with('.') || rest.starts_with("?."),
+        }
+    }
 }
 
 fn newline(span: Span) -> Token {
@@ -579,6 +592,31 @@ mod tests {
             all_kinds("self\ny"),
             [SelfKw, Newline, ident("y"), Newline, Eof]
         );
+    }
+
+    #[test]
+    fn dot_and_question_dot_continue_a_line() {
+        use TokenKind::{Dot, Eof, Eq, Let, Newline, QuestionDot, QuestionQuestion};
+        assert_eq!(
+            all_kinds("let t = a\n    .sum()")[..6],
+            [Let, ident("t"), Eq, ident("a"), Dot, ident("sum")]
+        );
+        assert_eq!(
+            all_kinds("a\n\n    // c\n    ?.b"),
+            [ident("a"), QuestionDot, ident("b"), Newline, Eof]
+        );
+        assert_eq!(
+            all_kinds("a\n?? b"),
+            [
+                ident("a"),
+                Newline,
+                QuestionQuestion,
+                ident("b"),
+                Newline,
+                Eof
+            ]
+        );
+        assert_eq!(all_kinds("a\n."), [ident("a"), Dot, Eof]);
     }
 
     #[test]
