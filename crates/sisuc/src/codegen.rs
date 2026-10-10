@@ -1182,12 +1182,12 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 }
 
-/// Asserts that an optional is a class optional: the checker rejects `i64?` and `bool?` until
+/// Asserts that an optional is a class optional: codegen for `i64?` and `bool?` lands in
 /// Task 22.
 fn assert_class_optional(ty: &Type) {
     assert!(
         ty.is_counted(),
-        "checked: `i64?` and `bool?` are rejected until Task 22"
+        "codegen for `i64?` and `bool?` lands in Task 22"
     );
 }
 

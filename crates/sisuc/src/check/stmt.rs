@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::expr::operator;
+use super::expr::{local, operator};
 use super::{
     Binding, BindingKind, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, not_found, type_of,
 };
@@ -429,14 +429,10 @@ impl Checker {
                 if i > last_exit {
                     return operand;
                 }
-                let local = self.fresh(operand.ty.clone());
-                let read = tir::Expr {
-                    kind: ExprKind::Local(local),
-                    ty: operand.ty.clone(),
-                    span: operand.span,
-                };
+                let bind = self.fresh(operand.ty.clone());
+                let read = local(bind, operand.ty.clone(), operand.span);
                 spills.push(tir::Stmt::Let {
-                    local,
+                    local: bind,
                     init: operand,
                 });
                 read

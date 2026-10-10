@@ -879,7 +879,7 @@ fn none_literal(e: &ast::Expr) -> bool {
 }
 
 /// A read of `local`, of type `ty`.
-fn local(local: tir::LocalId, ty: Type, span: Span) -> tir::Expr {
+pub(super) fn local(local: tir::LocalId, ty: Type, span: Span) -> tir::Expr {
     tir::Expr {
         kind: tir::ExprKind::Local(local),
         ty,

@@ -2252,9 +2252,9 @@ mod tests {
     /// The class the optionals tests share: its `next` field is optional.
     const T: &str = "class T {\n    let v: i64\n    let next: T?\n}\n";
 
-    /// Asserts that `f`, lowered after `T` and before an empty `main`, prints `part`.
-    fn f_contains(f: &str, part: &str) {
-        let printed = lowered(&format!("{T}{f}\nfn main() {{}}"));
+    /// Asserts that `f`, lowered after `prefix` and before an empty `main`, prints `part`.
+    fn f_contains(prefix: &str, f: &str, part: &str) {
+        let printed = lowered(&format!("{prefix}{f}\nfn main() {{}}"));
         assert!(printed.contains(part), "{printed}");
     }
 
@@ -2539,13 +2539,14 @@ mod tests {
             "(new T 1 (wrap t#0))",
             "(return (wrap t#0))",
         ] {
-            f_contains(src, part);
+            f_contains(T, src, part);
         }
     }
 
     #[test]
     fn lowers_else_if_let() {
         f_contains(
+            T,
             "fn f(a: T?, b: T?) -> i64 {\n    if let x = a { x.v } else if let y = b { y.v } else { 0 }\n}",
             "(if-some x#2 a#0 (block (. x#2 v)) (block (if-some y#3 b#1 (block (. y#3 v)) (block 0))))",
         );
@@ -2571,6 +2572,7 @@ mod tests {
     #[test]
     fn wraps_a_value_where_optional_expected() {
         f_contains(
+            T,
             "fn f() -> T? { T(v: 1, next: None) }",
             "(block (wrap (new T 1 None)))",
         );
@@ -2579,6 +2581,7 @@ mod tests {
     #[test]
     fn joins_if_branches() {
         f_contains(
+            T,
             "fn f(c: bool, t: T) -> T? {\n    let x = if c { None } else { t }\n    x\n}",
             "(let x#2 (if c#0 (block None) (block (wrap t#1))))",
         );
@@ -2588,6 +2591,7 @@ mod tests {
     #[test]
     fn joins_a_value_then_none() {
         f_contains(
+            T,
             "fn f(c: bool, t: T) -> T? {\n    let x = if c { t } else { None }\n    x\n}",
             "(let x#2 (if c#0 (block (wrap t#1)) (block None)))",
         );
@@ -2596,6 +2600,7 @@ mod tests {
     #[test]
     fn wraps_an_if_let_binding_beside_none() {
         f_contains(
+            T,
             "fn f(n: T?) {\n    let y = if let x = n { x } else { None }\n}",
             "(let y#2 (if-some x#1 n#0 (block (wrap x#1)) (block None)))",
         );
@@ -2605,6 +2610,7 @@ mod tests {
     #[test]
     fn wraps_a_value_beside_an_optional_call() {
         f_contains(
+            T,
             "fn give() -> T? { None }\nfn f(c: bool, t: T) {\n    let x = if c { t } else { give() }\n}",
             "(let x#2 (if c#0 (block (wrap t#1)) (block (call give))))",
         );
@@ -2613,6 +2619,7 @@ mod tests {
     #[test]
     fn lowers_if_let() {
         f_contains(
+            T,
             "fn f(n: T?) -> i64 {\n    if let x = n { x.v } else { 0 }\n}",
             "(if-some x#1 n#0 (block (. x#1 v)) (block 0))",
         );
@@ -2621,6 +2628,7 @@ mod tests {
     #[test]
     fn lowers_while_let() {
         f_contains(
+            T,
             "fn f(l: T?) -> i64 {\n    var n = 0\n    var node = l\n    while let x = node {\n        n += 1\n        node = x.next\n    }\n    n\n}",
             "(loop (block (if-some x#3 node#2 (block (= n#1 (+ n#1 1)) (= node#2 (. x#3 next))) (block (break)))))",
         );
@@ -2739,18 +2747,83 @@ mod tests {
         );
     }
 
-    /// The class the `?.`, `??`, `==` and `is` lowering tests share.
-    const C: &str = "class T {\n    let v: i64\n    let o: T?\n    fn m(self) {}\n}\n";
+    /// The operand that is not an object is blamed, not the whole expression.
+    #[test]
+    fn is_blames_the_operand_that_is_not_an_object() {
+        expect_error(
+            "class T {}\nfn f(t: T) -> bool { t is 1 }\nfn main() {}",
+            "`is` needs objects; found `i64`",
+            (2, 27),
+            None,
+            &[],
+            Some("use `==` to compare values"),
+        );
+    }
 
-    /// Asserts that `f`, lowered after `C` and before an empty `main`, prints `part`.
-    fn c_contains(f: &str, part: &str) {
-        let printed = lowered(&format!("{C}{f}\nfn main() {{}}"));
-        assert!(printed.contains(part), "{printed}");
+    /// A side with no path has no help, as `this value == None` is not code.
+    #[test]
+    fn is_none_without_a_path_has_no_help() {
+        expect_error(
+            "class T {}\nfn make() -> T? { None }\nfn f() -> bool { make() is None }\nfn main() {}",
+            "use `==` to test for `None`",
+            (3, 18),
+            None,
+            &[],
+            None,
+        );
     }
 
     #[test]
+    fn is_two_classes() {
+        error(
+            "class A {}\nclass B {}\nfn f(a: A, b: B) -> bool { a is b }\nfn main() {}",
+            "cannot compare `A` with `B`",
+            (3, 28),
+        );
+    }
+
+    /// The other operand is still checked after a `??` or `?.` fails.
+    #[test]
+    fn coalesce_left_not_optional_checks_the_right() {
+        errors(
+            "fn main() { print(1 ?? nope) }",
+            &[
+                ("the left side of `??` is not optional", (1, 19)),
+                ("cannot find `nope` in this scope", (1, 24)),
+            ],
+        );
+    }
+
+    #[test]
+    fn safe_call_on_non_optional_checks_the_member() {
+        errors(
+            "class T {\n    let v: i64\n}\nfn f(t: T) -> i64? { t?.w }\nfn main() {}",
+            &[
+                ("`t` is not optional", (4, 22)),
+                ("`T` has no field `w`", (4, 25)),
+            ],
+        );
+    }
+
+    /// The member's argument is checked on the plain receiver too.
+    #[test]
+    fn safe_call_on_non_optional_checks_the_arguments() {
+        errors(
+            "class T {\n    fn g(self, x: i64) -> i64 { x }\n}\nfn f(t: T) -> i64? { t?.g(nope) }\nfn main() {}",
+            &[
+                ("`t` is not optional", (4, 22)),
+                ("cannot find `nope` in this scope", (4, 27)),
+            ],
+        );
+    }
+
+    /// The class the `?.`, `??`, `==` and `is` lowering tests share.
+    const C: &str = "class T {\n    let v: i64\n    let o: T?\n    fn m(self) {}\n    fn g(self, x: i64) -> i64 { x }\n}\n";
+
+    #[test]
     fn lowers_safe_field() {
-        c_contains(
+        f_contains(
+            C,
             "fn f(t: T?) -> i64? { t?.v }",
             "(if-some #1 t#0 (block (wrap (. #1 v))) (block None))",
         );
@@ -2758,7 +2831,8 @@ mod tests {
 
     #[test]
     fn safe_optional_field_not_wrapped() {
-        c_contains(
+        f_contains(
+            C,
             "fn f(t: T?) -> T? { t?.o }",
             "(if-some #1 t#0 (block (. #1 o)) (block None))",
         );
@@ -2766,15 +2840,26 @@ mod tests {
 
     #[test]
     fn lowers_safe_unit_method() {
-        c_contains(
+        f_contains(
+            C,
             "fn f(t: T?) { t?.m() }",
             "(if-some #1 t#0 (block (call T.m #1)) (block))",
         );
     }
 
     #[test]
+    fn lowers_safe_method_with_an_argument() {
+        f_contains(
+            C,
+            "fn f(t: T?) -> i64? { t?.g(1) }",
+            "(if-some #1 t#0 (block (wrap (call T.g #1 1))) (block None))",
+        );
+    }
+
+    #[test]
     fn lowers_coalesce() {
-        c_contains(
+        f_contains(
+            C,
             "fn f(x: i64?) -> i64 { x ?? 0 }",
             "(if-some #1 x#0 (block #1) (block 0))",
         );
@@ -2782,7 +2867,8 @@ mod tests {
 
     #[test]
     fn coalesce_with_optional_right() {
-        c_contains(
+        f_contains(
+            C,
             "fn f(x: i64?, y: i64?) -> i64? { x ?? y }",
             "(if-some #2 x#0 (block (wrap #2)) (block y#1))",
         );
@@ -2798,7 +2884,8 @@ mod tests {
 
     #[test]
     fn equal_wraps_the_plain_side() {
-        c_contains(
+        f_contains(
+            C,
             "fn f(a: i64?, b: i64) -> bool { a == b }",
             "(== a#0 (wrap b#1))",
         );
@@ -2807,20 +2894,31 @@ mod tests {
     /// A bare `None` on the left takes the type of the right side.
     #[test]
     fn none_on_the_left_takes_the_other_type() {
-        c_contains("fn f(t: T?) -> bool { None != t }", "(!= None t#0)");
+        f_contains(C, "fn f(t: T?) -> bool { None != t }", "(!= None t#0)");
     }
 
     #[test]
     fn is_wraps_the_plain_side() {
-        c_contains(
+        f_contains(
+            C,
             "fn f(a: T, b: T?) -> bool { a is b }",
             "(is (wrap a#0) b#1)",
         );
     }
 
     #[test]
+    fn spills_is() {
+        f_contains(
+            C,
+            "fn make() -> T { T(v: 0, o: None) }\nfn f(c: bool) -> bool {\n    make() is if c { return false } else { make() }\n}",
+            "(block (let #1 (call make)) (let #2 (if c#0 (block (return false)) (block (call make)))) (is #1 #2))",
+        );
+    }
+
+    #[test]
     fn spills_equal() {
-        c_contains(
+        f_contains(
+            C,
             "fn make() -> T { T(v: 0, o: None) }\nfn f(c: bool) -> bool {\n    make() == if c { return false } else { make() }\n}",
             "(block (let #1 (call make)) (let #2 (if c#0 (block (return false)) (block (call make)))) (== #1 #2))",
         );
