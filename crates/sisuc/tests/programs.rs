@@ -62,7 +62,8 @@ fn valgrind(exe: &Path) -> Output {
 fn assert_prints_out_file(name: &str) {
     let expected =
         fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.out"))).expect("reads .out");
-    let out = run(name);
+    let exe = compile(Path::new(PROGRAMS), name);
+    let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -72,14 +73,14 @@ fn assert_prints_out_file(name: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 
-    let checked = valgrind(&Path::new(env!("CARGO_TARGET_TMPDIR")).join(name));
+    let checked = valgrind(&exe);
+    let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
+    assert_eq!(checked.status.code(), Some(0), "{valgrind_stderr}");
     assert_eq!(
-        checked.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&checked.stderr)
+        String::from_utf8_lossy(&checked.stdout),
+        expected,
+        "{valgrind_stderr}"
     );
-    assert_eq!(String::from_utf8_lossy(&checked.stdout), expected);
 }
 
 /// Checks that `out` is a panic: exit 101, `stdout`, and exactly the panic line on stderr.
