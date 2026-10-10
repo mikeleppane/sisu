@@ -29,6 +29,10 @@ use crate::tir::{
     UnaryOp,
 };
 
+/// The `expect` message for a builder call: codegen positions the builder before it emits code.
+const POSITIONED: &str =
+    "the builder should be positioned in a block while a function body is emitted";
+
 /// Compiles a program that passed `check` into an LLVM module for `machine`.
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
@@ -263,7 +267,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let value = self
             .builder
             .build_load(llvm_ty, field, "load")
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
         self.release(object.into(), &base.ty);
@@ -274,13 +278,13 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn same_object(&self, a: PointerValue<'ctx>, b: PointerValue<'ctx>) -> IntValue<'ctx> {
         self.builder
             .build_int_compare(IntPredicate::EQ, a, b, "same")
-            .expect("the builder should be positioned in a block while a function body is emitted")
+            .expect(POSITIONED)
     }
 
     fn call(&self, function: FunctionValue<'ctx>, args: &[BasicMetadataValueEnum<'ctx>]) {
         self.builder
             .build_call(function, args, "")
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
     }
 
     /// Releases a value nobody keeps, if there is one.
@@ -307,9 +311,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Slot::Alloca(ptr, ty) => {
                 // Name the load after the local (the alloca carries its name).
                 let name = ptr.get_name().to_string_lossy().into_owned();
-                self.builder.build_load(ty, ptr, &name).expect(
-                    "the builder should be positioned in a block while a function body is emitted",
-                )
+                self.builder.build_load(ty, ptr, &name).expect(POSITIONED)
             }
         })
     }
@@ -333,7 +335,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 ],
                 "object",
             )
-            .expect("the builder should be positioned in a block while a function body is emitted")
+            .expect(POSITIONED)
             .try_as_basic_value()
             .basic()
             .expect("the runtime declares `sisu_alloc` as returning a pointer")
@@ -403,9 +405,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.release_to(0);
             self.builder
                 .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
-                .expect(
-                    "the builder should be positioned in a block while a function body is emitted",
-                );
+                .expect(POSITIONED);
         }
     }
 
@@ -423,16 +423,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("the checker should reject a program without a `main` function");
         self.builder
             .build_call(sisu_main, &[], "")
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         self.builder
             .build_return(Some(&i32_type.const_zero()))
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
     }
 
     fn current_block(&self) -> BasicBlock<'ctx> {
-        self.builder
-            .get_insert_block()
-            .expect("the builder should be positioned in a block while a function body is emitted")
+        self.builder.get_insert_block().expect(POSITIONED)
     }
 
     fn current_function(&self) -> FunctionValue<'ctx> {
@@ -553,9 +551,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             _ if negated => {
                 let equal = self.equal(&lhs.ty, l, r);
-                self.builder.build_not(equal, "not").expect(
-                    "the builder should be positioned in a block while a function body is emitted",
-                )
+                self.builder.build_not(equal, "not").expect(POSITIONED)
             }
             _ => self.equal(&lhs.ty, l, r),
         };
@@ -603,7 +599,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return self
                     .builder
                     .build_call(self.functions[func.0], &args, "call")
-                    .expect("the builder should be positioned in a block while a function body is emitted")
+                    .expect(POSITIONED)
                     .try_as_basic_value()
                     .basic();
             }
@@ -621,7 +617,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     UnaryOp::Not => self
                         .builder
                         .build_not(operand, "not")
-                        .expect("the builder should be positioned in a block while a function body is emitted"),
+                        .expect(POSITIONED),
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
@@ -674,7 +670,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     self.release_to(0);
                     self.builder
                         .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
-                        .expect("the builder should be positioned in a block while a function body is emitted");
+                        .expect(POSITIONED);
                 }
                 return None;
             }
@@ -727,7 +723,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     let some = self
                         .builder
                         .build_is_not_null(value.into_pointer_value(), "some")
-                        .expect("the builder should be positioned in a block while a function body is emitted");
+                        .expect(POSITIONED);
                     (some, value)
                 } else {
                     let part = |index, name| {
@@ -758,22 +754,16 @@ impl<'ctx> Codegen<'ctx, '_> {
             Some(first) => builder.position_before(&first),
             None => builder.position_at_end(entry),
         }
-        builder
-            .build_alloca(ty, name)
-            .expect("the builder should be positioned in a block while a function body is emitted")
+        builder.build_alloca(ty, name).expect(POSITIONED)
     }
 
     /// The value a place held before an assignment.
     fn load(&self, ty: BasicTypeEnum<'ctx>, ptr: PointerValue<'ctx>) -> BasicValueEnum<'ctx> {
-        self.builder
-            .build_load(ty, ptr, "old")
-            .expect("the builder should be positioned in a block while a function body is emitted")
+        self.builder.build_load(ty, ptr, "old").expect(POSITIONED)
     }
 
     fn store(&self, ptr: PointerValue<'ctx>, value: BasicValueEnum<'ctx>) {
-        self.builder
-            .build_store(ptr, value)
-            .expect("the builder should be positioned in a block while a function body is emitted");
+        self.builder.build_store(ptr, value).expect(POSITIONED);
     }
 
     /// `loop`: the body block runs until a `Break` branches to the end block, where codegen
@@ -804,9 +794,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             arg = self
                 .builder
                 .build_int_z_extend(arg, self.context.i64_type(), "widened")
-                .expect(
-                    "the builder should be positioned in a block while a function body is emitted",
-                );
+                .expect(POSITIONED);
         }
         let is_bool = operand.ty == Type::Bool;
         let print = if is_bool {
@@ -817,7 +805,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let call = self
             .builder
             .build_call(print, &[arg.into()], "")
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         if is_bool {
             call.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
         }
@@ -832,24 +820,22 @@ impl<'ctx> Codegen<'ctx, '_> {
         let ok = self.context.append_basic_block(function, "ok");
         self.builder
             .build_conditional_branch(fails, panic_block, ok)
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         self.builder.position_at_end(panic_block);
         let (line, col) = line_col(self.source, span.start);
         let text = format!("{}:{line}:{col}: {message}", self.path);
         let msg = self
             .builder
             .build_global_string_ptr(&text, "panic.msg")
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         let len = self.context.i64_type().const_int(
             u64::try_from(text.len()).expect("a panic message should be shorter than 2^64 bytes"),
             false,
         );
         self.builder
             .build_call(self.panic, &[msg.as_pointer_value().into(), len.into()], "")
-            .expect("the builder should be positioned in a block while a function body is emitted");
-        self.builder
-            .build_unreachable()
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
+        self.builder.build_unreachable().expect(POSITIONED);
         self.builder.position_at_end(ok);
     }
 
@@ -867,7 +853,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         self.builder
             .build_conditional_branch(lhs, on_true, on_false)
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         self.builder.position_at_end(rhs_block);
         let rhs = self.value(rhs);
         let rhs_end = self.current_block();
@@ -917,9 +903,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder.position_at_end(block);
             self.builder
                 .build_conditional_branch(holds, next, merge)
-                .expect(
-                    "the builder should be positioned in a block while a function body is emitted",
-                );
+                .expect(POSITIONED);
             incoming.push((no, block));
         }
         incoming.push((holds, last_end));
@@ -944,7 +928,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let else_start = self.context.append_basic_block(function, "else");
         self.builder
             .build_conditional_branch(cond, then_start, else_start)
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         // A `unit` `if` discards its branches' values.
         let discards = *ty == Type::Unit;
         self.builder.position_at_end(then_start);
@@ -993,7 +977,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn branch_to(&self, block: BasicBlock<'ctx>) {
         self.builder
             .build_unconditional_branch(block)
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
     }
 
     fn phi<V: BasicValue<'ctx>>(
@@ -1001,10 +985,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         ty: impl BasicType<'ctx>,
         incoming: &[(V, BasicBlock<'ctx>)],
     ) -> BasicValueEnum<'ctx> {
-        let phi = self
-            .builder
-            .build_phi(ty, "phi")
-            .expect("the builder should be positioned in a block while a function body is emitted");
+        let phi = self.builder.build_phi(ty, "phi").expect(POSITIONED);
         for (value, block) in incoming {
             phi.add_incoming(&[(value, *block)]);
         }

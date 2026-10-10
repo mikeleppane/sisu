@@ -5,7 +5,7 @@ use inkwell::IntPredicate;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::values::IntValue;
 
-use super::Codegen;
+use super::{Codegen, POSITIONED};
 use crate::diagnostic::Span;
 use crate::tir::{BinaryOp, CompareOp, Expr, ExprKind, Type};
 
@@ -46,7 +46,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     ) -> IntValue<'ctx> {
         self.builder
             .build_int_compare(predicate, lhs, rhs, "cmp")
-            .expect("the builder should be positioned in a block while a function body is emitted")
+            .expect(POSITIONED)
     }
 
     /// `lhs op rhs` through `intrinsic`, an `llvm.{s,u}*.with.overflow` overloaded on the
@@ -66,7 +66,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let pair = self
             .builder
             .build_call(function, &[lhs.into(), rhs.into()], "checked")
-            .expect("the builder should be positioned in a block while a function body is emitted")
+            .expect(POSITIONED)
             .try_as_basic_value()
             .basic()
             .expect("an overflow intrinsic should return a `{ value, overflow }` pair")
@@ -102,9 +102,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             } else {
                 self.builder.build_int_unsigned_div(lhs, rhs, "div")
             }
-            .expect(
-                "the builder should be positioned in a block while a function body is emitted",
-            );
+            .expect(POSITIONED);
         }
         let min = i64_type.const_int(i64::MIN.cast_unsigned(), false);
         let minus_one = i64_type.const_int((-1_i64).cast_unsigned(), false);
@@ -115,14 +113,14 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.int_compare(IntPredicate::EQ, rhs, minus_one),
                 "overflow",
             )
-            .expect("the builder should be positioned in a block while a function body is emitted");
+            .expect(POSITIONED);
         self.panic_if(overflow, span, "integer overflow");
         if rem {
             self.builder.build_int_signed_rem(lhs, rhs, "rem")
         } else {
             self.builder.build_int_signed_div(lhs, rhs, "div")
         }
-        .expect("the builder should be positioned in a block while a function body is emitted")
+        .expect(POSITIONED)
     }
 
     pub(super) fn compare_pair(
@@ -156,9 +154,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             return self
                 .builder
                 .build_int_z_extend(value, self.context.i64_type(), "widened")
-                .expect(
-                    "the builder should be positioned in a block while a function body is emitted",
-                );
+                .expect(POSITIONED);
         }
         let too_big = self.int_compare(
             IntPredicate::UGT,
@@ -168,6 +164,6 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.panic_if(too_big, e.span, "value does not fit in `u8`");
         self.builder
             .build_int_truncate(value, self.context.i8_type(), "narrowed")
-            .expect("the builder should be positioned in a block while a function body is emitted")
+            .expect(POSITIONED)
     }
 }
