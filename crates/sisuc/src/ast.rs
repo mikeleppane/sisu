@@ -64,6 +64,8 @@ pub(crate) enum StmtKind {
         body: Block,
     },
     Return(Option<Expr>),
+    Break,
+    Continue,
     Assign {
         target: Ident,
         value: Expr,
@@ -242,6 +244,8 @@ impl fmt::Display for Stmt {
             StmtKind::While { cond, body } => write!(f, "(while {cond} {body})"),
             StmtKind::Return(None) => f.write_str("(return)"),
             StmtKind::Return(Some(e)) => write!(f, "(return {e})"),
+            StmtKind::Break => f.write_str("(break)"),
+            StmtKind::Continue => f.write_str("(continue)"),
             StmtKind::Assign { target, value } => write!(f, "(= {} {value})", target.name),
             StmtKind::CompoundAssign { op, target, value } => {
                 write!(f, "({op}= {} {value})", target.name)

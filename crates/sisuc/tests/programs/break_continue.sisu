@@ -1,0 +1,58 @@
+fn main() {
+    var i = 0
+    var odd = 0
+    while i < 10 {
+        i += 1
+        if i % 2 == 0 { continue }
+        odd += i
+    }
+    print(odd)
+    var n = 0
+    while true {
+        n += 1
+        if n * n > 50 { break }
+    }
+    print(n)
+    var pairs = 0
+    var a = 0
+    while a < 4 {
+        var b = 0
+        while true {
+            if b == a { break }
+            pairs += 1
+            b += 1
+        }
+        a += 1
+    }
+    print(pairs)
+    var c = 0
+    while if c >= 3 { break } else { c < 10 } {
+        c += 1
+    }
+    print(c)
+    var k = 0
+    var t = 0
+    while if k < 3 { k += 1
+        continue } else { k < 5 } {
+        k += 1
+        t += 10
+    }
+    print(k)
+    print(t)
+    var x = 0
+    var s = 0
+    while x < 4 {
+        x += 1
+        var y = 0
+        while y < 3 {
+            y += 1
+            if y == 2 { continue }
+            s += 1
+        }
+        if x == 2 { continue }
+        s += 100
+        if x == 3 { break }
+    }
+    print(s)
+    print(x)
+}
