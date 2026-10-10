@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Sisu compiler pipeline",
+    "output": "sisu-pipeline.html",
+    "quality_profile": "showcase",
+    "legend": {
+      "entries": {
+        "external": { "label": "Files" },
+        "backend": { "label": "sisuc stages" },
+        "frontend": { "label": "Diagnostics" },
+        "cloud": { "label": "LLVM and system toolchain" },
+        "database": { "label": "Runtime library" }
+      }
+    }
+  },
+  "components": [
+    { "id": "source", "type": "external", "label": "Source file", "sublabel": "program.sisu", "pos": [40, 200], "size": [130, 60] },
+    { "id": "lexer", "type": "backend", "label": "Lexer", "sublabel": "lexer.rs", "pos": [280, 200], "size": [130, 60] },
+    { "id": "parser", "type": "backend", "label": "Parser", "sublabel": "parser.rs", "pos": [490, 200], "size": [130, 60] },
+    { "id": "checker", "type": "backend", "label": "Checker", "sublabel": "check/", "pos": [690, 200], "size": [130, 60] },
+    { "id": "codegen", "type": "backend", "label": "Codegen", "sublabel": "codegen.rs, inkwell", "pos": [890, 200], "size": [130, 60] },
+    { "id": "diagnostics", "type": "frontend", "label": "Diagnostics", "sublabel": "rendered to stderr", "pos": [490, 40], "size": [130, 60] },
+    { "id": "llvm", "type": "cloud", "label": "LLVM 22", "sublabel": "mem2reg, x86-64 code", "pos": [890, 380], "size": [130, 60] },
+    { "id": "link", "type": "cloud", "label": "cc", "sublabel": "linker, run by link.rs", "pos": [650, 380], "size": [130, 60] },
+    { "id": "runtime", "type": "database", "label": "sisu-runtime", "sublabel": "libsisu_runtime.a", "pos": [650, 540], "size": [130, 60] },
+    { "id": "binary", "type": "external", "label": "Executable", "sublabel": "native x86-64 Linux", "pos": [410, 380], "size": [130, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "sisuc (Rust)", "wraps": ["lexer", "parser", "checker", "codegen", "diagnostics"] }
+  ],
+  "connections": [
+    { "id": "source-to-lexer", "from": "source", "to": "lexer", "label": "source text", "variant": "emphasis" },
+    { "id": "lexer-to-parser", "from": "lexer", "to": "parser", "label": "tokens", "variant": "emphasis" },
+    { "id": "parser-to-checker", "from": "parser", "to": "checker", "label": "AST", "variant": "emphasis" },
+    { "id": "checker-to-codegen", "from": "checker", "to": "codegen", "label": "tir", "variant": "emphasis" },
+    { "id": "codegen-to-llvm", "from": "codegen", "to": "llvm", "label": "LLVM IR", "variant": "emphasis" },
+    { "id": "llvm-to-link", "from": "llvm", "to": "link", "label": "object file", "variant": "emphasis" },
+    { "id": "link-to-binary", "from": "link", "to": "binary", "label": "links", "variant": "emphasis" },
+    { "id": "runtime-to-link", "from": "runtime", "to": "link", "label": "linked in", "fromSide": "top", "toSide": "bottom" },
+    { "id": "lexer-errors", "from": "lexer", "to": "diagnostics", "label": "first error", "variant": "dashed", "fromSide": "top", "toSide": "left" },
+    { "id": "parser-errors", "from": "parser", "to": "diagnostics", "label": "first error", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "checker-errors", "from": "checker", "to": "diagnostics", "label": "every error", "variant": "dashed", "fromSide": "top", "toSide": "right" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Driver", "items": ["main.rs runs the stages in order", "--emit tokens|ast|ir stops early and prints", "--check stops after the checker"] },
+    { "dot": "amber", "title": "Runtime", "items": ["C ABI, linked into every program", "sisu_print_int, sisu_print_bool, sisu_panic"] }
+  ]
+}
