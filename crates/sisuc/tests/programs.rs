@@ -158,18 +158,19 @@ fn bool_var() {
     assert_prints_out_file("bool_var");
 }
 
-/// Task 14 moves this under Valgrind, when objects stop leaking. Until then it only checks
-/// that the plain and `-O2` builds exit 0 and print `objects_unchecked.out`.
 #[test]
-fn objects_unchecked() {
-    let expected =
-        fs::read_to_string(Path::new(PROGRAMS).join("objects_unchecked.out")).expect("reads .out");
-    for o2 in [false, true] {
-        let out = run("objects_unchecked", o2);
-        assert_eq!(out.status.code(), Some(0), "o2 = {o2}");
-        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "o2 = {o2}");
-        assert_eq!(String::from_utf8_lossy(&out.stderr), "", "o2 = {o2}");
-    }
+fn objects() {
+    assert_prints_out_file("objects");
+}
+
+#[test]
+fn ownership() {
+    assert_prints_out_file("ownership");
+}
+
+#[test]
+fn field_order() {
+    assert_prints_out_file("field_order");
 }
 
 /// Each panicking program with its expected stdout and panic line.

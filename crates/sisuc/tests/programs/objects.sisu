@@ -1,0 +1,86 @@
+// Each function is one case. Valgrind checks that every object it makes is freed exactly once.
+class P {
+    var x: i64
+    var y: bool
+    var n: i64
+
+    fn bump(self, by: i64) -> i64 {
+        self.n += by
+        self.x = self.n + self.x
+        self.x
+    }
+}
+
+class E {}
+
+class T {
+    var count: i64
+    var e: E
+
+    fn me(self) -> T {
+        self
+    }
+}
+
+fn fields_and_methods() {
+    let p = P(x: 7, y: true, n: 42)
+    print(p.x)
+    print(p.y)
+    print(p.n)
+    p.x = 9
+    p.y = false
+    print(p.x)
+    print(p.y)
+    print(p.n)
+    print(p.bump(8))
+    print(p.x)
+    print(p.n)
+}
+
+// Review Focus 2: a method that returns `self`, chained and discarded.
+fn returns_self() {
+    let t = T(count: 3, e: E())
+    print(t.me().me().count)
+    t.me()
+    print(t.count)
+}
+
+// A `unit` function whose body ends in an object.
+fn ends_in_object() {
+    E()
+}
+
+// Class-typed values that nothing keeps.
+fn discarded(c: bool) {
+    E()
+    T(count: 1, e: E())
+    T(count: 2, e: E()).me()
+    ends_in_object()
+    if c { E() }
+    var i = 0
+    while i < 3 {
+        i += 1
+        E()
+    }
+    print(i)
+}
+
+// One object per iteration, dropped at the end of each.
+fn in_a_loop() {
+    var i = 0
+    var sum = 0
+    while i < 5 {
+        let t = T(count: i, e: E())
+        sum += t.count
+        i += 1
+    }
+    print(sum)
+}
+
+fn main() {
+    fields_and_methods()
+    returns_self()
+    discarded(true)
+    discarded(false)
+    in_a_loop()
+}
