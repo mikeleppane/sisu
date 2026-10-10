@@ -156,6 +156,32 @@ fn self_assign() {
     print(h.child.count)
 }
 
+// Assigning a new object releases the old one and keeps the new one.
+fn reassign_local() {
+    var x = T(count: 7, e: E())
+    x = T(count: 9, e: E())
+    print(x.count)
+}
+
+// The inner loop's `break` and `continue` release only its own locals; its `return` releases
+// every local and the parameter.
+fn nested_loops(p: T) -> i64 {
+    var i = 0
+    while i < 3 {
+        let a = E()
+        i += 1
+        var j = 0
+        while j < 3 {
+            let b = E()
+            j += 1
+            if j == 1 { continue }
+            if i == 2 { return p.count + i * 10 + j }
+            break
+        }
+    }
+    0
+}
+
 fn main() {
     print(return_in_loop())
     break_in_loop()
@@ -178,4 +204,8 @@ fn main() {
     logic(0)
     logic(2)
     self_assign()
+    reassign_local()
+    let p = T(count: 100, e: E())
+    print(nested_loops(p))
+    print(p.count)
 }

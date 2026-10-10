@@ -669,6 +669,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
             ExprKind::Equal { negated, lhs, rhs } => {
+                if let Type::Class(_) = lhs.ty {
+                    panic!("codegen for `==` on classes lands in Task 22");
+                }
                 let (l, r) = (self.value(lhs), self.value(rhs));
                 let predicate = if *negated {
                     IntPredicate::NE
@@ -1468,16 +1471,32 @@ mod tests {
         let context = Context::create();
         let ir = compiled(
             &context,
-            "fn retain() {}\nclass release {\n    fn Tree(self) {}\n}\nfn main() {\n    retain()\n    release().Tree()\n}",
+            "fn retain() {}\nclass release {\n    fn Tree(self) {}\n}\nclass Tree {}\nfn main() {\n    retain()\n    release().Tree()\n}",
         )
         .print_to_string()
         .to_string();
+        // The method `release.Tree` and the helper for class `Tree` must both keep their names:
+        // LLVM renames the second of two equal names with a numeric suffix.
         for wanted in [
             "define void @sisu.retain()",
             "define void @sisu.release.Tree(ptr",
+            "define void @sisu_rc.release.Tree(ptr",
         ] {
             assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
         }
+        assert!(
+            !ir.contains("@sisu.release.Tree."),
+            "a renamed symbol in\n{ir}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "codegen for `==` on classes lands in Task 22")]
+    fn equal_on_classes_panics() {
+        compiled(
+            &Context::create(),
+            "class E {}\nfn main() {\n    print(E() == E())\n}",
+        );
     }
 
     #[test]
