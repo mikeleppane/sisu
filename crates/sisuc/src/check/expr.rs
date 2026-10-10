@@ -968,12 +968,12 @@ impl Checker {
         };
         let checked = self.expr(&arg.value, None);
         let error = match type_of(&checked) {
-            Some(Type::Unit | Type::Class(_) | Type::Optional(_)) => wrong(),
-            Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
-            Some(ty @ Type::Array(_)) => {
+            Some(ty) if matches!(payload(ty), Type::Array(_)) => {
                 Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
                     .help("print each element in a `for` loop")
             }
+            Some(Type::Unit | Type::Class(_) | Type::Optional(_)) => wrong(),
+            Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
             _ => {
                 let kind = checked
                     .ok()

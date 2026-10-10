@@ -24,6 +24,10 @@ fn element_join() {
         "fn f(b: u8) { let a = [b, 1] }\nfn main() {}",
         &["(array b#0 1u8)"],
     );
+    contains(
+        "fn f(m: i64?, n: i64) {\n    let a = [m, n]\n    let b = [n, m]\n}\nfn main() {}",
+        &["(array m#0 (wrap n#1))", "(array (wrap n#1) m#0)"],
+    );
 }
 
 #[test]
@@ -126,6 +130,14 @@ fn empty_array_cannot_be_inferred() {
 }
 
 #[test]
+fn only_the_first_none_cannot_be_inferred() {
+    errors(
+        "fn main() { let x = [None, None] }",
+        &[("cannot infer the type of `None`", (1, 22))],
+    );
+}
+
+#[test]
 fn empty_array_where_no_array_is_expected() {
     errors(
         "fn main() { let x: i64 = [] }",
@@ -176,6 +188,17 @@ fn fill_with_one_object() {
 }
 
 #[test]
+fn fill_applies_the_class_rule_before_the_element_type() {
+    errors(
+        &with_node("fn f(n: Node) { let a: [i64] = [n; 3] }"),
+        &[
+            ("every element would be the same `Node` object", (4, 33)),
+            ("expected `i64`, found `Node`", (4, 33)),
+        ],
+    );
+}
+
+#[test]
 fn fill_length_is_i64() {
     errors(
         "fn main() { let a = [0; true] }",
@@ -213,13 +236,21 @@ fn index_a_non_array() {
         &[],
         Some("only arrays can be indexed"),
     );
+    errors(
+        &with_node("fn f(m: Node?) { print(m[0]) }"),
+        &[("cannot index `Node?`", (4, 24))],
+    );
 }
 
 #[test]
-fn unknown_method() {
+fn unknown_members() {
     errors(
         "fn f(xs: [i64]) { xs.push(1) }\nfn main() {}",
         &[("`[i64]` has no method `push`", (1, 22))],
+    );
+    errors(
+        "fn f(xs: [i64]) { print(xs.foo) }\nfn main() {}",
+        &[("`[i64]` has no field `foo`", (1, 28))],
     );
 }
 
@@ -265,6 +296,14 @@ fn is_on_arrays() {
         &[],
         Some("use `==`"),
     );
+    expect_error(
+        "fn f(a: [i64]?, b: [i64]) { print(a is b) }\nfn main() {}",
+        "`is` compares class objects; arrays are values",
+        (1, 35, "a"),
+        None,
+        &[],
+        Some("use `==`"),
+    );
 }
 
 #[test]
@@ -273,6 +312,14 @@ fn print_an_array() {
         "fn f(xs: [i64]) { print(xs) }\nfn main() {}",
         "cannot print `[i64]`",
         (1, 25, "xs"),
+        None,
+        &[],
+        Some("print each element in a `for` loop"),
+    );
+    expect_error(
+        "fn f(m: [i64]?) { print(m) }\nfn main() {}",
+        "cannot print `[i64]?`",
+        (1, 25, "m"),
         None,
         &[],
         Some("print each element in a `for` loop"),
@@ -288,6 +335,16 @@ fn unknown_element_type() {
 }
 
 #[test]
+fn unknown_expected_type_is_reported_once() {
+    for init in ["[]", "[None]", "[None; 2]"] {
+        errors(
+            &format!("fn main() {{ let a: Nope = {init} }}"),
+            &[("unknown type `Nope`", (1, 20))],
+        );
+    }
+}
+
+#[test]
 fn unknown_name_poisons() {
     for (init, col) in [
         ("nope[0]", 13),
@@ -299,5 +356,34 @@ fn unknown_name_poisons() {
             &format!("fn main() {{\n    let x = {init}\n    print(x + true)\n}}"),
             &[("cannot find `nope` in this scope", (2, col))],
         );
+    }
+}
+
+#[test]
+fn own_error_poisons() {
+    for (src, message, pos) in [
+        (
+            "fn main() {\n    let x = [1, []]\n    print(x + true)\n}".to_owned(),
+            "expected `i64?`, found `[]`",
+            (2, 17),
+        ),
+        (
+            format!("{NODE}fn main() {{\n    let x = [Node(v: 1); 3]\n    print(x + true)\n}}"),
+            "every element would be the same `Node` object",
+            (5, 14),
+        ),
+        (
+            "fn f(xs: [i64], b: u8) {\n    let x = xs[b]\n    print(x + true)\n}\nfn main() {}"
+                .to_owned(),
+            "expected `i64`, found `u8`",
+            (2, 16),
+        ),
+        (
+            "fn main() {\n    let x: [i64] = [true]\n    print(x + true)\n}".to_owned(),
+            "expected `i64`, found `bool`",
+            (2, 21),
+        ),
+    ] {
+        errors(&src, &[(message, pos)]);
     }
 }

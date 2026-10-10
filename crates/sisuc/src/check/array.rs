@@ -25,7 +25,7 @@ impl Checker {
         }
         if elements.is_empty() {
             let (d, mismatch) = match expected {
-                Some(Type::Never) => return Err(Poisoned::error()),
+                Some(ty) if *ty == UNKNOWN => return Err(Poisoned::error()),
                 Some(ty) => (
                     Diagnostic::error(span, format!("expected {}, found `[]`", self.show(ty))),
                     true,
@@ -63,19 +63,21 @@ impl Checker {
         }
         let mut failed = slots.iter().flatten().any(|c| type_of(c).is_none());
         let mut joined: Option<Type> = None;
-        for (slot, e) in slots.iter().zip(elements).filter(|_| !failed) {
-            let Some(ty) = slot.as_ref().and_then(type_of) else {
-                continue;
-            };
-            match &joined {
-                Some(t) if fits(t, ty) => {}
-                Some(t) if !fits(ty, t) => {
-                    let d = self.mismatch(e.span, Some(e), t, ty);
-                    self.diagnostics.push(d);
-                    failed = true;
-                    break;
+        if !failed {
+            for (slot, e) in slots.iter().zip(elements) {
+                let Some(ty) = slot.as_ref().and_then(type_of) else {
+                    continue;
+                };
+                match &joined {
+                    Some(t) if fits(t, ty) => {}
+                    Some(t) if !fits(ty, t) => {
+                        let d = self.mismatch(e.span, Some(e), t, ty);
+                        self.diagnostics.push(d);
+                        failed = true;
+                        break;
+                    }
+                    _ => joined = Some(ty.clone()),
                 }
-                _ => joined = Some(ty.clone()),
             }
         }
         let Some(joined) = joined.filter(|_| !failed) else {
@@ -97,6 +99,10 @@ impl Checker {
         } else {
             joined
         };
+        // A `[]` that rejected `want` makes the literal `Error`.
+        let mismatched = slots
+            .iter()
+            .any(|slot| matches!(slot, Some(Err(Poisoned { mismatch: true, .. }))));
         let checked = slots
             .into_iter()
             .map(|slot| {
@@ -106,7 +112,7 @@ impl Checker {
                 }
             })
             .collect();
-        self.array(span, element, checked, false)
+        self.array(span, element, checked, mismatched)
     }
 
     /// The `ArrayLit` of `checked`, an `[element]`, unless an element failed. `mismatched`
@@ -120,16 +126,15 @@ impl Checker {
     ) -> Checked {
         let ty = Type::Array(Box::new(element));
         match checked.into_iter().collect::<Result<Vec<_>, _>>() {
-            Ok(elements) if !mismatched => {
-                Ok(self.spilled(span, ty, elements, tir::ExprKind::ArrayLit))
-            }
+            Ok(elements) => Ok(self.spilled(span, ty, elements, tir::ExprKind::ArrayLit)),
             _ => Err(Poisoned::of((!mismatched).then_some(ty))),
         }
     }
 
-    /// `[value; len]`: `value` is checked against the expected element type, and `len` against
-    /// `i64`. A `value` of a class or a class optional is reported, as every slot would hold
-    /// the same object; the literal `None` is not.
+    /// `[value; len]`: `value` is checked with the expected element type as its hint, then
+    /// against it, and `len` against `i64`. A `value` of a class or a class optional is
+    /// reported, as every slot would hold the same object; the literal `None` is not. That rule
+    /// sees `value`'s own type, before a mismatch with the element type erases it.
     pub(super) fn array_fill(
         &mut self,
         span: Span,
@@ -137,18 +142,12 @@ impl Checker {
         len: &ast::Expr,
         expected: Option<&Type>,
     ) -> Checked {
-        let (checked, mismatched) = match element_of(expected) {
-            Some(element) => {
-                let element = element.clone();
-                self.operand(value, Some(&element))
-            }
-            // A `None` or `[]` here cannot be inferred, unless `expected` is `UNKNOWN`.
-            None => (
-                self.value(value, expected.filter(|ty| **ty == UNKNOWN)),
-                false,
-            ),
-        };
-        // A wrap only adds the `?` that `payload` removes, so this is the unwrapped type's rule.
+        let element = element_of(expected).cloned();
+        // Without an element type, a `None` or `[]` cannot be inferred, unless `expected` is
+        // `UNKNOWN`.
+        let hint = element.as_ref().or(expected.filter(|ty| **ty == UNKNOWN));
+        // `operand`, split so the class rule runs between the check and the wrap.
+        let checked = self.value(value, hint);
         let class = type_of(&checked)
             .map(payload)
             .filter(|ty| matches!(ty, Type::Class(_)) && !none_literal(value))
@@ -164,6 +163,10 @@ impl Checker {
                 )),
             );
         }
+        let (checked, mismatched) = match &element {
+            Some(element) => self.against(value, checked, Some(element)),
+            None => (checked, false),
+        };
         let (len, len_mismatched) = self.operand(len, Some(&Type::I64));
         let failed = mismatched || class.is_some() || len_mismatched;
         let ty = type_of(&checked).map(|ty| Type::Array(Box::new(ty.clone())));
@@ -198,7 +201,7 @@ impl Checker {
         self.diagnostics.extend(d);
         let (index, mismatched) = self.operand(index, Some(&Type::I64));
         match (checked, index, element) {
-            (Ok(base), Ok(index), Some(element)) if !mismatched => {
+            (Ok(base), Ok(index), Some(element)) => {
                 Ok(self.spilled(span, element, vec![base, index], |operands| {
                     let (base, index) = pair(operands);
                     tir::ExprKind::Index { base, index }
