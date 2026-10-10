@@ -2,14 +2,14 @@
 //! the length, then the elements. This module owns the layout, the array nodes and the
 //! bodies of the array helpers, which `define_helpers` reaches through `define_array_helper`.
 
-use inkwell::IntPredicate;
 use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, param};
-use super::{Codegen, POSITIONED};
+use super::{Codegen, POSITIONED, Slot};
 use crate::diagnostic::Span;
-use crate::tir::{Expr, ExprKind, Type};
+use crate::tir::{Expr, ExprKind, Place, Type};
 
 /// Where an array's elements sit in its block, from the target's data layout.
 pub(super) struct ArrayLayout<'ctx> {
@@ -166,6 +166,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         // pointee type. `inbounds` is sound because the block holds the header and then its
         // length's elements, `offset` is where the elements start, and every caller passes
         // an index below the length: `check_bounds` proved it, or a loop counts up to it.
+        // `unique` passes 0, whose address is at most one past the block's end, which
+        // `inbounds` allows.
         unsafe {
             let elements = self
                 .builder
@@ -357,7 +359,84 @@ impl<'ctx> Codegen<'ctx, '_> {
         len
     }
 
-    /// The body of `@sisu_rc.drop.[T]` or `@sisu_rc.eq.[T]`, `T` being `element`.
+    /// `Assign { place: Index { .. }, value }`. The place's own operands come first, left to
+    /// right: a field root's base, then each index from the root outwards. Then `value`, so
+    /// that a value which stores the array elsewhere makes the walk copy it. Then the walk from
+    /// the root's slot: at each level, load the array, check the index against its length,
+    /// make the array unique, and take the element's address as the next slot. Checking first
+    /// means an out-of-bounds write copies nothing. Last, the store, the release of the old
+    /// element, and the release of a field root's base.
+    pub(super) fn assign_index(&mut self, place: &Place, value: &Expr) {
+        let mut indexes = Vec::new();
+        let mut root = place;
+        while let Place::Index { base, index } = root {
+            indexes.push(index);
+            root = base;
+        }
+        indexes.reverse();
+        let object = match root {
+            Place::Field { base, .. } => Some((
+                self.expr(base)
+                    .expect("the checker should only make a field place on a class-typed base, which lowers to a pointer")
+                    .into_pointer_value(),
+                &base.ty,
+            )),
+            _ => None,
+        };
+        // An operand that exits ends the statement. `spill` bound every counted operand
+        // before it to a local, so nothing is left to release here.
+        let mut at = Vec::with_capacity(indexes.len());
+        for index in &indexes {
+            let Some(i) = self.expr(index) else { return };
+            at.push(i.into_int_value());
+        }
+        let Some(value) = self.expr(value) else {
+            return;
+        };
+        let (mut slot, mut ty) = match root {
+            Place::Local(local) => {
+                let Some(Slot::Alloca(ptr, _)) = self.locals[local.0] else {
+                    unreachable!(
+                        "the checker should only let a `var` be written, and every `var` has an `alloca`"
+                    )
+                };
+                (ptr, &self.types[local.0])
+            }
+            Place::Field { base, index } => {
+                let Type::Class(class) = base.ty else {
+                    unreachable!("the checker should only make a field place on a class-typed base")
+                };
+                let (object, _) =
+                    object.expect("a field root's base should have been evaluated before the walk");
+                (
+                    self.field_ptr(&base.ty, object, *index),
+                    &self.program.classes[class.0].fields[*index].ty,
+                )
+            }
+            Place::Index { .. } => unreachable!("the loop above should stop at the root"),
+        };
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        for (index, at) in indexes.iter().zip(at) {
+            let array = self
+                .builder
+                .build_load(ptr_type, slot, "array")
+                .expect(POSITIONED)
+                .into_pointer_value();
+            self.check_bounds(array, at, index.span);
+            let array = self.unique(slot, ty);
+            ty = element_of(ty);
+            slot = self.element_ptr(ty, array, at);
+        }
+        let old = ty.is_counted().then(|| self.load(value.get_type(), slot));
+        self.store(slot, value);
+        self.discard(old, ty);
+        if let Some((object, ty)) = object {
+            self.release(object.into(), ty);
+        }
+    }
+
+    /// The body of `@sisu_rc.drop.[T]`, `@sisu_rc.eq.[T]` or `@sisu_rc.unique.[T]`, `T`
+    /// being `element`.
     pub(super) fn define_array_helper(
         &self,
         kind: Helper,
@@ -367,6 +446,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         match kind {
             Helper::Drop => self.define_array_drop(element, function),
             Helper::Eq => self.define_array_eq(element, function),
+            Helper::Unique => self.define_array_unique(element, function),
             Helper::Release => unreachable!("`define_helpers` defines every `release` itself"),
         }
     }
@@ -420,5 +500,67 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder.position_at_end(next);
         });
         self.branch_to(equal);
+    }
+
+    /// `@sisu_rc.unique.[T](slot) -> ptr`: the array in `slot` when its count is 1. Otherwise
+    /// a new block of the same length with count 1, the elements copied with `llvm.memcpy`
+    /// and each counted one retained, stored into `slot`; the old block is released.
+    fn define_array_unique(&self, element: &Type, function: FunctionValue<'ctx>) {
+        let block = |name| self.context.append_basic_block(function, name);
+        let (entry, only, shared) = (block("entry"), block("only"), block("shared"));
+        self.builder.position_at_end(entry);
+        let slot = param(function);
+        let i64_type = self.context.i64_type();
+        let array = self
+            .builder
+            .build_load(
+                self.context.ptr_type(AddressSpace::default()),
+                slot,
+                "array",
+            )
+            .expect(POSITIONED)
+            .into_pointer_value();
+        let count = self
+            .builder
+            .build_load(i64_type, array, "count")
+            .expect(POSITIONED)
+            .into_int_value();
+        let one = self.int_compare(IntPredicate::EQ, count, i64_type.const_int(1, false));
+        self.builder
+            .build_conditional_branch(one, only, shared)
+            .expect(POSITIONED);
+        self.builder.position_at_end(only);
+        self.builder.build_return(Some(&array)).expect(POSITIONED);
+        self.builder.position_at_end(shared);
+        let len = self.array_len(array);
+        // The length fit once, so the new block needs no size check.
+        let copy = self.alloc_array(element, len, None);
+        let layout = self.array_layout(element);
+        let bytes = self
+            .builder
+            .build_int_nuw_mul(len, i64_type.const_int(layout.size, false), "bytes")
+            .expect(POSITIONED);
+        // The elements start at an offset that is a multiple of the block's alignment.
+        let align = u32::try_from(layout.align)
+            .expect("the block's alignment should fit in a `u32`, as each ABI alignment does");
+        let zero = i64_type.const_zero();
+        self.builder
+            .build_memcpy(
+                self.element_ptr(element, copy, zero),
+                align,
+                self.element_ptr(element, array, zero),
+                align,
+                bytes,
+            )
+            .expect("the block's alignment should be a power of two, as each ABI alignment is");
+        if element.is_counted() {
+            self.count_loop(len, |index| {
+                self.retain(self.load_element(element, copy, index), element);
+            });
+        }
+        self.store(slot, copy.into());
+        // Releasing the old block never frees it: its count was above 1.
+        self.add_to_count(array, i64_type.const_int((-1_i64).cast_unsigned(), false));
+        self.builder.build_return(Some(&copy)).expect(POSITIONED);
     }
 }
