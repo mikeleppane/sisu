@@ -97,9 +97,26 @@ impl Parser<'_> {
     /// The only place that reads a type; later milestones extend it.
     fn parse_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         let ident = self.ident("a type")?;
+        let mut span = ident.span;
+        let optional = self.eat(&TokenKind::Question).is_some();
+        if optional {
+            span = span.to(self.last_span());
+        }
+        // `??` is one token, so `Tree??` and `Tree? ?` both stop here.
+        if matches!(
+            self.peek().kind,
+            TokenKind::Question | TokenKind::QuestionQuestion
+        ) {
+            return Err(Diagnostic::error(
+                ident.span.to(self.peek().span),
+                format!("`{}??` is not a type", ident.name),
+            )
+            .help("optionals do not nest"));
+        }
         Ok(TypeExpr {
             name: ident.name,
-            span: ident.span,
+            optional,
+            span,
         })
     }
 
@@ -234,10 +251,18 @@ impl Parser<'_> {
             TokenKind::Let | TokenKind::Var => self.let_stmt()?,
             TokenKind::While => {
                 self.bump();
-                let cond = self.expr()?;
-                StmtKind::While {
-                    cond,
-                    body: self.block()?,
+                if let Some((name, value)) = self.let_binding()? {
+                    StmtKind::WhileLet {
+                        name,
+                        value,
+                        body: self.block()?,
+                    }
+                } else {
+                    let cond = self.expr()?;
+                    StmtKind::While {
+                        cond,
+                        body: self.block()?,
+                    }
                 }
             }
             TokenKind::Return => {
@@ -273,6 +298,16 @@ impl Parser<'_> {
     /// The span of the token just consumed.
     fn last_span(&self) -> Span {
         self.tokens[self.pos - 1].span
+    }
+
+    /// `let name = value`, after `if` or `while`; `None` when no `let` follows.
+    fn let_binding(&mut self) -> Result<Option<(Ident, Expr)>, Diagnostic> {
+        if self.eat(&TokenKind::Let).is_none() {
+            return Ok(None);
+        }
+        let name = self.ident("a variable name")?;
+        self.expect(&TokenKind::Eq)?;
+        Ok(Some((name, self.expr()?)))
     }
 
     fn let_stmt(&mut self) -> Result<StmtKind, Diagnostic> {
@@ -443,6 +478,10 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::SelfValue
             }
+            TokenKind::NoneKw => {
+                self.bump();
+                ExprKind::NoneLit
+            }
             TokenKind::Ident(name) => {
                 self.bump();
                 if self.at(&TokenKind::LParen) {
@@ -517,12 +556,16 @@ impl Parser<'_> {
 
     fn if_expr(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.expect(&TokenKind::If)?.span;
-        let cond = self.expr()?;
+        // `Ok` is a plain condition, `Err` the `let name = value` of an `if let`.
+        let head = match self.let_binding()? {
+            Some(binding) => Err(binding),
+            None => Ok(self.expr()?),
+        };
         let then_block = self.block()?;
         let mut end = then_block.span;
         let else_block = if self.eat(&TokenKind::Else).is_some() {
             let block = if self.at(&TokenKind::If) {
-                // `else if` becomes a block holding the inner `if`.
+                // `else if` and `else if let` become a block holding the inner `if`.
                 let inner = self.if_expr()?;
                 Block {
                     span: inner.span,
@@ -539,13 +582,22 @@ impl Parser<'_> {
         } else {
             None
         };
-        Ok(Expr {
-            span: start.to(end),
-            kind: ExprKind::If {
+        let kind = match head {
+            Ok(cond) => ExprKind::If {
                 cond: Box::new(cond),
                 then_block,
                 else_block,
             },
+            Err((name, value)) => ExprKind::IfLet {
+                name,
+                value: Box::new(value),
+                then_block,
+                else_block,
+            },
+        };
+        Ok(Expr {
+            span: start.to(end),
+            kind,
         })
     }
 }
@@ -718,7 +770,6 @@ mod tests {
         // `self` is an expression now, so its row hits a different error.
         let rows = [
             ("class", "class", "an expression"),
-            ("None", "None", "an expression"),
             ("is", "is", "an expression"),
             ("let self = 1", "self", "a variable name"),
             (".", ".", "an expression"),
@@ -764,6 +815,8 @@ mod tests {
             ("make().count = 1", "(= (. (call make) count) 1)"),
             ("a.f += 1", "(+= (. a f) 1)"),
             ("self.left = t", "(= (. self left) t)"),
+            ("None", "None"),
+            ("f(None)", "(call f None)"),
         ];
         for (src, expected) in rows {
             assert_eq!(expr(src), expected, "{src}");
@@ -976,5 +1029,79 @@ error: expected `=`, found end of line
             parse_err("class A { let x: i64 let y: i64 }"),
             ("expected end of line, found `let`".to_string(), 1, 22)
         );
+    }
+
+    #[test]
+    fn optional_types() {
+        assert_eq!(
+            body("fn main() { let x: Tree? = None }"),
+            "(block (let x Tree? None))"
+        );
+        assert_eq!(
+            program("fn f(t: Tree?) -> i64? {}"),
+            "(fn f ((t Tree?)) i64? (block))"
+        );
+        assert_eq!(
+            program("class A {\n    var next: A?\n}"),
+            "(class A (var next A?))"
+        );
+        // The span runs through the `?`.
+        let f = first_fn("fn f() -> Tree? {}");
+        assert_eq!(f.ret.expect("has a return type").span, Span::new(10, 15));
+    }
+
+    #[test]
+    fn if_let_chain() {
+        assert_eq!(
+            body("fn main() { if let n = node { a } else if let m = other { b } else { c } }"),
+            "(block (if-let n node (block a) (block (if-let m other (block b) (block c)))))"
+        );
+        assert_eq!(
+            body("fn main() { if let n = node { a } }"),
+            "(block (if-let n node (block a)))"
+        );
+        assert_eq!(
+            body("fn main() { if let n = node { a } else if c { b } }"),
+            "(block (if-let n node (block a) (block (if c (block b)))))"
+        );
+    }
+
+    #[test]
+    fn while_let() {
+        assert_eq!(
+            body("fn main() { while let n = node { f(n) } }"),
+            "(block (while-let n node (block (call f n))))"
+        );
+    }
+
+    #[test]
+    fn let_pattern_needs_a_name() {
+        for src in ["if let 1 = x {}", "while let 1 = x {}"] {
+            assert_eq!(
+                expr_err(src).0,
+                "expected a variable name, found `1`",
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn optionals_do_not_nest() {
+        // `Tree??` lexes as one token and `Tree? ?` as two; both name the type `Tree??`.
+        let rows = [
+            (
+                "fn main() { let x: Tree?? = None }",
+                Span::new(19, 25),
+                (1, 20),
+            ),
+            ("fn f() -> Tree? ? {}", Span::new(10, 17), (1, 11)),
+        ];
+        for (src, span, position) in rows {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.message, "`Tree??` is not a type", "{src}");
+            assert_eq!(d.help.as_deref(), Some("optionals do not nest"), "{src}");
+            assert_eq!(d.span, span, "{src}");
+            assert_eq!(line_col(src, d.span.start), position, "{src}");
+        }
     }
 }

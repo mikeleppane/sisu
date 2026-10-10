@@ -106,6 +106,7 @@ impl Checker {
                 };
                 Ok(tir::Stmt::Expr(lower_while(cond, body, stmt.span)))
             }
+            StmtKind::WhileLet { .. } => panic!("optionals land in Task 17"),
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),

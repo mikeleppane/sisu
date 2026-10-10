@@ -362,6 +362,7 @@ impl Checker {
 
     /// `None`, reported, for an unknown type.
     fn resolve(&mut self, ty: &ast::TypeExpr) -> Option<Type> {
+        assert!(!ty.optional, "optionals land in Task 17");
         match ty.name.as_str() {
             "i64" => Some(Type::I64),
             "bool" => Some(Type::Bool),

@@ -94,6 +94,7 @@ impl Checker {
                 then_block,
                 else_block,
             } => self.if_expr(e.span, cond, then_block, else_block.as_ref()),
+            ExprKind::NoneLit | ExprKind::IfLet { .. } => panic!("optionals land in Task 17"),
         }
     }
 
