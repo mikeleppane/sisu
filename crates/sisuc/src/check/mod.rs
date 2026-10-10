@@ -2778,6 +2778,39 @@ mod tests {
         );
     }
 
+    /// `t == None` does not compile for a `T`, so it is not offered.
+    #[test]
+    fn is_none_on_a_plain_object_has_no_help() {
+        expect_error(
+            "class T {}\nfn f(t: T) -> bool { t is None }\nfn main() {}",
+            "use `==` to test for `None`",
+            (2, 22),
+            None,
+            &[],
+            None,
+        );
+    }
+
+    #[test]
+    fn is_none_checks_the_other_side() {
+        errors(
+            "fn main() { print(nope is None) }",
+            &[
+                ("use `==` to test for `None`", (1, 19)),
+                ("cannot find `nope` in this scope", (1, 19)),
+            ],
+        );
+    }
+
+    /// Once an operand is `Error`, the later one is not held to `is`.
+    #[test]
+    fn is_after_an_error_checks_no_further() {
+        errors(
+            "fn main() { print(nope is 1) }",
+            &[("cannot find `nope` in this scope", (1, 19))],
+        );
+    }
+
     #[test]
     fn is_two_classes() {
         error(
@@ -2877,6 +2910,23 @@ mod tests {
             "fn f(x: i64?, y: i64?) -> i64? { x ?? y }",
             "(if-some #2 x#0 (block (wrap #2)) (block y#1))",
         );
+    }
+
+    /// A bare `None` on the right takes the left side's type.
+    #[test]
+    fn coalesce_with_none_right() {
+        f_contains(
+            C,
+            "fn f(x: i64?) -> i64? { x ?? None }",
+            "(if-some #1 x#0 (block (wrap #1)) (block None))",
+        );
+    }
+
+    #[test]
+    fn coalesce_with_none_in_an_if() {
+        clean(&format!(
+            "{C}fn f(x: i64?, c: bool) -> i64? {{ x ?? if c {{ None }} else {{ 1 }} }}\nfn main() {{}}"
+        ));
     }
 
     /// `x ?? (y ?? 0)` is an `i64`, which the return type checks.

@@ -250,20 +250,22 @@ impl Checker {
     fn is(&mut self, span: Span, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         if none_literal(lhs) || none_literal(rhs) {
             let other = if none_literal(lhs) { rhs } else { lhs };
-            let mut d = Diagnostic::error(span, "use `==` to test for `None`");
-            if let Some(path) = path(other) {
-                d = d.help(format!("`{path} == None`"));
+            let at = self.diagnostics.len();
+            self.diagnostics
+                .push(Diagnostic::error(span, "use `==` to test for `None`"));
+            let checked = self.value(other, Some(&UNKNOWN));
+            // `== None` compiles only beside an optional, or a side whose type is unknown.
+            let optional = type_of(&checked).is_none_or(|ty| matches!(ty, Type::Optional(_)));
+            if optional && let Some(path) = path(other) {
+                self.diagnostics[at].help = Some(format!("`{path} == None`"));
             }
-            self.diagnostics.push(d);
-            // Only its own diagnostics matter.
-            let _ = self.value(other, Some(&UNKNOWN));
             return Err(Poisoned::error());
         }
         let (l, r) = (self.value(lhs, None), self.value(rhs, None));
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
-            if let Some(ty) = type_of(checked)
-                && !ty.is_counted()
-            {
+            // Once an operand is `Error`, the later one is not held to `is`.
+            let Some(ty) = type_of(checked) else { break };
+            if !ty.is_counted() {
                 let message = format!("`is` needs objects; found {}", self.show(ty));
                 self.diagnostics
                     .push(Diagnostic::error(side.span, message).help("use `==` to compare values"));
@@ -946,8 +948,7 @@ fn path(e: &ast::Expr) -> Option<String> {
         ExprKind::Name(name) => Some(name.clone()),
         ExprKind::SelfValue => Some("self".to_owned()),
         ExprKind::Field { base, name, safe } => {
-            let dot = if *safe { "?." } else { "." };
-            Some(format!("{}{dot}{}", path(base)?, name.name))
+            Some(format!("{}{}{}", path(base)?, ast::dot(*safe), name.name))
         }
         _ => None,
     }

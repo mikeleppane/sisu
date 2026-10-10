@@ -382,7 +382,7 @@ impl fmt::Display for Stmt {
 }
 
 /// The access operator as the tree prints it.
-fn dot(safe: bool) -> &'static str {
+pub(crate) fn dot(safe: bool) -> &'static str {
     if safe { "?." } else { "." }
 }
 
