@@ -9,8 +9,8 @@ const PROGRAMS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
 const MIN: &str = "    let min = -9_223_372_036_854_775_807 - 1";
 const MAX: &str = "    let big = 9_223_372_036_854_775_807";
 
-/// `sisuc <input> <output>`, run from `dir`, once the runtime archive is built.
-fn sisuc(dir: &Path, input: &str, output: &Path) -> Command {
+/// `sisuc [-O2] <input> <output>`, run from `dir`, once the runtime archive is built.
+fn sisuc(dir: &Path, input: &str, output: &Path, o2: bool) -> Command {
     // `cargo nextest run` does not build the runtime archive that `sisuc` links
     // against, so build it here. This is a no-op when it is up to date.
     let built = Command::new(env!("CARGO"))
@@ -20,14 +20,23 @@ fn sisuc(dir: &Path, input: &str, output: &Path) -> Command {
     assert!(built.success(), "building sisu-runtime failed");
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_sisuc"));
-    command.current_dir(dir).arg(input).arg(output);
+    command.current_dir(dir);
+    if o2 {
+        command.arg("-O2");
+    }
+    command.arg(input).arg(output);
     command
 }
 
-/// Compiles `<dir>/<name>.sisu`, run from `dir`, into `<CARGO_TARGET_TMPDIR>/<name>`.
-fn compile(dir: &Path, name: &str) -> PathBuf {
-    let exe = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let out = sisuc(dir, &format!("{name}.sisu"), &exe)
+/// Compiles `<dir>/<name>.sisu`, run from `dir`, into `<CARGO_TARGET_TMPDIR>/<name>`, or
+/// `<name>-O2` with `o2`.
+fn compile(dir: &Path, name: &str, o2: bool) -> PathBuf {
+    let exe = Path::new(env!("CARGO_TARGET_TMPDIR")).join(if o2 {
+        format!("{name}-O2")
+    } else {
+        name.to_string()
+    });
+    let out = sisuc(dir, &format!("{name}.sisu"), &exe, o2)
         .output()
         .expect("sisuc starts");
     assert!(
@@ -38,9 +47,9 @@ fn compile(dir: &Path, name: &str) -> PathBuf {
     exe
 }
 
-/// Compiles and runs `tests/programs/<name>.sisu`.
-fn run(name: &str) -> Output {
-    let exe = compile(Path::new(PROGRAMS), name);
+/// Compiles, at `-O2` if `o2`, and runs `tests/programs/<name>.sisu`.
+fn run(name: &str, o2: bool) -> Output {
+    let exe = compile(Path::new(PROGRAMS), name, o2);
     Command::new(exe).output().expect("the program starts")
 }
 
@@ -58,11 +67,12 @@ fn valgrind(exe: &Path) -> Output {
 }
 
 /// Runs `<name>.sisu` and checks that it exits 0, prints `<name>.out` and nothing on stderr,
-/// then that it does the same under Valgrind.
+/// then that it does the same under Valgrind, and that the `-O2` build prints the same under
+/// Valgrind.
 fn assert_prints_out_file(name: &str) {
     let expected =
         fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.out"))).expect("reads .out");
-    let exe = compile(Path::new(PROGRAMS), name);
+    let exe = compile(Path::new(PROGRAMS), name, false);
     let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(
         out.status.code(),
@@ -73,14 +83,27 @@ fn assert_prints_out_file(name: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 
-    let checked = valgrind(&exe);
-    let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
-    assert_eq!(checked.status.code(), Some(0), "{valgrind_stderr}");
-    assert_eq!(
-        String::from_utf8_lossy(&checked.stdout),
-        expected,
-        "{valgrind_stderr}"
+    let o2 = compile(Path::new(PROGRAMS), name, true);
+    assert!(
+        fs::read(&exe).expect("reads plain build") != fs::read(&o2).expect("reads -O2 build"),
+        "{name}: -O2 build is identical to the plain build"
     );
+    for exe in [exe, o2] {
+        let checked = valgrind(&exe);
+        let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
+        assert_eq!(
+            checked.status.code(),
+            Some(0),
+            "{}: {valgrind_stderr}",
+            exe.display()
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&checked.stdout),
+            expected,
+            "{}: {valgrind_stderr}",
+            exe.display()
+        );
+    }
 }
 
 /// Checks that `out` is a panic: exit 101, `stdout`, and exactly the panic line on stderr.
@@ -116,6 +139,11 @@ fn loops() {
 }
 
 #[test]
+fn break_continue() {
+    assert_prints_out_file("break_continue");
+}
+
+#[test]
 fn short_circuit() {
     assert_prints_out_file("short_circuit");
 }
@@ -130,38 +158,55 @@ fn bool_var() {
     assert_prints_out_file("bool_var");
 }
 
-#[test]
-fn overflow() {
-    assert_panics(
-        &run("overflow"),
+/// Each panicking program with its expected stdout and panic line.
+const PANICS: [(&str, &str, &str); 3] = [
+    (
+        "overflow",
         "1\n",
         "sisu: panic at overflow.sisu:4:11: integer overflow\n",
-    );
+    ),
+    (
+        "div_zero",
+        "",
+        "sisu: panic at div_zero.sisu:2:5: division by zero\n",
+    ),
+    (
+        "div_overflow",
+        "",
+        "sisu: panic at div_overflow.sisu:3:13: integer overflow\n",
+    ),
+];
+
+#[test]
+fn overflow() {
+    let (name, stdout, stderr) = PANICS[0];
+    assert_panics(&run(name, false), stdout, stderr);
 }
 
 #[test]
 fn div_zero() {
-    assert_panics(
-        &run("div_zero"),
-        "",
-        "sisu: panic at div_zero.sisu:2:5: division by zero\n",
-    );
+    let (name, stdout, stderr) = PANICS[1];
+    assert_panics(&run(name, false), stdout, stderr);
 }
 
 #[test]
 fn div_overflow() {
-    assert_panics(
-        &run("div_overflow"),
-        "",
-        "sisu: panic at div_overflow.sisu:3:13: integer overflow\n",
-    );
+    let (name, stdout, stderr) = PANICS[2];
+    assert_panics(&run(name, false), stdout, stderr);
+}
+
+#[test]
+fn panics_survive_o2() {
+    for (name, stdout, stderr) in PANICS {
+        assert_panics(&run(name, true), stdout, stderr);
+    }
 }
 
 /// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu` and compiles it from there.
 fn compile_tmp(name: &str, source: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(dir.join(format!("{name}.sisu")), source).expect("writes");
-    compile(dir, name)
+    compile(dir, name, false)
 }
 
 #[test]
@@ -236,7 +281,7 @@ fn output_naming_the_input_is_refused() {
     let input = dir.join("overwrite_input.sisu");
     fs::write(&input, source).expect("writes");
     for output in ["overwrite_input.sisu", "./overwrite_input.sisu"] {
-        let out = sisuc(dir, "overwrite_input.sisu", Path::new(output))
+        let out = sisuc(dir, "overwrite_input.sisu", Path::new(output), false)
             .output()
             .expect("sisuc starts");
         assert_eq!(out.status.code(), Some(1), "output {output}");
@@ -268,7 +313,7 @@ fn existing_object_file_survives_a_build() {
     fs::write(dir.join("keep_object.sisu"), "fn main() {}\n").expect("writes");
     fs::write(dir.join("keep_object.o"), "not sisuc's").expect("writes");
     let tmp = empty_dir("keep_object_tmp");
-    let out = sisuc(dir, "keep_object.sisu", &dir.join("keep_object"))
+    let out = sisuc(dir, "keep_object.sisu", &dir.join("keep_object"), false)
         .env("TMPDIR", &tmp)
         .output()
         .expect("sisuc starts");
@@ -292,7 +337,7 @@ fn failed_link_leaves_no_object_file() {
     // `cc` cannot write an executable over a directory.
     let output = empty_dir("link_fails");
     let tmp = empty_dir("link_fails_tmp");
-    let out = sisuc(dir, "link_fails.sisu", &output)
+    let out = sisuc(dir, "link_fails.sisu", &output, false)
         .env("TMPDIR", &tmp)
         .output()
         .expect("sisuc starts");
@@ -311,7 +356,7 @@ fn build_tmp(name: &str, source: &str) -> (Output, PathBuf) {
     let exe = dir.join(name);
     // It is absent on the first run, so a failure here is expected and harmless.
     let _ = fs::remove_file(&exe);
-    let out = sisuc(dir, &format!("{name}.sisu"), &exe)
+    let out = sisuc(dir, &format!("{name}.sisu"), &exe, false)
         .output()
         .expect("sisuc starts");
     (out, exe)
