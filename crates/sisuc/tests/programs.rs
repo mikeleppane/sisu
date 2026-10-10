@@ -395,6 +395,12 @@ fn panic_cases() {
             "u8(a)",
             "value does not fit in `u8`",
         ),
+        print_case(
+            "sum_overflow",
+            "let xs = [9_223_372_036_854_775_807, 1]",
+            "xs.sum()",
+            "integer overflow",
+        ),
         bounds_case(
             "bounds_at_length",
             "5",
@@ -422,12 +428,6 @@ fn panic_cases() {
         // 16 + 9_223_372_036_854_775_791 bytes is exactly `i64::MAX`, above the largest
         // size that rounds up to the alignment of 8 within it.
         fill_case("length_too_large", "false", "9_223_372_036_854_775_791", 22),
-        print_case(
-            "sum_overflow",
-            "let xs = [9_223_372_036_854_775_807, 1]",
-            "xs.sum()",
-            "integer overflow",
-        ),
         // 2^62 * 8 bytes overflows the multiply.
         fill_case("length_overflows", "0", "4_611_686_018_427_387_904", 18),
         // (2^61 - 1) * 8 bytes is 2^64 - 8, which fits; adding the 16-byte header wraps.

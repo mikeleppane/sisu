@@ -1,5 +1,5 @@
-//! Arrays: literals and their element join, `[v; n]`, indexing, `len()`, `sum()`, `contains()`, and the rules that
-//! keep arrays values.
+//! Arrays: literals and their element join, `[v; n]`, indexing, `len()`, `sum()`,
+//! `contains()`, and the rules that keep arrays values.
 
 use super::*;
 
@@ -313,6 +313,27 @@ fn contains_argument_is_an_element() {
     errors(
         "fn f(xs: [i64]) { print(xs.contains(true)) }\nfn main() {}",
         &[("expected `i64`, found `bool`", (1, 37))],
+    );
+}
+
+/// A failed `contains` is `Error` when its argument is the problem, so a use of the result
+/// adds no error. A poisoned receiver with a good argument still has type `bool`.
+#[test]
+fn contains_poison() {
+    errors(
+        "fn f(xs: [i64]) {\n    let b = xs.contains(true)\n    print(b + 1)\n}\nfn main() {}",
+        &[("expected `i64`, found `bool`", (2, 25))],
+    );
+    errors(
+        "fn f(xs: [i64]) {\n    let b = xs.contains(v: 1)\n    print(b + 1)\n}\nfn main() {}",
+        &[("labels on arguments come in milestone 10", (2, 25))],
+    );
+    errors(
+        "fn f(g: [[i64]]) {\n    let b = g[nope].contains(1)\n    print(b + 1)\n}\nfn main() {}",
+        &[
+            ("cannot find `nope` in this scope", (2, 15)),
+            ("expected `i64`, found `bool`", (3, 11)),
+        ],
     );
 }
 

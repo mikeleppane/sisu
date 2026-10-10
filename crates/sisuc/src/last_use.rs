@@ -333,6 +333,21 @@ mod tests {
         );
     }
 
+    /// A comparison chain evaluates its operands in order, so only the last read moves.
+    #[test]
+    fn comparison_chain_reads() {
+        has(
+            "fn f(xs: [i64]) -> bool { 0 < xs.len() }",
+            "f",
+            &["(len (move xs#0))"],
+        );
+        has(
+            "fn f(xs: [i64]) -> bool { 0 < xs.len() < xs.len() }",
+            "f",
+            &["(len xs#0)", "(len (move xs#0))"],
+        );
+    }
+
     #[test]
     fn read_in_loop_body() {
         let printed =

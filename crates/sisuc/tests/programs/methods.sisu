@@ -48,4 +48,8 @@ fn main() {
 
     print(exits(rows, true))                  // false
     print(exits([[0], [1]], false))           // true
+
+    // The base is also the value's source and its last use: the value moves, the base does not.
+    let pair = [[1], [2]]
+    print(pair.contains(pair[1]))             // true
 }

@@ -254,7 +254,7 @@ impl Checker {
                 let labeled = self.labels(args);
                 let (value, mismatched) = self.operand(&args[0].value, Some(element));
                 match (receiver, value) {
-                    (Ok(base), Ok(value)) if !labeled && !mismatched => {
+                    (Ok(base), Ok(value)) if !labeled => {
                         Ok(
                             self.spilled(span, Type::Bool, vec![base, value], |operands| {
                                 let (base, value) = pair(operands);

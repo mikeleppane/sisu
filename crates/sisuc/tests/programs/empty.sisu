@@ -1,5 +1,6 @@
 // Empty arrays: `[]` and `[v; 0]` have length 0, a `for` over one runs no times, and two
-// empty arrays are equal. `[[1]; 0]` releases `[1]` once.
+// empty arrays are equal. `sum()` of one is 0 and `contains` finds nothing. `[[1]; 0]`
+// releases `[1]` once.
 class Node {}
 
 fn main() {
