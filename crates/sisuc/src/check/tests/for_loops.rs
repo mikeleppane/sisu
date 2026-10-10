@@ -91,10 +91,11 @@ fn loop_variable_ends_with_the_loop() {
     );
 }
 
+/// The outer `x` is `bool`, the loop's is `i64`: each typed use clean pins which one it resolves to.
 #[test]
 fn loop_variable_shadows_an_outer_binding() {
     clean(
-        "fn f(xs: [i64]) {\n    let x = 1\n    for x in xs { print(x) }\n    print(x)\n}\nfn main() {}",
+        "fn f(xs: [i64]) {\n    let x = true\n    for x in xs {\n        let a: i64 = x\n    }\n    let b: bool = x\n}\nfn main() {}",
     );
 }
 
