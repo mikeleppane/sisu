@@ -264,3 +264,62 @@ fn emit_tir_error_prints_no_tir() {
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
 }
+
+const FIB: &str = "fn fib(n: i64) -> i64 {\n    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }\n}\n\nfn main() {\n    print(fib(30))\n}\n";
+
+#[test]
+fn o2_combinations_are_usage_errors() {
+    let cases: [&[&str]; 6] = [
+        &["-O2", "--check", "f.sisu"],
+        &["-O2", "--emit", "tokens", "f.sisu"],
+        &["-O2", "--emit", "ast", "f.sisu"],
+        &["-O2", "--emit", "tir", "f.sisu"],
+        &["-O2", "--emit", "ir-raw", "f.sisu"],
+        &["f.sisu", "out", "-O2"],
+    ];
+    for args in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(env!("CARGO_TARGET_TMPDIR"))
+            .args(args)
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn emit_ir_raw_parses_back() {
+    let out = run_on("emit_ir_raw_parses_back", FIB, &["--emit", "ir-raw"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let context = inkwell::context::Context::create();
+    let module = context
+        .create_module_from_ir(
+            inkwell::memory_buffer::MemoryBuffer::create_from_memory_range_copy(&out.stdout, "raw"),
+        )
+        .unwrap_or_else(|e| panic!("{e}\n{}", String::from_utf8_lossy(&out.stdout)));
+    module.verify().expect("the module verifies");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("; before"));
+}
+
+#[test]
+fn emit_ir_o2() {
+    let out = run_on("emit_ir_o2", FIB, &["-O2", "--emit", "ir"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("; before default<O2>\n"), "{stdout}");
+    assert!(stdout.contains("\n; after default<O2>\n"), "{stdout}");
+}

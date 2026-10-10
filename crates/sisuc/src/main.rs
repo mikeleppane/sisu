@@ -20,13 +20,23 @@ use diagnostic::Diagnostic;
 use inkwell::context::Context;
 use tir::Program;
 
-const USAGE: &str = "usage: sisuc <input.sisu> <output> | --emit tokens|ast|tir|ir <input.sisu> | --check <input.sisu>";
+const USAGE: &str = "usage: sisuc [-O2] <input.sisu> <output> | [-O2] --emit ir <input.sisu> | --emit tokens|ast|tir|ir-raw <input.sisu> | --check <input.sisu>";
 
 /// What the command line asks for.
 enum Mode {
-    Emit { stage: Stage, input: PathBuf },
-    Check { input: PathBuf },
-    Build { input: PathBuf, output: PathBuf },
+    Emit {
+        stage: Stage,
+        input: PathBuf,
+        o2: bool,
+    },
+    Check {
+        input: PathBuf,
+    },
+    Build {
+        input: PathBuf,
+        output: PathBuf,
+        o2: bool,
+    },
 }
 
 enum Stage {
@@ -34,21 +44,29 @@ enum Stage {
     Ast,
     Tir,
     Ir,
+    IrRaw,
 }
 
 fn parse_args(args: &[OsString]) -> Result<Mode, String> {
-    match args {
+    // `-O2` is accepted only as the first argument.
+    let (o2, args) = match args {
+        [flag, rest @ ..] if flag == "-O2" => (true, rest),
+        _ => (false, args),
+    };
+    let mode = match args {
         [flag, stage, input] if flag == "--emit" => {
             let stage = match stage.to_str() {
                 Some("tokens") => Stage::Tokens,
                 Some("ast") => Stage::Ast,
                 Some("tir") => Stage::Tir,
                 Some("ir") => Stage::Ir,
+                Some("ir-raw") => Stage::IrRaw,
                 _ => return Err(USAGE.to_string()),
             };
             Ok(Mode::Emit {
                 stage,
                 input: PathBuf::from(input),
+                o2,
             })
         }
         [flag, input] if flag == "--check" => Ok(Mode::Check {
@@ -62,10 +80,25 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
             Ok(Mode::Build {
                 input: PathBuf::from(input),
                 output: PathBuf::from(output),
+                o2,
             })
         }
         _ => Err(USAGE.to_string()),
+    }?;
+    // The other modes run no optimizer.
+    if o2
+        && !matches!(
+            mode,
+            Mode::Build { .. }
+                | Mode::Emit {
+                    stage: Stage::Ir,
+                    ..
+                }
+        )
+    {
+        return Err(USAGE.to_string());
     }
+    Ok(mode)
 }
 
 fn main() -> ExitCode {
@@ -78,9 +111,9 @@ fn main() -> ExitCode {
         }
     };
     match mode {
-        Mode::Emit { stage, input } => emit(&stage, &input),
+        Mode::Emit { stage, input, o2 } => emit(&stage, &input, o2),
         Mode::Check { input } => run_check(&input),
-        Mode::Build { input, output } => build(&input, &output),
+        Mode::Build { input, output, o2 } => build(&input, &output, o2),
     }
 }
 
@@ -92,7 +125,7 @@ fn read(input: &Path) -> Option<String> {
 }
 
 /// Prints one stage's output for `input` to stdout.
-fn emit(stage: &Stage, input: &Path) -> ExitCode {
+fn emit(stage: &Stage, input: &Path, o2: bool) -> ExitCode {
     let path = input.to_string_lossy();
     let Some(source) = read(input) else {
         return ExitCode::FAILURE;
@@ -126,12 +159,13 @@ fn emit(stage: &Stage, input: &Path) -> ExitCode {
             }
             None => ExitCode::FAILURE,
         },
-        Stage::Ir => emit_ir(&path, &source),
+        Stage::Ir => emit_ir(&path, &source, o2),
+        Stage::IrRaw => emit_ir_raw(&path, &source),
     }
 }
 
-/// Prints the module for `source` before and after `mem2reg`, once it passes the checker.
-fn emit_ir(path: &str, source: &str) -> ExitCode {
+/// Prints the module for `source` before and after the pipeline, once it passes the checker.
+fn emit_ir(path: &str, source: &str, o2: bool) -> ExitCode {
     let Some(program) = front_end(path, source) else {
         return ExitCode::FAILURE;
     };
@@ -139,12 +173,32 @@ fn emit_ir(path: &str, source: &str) -> ExitCode {
     let module = codegen::compile(&context, &program, path, source);
     // `LLVMString`'s `Display` quotes and escapes the text; `to_string` does not.
     let before = module.print_to_string().to_string();
-    match codegen::target_machine().and_then(|machine| codegen::run_mem2reg(&module, &machine)) {
+    let pipeline = codegen::pipeline(o2);
+    match codegen::target_machine(o2).and_then(|machine| codegen::optimize(&module, &machine, o2)) {
         Ok(()) => {
             print!(
-                "; before mem2reg\n{before}\n; after mem2reg\n{}",
+                "; before {pipeline}\n{before}\n; after {pipeline}\n{}",
                 module.print_to_string().to_string()
             );
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("sisuc: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Prints the verified module for `source`, as codegen made it.
+fn emit_ir_raw(path: &str, source: &str) -> ExitCode {
+    let Some(program) = front_end(path, source) else {
+        return ExitCode::FAILURE;
+    };
+    let context = Context::create();
+    let module = codegen::compile(&context, &program, path, source);
+    match module.verify() {
+        Ok(()) => {
+            print!("{}", module.print_to_string().to_string());
             ExitCode::SUCCESS
         }
         Err(message) => {
@@ -163,7 +217,7 @@ fn run_check(input: &Path) -> ExitCode {
 }
 
 /// Compiles `input` into the executable `output`.
-fn build(input: &Path, output: &Path) -> ExitCode {
+fn build(input: &Path, output: &Path, o2: bool) -> ExitCode {
     // `cc -o` would replace the source with the executable.
     let overwrites_input = match (fs::canonicalize(input), fs::canonicalize(output)) {
         (Ok(input), Ok(output)) => input == output,
@@ -183,7 +237,7 @@ fn build(input: &Path, output: &Path) -> ExitCode {
     let Some(program) = front_end(&path, &source) else {
         return ExitCode::FAILURE;
     };
-    match compile(&program, &path, &source, output) {
+    match compile(&program, &path, &source, output, o2) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("sisuc: {message}");
@@ -215,11 +269,17 @@ fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
 }
 
 /// Compiles `program` into the executable `output`, going through a temporary object file.
-fn compile(program: &Program, path: &str, source: &str, output: &Path) -> Result<(), String> {
+fn compile(
+    program: &Program,
+    path: &str,
+    source: &str,
+    output: &Path,
+    o2: bool,
+) -> Result<(), String> {
     let context = Context::create();
     let module = codegen::compile(&context, program, path, source);
-    let machine = codegen::target_machine()?;
-    codegen::run_mem2reg(&module, &machine)?;
+    let machine = codegen::target_machine(o2)?;
+    codegen::optimize(&module, &machine, o2)?;
     let code = codegen::object_code(&module, &machine)?;
     // A name of its own, so a user's `<output>.o` is left alone; the nanoseconds pick a
     // fresh name when one is taken.
