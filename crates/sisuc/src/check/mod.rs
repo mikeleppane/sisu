@@ -596,7 +596,7 @@ mod tests {
             ),
             (
                 "compare",
-                "fn main() {\n    let x = 1 < true\n    print(x + 1)\n}".into(),
+                "fn main() {\n    let x = 1 < true < 2\n    print(x + 1)\n}".into(),
                 MISMATCH,
                 (2, 17),
             ),
