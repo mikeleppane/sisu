@@ -94,14 +94,18 @@ impl Checker {
                 })
             }
             StmtKind::While { cond, body } => {
+                self.loop_depth += 1;
                 let cond = self.expect(cond, Some(&Type::Bool));
                 let body = self.block(body);
+                self.loop_depth -= 1;
                 let (Ok(cond), Ok(body)) = (cond, body) else {
                     return Err(unit());
                 };
                 Ok(tir::Stmt::Expr(lower_while(cond, body, stmt.span)))
             }
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
+            StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
+            StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
             StmtKind::Assign { target, value } => self.assign(stmt.span, target, value),
             StmtKind::CompoundAssign { op, target, value } => {
                 // `assign` already reports an unknown target; a synthetic read would repeat it.
@@ -165,6 +169,24 @@ impl Checker {
         };
         Ok(tir::Stmt::Expr(tir::Expr {
             kind: ExprKind::Return(value),
+            ty: Type::Never,
+            span,
+        }))
+    }
+
+    /// `break` or `continue`, of type `never` even outside a loop.
+    fn jump(&mut self, span: Span, keyword: &str, kind: ExprKind) -> Result<tir::Stmt, Poisoned> {
+        if self.loop_depth == 0 {
+            self.diagnostics.push(Diagnostic::error(
+                span,
+                format!("`{keyword}` outside a loop"),
+            ));
+            return Err(Poisoned {
+                ty: Some(Type::Never),
+            });
+        }
+        Ok(tir::Stmt::Expr(tir::Expr {
+            kind,
             ty: Type::Never,
             span,
         }))

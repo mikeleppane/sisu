@@ -116,6 +116,11 @@ fn loops() {
 }
 
 #[test]
+fn break_continue() {
+    assert_prints_out_file("break_continue");
+}
+
+#[test]
 fn short_circuit() {
     assert_prints_out_file("short_circuit");
 }

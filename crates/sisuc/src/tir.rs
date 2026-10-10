@@ -117,6 +117,7 @@ pub(crate) enum ExprKind {
     },
     Loop(Block),
     Break,
+    Continue,
     Return(Option<Box<Expr>>),
 }
 
@@ -249,6 +250,7 @@ impl Printer<'_> {
                 f.write_str(")")
             }
             ExprKind::Break => f.write_str("(break)"),
+            ExprKind::Continue => f.write_str("(continue)"),
             ExprKind::Return(None) => f.write_str("(return)"),
             ExprKind::Return(Some(value)) => self.unary(f, "return", value),
         }

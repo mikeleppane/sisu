@@ -1,0 +1,28 @@
+fn main() {
+    var i = 0
+    var odd = 0
+    while i < 10 {
+        i += 1
+        if i % 2 == 0 { continue }
+        odd += i
+    }
+    print(odd)
+    var n = 0
+    while true {
+        n += 1
+        if n * n > 50 { break }
+    }
+    print(n)
+    var pairs = 0
+    var a = 0
+    while a < 4 {
+        var b = 0
+        while true {
+            if b == a { break }
+            pairs += 1
+            b += 1
+        }
+        a += 1
+    }
+    print(pairs)
+}

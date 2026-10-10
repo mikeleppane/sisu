@@ -60,6 +60,8 @@ struct Checker {
     locals: Vec<tir::Local>,
     /// `None` is `Error`.
     ret: Option<Type>,
+    /// Loops open around the code being checked; a `while` condition counts as inside.
+    loop_depth: usize,
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
@@ -71,6 +73,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         scopes: Vec::new(),
         locals: Vec::new(),
         ret: None,
+        loop_depth: 0,
     };
     checker.collect_signatures(program);
     // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
@@ -775,6 +778,49 @@ mod tests {
         assert_eq!(
             lowered("fn main() {\n    var i = 0\n    while i < 3 {\n        i = i + 1\n    }\n}"),
             "(fn main () unit (block (var i#0 0) (loop (block (if (< i#0 3) (block (= i#0 (+ i#0 1))) (block (break)))))))"
+        );
+    }
+
+    #[test]
+    fn lowers_continue() {
+        assert_eq!(
+            lowered(
+                "fn main() {\n    var i = 0\n    while i < 3 {\n        i = i + 1\n        if i == 2 { continue }\n        print(i)\n    }\n}"
+            ),
+            "(fn main () unit (block (var i#0 0) (loop (block (if (< i#0 3) (block (= i#0 (+ i#0 1)) (if (== i#0 2) (block (continue))) (print i#0)) (block (break)))))))"
+        );
+    }
+
+    #[test]
+    fn break_outside_loop() {
+        errors(
+            "fn main() { break }",
+            &[("`break` outside a loop", (1, 13))],
+        );
+    }
+
+    #[test]
+    fn continue_outside_loop() {
+        errors(
+            "fn main() { continue }",
+            &[("`continue` outside a loop", (1, 13))],
+        );
+    }
+
+    #[test]
+    fn break_after_loop() {
+        errors(
+            "fn main() {\n    while true {}\n    break\n}",
+            &[("`break` outside a loop", (3, 5))],
+        );
+    }
+
+    #[test]
+    fn statement_after_break() {
+        warning(
+            "fn main() {\n    while true {\n        break\n        print(1)\n    }\n}",
+            "unreachable code",
+            (4, 9),
         );
     }
 

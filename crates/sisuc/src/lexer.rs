@@ -17,6 +17,8 @@ pub(crate) enum TokenKind {
     Else,
     While,
     Return,
+    Break,
+    Continue,
     True,
     False,
     Plus,
@@ -69,6 +71,8 @@ impl TokenKind {
             TokenKind::Else => "Else",
             TokenKind::While => "While",
             TokenKind::Return => "Return",
+            TokenKind::Break => "Break",
+            TokenKind::Continue => "Continue",
             TokenKind::True => "True",
             TokenKind::False => "False",
             TokenKind::Plus => "Plus",
@@ -117,6 +121,8 @@ impl TokenKind {
             TokenKind::Else => "else",
             TokenKind::While => "while",
             TokenKind::Return => "return",
+            TokenKind::Break => "break",
+            TokenKind::Continue => "continue",
             TokenKind::True => "true",
             TokenKind::False => "false",
             TokenKind::Plus => "+",
@@ -244,11 +250,11 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 
 /// Whether `token` can end a statement (Go's rule).
 fn can_end_statement(token: Option<&Token>) -> bool {
-    use TokenKind::{False, Ident, Int, RBrace, RParen, Return, True};
+    use TokenKind::{Break, Continue, False, Ident, Int, RBrace, RParen, Return, True};
     token.is_some_and(|t| {
         matches!(
             t.kind,
-            Ident(_) | Int(_) | True | False | Return | RParen | RBrace
+            Ident(_) | Int(_) | True | False | Return | Break | Continue | RParen | RBrace
         )
     })
 }
@@ -337,6 +343,8 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "else" => TokenKind::Else,
         "while" => TokenKind::While,
         "return" => TokenKind::Return,
+        "break" => TokenKind::Break,
+        "continue" => TokenKind::Continue,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         _ => TokenKind::Ident(text.to_string()),
@@ -470,6 +478,15 @@ mod tests {
         assert_eq!(
             kinds("fn let var if else while return true false"),
             [Fn, Let, Var, If, Else, While, Return, True, False, Eof]
+        );
+    }
+
+    #[test]
+    fn break_and_continue_end_a_statement() {
+        use TokenKind::{Break, Continue, Eof, Newline};
+        assert_eq!(
+            all_kinds("break\ncontinue"),
+            [Break, Newline, Continue, Newline, Eof]
         );
     }
 

@@ -353,6 +353,15 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.branch_to(end);
                 return None;
             }
+            ExprKind::Continue => {
+                let body = self
+                    .loops
+                    .last()
+                    .expect("checked: `continue` is in a loop")
+                    .body;
+                self.branch_to(body);
+                return None;
+            }
             ExprKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| self.expr(e));
                 // The checker rejects a `never` return value; this keeps codegen safe anyway.
