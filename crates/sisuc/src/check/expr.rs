@@ -4,7 +4,7 @@ use super::{
     Binding, Checked, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, block_type, not_found,
     type_of, value_span, wrap, wrap_block,
 };
-use crate::ast::{self, ExprKind, UnaryOp};
+use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::tir::{self, Type};
 
@@ -47,11 +47,20 @@ impl Checker {
                 };
                 node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
             }
-            ExprKind::Field { base, name } => self.field(e.span, base, name),
+            ExprKind::Field { safe: true, .. }
+            | ExprKind::MethodCall { safe: true, .. }
+            | ExprKind::Coalesce { .. }
+            | ExprKind::Is { .. } => panic!("checking `?.`, `??` and `is` lands in Task 21"),
+            ExprKind::Field {
+                base,
+                name,
+                safe: false,
+            } => self.field(e.span, base, name),
             ExprKind::MethodCall {
                 receiver,
                 method,
                 args,
+                safe: false,
             } => self.method_call(e.span, receiver, method, args),
             ExprKind::Unary { op, operand } => {
                 let want = match op {
@@ -70,29 +79,7 @@ impl Checker {
                 )
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(e.span, *op, lhs, rhs),
-            ExprKind::Compare { operands, ops } => {
-                // Once an operand is `Error`, the rest expect `Error`, as in `binary`.
-                let mut want = Some(&Type::I64);
-                let (mut checked, mut mismatched) = (Vec::new(), false);
-                for operand in operands {
-                    let (operand, m) = self.operand(operand, want);
-                    if type_of(&operand).is_none() {
-                        want = None;
-                    }
-                    mismatched |= m;
-                    checked.push(operand);
-                }
-                let operands = checked.into_iter().collect::<Result<Vec<_>, _>>().ok();
-                typed(
-                    e.span,
-                    Type::Bool,
-                    mismatched,
-                    operands.map(|operands| tir::ExprKind::Compare {
-                        operands,
-                        ops: ops.clone(),
-                    }),
-                )
-            }
+            ExprKind::Compare { operands, ops } => self.compare(e.span, operands, ops),
             ExprKind::If {
                 cond,
                 then_block,
@@ -112,6 +99,31 @@ impl Checker {
                 expected,
             ),
         }
+    }
+
+    /// A comparison chain: every operand is an `i64`.
+    fn compare(&mut self, span: Span, operands: &[ast::Expr], ops: &[CompareOp]) -> Checked {
+        // Once an operand is `Error`, the rest expect `Error`, as in `binary`.
+        let mut want = Some(&Type::I64);
+        let (mut checked, mut mismatched) = (Vec::new(), false);
+        for operand in operands {
+            let (operand, m) = self.operand(operand, want);
+            if type_of(&operand).is_none() {
+                want = None;
+            }
+            mismatched |= m;
+            checked.push(operand);
+        }
+        let operands = checked.into_iter().collect::<Result<Vec<_>, _>>().ok();
+        typed(
+            span,
+            Type::Bool,
+            mismatched,
+            operands.map(|operands| tir::ExprKind::Compare {
+                operands,
+                ops: ops.to_vec(),
+            }),
+        )
     }
 
     /// An expression whose value is used: not `unit` or `never`.
@@ -745,7 +757,11 @@ fn path(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ExprKind::Name(name) => Some(name.clone()),
         ExprKind::SelfValue => Some("self".to_owned()),
-        ExprKind::Field { base, name } => Some(format!("{}.{}", path(base)?, name.name)),
+        ExprKind::Field {
+            base,
+            name,
+            safe: false,
+        } => Some(format!("{}.{}", path(base)?, name.name)),
         _ => None,
     }
 }

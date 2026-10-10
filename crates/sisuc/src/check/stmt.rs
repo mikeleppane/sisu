@@ -146,13 +146,13 @@ impl Checker {
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
             StmtKind::Assign { target, value } => match &target.kind {
-                ast::ExprKind::Field { base, name } => {
+                ast::ExprKind::Field { base, name, .. } => {
                     self.assign_field(stmt.span, base, name, value)
                 }
                 _ => self.assign(stmt.span, &place_name(target), value),
             },
             StmtKind::CompoundAssign { op, target, value } => {
-                if let ast::ExprKind::Field { base, name } = &target.kind {
+                if let ast::ExprKind::Field { base, name, .. } = &target.kind {
                     return self.compound_field(stmt.span, *op, target.span, base, name, value);
                 }
                 let target = &place_name(target);
