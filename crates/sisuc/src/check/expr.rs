@@ -266,10 +266,10 @@ impl Checker {
         let (then, other, ty) = self.branches(then_block, else_block, expected, |c, expected| {
             c.block(then_block, expected)
         });
-        let ty = if mismatched {
-            Err(Poisoned::error())
-        } else {
-            ty
+        // A failed join keeps its own `mismatch`.
+        let ty = match ty {
+            Ok(_) if mismatched => Err(Poisoned::error()),
+            ty => ty,
         };
         match (cond, then, other.transpose(), ty) {
             (Ok(cond), Ok(then_block), Ok(else_block), Ok(ty)) => Ok(tir::Expr {
@@ -304,10 +304,10 @@ impl Checker {
             block
         });
         let bind = bind.expect("`branches` checks the first block");
-        let ty = if mismatched {
-            Err(Poisoned::error())
-        } else {
-            ty
+        // A failed join keeps its own `mismatch`.
+        let ty = match ty {
+            Ok(_) if mismatched => Err(Poisoned::error()),
+            ty => ty,
         };
         match (scrutinee, then, other.transpose(), ty) {
             (Ok(scrutinee), Ok(then_block), Ok(else_block), Ok(ty)) => Ok(tir::Expr {
@@ -396,8 +396,14 @@ impl Checker {
                 }
                 joined
             }
+            // With a type expected, the branch that fits it neither as is nor as its payload is
+            // the mistake; without one, the `else` is, against the first branch.
             (Some(t), Some(o)) => {
-                let d = self.mismatch(value_span(else_block), &t, &o);
+                let d = match expected.filter(|w| **w != UNKNOWN) {
+                    Some(w) if fits(w, &t) => self.mismatch(value_span(else_block), w, &o),
+                    Some(w) => self.mismatch(value_span(then_block), w, &t),
+                    None => self.mismatch(value_span(else_block), &t, &o),
+                };
                 self.diagnostics.push(d);
                 None
             }
@@ -709,6 +715,11 @@ fn bare_none(block: &ast::Block) -> bool {
             ..
         })
     )
+}
+
+/// Whether a branch of type `ty` fits the expected `want`: as is, or as its payload.
+fn fits(want: &Type, ty: &Type) -> bool {
+    want == ty || matches!(want, Type::Optional(payload) if **payload == *ty)
 }
 
 /// What one branch of an `if` expects after the other, of type `ty`, when the `if` expects

@@ -2513,15 +2513,79 @@ mod tests {
                 .collect();
             errors(&format!("{src}\nfn main() {{}}"), &expected);
         }
+        // A rejected condition or scrutinee keeps the branches' mismatch.
+        errors(
+            "fn main() {\n    let x = !(if 1 { None } else { None })\n    print(x + 1)\n}",
+            &[
+                ("expected `bool`, found `i64`", (2, 18)),
+                ("expected `bool`, found `None`", (2, 22)),
+                ("expected `bool`, found `None`", (2, 36)),
+            ],
+        );
+        errors(
+            "fn main() {\n    let x = !(if let y = 5 { None } else { None })\n    print(x + 1)\n}",
+            &[
+                ("`if let` needs an optional; this is `i64`", (2, 26)),
+                ("expected `bool`, found `None`", (2, 30)),
+                ("expected `bool`, found `None`", (2, 44)),
+            ],
+        );
     }
 
-    /// The `if let` binding has a scope of its own around the first block, so the block may
-    /// declare the name again.
+    /// With a type expected, a join that fails is reported at the branch that fits it neither
+    /// as is nor as its payload, in either order, from a body, a `return` or a `let`.
     #[test]
-    fn if_let_block_redeclares_the_binding() {
-        clean(&format!(
-            "{T}fn f(n: T?) {{\n    if let x = n {{ let x = 1 }}\n}}\nfn main() {{}}"
-        ));
+    fn failed_join_blames_the_branch_that_does_not_fit() {
+        let sites = [
+            ("fn f(c: bool) -> T? {\n    ", 5),
+            ("fn f(c: bool) -> T? {\n    return ", 12),
+            ("fn f(c: bool) {\n    let x: T? = ", 17),
+        ];
+        let values = [
+            ("if c { 1 } else { None }", 7),
+            ("if c { None } else { 1 }", 21),
+        ];
+        for (site, start) in sites {
+            for (value, offset) in values {
+                error(
+                    &format!("{T}{site}{value}\n}}\nfn main() {{}}"),
+                    "expected `T?`, found `i64`",
+                    (6, start + offset),
+                );
+            }
+        }
+    }
+
+    /// A `unit` or `never` branch types no `None` beside it.
+    #[test]
+    fn none_beside_unit_or_never_needs_a_type() {
+        for (value, col) in [
+            ("if c { g() } else { None }", 25),
+            ("if c { return } else { None }", 28),
+        ] {
+            errors(
+                &format!(
+                    "fn g() {{}}\nfn f(c: bool) {{\n    {value}\n    print(1)\n}}\nfn main() {{}}"
+                ),
+                &[("cannot infer the type of `None`", (3, col))],
+            );
+        }
+    }
+
+    /// The `if let` and `while let` binding belongs to the scope of its block, so the block
+    /// cannot declare the name again.
+    #[test]
+    fn unwrapping_block_cannot_redeclare_the_binding() {
+        for (head, x, col) in [("if let", 12, 24), ("while let", 15, 27)] {
+            expect_error(
+                &format!("{T}fn f(n: T?) {{\n    {head} x = n {{ let x = 1 }}\n}}\nfn main() {{}}"),
+                "`x` is already declared in this scope",
+                (6, col),
+                None,
+                &[(6, x, "first declared here")],
+                None,
+            );
+        }
     }
 
     /// Every position that expects a `T?` wraps a `T`.
@@ -2586,6 +2650,23 @@ mod tests {
         f_contains(
             "fn f(c: bool, t: T) -> T? {\n    let x = if c { t } else { None }\n    x\n}",
             "(let x#2 (if c#0 (block (wrap t#1)) (block None)))",
+        );
+    }
+
+    #[test]
+    fn wraps_an_if_let_binding_beside_none() {
+        f_contains(
+            "fn f(n: T?) {\n    let y = if let x = n { x } else { None }\n}",
+            "(let y#2 (if-some x#1 n#0 (block (wrap x#1)) (block None)))",
+        );
+    }
+
+    /// A `T` meets a `T?` that is not a bare `None`: the `T` branch is wrapped.
+    #[test]
+    fn wraps_a_value_beside_an_optional_call() {
+        f_contains(
+            "fn give() -> T? { None }\nfn f(c: bool, t: T) {\n    let x = if c { t } else { give() }\n}",
+            "(let x#2 (if c#0 (block (wrap t#1)) (block (call give))))",
         );
     }
 

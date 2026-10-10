@@ -16,6 +16,11 @@ impl Checker {
     /// Every statement is checked, also after one fails. `expected` is for the block's value.
     pub(super) fn block(&mut self, block: &ast::Block, expected: Option<&Type>) -> CheckedBlock {
         self.scopes.push(HashMap::new());
+        self.scoped_block(block, expected)
+    }
+
+    /// `block`, in the scope just opened for it, which it closes.
+    fn scoped_block(&mut self, block: &ast::Block, expected: Option<&Type>) -> CheckedBlock {
         let mut stmts = Vec::new();
         let mut ty = Some(Type::Unit);
         let (mut failed, mut warned, mut mismatch) = (false, false, false);
@@ -359,8 +364,9 @@ impl Checker {
         Ok(tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span)))
     }
 
-    /// `block`, in a scope of its own where `name` is bound to a `ty`, as `keyword` (`if let`
-    /// or `while let`) binds it. The bound local, and the block.
+    /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let` or
+    /// `while let`) binds it: the block cannot declare `name` again. The bound local, and the
+    /// block.
     pub(super) fn unwrapping_block(
         &mut self,
         keyword: &'static str,
@@ -371,9 +377,7 @@ impl Checker {
     ) -> (tir::LocalId, CheckedBlock) {
         self.scopes.push(HashMap::new());
         let bind = self.declare(name, ty, BindingKind::Unwrapped(keyword));
-        let block = self.block(block, expected);
-        self.pop_scope();
-        (bind, block)
+        (bind, self.scoped_block(block, expected))
     }
 
     /// The type of field `index` of `class`, which `span` assigns, and whether it may be
