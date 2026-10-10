@@ -42,11 +42,13 @@ Milestones 1 to 3 are done. `sisuc` compiles:
 - `==` that compares objects field by field, and `is` that tests identity
 - optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
   `while let`
-- `u8`, a byte whose arithmetic panics on overflow like `i64`'s
-- arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`, read and
-  written by index, and walked with `for x in xs` or `for i in 0..n`; arrays are values
-  with copy-on-write, so `let b = a` shares until one of them is written, and a counted
-  local's last read moves it instead of copying
+- `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
+  conversions `u8(...)` and `i64(...)`
+- arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
+  read and written by index, compared with `==`, and walked with `for x in xs`
+  or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
+- copy-on-write arrays: `let b = a` shares until one of them is written, and a
+  counted local's last read moves it instead of copying
 - error messages in the style of `rustc`, pointing at the code
 
 ## Start here

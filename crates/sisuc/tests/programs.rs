@@ -249,6 +249,21 @@ fn sieve() {
     assert_prints_out_file("sieve");
 }
 
+#[test]
+fn handover() {
+    assert_prints_out_file("handover");
+}
+
+#[test]
+fn copies() {
+    assert_prints_out_file("copies");
+}
+
+#[test]
+fn walk() {
+    assert_prints_out_file("walk");
+}
+
 /// The `N` of the `total heap usage: N allocs` line in Valgrind's stderr, thousands separators
 /// removed; panics when the line is missing.
 fn allocs_in(valgrind_stderr: &str) -> u64 {
@@ -268,15 +283,7 @@ fn allocs_in(valgrind_stderr: &str) -> u64 {
 /// Runs `exe` under Valgrind and returns its stdout and `allocs_in` of its stderr. Valgrind runs
 /// without `-q`, which prints the heap summary.
 fn heap_allocs(exe: &Path) -> (String, u64) {
-    let out = Command::new("valgrind")
-        .args([
-            "--leak-check=full",
-            "--errors-for-leak-kinds=definite,indirect,possible",
-            "--error-exitcode=1",
-        ])
-        .arg(exe)
-        .output()
-        .expect("valgrind is required: install it with `apt install valgrind`");
+    let out = valgrind(exe);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{}: {stderr}", exe.display());
     (
@@ -295,16 +302,12 @@ fn extra_allocs(name: &str, o2: bool) -> (String, String, i64) {
     let rest = source
         .strip_prefix(FIRST_LINE)
         .unwrap_or_else(|| panic!("{name}.sisu should start with `{}`", FIRST_LINE.trim_end()));
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let baseline = format!("{name}_k0");
-    fs::write(
-        dir.join(format!("{baseline}.sisu")),
-        format!("{}{rest}", FIRST_LINE.replace("1000", "0")),
-    )
-    .expect("writes the baseline program");
+    let baseline = format!("{}{rest}", FIRST_LINE.replace("1000", "0"));
 
-    let (stdout, allocs) = heap_allocs(&compile(Path::new(PROGRAMS), name, o2));
-    let (base_stdout, base_allocs) = heap_allocs(&compile(dir, &baseline, o2));
+    // Own file names, so these builds never share an executable with the test of `<name>.out`.
+    let (stdout, allocs) = heap_allocs(&compile_tmp(&format!("{name}_k1000"), &source, o2));
+    let (base_stdout, base_allocs) =
+        heap_allocs(&compile_tmp(&format!("{name}_k0"), &baseline, o2));
     let extra = i64::try_from(allocs).expect("a count fits i64")
         - i64::try_from(base_allocs).expect("a count fits i64");
     (stdout, base_stdout, extra)
@@ -320,6 +323,38 @@ fn allocs_in_reads_grouped_counts() {
 #[should_panic(expected = "no `total heap usage` line")]
 fn allocs_in_panics_without_the_summary_line() {
     allocs_in("==1== All heap blocks were freed -- no leaks are possible");
+}
+
+/// The `-O2` rows of `allocation_counts` only prove the hand-over if the call to `fill` is
+/// still there: the inliner would otherwise fold it into `main`.
+#[test]
+fn fill_call_survives_o2() {
+    for name in ["handover", "copies"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(PROGRAMS)
+            .args(["-O2", "--emit", "ir"])
+            .arg(format!("{name}.sisu"))
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let (_, after) = stdout
+            .split_once("\n; after default<O2>\n")
+            .unwrap_or_else(|| panic!("no `; after default<O2>` line in\n{stdout}"));
+        let (_, main_onward) = after
+            .split_once("define void @sisu.main()")
+            .unwrap_or_else(|| panic!("{name}: no `sisu.main` in\n{after}"));
+        let main = main_onward
+            .split("\n}")
+            .next()
+            .expect("split yields one piece");
+        assert!(main.contains("call ptr @sisu.fill("), "{name}: {main}");
+    }
 }
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.

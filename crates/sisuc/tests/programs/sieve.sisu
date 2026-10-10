@@ -1,5 +1,5 @@
 // Counts the primes up to 100 000 with a sieve. `is_prime` is written in place and handed to
-// the caller: no copy, because every use of it is a last use or a write.
+// the caller: no copy, because the array is never shared.
 fn sieve(n: i64) -> [bool] {
     var is_prime = [true; n + 1]
     is_prime[0] = false
