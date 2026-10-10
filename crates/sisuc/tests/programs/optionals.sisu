@@ -14,6 +14,10 @@ class P {
     fn say(self, x: i64) {
         print(x)
     }
+
+    fn me(self) -> P {
+        self
+    }
 }
 
 // `Pt.tag` names a class declared later, so `@sisu_rc.eq.Pt` calls a helper defined after it.
@@ -39,8 +43,8 @@ fn flip(b: bool?) -> bool? {
     if let v = b { !v } else { None }
 }
 
-// The first `n` from `from` whose square exceeds `limit`, or `None` past `to`. The recursion
-// keeps the `i64?` return a real call, even at `-O2`.
+// The first `n` from `from` whose square exceeds `limit`, or `None` past `to`. `-O2` folds
+// these calls away; `climb` and `toggle` keep `i64?` and `bool?` crossing a real call.
 fn root_above(from: i64, to: i64, limit: i64) -> i64? {
     if from > to {
         None
@@ -128,6 +132,10 @@ fn safe_calls() {
     print(p?.n ?? 0)
     print(none?.n ?? 0)
     print(p?.get() == 4)
+    print(p?.e == None)
+    print(none?.e == None)
+    print(p?.me()?.n ?? 0)
+    print(none?.me() == None)
     let o: Pt? = Pt(x: 6, y: None, tag: None)
     print(o?.x ?? 0)
 }
