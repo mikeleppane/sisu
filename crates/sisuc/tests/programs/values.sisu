@@ -120,6 +120,19 @@ fn value_first() {
     print(xs[0])                      // 9
 }
 
+// Prints `marker` so the output shows when an operand runs.
+fn traced(marker: i64, v: i64) -> i64 {
+    print(marker)
+    v
+}
+
+// A write runs each index once from the root outwards, then the value.
+fn operand_order() {
+    var grid = [[0, 0], [0, 0]]
+    grid[traced(100, 1)][traced(200, 0)] = traced(300, 4)
+    print(grid[1][0])                 // 4
+}
+
 // The value returns before the index is checked against the length.
 fn exits(c: bool) -> i64 {
     var xs = [1]
@@ -152,6 +165,7 @@ fn main() {
     shared_object()
     aliasing()
     value_first()
+    operand_order()                   // 100, 200, 300
     print(exits(true))                // 0
     print(field_exits(true))          // 2
     print(index_exits(true))          // 3
