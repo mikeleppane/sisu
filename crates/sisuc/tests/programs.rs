@@ -185,6 +185,11 @@ fn list() {
 }
 
 #[test]
+fn for_range_releases_the_body_tail() {
+    assert_prints_out_file("for_range_drop");
+}
+
+#[test]
 fn drops() {
     assert_prints_out_file("drops");
 }

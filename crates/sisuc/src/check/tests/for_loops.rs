@@ -31,6 +31,23 @@ fn range_bounds_are_i64() {
 }
 
 #[test]
+fn range_start_is_i64() {
+    errors(
+        "fn f(b: u8) { for i in b..0 {} }\nfn main() {}",
+        &[("expected `i64`, found `u8`", (1, 24))],
+    );
+}
+
+#[test]
+fn loop_variable_has_the_element_type() {
+    clean("fn f(xs: [u8]) { for x in xs { let y: u8 = x } }\nfn main() {}");
+    errors(
+        "fn f(xs: [u8]) { for x in xs { let y: bool = x } }\nfn main() {}",
+        &[("expected `bool`, found `u8`", (1, 46))],
+    );
+}
+
+#[test]
 fn for_needs_array() {
     expect_error(
         "fn main() { for x in 5 {} }",
@@ -67,14 +84,22 @@ fn loop_variable_is_immutable() {
 }
 
 #[test]
-fn loop_variable_scope() {
+fn loop_variable_ends_with_the_loop() {
     errors(
         "fn f(xs: [i64]) {\n    for x in xs {}\n    print(x)\n}\nfn main() {}",
         &[("cannot find `x` in this scope", (3, 11))],
     );
+}
+
+#[test]
+fn loop_variable_shadows_an_outer_binding() {
     clean(
         "fn f(xs: [i64]) {\n    let x = 1\n    for x in xs { print(x) }\n    print(x)\n}\nfn main() {}",
     );
+}
+
+#[test]
+fn break_and_continue_work_in_for() {
     clean(
         "fn f(xs: [i64]) {\n    for x in xs {\n        if x == 1 { continue }\n        if x == 2 { break }\n    }\n}\nfn main() {}",
     );
@@ -94,5 +119,17 @@ fn for_poison() {
     errors(
         "fn main() {\n    for x in nope { print(x + true) }\n}",
         &[("cannot find `nope` in this scope", (2, 14))],
+    );
+}
+
+#[test]
+fn bad_range_bound_still_checks_the_body() {
+    // `i` is `i64` whatever the bounds are, so the body's own error is real.
+    errors(
+        "fn main() {\n    for i in nope..3 { print(i + true) }\n}",
+        &[
+            ("cannot find `nope` in this scope", (2, 14)),
+            ("expected `i64`, found `bool`", (2, 34)),
+        ],
     );
 }

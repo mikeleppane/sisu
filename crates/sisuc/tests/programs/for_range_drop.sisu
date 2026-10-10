@@ -1,0 +1,12 @@
+class Node { let v: i64 }
+
+fn make(i: i64) -> Node { Node(v: i) }
+
+fn main() {
+    var total = 0
+    for i in 0..3 {
+        total += i
+        make(i)
+    }
+    print(total)
+}

@@ -202,6 +202,8 @@ impl Checker {
         let (Some(header), Ok(body)) = (header, body) else {
             return Err(Poisoned::typed(Type::Unit));
         };
+        // The body keeps its own type, so codegen releases a counted tail value.
+        let body_ty = body.ty.clone();
         let ForHeader {
             mut stmts,
             counter,
@@ -225,7 +227,7 @@ impl Checker {
                     place: tir::Place::Local(counter),
                     value: expr(next, Type::I64),
                 },
-                tir::Stmt::Expr(expr(ExprKind::Block(body), Type::Unit)),
+                tir::Stmt::Expr(expr(ExprKind::Block(body), body_ty)),
             ],
             value: None,
             ty: Type::Unit,
