@@ -383,11 +383,16 @@ impl Checker {
                 Type::Class(id)
             }
         };
-        Some(if ty.optional {
-            Type::Optional(Box::new(named))
-        } else {
-            named
-        })
+        if !ty.optional {
+            return Some(named);
+        }
+        // Temporary: Task 22 deletes this message when codegen lowers scalar optionals.
+        if matches!(named, Type::I64 | Type::Bool) {
+            let message = format!("`{}?` is not supported yet", ty.name);
+            self.diagnostics.push(Diagnostic::error(ty.span, message));
+            return None;
+        }
+        Some(Type::Optional(Box::new(named)))
     }
 
     /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
@@ -2373,9 +2378,85 @@ mod tests {
     #[test]
     fn print_optional() {
         error(
-            "fn f(x: i64?) { print(x) }\nfn main() {}",
+            &format!("{T}fn f(x: T?) {{ print(x) }}\nfn main() {{}}"),
             "`print` takes one `i64` or `bool`",
-            (1, 17),
+            (5, 15),
+        );
+    }
+
+    /// Temporary: Task 22 deletes this test when codegen lowers scalar optionals. The rejected
+    /// type is `Error`, so the `None` it would type draws nothing.
+    #[test]
+    fn scalar_optional_is_not_supported_yet() {
+        errors(
+            "fn f(x: bool?) {}\nfn main() { let x: i64? = None }",
+            &[
+                ("`bool?` is not supported yet", (1, 9)),
+                ("`i64?` is not supported yet", (2, 20)),
+            ],
+        );
+    }
+
+    /// A `None` that its rule rejects fails that rule: what the rule makes is `Error`, so a
+    /// later use draws nothing.
+    #[test]
+    fn rejected_none_reports_once() {
+        let cases = [
+            (
+                "fn main() {\n    let x = !None\n    print(x + 1)\n}",
+                "expected `bool`, found `None`",
+                (2, 14),
+            ),
+            (
+                "fn main() {\n    let x = if None { 1 } else { 2 }\n    print(x && true)\n}",
+                "expected `bool`, found `None`",
+                (2, 16),
+            ),
+            (
+                "fn f(x: i64) -> i64 { x }\nfn main() {\n    let r = f(None)\n    print(r && true)\n}",
+                "expected `i64`, found `None`",
+                (3, 15),
+            ),
+            (
+                "fn main() {\n    let y = None + 1\n    print(y && true)\n}",
+                "expected `i64`, found `None`",
+                (2, 13),
+            ),
+        ];
+        for (src, message, pos) in cases {
+            error(src, message, pos);
+        }
+    }
+
+    /// The `if let` binding has a scope of its own around the first block, so the block may
+    /// declare the name again.
+    #[test]
+    fn if_let_block_redeclares_the_binding() {
+        clean(&format!(
+            "{T}fn f(n: T?) {{\n    if let x = n {{ let x = 1 }}\n}}\nfn main() {{}}"
+        ));
+    }
+
+    /// Every position that expects a `T?` wraps a `T`.
+    #[test]
+    fn wraps_where_optional_expected() {
+        let src = "fn g(x: T?) {}\nfn f(t: T) -> T? {\n    let a: T? = t\n    var b: T? = None\n    b = t\n    g(t)\n    let c = T(v: 1, next: t)\n    return t\n}";
+        for part in [
+            "(let a#1 (wrap t#0))",
+            "(= b#2 (wrap t#0))",
+            "(call g (wrap t#0))",
+            "(new T 1 (wrap t#0))",
+            "(return (wrap t#0))",
+        ] {
+            f_contains(src, part);
+        }
+    }
+
+    #[test]
+    fn lowers_else_if_let() {
+        f_contains(
+            "fn f(a: T?, b: T?) -> i64 {\n    if let x = a { x.v } else if let y = b { y.v } else { 0 }\n}",
+            "(if-some x#2 a#0 (block (. x#2 v)) (block (if-some y#3 b#1 (block (. y#3 v)) (block 0))))",
         );
     }
 

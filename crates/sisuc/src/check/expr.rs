@@ -136,6 +136,11 @@ impl Checker {
     /// that wants `want`, so that rule's expression is `Error`.
     fn operand(&mut self, e: &ast::Expr, want: Option<&Type>) -> (Checked, bool) {
         let checked = self.value(e, Some(want.unwrap_or(&UNKNOWN)));
+        // `none` has reported a `None` that `want` rejects: a mismatch, which `against` cannot
+        // tell from an `Error` operand.
+        if want.is_some() && matches!(e.kind, ExprKind::NoneLit) && checked.is_err() {
+            return (checked, true);
+        }
         self.against(e.span, checked, want)
     }
 
