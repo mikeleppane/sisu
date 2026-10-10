@@ -409,18 +409,7 @@ impl Checker {
         if !ty.optional {
             return Some(named);
         }
-        self.optional_of(named, ty.span)
-    }
-
-    /// `payload?`, as the type at `span` names it or the `if` join there infers it.
-    fn optional_of(&mut self, payload: Type, span: Span) -> Option<Type> {
-        // Temporary: Task 22 deletes this message when codegen lowers scalar optionals.
-        if matches!(payload, Type::I64 | Type::Bool) {
-            let message = format!("`{payload}?` is not supported yet");
-            self.diagnostics.push(Diagnostic::error(span, message));
-            return None;
-        }
-        Some(Type::Optional(Box::new(payload)))
+        Some(optional_of(named))
     }
 
     /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
@@ -540,6 +529,14 @@ fn block_expr(stmts: Vec<tir::Stmt>, value: Option<tir::Expr>, ty: Type, span: S
     }
 }
 
+/// `ty?`; an optional is its own, as optionals do not nest.
+fn optional_of(ty: Type) -> Type {
+    match ty {
+        Type::Optional(_) => ty,
+        ty => Type::Optional(Box::new(ty)),
+    }
+}
+
 /// `e`, of type `T`, where its optional `ty` is expected.
 fn wrap(e: tir::Expr, ty: &Type) -> tir::Expr {
     tir::Expr {
@@ -618,23 +615,32 @@ mod tests {
         line_col(src, span.start)
     }
 
-    /// Asserts exactly one error with these parts, and no `tir`; `secondary` is
-    /// `(line, col, text)` rows.
+    /// Asserts exactly one error and no `tir`, and returns it.
+    fn single_error(src: &str, message: &str) -> Diagnostic {
+        let (program, mut ds) = checked(src);
+        assert!(program.is_none(), "an error yields no `tir`");
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        let d = ds.remove(0);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.message, message);
+        d
+    }
+
+    /// Asserts exactly one error with these parts, and no `tir`; `pos` is `(line, col, text)`
+    /// of the whole primary span, `secondary` is `(line, col, text)` rows.
     fn expect_error(
         src: &str,
         message: &str,
-        pos: (usize, usize),
+        pos: (usize, usize, &str),
         label: Option<&str>,
         secondary: &[(usize, usize, &str)],
         help: Option<&str>,
     ) {
-        let (program, ds) = checked(src);
-        assert!(program.is_none(), "an error yields no `tir`");
-        assert_eq!(ds.len(), 1, "{ds:?}");
-        let d = &ds[0];
-        assert_eq!(d.severity, Severity::Error);
-        assert_eq!(d.message, message);
-        assert_eq!(at(src, d.span), pos);
+        let d = single_error(src, message);
+        assert_eq!(
+            (at(src, d.span), &src[d.span.start..d.span.end]),
+            ((pos.0, pos.1), pos.2)
+        );
         assert_eq!(d.label.as_deref(), label);
         let found: Vec<_> = d
             .secondary
@@ -650,7 +656,11 @@ mod tests {
 
     /// Asserts exactly one error with this message and position, and no label or help.
     fn error(src: &str, message: &str, pos: (usize, usize)) {
-        expect_error(src, message, pos, None, &[], None);
+        let d = single_error(src, message);
+        assert_eq!(at(src, d.span), pos);
+        assert_eq!(d.label, None);
+        assert!(d.secondary.is_empty(), "{:?}", d.secondary);
+        assert_eq!(d.help, None);
     }
 
     /// Asserts exactly one diagnostic: a warning with this message and position.
@@ -672,7 +682,7 @@ mod tests {
         expect_error(
             "fn main() {}\nfn main() {}",
             "function `main` is defined twice",
-            (2, 4),
+            (2, 4, "main"),
             None,
             &[(1, 4, "first defined here")],
             None,
@@ -684,7 +694,7 @@ mod tests {
         expect_error(
             "fn print() {}\nfn main() {}",
             "function `print` is defined twice",
-            (1, 4),
+            (1, 4, "print"),
             Some("`print` is built in"),
             &[],
             None,
@@ -694,7 +704,7 @@ mod tests {
     #[test]
     fn missing_main() {
         let src = "fn f() {}";
-        expect_error(src, "no `main` function", (1, 1), None, &[], None);
+        expect_error(src, "no `main` function", (1, 1, ""), None, &[], None);
         assert_eq!(diags(src)[0].span, Span::new(0, 0));
     }
 
@@ -703,7 +713,7 @@ mod tests {
         expect_error(
             "fn main(x: i64) {}",
             "`main` takes no parameters and returns no value",
-            (1, 4),
+            (1, 4, "main"),
             None,
             &[],
             None,
@@ -715,7 +725,7 @@ mod tests {
         expect_error(
             "fn main() -> i64 { 0 }",
             "`main` takes no parameters and returns no value",
-            (1, 4),
+            (1, 4, "main"),
             None,
             &[],
             None,
@@ -727,7 +737,7 @@ mod tests {
         expect_error(
             "fn main() { let x: str = 1 }",
             "unknown type `str`",
-            (1, 20),
+            (1, 20, "str"),
             None,
             &[],
             Some("the types are `i64`, `bool` and classes"),
@@ -739,7 +749,7 @@ mod tests {
         expect_error(
             "fn main() { print(y) }",
             "cannot find `y` in this scope",
-            (1, 19),
+            (1, 19, "y"),
             None,
             &[],
             None,
@@ -751,7 +761,7 @@ mod tests {
         expect_error(
             "fn main() { g() }",
             "cannot find function `g`",
-            (1, 13),
+            (1, 13, "g"),
             None,
             &[],
             None,
@@ -763,7 +773,7 @@ mod tests {
         expect_error(
             "fn main() {\n    let x = 1\n    let x = 2\n}",
             "`x` is already declared in this scope",
-            (3, 9),
+            (3, 9, "x"),
             None,
             &[(2, 9, "first declared here")],
             None,
@@ -775,7 +785,7 @@ mod tests {
         expect_error(
             "fn f(a: i64, a: i64) {}\nfn main() {}",
             "`a` is already declared in this scope",
-            (1, 14),
+            (1, 14, "a"),
             None,
             &[(1, 6, "first declared here")],
             None,
@@ -1179,7 +1189,7 @@ mod tests {
         expect_error(
             "fn f(a: str) {}\nfn main() {}",
             "unknown type `str`",
-            (1, 9),
+            (1, 9, "str"),
             None,
             &[],
             Some("the types are `i64`, `bool` and classes"),
@@ -1228,18 +1238,6 @@ mod tests {
             "fn main() { print(1 == true) }",
             "cannot compare `i64` with `bool`",
             (1, 19),
-        );
-    }
-
-    /// Temporary: Task 21 deletes this test with its diagnostic.
-    #[test]
-    fn equality_on_classes_not_supported_yet() {
-        errors(
-            "class E {}\nfn main() {\n    print(E() == E())\n    print(1 != E())\n}",
-            &[
-                ("`==` on classes is not supported yet", (3, 11)),
-                ("`!=` on classes is not supported yet", (4, 11)),
-            ],
         );
     }
 
@@ -1531,7 +1529,7 @@ mod tests {
         expect_error(
             src,
             "cannot assign to `n`",
-            (3, 5),
+            (3, 5, "n = 1"),
             Some("cannot assign twice"),
             &[(2, 9, "declared with `let` here")],
             Some("declare it with `var`"),
@@ -1554,7 +1552,7 @@ mod tests {
         expect_error(
             "fn main() {\n    let n = 0\n    n += 1\n}",
             "cannot assign to `n`",
-            (3, 5),
+            (3, 5, "n += 1"),
             Some("cannot assign twice"),
             &[(2, 9, "declared with `let` here")],
             Some("declare it with `var`"),
@@ -1566,7 +1564,7 @@ mod tests {
         expect_error(
             "fn f(n: i64) {\n    n = 1\n}\nfn main() {}",
             "cannot assign to `n`",
-            (2, 5),
+            (2, 5, "n = 1"),
             None,
             &[(1, 6, "declared as a parameter here")],
             Some("copy it into a `var`: `var n = n`"),
@@ -1578,7 +1576,7 @@ mod tests {
         expect_error(
             "fn f(n: i64) {\n    n += 1\n}\nfn main() {}",
             "cannot assign to `n`",
-            (2, 5),
+            (2, 5, "n += 1"),
             None,
             &[(1, 6, "declared as a parameter here")],
             Some("copy it into a `var`: `var n = n`"),
@@ -1669,7 +1667,7 @@ mod tests {
         expect_error(
             "class A {}\nfn A() {}\nfn main() {}",
             "function `A` is defined twice",
-            (2, 4),
+            (2, 4, "A"),
             None,
             &[(1, 7, "first defined here")],
             None,
@@ -1681,7 +1679,7 @@ mod tests {
         expect_error(
             "fn A() {}\nclass A {}\nfn main() {}",
             "class `A` is defined twice",
-            (2, 7),
+            (2, 7, "A"),
             None,
             &[(1, 4, "first defined here")],
             None,
@@ -1713,7 +1711,7 @@ mod tests {
         expect_error(
             "class print {}\nfn main() {}",
             "class `print` is defined twice",
-            (1, 7),
+            (1, 7, "print"),
             Some("`print` is built in"),
             &[],
             None,
@@ -1725,7 +1723,7 @@ mod tests {
         expect_error(
             "class A {\n    let x: i64\n    fn x(self) {}\n}\nfn main() {}",
             "method `x` is defined twice",
-            (3, 8),
+            (3, 8, "x"),
             None,
             &[(2, 9, "first defined here")],
             None,
@@ -1737,7 +1735,7 @@ mod tests {
         expect_error(
             "class A {\n    fn x(self) {}\n    var x: i64\n}\nfn main() {}",
             "field `x` is defined twice",
-            (3, 9),
+            (3, 9, "x"),
             None,
             &[(2, 8, "first defined here")],
             None,
@@ -1758,7 +1756,7 @@ mod tests {
         expect_error(
             "class Node {\n    let next: Node\n}\nfn main() {}",
             "`Node` can never be constructed: field `next` needs a `Node`",
-            (2, 9),
+            (2, 9, "next"),
             None,
             &[],
             Some("make it optional: `Node?`"),
@@ -1770,7 +1768,7 @@ mod tests {
         expect_error(
             "class A {\n    let b: B\n}\nclass B {\n    let a: A\n}\nfn main() {}",
             "`A` can never be constructed: field `b` needs a `B`",
-            (2, 9),
+            (2, 9, "b"),
             None,
             &[],
             Some("make it optional: `B?`"),
@@ -1800,7 +1798,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n}\nfn main() { P(1) }",
             "this argument needs a label",
-            (4, 15),
+            (4, 15, "1"),
             None,
             &[],
             Some("label it with its field: `x: ...`"),
@@ -1821,7 +1819,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(y: 1, x: 2) }",
             "expected field `x` here, found `y`",
-            (5, 15),
+            (5, 15, "y"),
             None,
             &[],
             Some("name the fields in declaration order: `x`, `y`"),
@@ -1833,7 +1831,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(x: 1) }",
             "missing field `y`",
-            (5, 13),
+            (5, 13, "P(x: 1)"),
             None,
             &[],
             Some("name the fields in declaration order: `x`, `y`"),
@@ -1968,7 +1966,7 @@ mod tests {
         expect_error(
             "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.m)\n}",
             "`m` is a method of `P`, not a field",
-            (6, 13),
+            (6, 13, "m"),
             None,
             &[],
             Some("call it: `m()`"),
@@ -2051,7 +2049,7 @@ mod tests {
         expect_error(
             "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = 2\n}",
             "cannot assign to `x`",
-            (6, 5),
+            (6, 5, "p.x = 2"),
             None,
             &[(2, 9, "declared with `let` here")],
             Some("declare it with `var`"),
@@ -2267,9 +2265,9 @@ mod tests {
     /// The class the optionals tests share: its `next` field is optional.
     const T: &str = "class T {\n    let v: i64\n    let next: T?\n}\n";
 
-    /// Asserts that `f`, lowered after `T` and before an empty `main`, prints `part`.
-    fn f_contains(f: &str, part: &str) {
-        let printed = lowered(&format!("{T}{f}\nfn main() {{}}"));
+    /// Asserts that `f`, lowered after `prefix` and before an empty `main`, prints `part`.
+    fn f_contains(prefix: &str, f: &str, part: &str) {
+        let printed = lowered(&format!("{prefix}{f}\nfn main() {{}}"));
         assert!(printed.contains(part), "{printed}");
     }
 
@@ -2278,7 +2276,7 @@ mod tests {
         expect_error(
             "fn main() { let x = None }",
             "cannot infer the type of `None`",
-            (1, 21),
+            (1, 21, "None"),
             None,
             &[],
             Some("write the type: `let x: Tree? = None`"),
@@ -2307,7 +2305,7 @@ mod tests {
         expect_error(
             "class T {\n    let v: i64\n}\nfn f(node: T?) -> i64 { node.v }\nfn main() {}",
             "`node` may be `None`",
-            (4, 25),
+            (4, 25, "node"),
             None,
             &[],
             Some("use `?.`, or unwrap it with `if let`"),
@@ -2382,7 +2380,7 @@ mod tests {
                 "{T}fn f(n: T?) {{\n    if let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
             ),
             "cannot assign to `x`",
-            (7, 9),
+            (7, 9, "x = T(v: 1, next: None)"),
             None,
             &[(6, 12, "bound by `if let` here")],
             None,
@@ -2396,7 +2394,7 @@ mod tests {
                 "{T}fn f(n: T?) {{\n    while let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
             ),
             "cannot assign to `x`",
-            (7, 9),
+            (7, 9, "x = T(v: 1, next: None)"),
             None,
             &[(6, 15, "bound by `while let` here")],
             None,
@@ -2410,51 +2408,11 @@ mod tests {
             "`print` takes one `i64` or `bool`",
             (5, 15),
         );
-    }
-
-    /// Temporary: Task 22 deletes this test when codegen lowers scalar optionals. The rejected
-    /// type is `Error`, so the `None` it would type draws nothing. An `if` that would join to
-    /// one is reported at its branch that is not `None`, and is `Error`: its use draws nothing.
-    #[test]
-    fn scalar_optional_is_not_supported_yet() {
-        errors(
-            "fn f(x: bool?) {}\nfn main() { let x: i64? = None }",
-            &[
-                ("`bool?` is not supported yet", (1, 9)),
-                ("`i64?` is not supported yet", (2, 20)),
-            ],
+        error(
+            "fn f(x: i64?) { print(x) }\nfn main() {}",
+            "`print` takes one `i64` or `bool`",
+            (1, 17),
         );
-        let joins = [
-            (
-                "if c { 1 } else { None }",
-                "`i64?` is not supported yet",
-                20,
-            ),
-            (
-                "if c { None } else { 1 }",
-                "`i64?` is not supported yet",
-                34,
-            ),
-            (
-                "if c { true } else { None }",
-                "`bool?` is not supported yet",
-                20,
-            ),
-            (
-                "if c { None } else { false }",
-                "`bool?` is not supported yet",
-                34,
-            ),
-        ];
-        for (value, message, col) in joins {
-            error(
-                &format!(
-                    "fn f(c: bool) {{\n    let x = {value}\n    print(x.v)\n}}\nfn main() {{}}"
-                ),
-                message,
-                (2, col),
-            );
-        }
     }
 
     /// A `None` that its rule rejects fails that rule: what the rule makes is `Error`, so a
@@ -2580,7 +2538,7 @@ mod tests {
             expect_error(
                 &format!("{T}fn f(n: T?) {{\n    {head} x = n {{ let x = 1 }}\n}}\nfn main() {{}}"),
                 "`x` is already declared in this scope",
-                (6, col),
+                (6, col, "x"),
                 None,
                 &[(6, x, "first declared here")],
                 None,
@@ -2599,13 +2557,14 @@ mod tests {
             "(new T 1 (wrap t#0))",
             "(return (wrap t#0))",
         ] {
-            f_contains(src, part);
+            f_contains(T, src, part);
         }
     }
 
     #[test]
     fn lowers_else_if_let() {
         f_contains(
+            T,
             "fn f(a: T?, b: T?) -> i64 {\n    if let x = a { x.v } else if let y = b { y.v } else { 0 }\n}",
             "(if-some x#2 a#0 (block (. x#2 v)) (block (if-some y#3 b#1 (block (. y#3 v)) (block 0))))",
         );
@@ -2631,6 +2590,7 @@ mod tests {
     #[test]
     fn wraps_a_value_where_optional_expected() {
         f_contains(
+            T,
             "fn f() -> T? { T(v: 1, next: None) }",
             "(block (wrap (new T 1 None)))",
         );
@@ -2639,6 +2599,7 @@ mod tests {
     #[test]
     fn joins_if_branches() {
         f_contains(
+            T,
             "fn f(c: bool, t: T) -> T? {\n    let x = if c { None } else { t }\n    x\n}",
             "(let x#2 (if c#0 (block None) (block (wrap t#1))))",
         );
@@ -2648,6 +2609,7 @@ mod tests {
     #[test]
     fn joins_a_value_then_none() {
         f_contains(
+            T,
             "fn f(c: bool, t: T) -> T? {\n    let x = if c { t } else { None }\n    x\n}",
             "(let x#2 (if c#0 (block (wrap t#1)) (block None)))",
         );
@@ -2656,6 +2618,7 @@ mod tests {
     #[test]
     fn wraps_an_if_let_binding_beside_none() {
         f_contains(
+            T,
             "fn f(n: T?) {\n    let y = if let x = n { x } else { None }\n}",
             "(let y#2 (if-some x#1 n#0 (block (wrap x#1)) (block None)))",
         );
@@ -2665,6 +2628,7 @@ mod tests {
     #[test]
     fn wraps_a_value_beside_an_optional_call() {
         f_contains(
+            T,
             "fn give() -> T? { None }\nfn f(c: bool, t: T) {\n    let x = if c { t } else { give() }\n}",
             "(let x#2 (if c#0 (block (wrap t#1)) (block (call give))))",
         );
@@ -2673,6 +2637,7 @@ mod tests {
     #[test]
     fn lowers_if_let() {
         f_contains(
+            T,
             "fn f(n: T?) -> i64 {\n    if let x = n { x.v } else { 0 }\n}",
             "(if-some x#1 n#0 (block (. x#1 v)) (block 0))",
         );
@@ -2681,8 +2646,349 @@ mod tests {
     #[test]
     fn lowers_while_let() {
         f_contains(
+            T,
             "fn f(l: T?) -> i64 {\n    var n = 0\n    var node = l\n    while let x = node {\n        n += 1\n        node = x.next\n    }\n    n\n}",
             "(loop (block (if-some x#3 node#2 (block (= n#1 (+ n#1 1)) (= node#2 (. x#3 next))) (block (break)))))",
+        );
+    }
+
+    #[test]
+    fn safe_call_on_non_optional() {
+        expect_error(
+            "class T {\n    let v: i64\n}\nfn f(t: T) -> i64? { t?.v }\nfn main() {}",
+            "`t` is not optional",
+            (4, 22, "t"),
+            None,
+            &[],
+            Some("use `.`"),
+        );
+    }
+
+    /// In `a?.b.c`, the `.c` applies to a `B?`.
+    #[test]
+    fn safe_chain_needs_each_step() {
+        expect_error(
+            "class A {\n    let b: B\n}\nclass B {\n    let c: i64\n}\nfn f(a: A?) -> i64? { a?.b.c }\nfn main() {}",
+            "`a?.b` may be `None`",
+            (7, 23, "a?.b"),
+            None,
+            &[],
+            Some("use `?.`, or unwrap it with `if let`"),
+        );
+    }
+
+    #[test]
+    fn coalesce_left_not_optional() {
+        error(
+            "fn main() { print(1 ?? 2) }",
+            "the left side of `??` is not optional",
+            (1, 19),
+        );
+    }
+
+    #[test]
+    fn coalesce_never() {
+        error(
+            "fn f(x: i64?, c: bool) -> i64 {\n    x ?? if c { return 0 } else { return 1 }\n}\nfn main() {}",
+            "unreachable code",
+            (2, 10),
+        );
+    }
+
+    #[test]
+    fn coalesce_type() {
+        error(
+            "fn f(x: i64?) -> i64 { x ?? true }\nfn main() {}",
+            "expected `i64`, found `bool`",
+            (1, 29),
+        );
+    }
+
+    #[test]
+    fn equal_none_on_non_optional() {
+        error(
+            "class T {}\nfn f(x: T) -> bool { x == None }\nfn main() {}",
+            "`x` is not optional, so it is never `None`",
+            (2, 22),
+        );
+    }
+
+    #[test]
+    fn none_equals_none() {
+        errors(
+            "fn main() { print(None == None) }",
+            &[("cannot infer the type of `None`", (1, 19))],
+        );
+    }
+
+    #[test]
+    fn equal_unit() {
+        errors(
+            "fn g() {}\nfn main() { print(g() == g()) }",
+            &[
+                ("expression has no value", (2, 19)),
+                ("expression has no value", (2, 26)),
+            ],
+        );
+    }
+
+    #[test]
+    fn equal_two_classes() {
+        error(
+            "class A {}\nclass B {}\nfn f(a: A, b: B) -> bool { a == b }\nfn main() {}",
+            "cannot compare `A` with `B`",
+            (3, 28),
+        );
+    }
+
+    #[test]
+    fn is_none() {
+        expect_error(
+            "class T {}\nfn f(x: T?) -> bool { x is None }\nfn main() {}",
+            "use `==` to test for `None`",
+            (2, 23, "x is None"),
+            None,
+            &[],
+            Some("`x == None`"),
+        );
+    }
+
+    #[test]
+    fn is_on_integers() {
+        expect_error(
+            "fn main() { print(1 is 1) }",
+            "`is` needs objects; found `i64`",
+            (1, 19, "1"),
+            None,
+            &[],
+            Some("use `==` to compare values"),
+        );
+    }
+
+    /// The operand that is not an object is blamed, not the whole expression.
+    #[test]
+    fn is_blames_the_operand_that_is_not_an_object() {
+        expect_error(
+            "class T {}\nfn f(t: T) -> bool { t is 1 }\nfn main() {}",
+            "`is` needs objects; found `i64`",
+            (2, 27, "1"),
+            None,
+            &[],
+            Some("use `==` to compare values"),
+        );
+    }
+
+    /// A side with no path has no help, as `this value == None` is not code.
+    #[test]
+    fn is_none_without_a_path_has_no_help() {
+        expect_error(
+            "class T {}\nfn make() -> T? { None }\nfn f() -> bool { make() is None }\nfn main() {}",
+            "use `==` to test for `None`",
+            (3, 18, "make() is None"),
+            None,
+            &[],
+            None,
+        );
+    }
+
+    /// `t == None` does not compile for a `T`, so it is not offered.
+    #[test]
+    fn is_none_on_a_plain_object_has_no_help() {
+        expect_error(
+            "class T {}\nfn f(t: T) -> bool { t is None }\nfn main() {}",
+            "use `==` to test for `None`",
+            (2, 22, "t is None"),
+            None,
+            &[],
+            None,
+        );
+    }
+
+    #[test]
+    fn is_none_checks_the_other_side() {
+        errors(
+            "fn main() { print(nope is None) }",
+            &[
+                ("use `==` to test for `None`", (1, 19)),
+                ("cannot find `nope` in this scope", (1, 19)),
+            ],
+        );
+    }
+
+    /// Once an operand is `Error`, the later one is not held to `is`.
+    #[test]
+    fn is_after_an_error_checks_no_further() {
+        errors(
+            "fn main() { print(nope is 1) }",
+            &[("cannot find `nope` in this scope", (1, 19))],
+        );
+    }
+
+    #[test]
+    fn is_two_classes() {
+        error(
+            "class A {}\nclass B {}\nfn f(a: A, b: B) -> bool { a is b }\nfn main() {}",
+            "cannot compare `A` with `B`",
+            (3, 28),
+        );
+    }
+
+    /// The other operand is still checked after a `??` or `?.` fails.
+    #[test]
+    fn coalesce_left_not_optional_checks_the_right() {
+        errors(
+            "fn main() { print(1 ?? nope) }",
+            &[
+                ("the left side of `??` is not optional", (1, 19)),
+                ("cannot find `nope` in this scope", (1, 24)),
+            ],
+        );
+    }
+
+    #[test]
+    fn safe_call_on_non_optional_checks_the_member() {
+        errors(
+            "class T {\n    let v: i64\n}\nfn f(t: T) -> i64? { t?.w }\nfn main() {}",
+            &[
+                ("`t` is not optional", (4, 22)),
+                ("`T` has no field `w`", (4, 25)),
+            ],
+        );
+    }
+
+    /// The member's argument is checked on the plain receiver too.
+    #[test]
+    fn safe_call_on_non_optional_checks_the_arguments() {
+        errors(
+            "class T {\n    fn g(self, x: i64) -> i64 { x }\n}\nfn f(t: T) -> i64? { t?.g(nope) }\nfn main() {}",
+            &[
+                ("`t` is not optional", (4, 22)),
+                ("cannot find `nope` in this scope", (4, 27)),
+            ],
+        );
+    }
+
+    /// The class the `?.`, `??`, `==` and `is` lowering tests share.
+    const C: &str = "class T {\n    let v: i64\n    let o: T?\n    fn m(self) {}\n    fn g(self, x: i64) -> i64 { x }\n}\n";
+
+    #[test]
+    fn lowers_safe_field() {
+        f_contains(
+            C,
+            "fn f(t: T?) -> i64? { t?.v }",
+            "(if-some #1 t#0 (block (wrap (. #1 v))) (block None))",
+        );
+    }
+
+    #[test]
+    fn safe_optional_field_not_wrapped() {
+        f_contains(
+            C,
+            "fn f(t: T?) -> T? { t?.o }",
+            "(if-some #1 t#0 (block (. #1 o)) (block None))",
+        );
+    }
+
+    #[test]
+    fn lowers_safe_unit_method() {
+        f_contains(
+            C,
+            "fn f(t: T?) { t?.m() }",
+            "(if-some #1 t#0 (block (call T.m #1)) (block))",
+        );
+    }
+
+    #[test]
+    fn lowers_safe_method_with_an_argument() {
+        f_contains(
+            C,
+            "fn f(t: T?) -> i64? { t?.g(1) }",
+            "(if-some #1 t#0 (block (wrap (call T.g #1 1))) (block None))",
+        );
+    }
+
+    #[test]
+    fn lowers_coalesce() {
+        f_contains(
+            C,
+            "fn f(x: i64?) -> i64 { x ?? 0 }",
+            "(if-some #1 x#0 (block #1) (block 0))",
+        );
+    }
+
+    #[test]
+    fn coalesce_with_optional_right() {
+        f_contains(
+            C,
+            "fn f(x: i64?, y: i64?) -> i64? { x ?? y }",
+            "(if-some #2 x#0 (block (wrap #2)) (block y#1))",
+        );
+    }
+
+    /// A bare `None` on the right takes the left side's type.
+    #[test]
+    fn coalesce_with_none_right() {
+        f_contains(
+            C,
+            "fn f(x: i64?) -> i64? { x ?? None }",
+            "(if-some #1 x#0 (block (wrap #1)) (block None))",
+        );
+    }
+
+    #[test]
+    fn coalesce_with_none_in_an_if() {
+        clean(&format!(
+            "{C}fn f(x: i64?, c: bool) -> i64? {{ x ?? if c {{ None }} else {{ 1 }} }}\nfn main() {{}}"
+        ));
+    }
+
+    /// `x ?? (y ?? 0)` is an `i64`, which the return type checks.
+    #[test]
+    fn coalesce_chain_is_not_optional() {
+        clean(&format!(
+            "{C}fn f(x: i64?, y: i64?) -> i64 {{ x ?? y ?? 0 }}\nfn main() {{}}"
+        ));
+    }
+
+    #[test]
+    fn equal_wraps_the_plain_side() {
+        f_contains(
+            C,
+            "fn f(a: i64?, b: i64) -> bool { a == b }",
+            "(== a#0 (wrap b#1))",
+        );
+    }
+
+    /// A bare `None` on the left takes the type of the right side.
+    #[test]
+    fn none_on_the_left_takes_the_other_type() {
+        f_contains(C, "fn f(t: T?) -> bool { None != t }", "(!= None t#0)");
+    }
+
+    #[test]
+    fn is_wraps_the_plain_side() {
+        f_contains(
+            C,
+            "fn f(a: T, b: T?) -> bool { a is b }",
+            "(is (wrap a#0) b#1)",
+        );
+    }
+
+    #[test]
+    fn spills_is() {
+        f_contains(
+            C,
+            "fn make() -> T { T(v: 0, o: None) }\nfn f(c: bool) -> bool {\n    make() is if c { return false } else { make() }\n}",
+            "(block (let #1 (call make)) (let #2 (if c#0 (block (return false)) (block (call make)))) (is #1 #2))",
+        );
+    }
+
+    #[test]
+    fn spills_equal() {
+        f_contains(
+            C,
+            "fn make() -> T { T(v: 0, o: None) }\nfn f(c: bool) -> bool {\n    make() == if c { return false } else { make() }\n}",
+            "(block (let #1 (call make)) (let #2 (if c#0 (block (return false)) (block (call make)))) (== #1 #2))",
         );
     }
 }

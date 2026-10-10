@@ -133,14 +133,18 @@ pub(crate) enum ExprKind {
     },
     SelfValue,
     NoneLit,
+    /// `safe` is `base?.name`.
     Field {
         base: Box<Expr>,
         name: Ident,
+        safe: bool,
     },
+    /// `safe` is `receiver?.method(args)`.
     MethodCall {
         receiver: Box<Expr>,
         method: Ident,
         args: Vec<Arg>,
+        safe: bool,
     },
     Unary {
         op: UnaryOp,
@@ -155,6 +159,16 @@ pub(crate) enum ExprKind {
     Compare {
         operands: Vec<Expr>,
         ops: Vec<CompareOp>,
+    },
+    /// `lhs ?? rhs`.
+    Coalesce {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    /// `lhs is rhs`.
+    Is {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
     },
     /// `else if` is an `else_block` holding one `Expr` statement with the inner `if`.
     If {
@@ -367,6 +381,11 @@ impl fmt::Display for Stmt {
     }
 }
 
+/// The access operator as the tree prints it.
+pub(crate) fn dot(safe: bool) -> &'static str {
+    if safe { "?." } else { "." }
+}
+
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
@@ -380,18 +399,23 @@ impl fmt::Display for Expr {
             }
             ExprKind::SelfValue => f.write_str("self"),
             ExprKind::NoneLit => f.write_str("None"),
-            ExprKind::Field { base, name } => write!(f, "(. {base} {})", name.name),
+            ExprKind::Field { base, name, safe } => {
+                write!(f, "({} {base} {})", dot(*safe), name.name)
+            }
             ExprKind::MethodCall {
                 receiver,
                 method,
                 args,
+                safe,
             } => {
-                write!(f, "(call (. {receiver} {})", method.name)?;
+                write!(f, "(call ({} {receiver} {})", dot(*safe), method.name)?;
                 spaced(f, args)?;
                 f.write_str(")")
             }
             ExprKind::Unary { op, operand } => write!(f, "({op} {operand})"),
             ExprKind::Binary { op, lhs, rhs } => write!(f, "({op} {lhs} {rhs})"),
+            ExprKind::Coalesce { lhs, rhs } => write!(f, "(?? {lhs} {rhs})"),
+            ExprKind::Is { lhs, rhs } => write!(f, "(is {lhs} {rhs})"),
             ExprKind::Compare { operands, ops } => {
                 // `(< a b <= c)`: the first operator leads, the rest sit between operands.
                 write!(f, "({} {} {}", ops[0], operands[0], operands[1])?;

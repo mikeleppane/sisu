@@ -7,3 +7,5 @@
 /.codegraph/
 # Specs and plans: internal design docs, kept locally, never committed.
 /docs/superpowers/
+# cargo-mutants reports.
+/mutants.out*/

@@ -13,9 +13,11 @@ running the same checks as CI. Sisu builds and runs on x86-64 Linux.
 - [prek](https://prek.j178.dev) for the Git hooks, with
   [typos](https://github.com/crate-ci/typos) and `shellcheck`, which two of
   the hooks run.
-- [cargo-nextest](https://nexte.st) and
-  [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) for the commands
-  below.
+- [cargo-nextest](https://nexte.st),
+  [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) and
+  [cargo-mutants](https://mutants.rs) for the commands below.
+- Valgrind. The end-to-end tests run each program under it to catch leaks
+  and memory errors.
 
 LLVM 22 lives inside the repository. `scripts/install-llvm.sh` downloads the
 official release (1.9 GB) and keeps only what the build needs in `.llvm/22`
@@ -27,8 +29,9 @@ LLVM is left alone.
 Run these once per clone:
 
 ```console
-$ ./scripts/install-llvm.sh   # LLVM 22 into .llvm/22
-$ prek install                # run the checks on every commit
+$ ./scripts/install-llvm.sh             # LLVM 22 into .llvm/22
+$ prek install                          # run the checks on every commit
+$ cargo install --locked cargo-mutants  # mutation testing
 ```
 
 ## Build and test
@@ -39,6 +42,17 @@ $ cargo nextest run --workspace  # unit tests and end-to-end programs
 $ prek run --all-files           # fmt, clippy, typos, file hygiene, shell and workflow lint, as in CI
 $ cargo deny check               # advisories, licenses, sources
 ```
+
+Mutation testing changes the code that a branch touched, one mutant at a
+time, and reports each mutant the tests still pass. `.cargo/mutants.toml`
+leaves `.llvm/` out of its copy of the tree, so the command points the build
+at the original:
+
+```console
+$ LLVM_SYS_221_PREFIX=$PWD/.llvm/22 cargo mutants --in-diff <(git diff $(git merge-base main HEAD))
+```
+
+Commit or stash first: the diff must match the files on disk.
 
 ## Compile and run a program
 
@@ -91,8 +105,14 @@ These flags run the pipeline up to one stage and stop there.
 | --- | --- |
 | `sisuc --emit tokens file.sisu` | The lexer's tokens |
 | `sisuc --emit ast file.sisu` | The parser's syntax tree |
+| `sisuc --emit tir file.sisu` | The checker's typed tree, `tir` |
 | `sisuc --emit ir file.sisu` | The LLVM IR, before and after `mem2reg` |
+| `sisuc -O2 --emit ir file.sisu` | The LLVM IR, before and after LLVM's `default<O2>` pipeline |
+| `sisuc --emit ir-raw file.sisu` | The LLVM IR before any pass, as one module that LLVM's `opt` reads |
 | `sisuc --check file.sisu` | Only diagnostics; exits with code 1 if any is an error |
+
+`-O2` must come first. It also works when building an executable:
+`sisuc -O2 file.sisu out`.
 
 ## Repository layout
 
