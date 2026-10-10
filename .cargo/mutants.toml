@@ -1,0 +1,6 @@
+# cargo-mutants (https://mutants.rs). Run it as `AGENTS.md` shows.
+test_tool = "nextest"
+# Skip ignored files when copying the tree, above all the 12G `.llvm/`.
+# The copy then lacks `.llvm/`, so the command sets an absolute
+# LLVM_SYS_221_PREFIX.
+gitignore = true
