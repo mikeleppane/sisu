@@ -1,8 +1,8 @@
 //! The parser: tokens to the syntax tree.
 
 use crate::ast::{
-    BinaryOp, Block, CompareOp, Expr, ExprKind, Function, Ident, Param, Program, Stmt, StmtKind,
-    TypeExpr, UnaryOp,
+    Arg, BinaryOp, Block, Class, CompareOp, Expr, ExprKind, FieldDecl, Function, Ident, Item,
+    Member, Param, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -104,22 +104,85 @@ impl Parser<'_> {
     }
 
     fn program(&mut self) -> Result<Program, Diagnostic> {
-        let mut functions = Vec::new();
+        let mut items = Vec::new();
         self.skip_newlines();
         while !self.at(&TokenKind::Eof) {
-            functions.push(self.function()?);
+            items.push(match self.peek().kind {
+                TokenKind::Fn => Item::Function(self.function(false)?),
+                TokenKind::Class => Item::Class(self.class()?),
+                _ => return Err(self.expected("`fn` or `class`")),
+            });
             self.skip_newlines();
         }
-        Ok(Program { functions })
+        Ok(Program { items })
     }
 
-    fn function(&mut self) -> Result<Function, Diagnostic> {
+    fn class(&mut self) -> Result<Class, Diagnostic> {
+        self.expect(&TokenKind::Class)?;
+        let name = self.ident("a class name")?;
+        self.expect(&TokenKind::LBrace)?;
+        let mut members = Vec::new();
+        self.skip_newlines();
+        while !self.at(&TokenKind::RBrace) {
+            members.push(self.member()?);
+            if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
+                return Err(self.expected("end of line"));
+            }
+            self.skip_newlines();
+        }
+        self.bump();
+        Ok(Class { name, members })
+    }
+
+    fn member(&mut self) -> Result<Member, Diagnostic> {
+        match self.peek().kind {
+            TokenKind::Let | TokenKind::Var => {
+                let mutable = self.bump().kind == TokenKind::Var;
+                let name = self.ident("a field name")?;
+                self.expect(&TokenKind::Colon)?;
+                Ok(Member::Field(FieldDecl {
+                    mutable,
+                    name,
+                    ty: self.parse_type()?,
+                }))
+            }
+            TokenKind::Fn => {
+                let method = self.function(true)?;
+                if method.self_param.is_none() {
+                    return Err(Diagnostic::error(
+                        method.name.span,
+                        "a method needs `self` as its first parameter",
+                    )
+                    .help("static methods are not supported yet"));
+                }
+                Ok(Member::Method(method))
+            }
+            _ => Err(self.expected("`let`, `var` or `fn`")),
+        }
+    }
+
+    /// `method` is true inside a class body, where `self` may be the first parameter.
+    fn function(&mut self, method: bool) -> Result<Function, Diagnostic> {
         let fn_token = self.expect(&TokenKind::Fn)?;
         let name = self.ident("a function name")?;
         self.expect(&TokenKind::LParen)?;
+        let mut self_param = None;
         let mut params = Vec::new();
         if !self.at(&TokenKind::RParen) {
             loop {
+                if self.at(&TokenKind::SelfKw) {
+                    if !(method && self_param.is_none() && params.is_empty()) {
+                        return Err(Diagnostic::error(
+                            self.peek().span,
+                            "`self` is only the first parameter of a method",
+                        ));
+                    }
+                    self_param = Some(self.bump().span);
+                    if self.eat(&TokenKind::Comma).is_none() {
+                        break;
+                    }
+                    continue;
+                }
                 let name = self.ident("a parameter name")?;
                 self.expect(&TokenKind::Colon)?;
                 params.push(Param {
@@ -139,6 +202,7 @@ impl Parser<'_> {
         let body = self.block()?;
         Ok(Function {
             name,
+            self_param,
             params,
             ret,
             span: fn_token.span.to(body.span),
@@ -239,28 +303,17 @@ impl Parser<'_> {
             TokenKind::PercentEq => Some(BinaryOp::Rem),
             _ => return Ok(StmtKind::Expr(target)),
         };
-        let ExprKind::Name(name) = &target.kind else {
+        if !matches!(target.kind, ExprKind::Name(_) | ExprKind::Field { .. }) {
             return Err(Diagnostic::error(
                 target.span,
                 "cannot assign to this expression",
             ));
-        };
-        let ident = Ident {
-            name: name.clone(),
-            span: target.span,
-        };
+        }
         self.bump();
-        let rhs = self.expr()?;
+        let value = self.expr()?;
         Ok(match op {
-            None => StmtKind::Assign {
-                target: ident,
-                value: rhs,
-            },
-            Some(op) => StmtKind::CompoundAssign {
-                op,
-                target: ident,
-                value: rhs,
-            },
+            None => StmtKind::Assign { target, value },
+            Some(op) => StmtKind::CompoundAssign { op, target, value },
         })
     }
 
@@ -334,7 +387,7 @@ impl Parser<'_> {
         let op = match self.peek().kind {
             TokenKind::Minus => UnaryOp::Neg,
             TokenKind::Bang => UnaryOp::Not,
-            _ => return self.primary(),
+            _ => return self.postfix(),
         };
         let start = self.bump().span;
         let operand = self.unary()?;
@@ -345,6 +398,34 @@ impl Parser<'_> {
                 operand: Box::new(operand),
             },
         })
+    }
+
+    /// `primary` followed by any number of `.field` and `.method(args)`.
+    fn postfix(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.primary()?;
+        while self.eat(&TokenKind::Dot).is_some() {
+            let name = self.ident("a field or method name")?;
+            expr = if self.at(&TokenKind::LParen) {
+                let (args, close) = self.args()?;
+                Expr {
+                    span: expr.span.to(close),
+                    kind: ExprKind::MethodCall {
+                        receiver: Box::new(expr),
+                        method: name,
+                        args,
+                    },
+                }
+            } else {
+                Expr {
+                    span: expr.span.to(name.span),
+                    kind: ExprKind::Field {
+                        base: Box::new(expr),
+                        name,
+                    },
+                }
+            };
+        }
+        Ok(expr)
     }
 
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
@@ -358,12 +439,23 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::Bool(token.kind == TokenKind::True)
             }
+            TokenKind::SelfKw => {
+                self.bump();
+                ExprKind::SelfValue
+            }
             TokenKind::Ident(name) => {
                 self.bump();
                 if self.at(&TokenKind::LParen) {
-                    return self.call(Ident {
-                        name,
-                        span: token.span,
+                    let (args, close) = self.args()?;
+                    return Ok(Expr {
+                        span: token.span.to(close),
+                        kind: ExprKind::Call {
+                            callee: Ident {
+                                name,
+                                span: token.span,
+                            },
+                            args,
+                        },
                     });
                 }
                 ExprKind::Name(name)
@@ -387,21 +479,39 @@ impl Parser<'_> {
         })
     }
 
-    fn call(&mut self, callee: Ident) -> Result<Expr, Diagnostic> {
+    /// `(` arguments `)`, and the span of the `)`.
+    fn args(&mut self) -> Result<(Vec<Arg>, Span), Diagnostic> {
         self.expect(&TokenKind::LParen)?;
         let mut args = Vec::new();
         if !self.at(&TokenKind::RParen) {
             loop {
-                args.push(self.expr()?);
+                args.push(self.arg()?);
                 if self.eat(&TokenKind::Comma).is_none() {
                     break;
                 }
             }
         }
         let close = self.expect(&TokenKind::RParen)?;
-        Ok(Expr {
-            span: callee.span.to(close.span),
-            kind: ExprKind::Call { callee, args },
+        Ok((args, close.span))
+    }
+
+    /// A label is an `Ident` followed by `:`, so it takes two tokens of lookahead.
+    fn arg(&mut self) -> Result<Arg, Diagnostic> {
+        let labeled = matches!(self.peek().kind, TokenKind::Ident(_))
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| t.kind == TokenKind::Colon);
+        let label = if labeled {
+            let label = self.ident("a label")?;
+            self.bump();
+            Some(label)
+        } else {
+            None
+        };
+        Ok(Arg {
+            label,
+            value: self.expr()?,
         })
     }
 
@@ -454,8 +564,16 @@ mod tests {
         parsed(src).to_string()
     }
 
+    /// The first item, which must be a function.
+    fn first_fn(src: &str) -> Function {
+        match parsed(src).items.into_iter().next() {
+            Some(Item::Function(f)) => f,
+            other => panic!("expected a function, found {other:?}"),
+        }
+    }
+
     fn body(src: &str) -> String {
-        parsed(src).functions[0].body.to_string()
+        first_fn(src).body.to_string()
     }
 
     fn parse_diagnostic(src: &str) -> Diagnostic {
@@ -494,10 +612,7 @@ mod tests {
 
     #[test]
     fn function_span() {
-        assert_eq!(
-            parsed("fn main() {\n}\n").functions[0].span,
-            Span::new(0, 13)
-        );
+        assert_eq!(first_fn("fn main() {\n}\n").span, Span::new(0, 13));
     }
 
     #[test]
@@ -584,21 +699,36 @@ mod tests {
     fn top_level_statement() {
         assert_eq!(
             parse_err("let x = 1"),
-            ("expected `fn`, found `let`".to_string(), 1, 1)
+            ("expected `fn` or `class`, found `let`".to_string(), 1, 1)
         );
     }
 
     /// Parses `fn main() { <src> }` and prints the first statement.
     fn expr(src: &str) -> String {
-        parsed(&format!("fn main() {{ {src} }}")).functions[0]
-            .body
-            .stmts[0]
-            .to_string()
+        first_fn(&format!("fn main() {{ {src} }}")).body.stmts[0].to_string()
     }
 
     /// Error message, line and column for `fn main() { <src> }`; the columns start at 13.
     fn expr_err(src: &str) -> (String, usize, usize) {
         parse_err(&format!("fn main() {{ {src} }}"))
+    }
+
+    #[test]
+    fn new_tokens_are_quoted_in_errors() {
+        // `self` is an expression now, so its row hits a different error.
+        let rows = [
+            ("class", "class", "an expression"),
+            ("None", "None", "an expression"),
+            ("is", "is", "an expression"),
+            ("let self = 1", "self", "a variable name"),
+            (".", ".", "an expression"),
+            ("?", "?", "an expression"),
+            ("?.", "?.", "an expression"),
+            ("??", "??", "an expression"),
+        ];
+        for (src, tok, what) in rows {
+            assert_eq!(expr_err(src).0, format!("expected {what}, found `{tok}`"));
+        }
     }
 
     #[test]
@@ -623,6 +753,17 @@ mod tests {
             ("x *= 2", "(*= x 2)"),
             ("x /= 2", "(/= x 2)"),
             ("(x) = 1", "(= x 1)"),
+            ("a.b.c", "(. (. a b) c)"),
+            ("t.insert(1, 2)", "(call (. t insert) 1 2)"),
+            (
+                "Tree(value: 1, left: x)",
+                "(call Tree (: value 1) (: left x))",
+            ),
+            ("-a.b", "(- (. a b))"),
+            ("E()", "(call E)"),
+            ("make().count = 1", "(= (. (call make) count) 1)"),
+            ("a.f += 1", "(+= (. a f) 1)"),
+            ("self.left = t", "(= (. self left) t)"),
         ];
         for (src, expected) in rows {
             assert_eq!(expr(src), expected, "{src}");
@@ -636,8 +777,8 @@ mod tests {
 
     #[test]
     fn compound_assignment_spans() {
-        let tree = parsed("fn main() { x += 1 }");
-        let stmt = &tree.functions[0].body.stmts[0];
+        let tree = first_fn("fn main() { x += 1 }");
+        let stmt = &tree.body.stmts[0];
         assert_eq!(stmt.span, Span::new(12, 18));
         assert!(
             matches!(stmt.kind, StmtKind::CompoundAssign { .. }),
@@ -719,6 +860,121 @@ error: expected `=`, found end of line
         assert_eq!(
             parse_err("fn main() {\r\n    let y\r\n}\r\n"),
             ("expected `=`, found end of line".to_string(), 2, 10)
+        );
+    }
+
+    #[test]
+    fn class_with_members() {
+        assert_eq!(
+            program(
+                "class Tree {\n    let value: i64\n    var left: Tree\n\n    fn sum(self) -> i64 { self.value }\n}"
+            ),
+            "(class Tree (let value i64) (var left Tree) (fn sum (self) i64 (block (. self value))))"
+        );
+    }
+
+    #[test]
+    fn empty_class() {
+        assert_eq!(program("class E {}"), "(class E)");
+    }
+
+    #[test]
+    fn items_in_any_mix() {
+        assert_eq!(
+            program("fn f() {}\nclass E {}\nfn g() {}"),
+            "(fn f () unit (block))\n(class E)\n(fn g () unit (block))"
+        );
+    }
+
+    #[test]
+    fn method_params_follow_self() {
+        assert_eq!(
+            program("class A {\n    fn f(self, a: i64, b: bool) {}\n}"),
+            "(class A (fn f (self (a i64) (b bool)) unit (block)))"
+        );
+    }
+
+    #[test]
+    fn method_without_self() {
+        let src = "class A {\n    fn f() {}\n}";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.message, "a method needs `self` as its first parameter");
+        assert_eq!(
+            d.help.as_deref(),
+            Some("static methods are not supported yet")
+        );
+        assert_eq!(line_col(src, d.span.start), (2, 8));
+    }
+
+    #[test]
+    fn self_not_first() {
+        assert_eq!(
+            parse_err("class A {\n    fn f(x: i64, self) {}\n}"),
+            (
+                "`self` is only the first parameter of a method".to_string(),
+                2,
+                18
+            )
+        );
+    }
+
+    #[test]
+    fn self_repeated() {
+        assert_eq!(
+            parse_err("class A {\n    fn f(self, self) {}\n}"),
+            (
+                "`self` is only the first parameter of a method".to_string(),
+                2,
+                16
+            )
+        );
+    }
+
+    #[test]
+    fn self_outside_class() {
+        assert_eq!(
+            parse_err("fn f(self) {}"),
+            (
+                "`self` is only the first parameter of a method".to_string(),
+                1,
+                6
+            )
+        );
+    }
+
+    #[test]
+    fn call_of_a_call() {
+        assert_eq!(
+            expr_err("f()()"),
+            ("expected end of line, found `(`".to_string(), 1, 16)
+        );
+    }
+
+    #[test]
+    fn assign_to_method_call() {
+        assert_eq!(
+            expr_err("t.m() = 1"),
+            ("cannot assign to this expression".to_string(), 1, 13)
+        );
+    }
+
+    #[test]
+    fn bad_class_member() {
+        assert_eq!(
+            parse_err("class A { 1 }"),
+            (
+                "expected `let`, `var` or `fn`, found `1`".to_string(),
+                1,
+                11
+            )
+        );
+    }
+
+    #[test]
+    fn class_members_need_a_line_break() {
+        assert_eq!(
+            parse_err("class A { let x: i64 let y: i64 }"),
+            ("expected end of line, found `let`".to_string(), 1, 22)
         );
     }
 }

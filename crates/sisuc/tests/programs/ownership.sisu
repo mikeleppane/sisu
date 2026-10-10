@@ -1,0 +1,223 @@
+// Each function is one ownership case. Valgrind checks that every object is freed exactly once
+// on every path: early exits, spills, field reads and writes, and assignments to itself.
+class E {}
+
+class T {
+    var count: i64
+    var e: E
+
+    fn add(self, n: i64) -> i64 {
+        self.count + n
+    }
+}
+
+class Holder {
+    var child: T
+}
+
+class N {}
+
+class C {
+    let next: N
+}
+
+// A counted operand before a scalar one, for the spills.
+class P {
+    let e: E
+    let x: i64
+}
+
+// A scalar operand before a counted one: nothing spills.
+class Q {
+    let x: i64
+    let e: E
+}
+
+fn make() -> C {
+    C(next: N())
+}
+
+fn pick(t: T) -> T {
+    t
+}
+
+fn take(e: E, n: i64) -> i64 {
+    n
+}
+
+fn return_in_loop() -> i64 {
+    let a = T(count: 1, e: E())
+    var i = 0
+    while true {
+        let b = T(count: 10, e: E())
+        i += 1
+        if i == 3 { return a.count + b.count + i }
+        let c = E()
+    }
+    0
+}
+
+fn break_in_loop() {
+    let a = E()
+    var i = 0
+    while true {
+        let b = T(count: i, e: E())
+        i += 1
+        if i == 2 { break }
+        let c = E()
+    }
+    print(i)
+}
+
+fn continue_in_loop() {
+    let a = E()
+    var i = 0
+    var sum = 0
+    while i < 4 {
+        let b = T(count: i, e: E())
+        i += 1
+        if i % 2 == 0 { continue }
+        let c = E()
+        sum += b.count
+    }
+    print(sum)
+}
+
+// `b` was never bound when the `return` runs, so only `a` is released there.
+fn early_return(c: bool) {
+    let a = E()
+    if c { return }
+    let b = E()
+    print(2)
+}
+
+// A call, a constructor, a field assignment, a method's receiver and a compound field
+// assignment, each interrupted by `return` at `at`.
+fn spill_return(at: i64) -> i64 {
+    let t = T(count: 0, e: E())
+    let a = take(E(), if at == 1 { return 1 } else { 10 })
+    let b = P(e: E(), x: if at == 2 { return 2 } else { 20 }).x
+    pick(t).e = if at == 3 { return 3 } else { E() }
+    let c = t.add(if at == 4 { return 4 } else { 100 })
+    t.count += if at == 5 { return 5 } else { 1000 }
+    a + b + c + t.count
+}
+
+// The same spills interrupted by `break` at `at`.
+fn spill_break(at: i64) {
+    let t = T(count: 0, e: E())
+    var i = 0
+    while i < 2 {
+        i += 1
+        let a = take(E(), if at == 1 { break } else { i })
+        let b = P(e: E(), x: if at == 2 { break } else { i }).x
+        t.e = if at == 3 { break } else { E() }
+        let c = t.add(if at == 4 { break } else { i })
+        t.count += if at == 5 { break } else { a + b + c }
+    }
+    print(t.count)
+}
+
+// `New` runs its arguments before `sisu_alloc`, so the `return` leaves no object behind.
+fn new_exits_first(c: bool) {
+    let q = Q(x: if c { return } else { 1 }, e: E())
+    print(q.x)
+}
+
+fn reassign_field() {
+    let t = T(count: 0, e: E())
+    var i = 0
+    while i < 3 {
+        t.e = E()
+        i += 1
+    }
+    print(i)
+}
+
+// The field is retained before the call's result is released.
+fn field_of_call() {
+    let n = make().next
+    make().next
+}
+
+fn assign_through_call() {
+    let t = T(count: 1, e: E())
+    pick(t).count = 5
+    pick(t).e = E()
+    print(t.count)
+}
+
+// `a` is live whether or not the right operand runs.
+fn logic(n: i64) {
+    let a = T(count: n, e: E())
+    print(T(count: n, e: E()).count > 0 && pick(a).count > 1)
+    print(a.count > 0 || T(count: n, e: E()).count > 1)
+}
+
+// Review Focus 1: assigning a reference to itself keeps the object alive.
+fn self_assign() {
+    var x = T(count: 7, e: E())
+    x = x
+    print(x.count)
+    let h = Holder(child: T(count: 8, e: E()))
+    h.child = h.child
+    print(h.child.count)
+}
+
+// Assigning a new object releases the old one and keeps the new one.
+fn reassign_local() {
+    var x = T(count: 7, e: E())
+    x = T(count: 9, e: E())
+    print(x.count)
+}
+
+// The inner loop's `break` and `continue` release only its own locals; its `return` releases
+// every local and the parameter.
+fn nested_loops(p: T) -> i64 {
+    var i = 0
+    while i < 3 {
+        let a = E()
+        i += 1
+        var j = 0
+        while j < 3 {
+            let b = E()
+            j += 1
+            if j == 1 { continue }
+            if i == 2 { return p.count + i * 10 + j }
+            break
+        }
+    }
+    0
+}
+
+fn main() {
+    print(return_in_loop())
+    break_in_loop()
+    continue_in_loop()
+    early_return(true)
+    early_return(false)
+    print(spill_return(1))
+    print(spill_return(2))
+    print(spill_return(3))
+    print(spill_return(4))
+    print(spill_return(5))
+    print(spill_return(0))
+    spill_break(1)
+    spill_break(2)
+    spill_break(3)
+    spill_break(4)
+    spill_break(5)
+    spill_break(0)
+    new_exits_first(true)
+    new_exits_first(false)
+    reassign_field()
+    field_of_call()
+    assign_through_call()
+    logic(0)
+    logic(2)
+    self_assign()
+    reassign_local()
+    let p = T(count: 100, e: E())
+    print(nested_loops(p))
+    print(p.count)
+}
