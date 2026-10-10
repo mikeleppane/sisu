@@ -72,8 +72,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
-    /// A block with count 1 and length `len`. A literal passes a constant size; `[v; n]` gets
-    /// the run-time checks at `span`.
+    /// A block with count 1 and length `len`. A literal passes a constant length, and `unique`
+    /// a run-time length that already passed the checks; `[v; n]` gets them at `span`.
     pub(super) fn alloc_array(
         &self,
         element: &Type,
@@ -364,7 +364,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// that a value which stores the array elsewhere makes the walk copy it. Then the walk from
     /// the root's slot: at each level, load the array, check the index against its length,
     /// make the array unique, and take the element's address as the next slot. Checking first
-    /// means an out-of-bounds write copies nothing. Last, the store, the release of the old
+    /// means a level whose index is out of bounds copies nothing; an outer level may already
+    /// have copied. Last, the store, the release of the old
     /// element, and the release of a field root's base.
     pub(super) fn assign_index(&mut self, place: &Place, value: &Expr) {
         let mut indexes = Vec::new();
@@ -504,7 +505,8 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `@sisu_rc.unique.[T](slot) -> ptr`: the array in `slot` when its count is 1. Otherwise
     /// a new block of the same length with count 1, the elements copied with `llvm.memcpy`
-    /// and each counted one retained, stored into `slot`; the old block is released.
+    /// and each counted one retained, stored into `slot`; the old block is released. It has no
+    /// `null` early return: the slot is an `alloca`, a field address or an element address.
     fn define_array_unique(&self, element: &Type, function: FunctionValue<'ctx>) {
         let block = |name| self.context.append_basic_block(function, name);
         let (entry, only, shared) = (block("entry"), block("only"), block("shared"));

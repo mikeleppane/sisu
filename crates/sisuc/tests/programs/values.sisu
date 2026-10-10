@@ -81,12 +81,15 @@ fn method() {
     print(board.cells[1])             // 7
 }
 
-// A class is shared: both locals hold the one object, whose field the write changes.
+// A class is shared: both locals hold the one object, whose field the write changes. `saved`
+// shares the field's array, so the write stores a copy into the field.
 fn shared_object() {
     let a = Board(cells: [1, 2])
     let b = a
+    let saved = a.cells
     a.cells[0] = 5
     print(b.cells[0])                 // 5
+    print(saved[0])                   // 1
 }
 
 // Review Focus 2: after `rows[1] = rows[0]`, both slots hold one block.
@@ -124,6 +127,19 @@ fn exits(c: bool) -> i64 {
     xs[0]
 }
 
+// The value returns after the field's object is evaluated.
+fn field_exits(c: bool) -> i64 {
+    let board = Board(cells: [1])
+    board.cells[0] = if c { return 2 } else { 1 }
+    board.cells[0]
+}
+
+// The index returns while the temporary object is held.
+fn index_exits(c: bool) -> i64 {
+    make().cells[if c { return 3 } else { 0 }] = 1
+    0
+}
+
 fn main() {
     copied()
     parameter()
@@ -137,4 +153,6 @@ fn main() {
     aliasing()
     value_first()
     print(exits(true))                // 0
+    print(field_exits(true))          // 2
+    print(index_exits(true))          // 3
 }
