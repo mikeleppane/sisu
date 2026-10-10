@@ -1781,6 +1781,24 @@ mod tests {
         );
     }
 
+    /// `!=` on an `i64` or a `bool` is one `icmp ne`, not an `icmp eq` and a `not`.
+    #[test]
+    fn scalar_not_equal_is_one_icmp_ne() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "fn f(a: i64, b: i64) -> bool { a != b }\nfn g(a: bool, b: bool) -> bool { a != b }\nfn main() {}",
+        )
+        .print_to_string()
+        .to_string();
+        for (name, ty) in [("f", "i64"), ("g", "i1")] {
+            let body = function_body(&ir, &format!("define i1 @sisu.{name}("));
+            assert!(body.contains(&format!("icmp ne {ty} ")), "{body}");
+            assert!(!body.contains("icmp eq"), "{body}");
+            assert!(!body.contains("xor"), "{body}");
+        }
+    }
+
     #[test]
     fn eq_helper_per_class() {
         let context = Context::create();
