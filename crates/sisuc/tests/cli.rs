@@ -269,13 +269,19 @@ const FIB: &str = "fn fib(n: i64) -> i64 {\n    if n < 2 { n } else { fib(n - 1)
 
 #[test]
 fn o2_combinations_are_usage_errors() {
-    let cases: [&[&str]; 6] = [
+    let cases: [&[&str]; 12] = [
         &["-O2", "--check", "f.sisu"],
         &["-O2", "--emit", "tokens", "f.sisu"],
         &["-O2", "--emit", "ast", "f.sisu"],
         &["-O2", "--emit", "tir", "f.sisu"],
         &["-O2", "--emit", "ir-raw", "f.sisu"],
         &["f.sisu", "out", "-O2"],
+        &["--emit", "ir", "-O2", "f.sisu"],
+        &["--check", "-O2", "f.sisu"],
+        &["-O2", "-O2", "f.sisu", "out"],
+        &["--emit", "ir", "-O2"],
+        &["--check", "-O2"],
+        &["--emit", "ir-raw", "-O2"],
     ];
     for args in cases {
         let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
@@ -310,9 +316,12 @@ fn emit_ir_raw_parses_back() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains("; before"));
 }
 
+const SQUARE: &str =
+    "fn sq(n: i64) -> i64 {\n    n * n\n}\n\nfn main() {\n    print(sq(3) + 4)\n}\n";
+
 #[test]
 fn emit_ir_o2() {
-    let out = run_on("emit_ir_o2", FIB, &["-O2", "--emit", "ir"]);
+    let out = run_on("emit_ir_o2", SQUARE, &["-O2", "--emit", "ir"]);
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -321,5 +330,11 @@ fn emit_ir_o2() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with("; before default<O2>\n"), "{stdout}");
-    assert!(stdout.contains("\n; after default<O2>\n"), "{stdout}");
+    let (before, after) = stdout
+        .split_once("\n; after default<O2>\n")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    // Only the O2 pipeline inlines and folds the call; mem2reg alone keeps it.
+    assert!(before.contains("call i64 @sisu.sq(i64 3)"), "{before}");
+    assert!(!after.contains("call i64 @sisu.sq"), "{after}");
+    assert!(after.contains("@sisu_print_int(i64 13)"), "{after}");
 }

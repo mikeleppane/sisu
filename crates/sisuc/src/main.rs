@@ -53,6 +53,9 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
         [flag, rest @ ..] if flag == "-O2" => (true, rest),
         _ => (false, args),
     };
+    if args.iter().any(|a| a == "-O2") {
+        return Err(USAGE.to_string());
+    }
     let mode = match args {
         [flag, stage, input] if flag == "--emit" => {
             let stage = match stage.to_str() {
