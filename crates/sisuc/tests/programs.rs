@@ -204,6 +204,11 @@ fn bytes() {
     assert_prints_out_file("bytes");
 }
 
+#[test]
+fn unsigned() {
+    assert_prints_out_file("unsigned");
+}
+
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
     let exe = compile(Path::new(PROGRAMS), name, false);
@@ -340,6 +345,12 @@ fn panic_cases() {
         u8_case(
             "u8_convert",
             "let a = 300",
+            "u8(a)",
+            "value does not fit in `u8`",
+        ),
+        u8_case(
+            "u8_convert_256",
+            "let a = 256",
             "u8(a)",
             "value does not fit in `u8`",
         ),

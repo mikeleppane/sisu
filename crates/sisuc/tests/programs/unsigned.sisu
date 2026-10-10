@@ -1,0 +1,7 @@
+// `u8`: unsigned multiplication and remainder, where signed reading would differ.
+fn main() {
+    let a: u8 = 200
+    print(a % 7)              // 4
+    let b: u8 = 100
+    print(b * 2)              // 200
+}
