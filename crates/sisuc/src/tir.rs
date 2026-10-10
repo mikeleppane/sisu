@@ -445,6 +445,15 @@ impl Printer<'_> {
 }
 
 impl Program {
+    /// The field drop follows in a loop: the last, in declaration order, whose type is
+    /// `class` or `class?`.
+    pub(crate) fn chain_field(&self, class: ClassId) -> Option<usize> {
+        let own = Type::Class(class);
+        self.classes[class.0].fields.iter().rposition(|field| {
+            field.ty == own || matches!(&field.ty, Type::Optional(payload) if **payload == own)
+        })
+    }
+
     /// A type as `--emit tir` prints it: a class by its name.
     fn type_name(&self, ty: &Type) -> String {
         match ty {
@@ -741,6 +750,50 @@ mod tests {
             ty: Type::I64,
         };
         expr(ExprKind::Block(block), Type::I64)
+    }
+
+    #[test]
+    fn chain_field_is_the_last_own_type_field() {
+        let field = |name: &str, ty: Type| Field {
+            name: name.into(),
+            ty,
+            mutable: false,
+        };
+        let class = |name: &str, fields: Vec<Field>| Class {
+            name: name.into(),
+            fields,
+        };
+        let optional = |id: usize| Type::Optional(Box::new(Type::Class(ClassId(id))));
+        let program = Program {
+            classes: vec![
+                class(
+                    "Node",
+                    vec![field("value", Type::I64), field("next", optional(0))],
+                ),
+                class(
+                    "Tree",
+                    vec![
+                        field("left", optional(1)),
+                        field("right", optional(1)),
+                        field("v", Type::I64),
+                    ],
+                ),
+                class(
+                    "Rev",
+                    vec![
+                        field("next", optional(2)),
+                        field("value", Type::I64),
+                        field("tag", Type::Class(ClassId(3))),
+                    ],
+                ),
+                class("Tag", vec![]),
+                class("A", vec![field("b", optional(5))]),
+                class("B", vec![field("a", optional(4))]),
+            ],
+            functions: vec![],
+        };
+        let chains = [0, 1, 2, 4].map(|id| program.chain_field(ClassId(id)));
+        assert_eq!(chains, [Some(1), Some(1), Some(0), None]);
     }
 
     #[test]

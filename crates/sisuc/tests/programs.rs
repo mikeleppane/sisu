@@ -2,6 +2,7 @@
 //! prints the right output or panics with the right message.
 
 use std::fs::{self, File};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -176,6 +177,49 @@ fn field_order() {
 #[test]
 fn unwrap() {
     assert_prints_out_file("unwrap");
+}
+
+#[test]
+fn list() {
+    assert_prints_out_file("list");
+}
+
+#[test]
+fn drops() {
+    assert_prints_out_file("drops");
+}
+
+/// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
+fn run_in_small_stack(name: &str) -> Output {
+    let exe = compile(Path::new(PROGRAMS), name, false);
+    Command::new("sh")
+        .args(["-c", r#"ulimit -s 256 && exec "$0""#])
+        .arg(exe)
+        .output()
+        .expect("sh starts")
+}
+
+#[test]
+fn longlist_frees_in_constant_stack() {
+    let out = run_in_small_stack("longlist");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{:?}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1000000\n");
+}
+
+/// The control for `longlist_frees_in_constant_stack`: a drop that recurses once per object
+/// overflows the same stack, so the limit is in force.
+#[test]
+fn deepchain_overflows_the_same_stack() {
+    let out = run_in_small_stack("deepchain");
+    assert!(out.status.signal().is_some(), "{:?}", out.status);
+    // It dies in the drop, after `print`: stdout is line-buffered.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
 }
 
 /// Each panicking program with its expected stdout and panic line.

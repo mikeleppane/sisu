@@ -1,0 +1,25 @@
+// A list of 100 000 nodes. Its drop at the end of `main` follows `next` in a loop: a
+// recursive drop of this many nodes, under Valgrind, nearly fills the default stack.
+class Node {
+    let value: i64
+    let next: Node?
+}
+
+fn main() {
+    var head: Node? = None
+    var i = 0
+    while i < 100_000 {
+        i += 1
+        head = Node(value: i, next: head)
+    }
+    var length = 0
+    var sum = 0
+    var node = head
+    while let n = node {
+        length += 1
+        sum += n.value
+        node = n.next
+    }
+    print(length)
+    print(sum)
+}

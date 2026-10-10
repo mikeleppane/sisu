@@ -251,7 +251,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Defines the counting helpers, which take their object without taking ownership:
     /// `@sisu_rc.retain` adds 1 to its count; `@sisu_rc.release.<C>` subtracts 1 and at 0
     /// calls `@sisu_rc.drop.<C>`, which releases each counted field, then frees the object.
-    /// Both return at once on `null`.
+    /// Both return at once on `null`. Drop does not release the chain field: it loads it,
+    /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
     fn define_helpers(&self, program: &Program, free: FunctionValue<'ctx>) {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let (object, done) = self.helper_entry(self.rc_retain);
@@ -264,33 +265,44 @@ impl<'ctx> Codegen<'ctx, '_> {
                 None,
             );
             let (object, done) = self.helper_entry(self.releases[i]);
-            let count = self.add_to_count(object, -1);
-            let zero = self.int_compare(
-                IntPredicate::EQ,
-                count,
-                self.context.i64_type().const_zero(),
-            );
             let drop_block = self.context.append_basic_block(self.releases[i], "drop");
-            self.builder
-                .build_conditional_branch(zero, drop_block, done)
-                .expect("builder is positioned");
+            self.decrement(object, drop_block, done);
             self.builder.position_at_end(drop_block);
             self.call(drop, &[object.into()]);
             self.branch_to(done);
 
-            self.builder
-                .position_at_end(self.context.append_basic_block(drop, "entry"));
-            let object = param(drop);
+            let entry = self.context.append_basic_block(drop, "entry");
+            self.builder.position_at_end(entry);
+            let chain = program.chain_field(ClassId(i));
+            // With a chain field, the body is a loop over the chain's objects, in one frame.
+            let looped = chain.map(|_| {
+                let body = self.context.append_basic_block(drop, "loop");
+                self.branch_to(body);
+                self.builder.position_at_end(body);
+                let object = self
+                    .builder
+                    .build_phi(ptr_type, "object")
+                    .expect("builder is positioned");
+                object.add_incoming(&[(&param(drop), entry)]);
+                (body, object)
+            });
+            let object = looped.map_or_else(
+                || param(drop),
+                |(_, phi)| phi.as_basic_value().into_pointer_value(),
+            );
             let ty = Type::Class(ClassId(i));
+            let load_field = |index| {
+                self.builder
+                    .build_load(ptr_type, self.field_ptr(&ty, object, index), "field")
+                    .expect("builder is positioned")
+            };
             for (index, field) in class.fields.iter().enumerate() {
-                if field.ty.is_counted() {
-                    let value = self
-                        .builder
-                        .build_load(ptr_type, self.field_ptr(&ty, object, index), "field")
-                        .expect("builder is positioned");
-                    self.release(value, &field.ty);
+                if field.ty.is_counted() && chain != Some(index) {
+                    self.release(load_field(index), &field.ty);
                 }
             }
+            // Loaded before the free, which ends the object.
+            let next = chain.map(|index| load_field(index).into_pointer_value());
             let (size, align) = self.class_layout(ClassId(i));
             let i64_type = self.context.i64_type();
             self.call(
@@ -301,10 +313,44 @@ impl<'ctx> Codegen<'ctx, '_> {
                     i64_type.const_int(u64::from(align), false).into(),
                 ],
             );
+            if let (Some(next), Some((body, phi))) = (next, looped) {
+                let done = self.context.append_basic_block(drop, "done");
+                let counted = self.context.append_basic_block(drop, "next");
+                let null = self
+                    .builder
+                    .build_is_null(next, "null")
+                    .expect("builder is positioned");
+                self.builder
+                    .build_conditional_branch(null, done, counted)
+                    .expect("builder is positioned");
+                self.builder.position_at_end(counted);
+                self.decrement(next, body, done);
+                phi.add_incoming(&[(&next, counted)]);
+                self.builder.position_at_end(done);
+            }
             self.builder
                 .build_return(None)
                 .expect("builder is positioned");
         }
+    }
+
+    /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to
+    /// `otherwise`.
+    fn decrement(
+        &self,
+        object: PointerValue<'ctx>,
+        at_zero: BasicBlock<'ctx>,
+        otherwise: BasicBlock<'ctx>,
+    ) {
+        let count = self.add_to_count(object, -1);
+        let zero = self.int_compare(
+            IntPredicate::EQ,
+            count,
+            self.context.i64_type().const_zero(),
+        );
+        self.builder
+            .build_conditional_branch(zero, at_zero, otherwise)
+            .expect("builder is positioned");
     }
 
     /// Starts helper `function`, which returns at once when its object is `null`. Leaves the
@@ -1514,6 +1560,25 @@ mod tests {
         ] {
             assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
         }
+    }
+
+    #[test]
+    fn drop_loops_on_the_chain_field() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class Node {\n    let value: i64\n    let next: Node?\n}\nclass Tree {\n    let left: Tree?\n    let right: Tree?\n    let v: i64\n}\nfn main() {}",
+        )
+        .print_to_string()
+        .to_string();
+        let node = function_body(&ir, "define void @sisu_rc.drop.Node(ptr");
+        for unwanted in ["@sisu_rc.drop.Node(", "@sisu_rc.release.Node("] {
+            assert!(!node.contains(unwanted), "{unwanted:?} in\n{node}");
+        }
+        // `right` is the chain field; only `left` is released, by recursion.
+        let tree = function_body(&ir, "define void @sisu_rc.drop.Tree(ptr");
+        assert_eq!(tree.matches("@sisu_rc.release.Tree(").count(), 1, "{tree}");
+        assert!(!tree.contains("@sisu_rc.drop.Tree("), "{tree}");
     }
 
     #[test]

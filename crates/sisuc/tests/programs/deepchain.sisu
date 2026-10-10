@@ -1,0 +1,21 @@
+// The control for `longlist.sisu`: 1 000 000 objects that alternate between two classes.
+// Neither class has a chain field, so the drop recurses once per object and overflows the
+// same 256 KiB stack.
+class A {
+    let b: B?
+}
+
+class B {
+    let a: A?
+}
+
+fn main() {
+    var a: A? = None
+    var i = 0
+    while i < 500_000 {
+        i += 1
+        let b = B(a: a)
+        a = A(b: b)
+    }
+    print(1)
+}

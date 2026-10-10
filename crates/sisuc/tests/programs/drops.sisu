@@ -1,0 +1,106 @@
+// Each function is one drop case. Valgrind checks that every object is freed exactly once.
+class Node {
+    let value: i64
+    let next: Node?
+}
+
+class Tag {
+    let n: i64
+}
+
+// A chain node with another class field: the drop releases `tag`, then follows `next`.
+class Tagged {
+    let tag: Tag
+    let value: i64
+    let next: Tagged?
+}
+
+// The chain field comes before the other fields.
+class Rev {
+    let next: Rev?
+    let value: i64
+    let tag: Tag
+}
+
+// The drop recurses on `left` and loops on `right`, the chain field.
+class Tree {
+    let left: Tree?
+    let value: i64
+    let right: Tree?
+}
+
+fn sum(nodes: Node?) -> i64 {
+    var total = 0
+    var node = nodes
+    while let n = node {
+        total += n.value
+        node = n.next
+    }
+    total
+}
+
+// `b` shares `a`'s tail. Dropping `b` stops the loop at the shared node, which `a` still holds.
+fn shared() {
+    let a = Node(value: 1, next: Node(value: 2, next: Node(value: 3, next: None)))
+    if true {
+        let b = Node(value: 10, next: a.next)
+        print(sum(b))
+    }
+    print(sum(a))
+}
+
+fn tagged() {
+    var head: Tagged? = None
+    var i = 0
+    while i < 3 {
+        i += 1
+        head = Tagged(tag: Tag(n: i * 10), value: i, next: head)
+    }
+    var total = 0
+    var node = head
+    while let n = node {
+        total += n.tag.n + n.value
+        node = n.next
+    }
+    print(total)
+}
+
+fn rev() {
+    var head: Rev? = None
+    var i = 0
+    while i < 3 {
+        i += 1
+        head = Rev(next: head, value: i, tag: Tag(n: i * 100))
+    }
+    var total = 0
+    var node = head
+    while let n = node {
+        total += n.tag.n + n.value
+        node = n.next
+    }
+    print(total)
+}
+
+fn leaf(value: i64) -> Tree {
+    Tree(left: None, value: value, right: None)
+}
+
+fn tree_sum(tree: Tree?) -> i64 {
+    if let t = tree { tree_sum(t.left) + t.value + tree_sum(t.right) } else { 0 }
+}
+
+fn tree() {
+    let t = Tree(
+        left: Tree(left: leaf(1), value: 2, right: leaf(3)),
+        value: 4,
+        right: Tree(left: leaf(5), value: 6, right: Tree(left: None, value: 7, right: leaf(8)))
+    )
+    print(tree_sum(t))
+}
+
+fn main() {
+    shared()
+    tagged()
+    rev()
+    tree()
+}
