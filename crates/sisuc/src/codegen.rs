@@ -200,6 +200,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
             Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
+            Type::Optional(_) => panic!("optionals land in Task 18"),
         }
     }
 
@@ -706,6 +707,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
             ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
             ExprKind::Block(block) => return self.block(block),
+            ExprKind::None | ExprKind::Wrap(_) | ExprKind::IfSome { .. } => {
+                panic!("optionals land in Task 18")
+            }
             ExprKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| self.expr(e));
                 // The checker rejects a `never` return value; this keeps codegen safe anyway.

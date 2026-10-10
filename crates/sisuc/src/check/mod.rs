@@ -26,6 +26,10 @@ struct Poisoned {
 type Checked = Result<tir::Expr, Poisoned>;
 type CheckedBlock = Result<tir::Block, Poisoned>;
 
+/// The expected type a position passes down when its own type is `Error`. No position expects
+/// `never`, so it stands for `Error` there: a `None` it reaches is `Error`, with no diagnostic.
+static UNKNOWN: Type = Type::Never;
+
 /// A type of `None` is `Error`: its error is reported where the signature names it.
 struct Signature {
     /// `f`, or `P.m` for a method.
@@ -55,6 +59,8 @@ enum BindingKind {
     Let,
     Var,
     Param,
+    /// Bound by an `if let` or a `while let`: the keyword.
+    Unwrapped(&'static str),
 }
 
 struct Binding {
@@ -360,23 +366,28 @@ impl Checker {
         }
     }
 
-    /// `None`, reported, for an unknown type.
+    /// `None`, reported at the name without its `?`, for an unknown type.
     fn resolve(&mut self, ty: &ast::TypeExpr) -> Option<Type> {
-        assert!(!ty.optional, "optionals land in Task 17");
-        match ty.name.as_str() {
-            "i64" => Some(Type::I64),
-            "bool" => Some(Type::Bool),
+        let named = match ty.name.as_str() {
+            "i64" => Type::I64,
+            "bool" => Type::Bool,
             name => {
-                if let Some(&id) = self.class_ids.get(name) {
-                    return Some(Type::Class(id));
-                }
-                self.diagnostics.push(
-                    Diagnostic::error(ty.span, format!("unknown type `{name}`"))
-                        .help("the types are `i64`, `bool` and classes"),
-                );
-                None
+                let Some(&id) = self.class_ids.get(name) else {
+                    let span = Span::new(ty.span.start, ty.span.start + name.len());
+                    self.diagnostics.push(
+                        Diagnostic::error(span, format!("unknown type `{name}`"))
+                            .help("the types are `i64`, `bool` and classes"),
+                    );
+                    return None;
+                };
+                Type::Class(id)
             }
-        }
+        };
+        Some(if ty.optional {
+            Type::Optional(Box::new(named))
+        } else {
+            named
+        })
     }
 
     /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
@@ -412,7 +423,18 @@ impl Checker {
                     .map(|(p, ty)| self.declare(&p.name, ty, BindingKind::Param)),
             )
             .collect();
-        let body = self.block(&f.body);
+        // A `unit` function discards its body's value, so it expects none.
+        let expected = match &ret {
+            None => Some(&UNKNOWN),
+            Some(Type::Unit) => None,
+            Some(ret) => Some(ret),
+        };
+        let mut body = self.block(&f.body, expected);
+        if let Some(want @ Type::Optional(payload)) = &ret
+            && block_type(&body) == Some(&**payload)
+        {
+            wrap_block(&mut body, want);
+        }
         self.pop_scope();
         let locals = std::mem::take(&mut self.locals);
         match (&ret, block_type(&body)) {
@@ -445,11 +467,16 @@ impl Checker {
         })
     }
 
-    /// A type as messages quote it: "`i64`", "`Tree`".
+    /// A type as messages quote it: "`i64`", "`Tree`", "`Tree?`".
     fn show(&self, ty: &Type) -> String {
+        format!("`{}`", self.type_name(ty))
+    }
+
+    fn type_name(&self, ty: &Type) -> String {
         match ty {
-            Type::Class(id) => format!("`{}`", self.classes[id.0].name.name),
-            ty => format!("`{ty}`"),
+            Type::Class(id) => self.classes[id.0].name.name.clone(),
+            Type::Optional(payload) => format!("{}?", self.type_name(payload)),
+            ty => ty.to_string(),
         }
     }
 
@@ -477,6 +504,30 @@ fn block_expr(stmts: Vec<tir::Stmt>, value: Option<tir::Expr>, ty: Type, span: S
         kind: tir::ExprKind::Block(block),
         ty,
         span,
+    }
+}
+
+/// `e`, of type `T`, where its optional `ty` is expected.
+fn wrap(e: tir::Expr, ty: &Type) -> tir::Expr {
+    tir::Expr {
+        span: e.span,
+        kind: tir::ExprKind::Wrap(Box::new(e)),
+        ty: ty.clone(),
+    }
+}
+
+/// Makes a block of type `T` one of the optional `ty` by wrapping its value.
+fn wrap_block(block: &mut CheckedBlock, ty: &Type) {
+    match block {
+        Ok(block) => {
+            let value = block
+                .value
+                .take()
+                .expect("a block of a value type ends in its value");
+            block.value = Some(Box::new(wrap(*value, ty)));
+            block.ty = ty.clone();
+        }
+        Err(poisoned) => poisoned.ty = Some(ty.clone()),
     }
 }
 
@@ -2166,6 +2217,223 @@ mod tests {
                 "fn one() -> i64 { 1 }\nfn h2(a: i64, n: i64) {}\nfn g(c: bool) -> i64 {\n    h2(one(), if c { return 0 } else { 1 })\n    2\n}"
             ),
             "(fn g ((c#0 bool)) i64 (block (call h2 (call one) (if c#0 (block (return 0)) (block 1))) 2))"
+        );
+    }
+
+    /// A class-optional operand holds a reference, and an `if let` can exit.
+    #[test]
+    fn spills_class_optional_before_exit_in_if_let() {
+        assert_eq!(
+            printed_g(
+                "fn maybe() -> B? { None }\nfn h(b: B?, n: i64) {}\nfn g(c: bool, n: B?) -> i64 {\n    h(maybe(), if let x = n { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool) (n#1 B?)) i64 (block (block (let #3 (call maybe)) (let #4 (if-some x#2 n#1 (block (return 0)) (block 1))) (call h #3 #4)) 2))"
+        );
+    }
+
+    /// The class the optionals tests share: its `next` field is optional.
+    const T: &str = "class T {\n    let v: i64\n    let next: T?\n}\n";
+
+    /// Asserts that `f`, lowered after `T` and before an empty `main`, prints `part`.
+    fn f_contains(f: &str, part: &str) {
+        let printed = lowered(&format!("{T}{f}\nfn main() {{}}"));
+        assert!(printed.contains(part), "{printed}");
+    }
+
+    #[test]
+    fn none_needs_a_type() {
+        expect_error(
+            "fn main() { let x = None }",
+            "cannot infer the type of `None`",
+            (1, 21),
+            None,
+            &[],
+            Some("write the type: `let x: Tree? = None`"),
+        );
+    }
+
+    #[test]
+    fn if_of_two_nones() {
+        errors(
+            "class T {}\nfn main() {\n    let x = if true { None } else { None }\n}",
+            &[("cannot infer the type of `None`", (3, 23))],
+        );
+    }
+
+    #[test]
+    fn none_for_non_optional() {
+        error(
+            "fn main() { let x: i64 = None }",
+            "expected `i64`, found `None`",
+            (1, 26),
+        );
+    }
+
+    #[test]
+    fn dot_on_optional() {
+        expect_error(
+            "class T {\n    let v: i64\n}\nfn f(node: T?) -> i64 { node.v }\nfn main() {}",
+            "`node` may be `None`",
+            (4, 25),
+            None,
+            &[],
+            Some("use `?.`, or unwrap it with `if let`"),
+        );
+    }
+
+    /// A path receiver is quoted as written; any other is "this value". A method call too.
+    #[test]
+    fn optional_receiver_is_named_by_its_path() {
+        errors(
+            "class N {\n    let next: N?\n    fn m(self) -> i64 { 1 }\n}\nfn g() -> N? { None }\nfn f(n: N) {\n    print(n.next.m())\n    print(g().next)\n}\nfn main() {}",
+            &[
+                ("`n.next` may be `None`", (7, 11)),
+                ("this value may be `None`", (8, 11)),
+            ],
+        );
+    }
+
+    #[test]
+    fn if_let_needs_optional() {
+        error(
+            "fn main() {\n    if let x = 5 {}\n}",
+            "`if let` needs an optional; this is `i64`",
+            (2, 16),
+        );
+    }
+
+    #[test]
+    fn while_let_needs_optional() {
+        error(
+            "fn main() {\n    while let x = 5 {}\n}",
+            "`while let` needs an optional; this is `i64`",
+            (2, 19),
+        );
+    }
+
+    #[test]
+    fn failed_if_let_binding_poisons() {
+        errors(
+            "fn main() {\n    if let x = 5 {\n        print(x + true)\n    }\n}",
+            &[("`if let` needs an optional; this is `i64`", (2, 16))],
+        );
+    }
+
+    #[test]
+    fn if_let_scope() {
+        error(
+            &format!(
+                "{T}fn f(n: T?) {{\n    if let x = n {{}} else {{ let y = x }}\n}}\nfn main() {{}}"
+            ),
+            "cannot find `x` in this scope",
+            (6, 36),
+        );
+    }
+
+    #[test]
+    fn optional_breaks_the_cycle() {
+        clean(&format!("{T}fn main() {{}}"));
+    }
+
+    #[test]
+    fn none_from_every_source() {
+        clean(&format!(
+            "{T}fn take(t: T?) {{}}\nfn give() -> T? {{ None }}\nfn main() {{\n    let a: T? = None\n    let b = T(v: 1, next: None)\n    take(None)\n    var c: T? = if true {{ None }} else if false {{ None }} else {{ None }}\n    c = None\n    return\n}}\nfn back(c: bool) -> T? {{\n    if c {{ return None }}\n    if let x = give() {{ None }} else {{ None }}\n}}"
+        ));
+    }
+
+    #[test]
+    fn assign_if_let_binding() {
+        expect_error(
+            &format!(
+                "{T}fn f(n: T?) {{\n    if let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
+            ),
+            "cannot assign to `x`",
+            (7, 9),
+            None,
+            &[(6, 12, "bound by `if let` here")],
+            None,
+        );
+    }
+
+    #[test]
+    fn assign_while_let_binding() {
+        expect_error(
+            &format!(
+                "{T}fn f(n: T?) {{\n    while let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
+            ),
+            "cannot assign to `x`",
+            (7, 9),
+            None,
+            &[(6, 15, "bound by `while let` here")],
+            None,
+        );
+    }
+
+    #[test]
+    fn print_optional() {
+        error(
+            "fn f(x: i64?) { print(x) }\nfn main() {}",
+            "`print` takes one `i64` or `bool`",
+            (1, 17),
+        );
+    }
+
+    #[test]
+    fn if_let_shadows() {
+        clean(&format!(
+            "{T}fn f(node: T?) -> i64 {{\n    if let node = node {{ node.v }} else {{ 0 }}\n}}\nfn main() {{}}"
+        ));
+    }
+
+    /// The `?` is not part of the unknown name, and the `None` it would type draws nothing.
+    #[test]
+    fn unknown_optional_type_underlines_the_name() {
+        let src = "fn main() { let x: Foo? = None }";
+        let ds = diags(src);
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        assert_eq!(ds[0].message, "unknown type `Foo`");
+        assert_eq!(&src[ds[0].span.start..ds[0].span.end], "Foo");
+    }
+
+    #[test]
+    fn wraps_a_value_where_optional_expected() {
+        f_contains(
+            "fn f() -> T? { T(v: 1, next: None) }",
+            "(block (wrap (new T 1 None)))",
+        );
+    }
+
+    #[test]
+    fn joins_if_branches() {
+        f_contains(
+            "fn f(c: bool, t: T) -> T? {\n    let x = if c { None } else { t }\n    x\n}",
+            "(let x#2 (if c#0 (block None) (block (wrap t#1))))",
+        );
+    }
+
+    /// The spec's `if c { t } else { None }`: the value comes first, and its branch is wrapped.
+    #[test]
+    fn joins_a_value_then_none() {
+        f_contains(
+            "fn f(c: bool, t: T) -> T? {\n    let x = if c { t } else { None }\n    x\n}",
+            "(let x#2 (if c#0 (block (wrap t#1)) (block None)))",
+        );
+    }
+
+    #[test]
+    fn lowers_if_let() {
+        f_contains(
+            "fn f(n: T?) -> i64 {\n    if let x = n { x.v } else { 0 }\n}",
+            "(if-some x#1 n#0 (block (. x#1 v)) (block 0))",
+        );
+    }
+
+    #[test]
+    fn lowers_while_let() {
+        f_contains(
+            "fn f(l: T?) -> i64 {\n    var n = 0\n    var node = l\n    while let x = node {\n        n += 1\n        node = x.next\n    }\n    n\n}",
+            "(loop (block (if-some x#3 node#2 (block (= n#1 (+ n#1 1)) (= node#2 (. x#3 next))) (block (break)))))",
         );
     }
 }

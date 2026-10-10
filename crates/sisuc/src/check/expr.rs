@@ -1,14 +1,17 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
 use super::{
-    Binding, Checked, Checker, Poisoned, block_expr, block_type, not_found, type_of, value_span,
+    Binding, Checked, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, block_type, not_found,
+    type_of, value_span, wrap, wrap_block,
 };
 use crate::ast::{self, ExprKind, UnaryOp};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::tir::{self, Type};
 
 impl Checker {
-    pub(super) fn expr(&mut self, e: &ast::Expr) -> Checked {
+    /// `expected` is the type the context wants, `None` when it wants none. It only types a
+    /// `None`, and flows into `if` and `if let` branches and a block's value; it never wraps.
+    pub(super) fn expr(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let node = |kind, ty| {
             Ok(tir::Expr {
                 kind,
@@ -19,6 +22,7 @@ impl Checker {
         match &e.kind {
             ExprKind::Int(n) => node(tir::ExprKind::Int(*n), Type::I64),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
+            ExprKind::NoneLit => self.none(e.span, expected),
             ExprKind::Name(name) => match self.lookup(name) {
                 Some(Binding {
                     local,
@@ -93,14 +97,26 @@ impl Checker {
                 cond,
                 then_block,
                 else_block,
-            } => self.if_expr(e.span, cond, then_block, else_block.as_ref()),
-            ExprKind::NoneLit | ExprKind::IfLet { .. } => panic!("optionals land in Task 17"),
+            } => self.if_expr(e.span, cond, then_block, else_block.as_ref(), expected),
+            ExprKind::IfLet {
+                name,
+                value,
+                then_block,
+                else_block,
+            } => self.if_let(
+                e.span,
+                name,
+                value,
+                then_block,
+                else_block.as_ref(),
+                expected,
+            ),
         }
     }
 
     /// An expression whose value is used: not `unit` or `never`.
-    pub(super) fn value(&mut self, e: &ast::Expr) -> Checked {
-        let checked = self.expr(e);
+    pub(super) fn value(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
+        let checked = self.expr(e, expected);
         let message = match type_of(&checked) {
             Some(Type::Unit) => "expression has no value",
             Some(Type::Never) => "unreachable code",
@@ -110,7 +126,8 @@ impl Checker {
         Err(Poisoned { ty: None })
     }
 
-    /// A value of type `want`; `None` is `Error`, which every type matches.
+    /// A value of type `want`; `None` is `Error`, which every type matches. A `T` where `want`
+    /// is a `T?` is wrapped.
     pub(super) fn expect(&mut self, e: &ast::Expr, want: Option<&Type>) -> Checked {
         self.operand(e, want).0
     }
@@ -118,7 +135,7 @@ impl Checker {
     /// `expect`, and whether it reported a mismatch. A mismatch is the failure of the rule
     /// that wants `want`, so that rule's expression is `Error`.
     fn operand(&mut self, e: &ast::Expr, want: Option<&Type>) -> (Checked, bool) {
-        let checked = self.value(e);
+        let checked = self.value(e, Some(want.unwrap_or(&UNKNOWN)));
         self.against(e.span, checked, want)
     }
 
@@ -132,6 +149,17 @@ impl Checker {
         if let (Some(want), Some(got)) = (want, type_of(&checked))
             && want != got
         {
+            if let Type::Optional(payload) = want
+                && **payload == *got
+            {
+                let wrapped = match checked {
+                    Ok(e) => Ok(wrap(e, want)),
+                    Err(_) => Err(Poisoned {
+                        ty: Some(want.clone()),
+                    }),
+                };
+                return (wrapped, false);
+            }
             let d = self.mismatch(span, want, got);
             self.diagnostics.push(d);
             return (Err(Poisoned { ty: None }), true);
@@ -175,7 +203,7 @@ impl Checker {
     }
 
     fn equal(&mut self, span: Span, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
-        let (l, r) = (self.value(lhs), self.value(rhs));
+        let (l, r) = (self.value(lhs, None), self.value(rhs, None));
         if let (Some(lt), Some(rt)) = (type_of(&l), type_of(&r))
             && (lt != rt || lt.is_counted())
         {
@@ -197,56 +225,166 @@ impl Checker {
         typed(span, Type::Bool, false, kind)
     }
 
-    /// Without an `else`, `unit`. With one, the branches' common type; a `never` branch takes
-    /// the other's, then an `Error` branch takes the other's. A condition that is not `bool`
-    /// makes the `if` `Error`.
+    /// A `None`, of the optional type `expected`.
+    fn none(&mut self, span: Span, expected: Option<&Type>) -> Checked {
+        let d = match expected {
+            Some(ty @ Type::Optional(_)) => {
+                return Ok(tir::Expr {
+                    kind: tir::ExprKind::None,
+                    ty: ty.clone(),
+                    span,
+                });
+            }
+            Some(Type::Never) => return Err(Poisoned { ty: None }),
+            Some(ty) => {
+                Diagnostic::error(span, format!("expected {}, found `None`", self.show(ty)))
+            }
+            None => Diagnostic::error(span, "cannot infer the type of `None`")
+                .help("write the type: `let x: Tree? = None`"),
+        };
+        self.diagnostics.push(d);
+        Err(Poisoned { ty: None })
+    }
+
+    /// Without an `else`, `unit`. With one, the branches joined (see `branches`). A condition
+    /// that is not `bool` makes the `if` `Error`.
     fn if_expr(
         &mut self,
         span: Span,
         cond: &ast::Expr,
         then_block: &ast::Block,
         else_block: Option<&ast::Block>,
+        expected: Option<&Type>,
     ) -> Checked {
         let (cond, mismatched) = self.operand(cond, Some(&Type::Bool));
-        let then = self.block(then_block);
-        let Some(else_block) = else_block else {
-            let kind = cond
-                .ok()
-                .zip(then.ok())
-                .map(|(cond, then)| tir::ExprKind::If {
-                    cond: Box::new(cond),
-                    then_block: then,
-                    else_block: None,
-                });
-            return typed(span, Type::Unit, mismatched, kind);
-        };
-        let other = self.block(else_block);
-        let ty = match (block_type(&then), block_type(&other)) {
-            // `never` first, so an `Error` branch and a `never` one make `Error`.
-            (Some(Type::Never), ty) | (ty, Some(Type::Never)) => ty.cloned(),
-            (None, None) => None,
-            (Some(t), None) | (None, Some(t)) => Some(t.clone()),
-            (Some(t), Some(o)) if t == o => Some(t.clone()),
-            (Some(t), Some(o)) => {
-                let d = self.mismatch(value_span(else_block), t, o);
-                self.diagnostics.push(d);
-                None
-            }
-        };
-        match (cond, then, other, ty) {
-            (Ok(cond), Ok(then), Ok(other), Some(ty)) => Ok(tir::Expr {
+        let (then, other, ty) = self.branches(then_block, else_block, expected, |c, expected| {
+            c.block(then_block, expected)
+        });
+        match (cond, then, other.transpose(), ty.filter(|_| !mismatched)) {
+            (Ok(cond), Ok(then_block), Ok(else_block), Some(ty)) => Ok(tir::Expr {
                 kind: tir::ExprKind::If {
                     cond: Box::new(cond),
-                    then_block: then,
-                    else_block: Some(other),
+                    then_block,
+                    else_block,
                 },
                 ty,
                 span,
             }),
-            (.., ty) => Err(Poisoned {
-                ty: ty.filter(|_| !mismatched),
-            }),
+            (.., ty) => Err(Poisoned { ty }),
         }
+    }
+
+    /// `if let name = value { ... }`, typed as `if`; `name` is in scope in the first block.
+    /// A `value` that is not optional makes it `Error`.
+    fn if_let(
+        &mut self,
+        span: Span,
+        name: &ast::Ident,
+        value: &ast::Expr,
+        then_block: &ast::Block,
+        else_block: Option<&ast::Block>,
+        expected: Option<&Type>,
+    ) -> Checked {
+        let (scrutinee, bound, mismatched) = self.unwrapped("if let", value);
+        let mut bind = None;
+        let (then, other, ty) = self.branches(then_block, else_block, expected, |c, expected| {
+            let (local, block) = c.unwrapping_block("if let", name, bound, then_block, expected);
+            bind = Some(local);
+            block
+        });
+        let bind = bind.expect("`branches` checks the first block");
+        match (
+            scrutinee,
+            then,
+            other.transpose(),
+            ty.filter(|_| !mismatched),
+        ) {
+            (Ok(scrutinee), Ok(then_block), Ok(else_block), Some(ty)) => Ok(tir::Expr {
+                kind: tir::ExprKind::IfSome {
+                    bind,
+                    scrutinee: Box::new(scrutinee),
+                    then_block,
+                    else_block,
+                },
+                ty,
+                span,
+            }),
+            (.., ty) => Err(Poisoned { ty }),
+        }
+    }
+
+    /// The optional `value` that `keyword` (`if let` or `while let`) unwraps, the type it binds
+    /// (`None` is `Error`), and whether `value` was reported for not being optional.
+    pub(super) fn unwrapped(
+        &mut self,
+        keyword: &str,
+        value: &ast::Expr,
+    ) -> (Checked, Option<Type>, bool) {
+        let scrutinee = self.value(value, None);
+        match type_of(&scrutinee) {
+            Some(Type::Optional(payload)) => {
+                let bound = Some((**payload).clone());
+                (scrutinee, bound, false)
+            }
+            Some(ty) => {
+                let d = Diagnostic::error(
+                    value.span,
+                    format!("`{keyword}` needs an optional; this is {}", self.show(ty)),
+                );
+                self.diagnostics.push(d);
+                (Err(Poisoned { ty: None }), None, true)
+            }
+            None => (scrutinee, None, false),
+        }
+    }
+
+    /// The blocks of an `if` or `if let`, `then` checking the first, and their type: `unit`
+    /// without an `else`. With no `expected` type, the branch whose value is not a bare `None`
+    /// is checked first, and the other expects its type made optional. Then a `never` branch,
+    /// and after it an `Error` one, takes the other's type; a `T` and a `T?` join to `T?`, the
+    /// `T` branch wrapped; other types that differ are reported.
+    fn branches(
+        &mut self,
+        then_block: &ast::Block,
+        else_block: Option<&ast::Block>,
+        expected: Option<&Type>,
+        then: impl FnOnce(&mut Self, Option<&Type>) -> CheckedBlock,
+    ) -> (CheckedBlock, Option<CheckedBlock>, Option<Type>) {
+        let Some(else_block) = else_block else {
+            return (then(self, None), None, Some(Type::Unit));
+        };
+        let (mut first, mut other);
+        if expected.is_none() && bare_none(then_block) && !bare_none(else_block) {
+            other = self.block(else_block, None);
+            let after = after_branch(block_type(&other));
+            first = then(self, after.as_ref());
+        } else {
+            first = then(self, expected);
+            let after = after_branch(block_type(&first));
+            other = self.block(else_block, expected.or(after.as_ref()));
+        }
+        let (t, o) = (block_type(&first).cloned(), block_type(&other).cloned());
+        let ty = match (t, o) {
+            // `never` first, so an `Error` branch and a `never` one make `Error`.
+            (Some(Type::Never), ty) | (ty, Some(Type::Never)) => ty,
+            (None, None) => None,
+            (Some(t), None) | (None, Some(t)) => Some(t),
+            (Some(t), Some(o)) if t == o => Some(t),
+            (Some(t), Some(o)) if after_branch(Some(&t)).as_ref() == Some(&o) => {
+                wrap_block(&mut first, &o);
+                Some(o)
+            }
+            (Some(t), Some(o)) if after_branch(Some(&o)).as_ref() == Some(&t) => {
+                wrap_block(&mut other, &t);
+                Some(t)
+            }
+            (Some(t), Some(o)) => {
+                let d = self.mismatch(value_span(else_block), &t, &o);
+                self.diagnostics.push(d);
+                None
+            }
+        };
+        (first, Some(other), ty)
     }
 
     fn call(&mut self, span: Span, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
@@ -275,8 +413,9 @@ impl Checker {
         method: &ast::Ident,
         args: &[ast::Arg],
     ) -> Checked {
-        let receiver = self.value(receiver);
-        let Some(func) = self.find_method(type_of(&receiver), method) else {
+        let receiver_expr = receiver;
+        let receiver = self.value(receiver, None);
+        let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method) else {
             self.labels(args);
             self.stray(args);
             return Err(Poisoned { ty: None });
@@ -377,7 +516,7 @@ impl Checker {
                 failed = true;
             }
             if failed {
-                checked.push(self.expr(&arg.value));
+                checked.push(self.expr(&arg.value, Some(&UNKNOWN)));
             } else {
                 let (arg, mismatched) = self.operand(&arg.value, fields[i].1.as_ref());
                 failed = mismatched;
@@ -402,8 +541,9 @@ impl Checker {
 
     /// `base.name`.
     fn field(&mut self, span: Span, base: &ast::Expr, name: &ast::Ident) -> Checked {
-        let base = self.value(base);
-        let Some((class, index)) = self.find_field(type_of(&base), name) else {
+        let receiver = base;
+        let base = self.value(base, None);
+        let Some((class, index)) = self.find_field(type_of(&base), receiver, name) else {
             return Err(Poisoned { ty: None });
         };
         let ty = self.classes[class.0].fields[index].ty.clone();
@@ -420,11 +560,12 @@ impl Checker {
         }
     }
 
-    /// The class and index of field `name` of a value of type `base`. `None` when there is
-    /// none, reported unless `base` is `Error`.
+    /// The class and index of field `name` of `receiver`, a value of type `base`. `None` when
+    /// there is none, reported unless `base` is `Error`.
     pub(super) fn find_field(
         &mut self,
         base: Option<&Type>,
+        receiver: &ast::Expr,
         name: &ast::Ident,
     ) -> Option<(tir::ClassId, usize)> {
         let ty = base?;
@@ -448,16 +589,22 @@ impl Checker {
                     no_member("field", &self.show(ty), name)
                 }
             }
+            Type::Optional(_) => may_be_none(receiver),
             _ => no_member("field", &self.show(ty), name),
         };
         self.diagnostics.push(d);
         None
     }
 
-    /// The method `name` of a value of type `receiver`. `None` when there is none, reported
-    /// unless `receiver` is `Error`.
-    fn find_method(&mut self, receiver: Option<&Type>, name: &ast::Ident) -> Option<tir::FuncId> {
-        let ty = receiver?;
+    /// The method `name` of `receiver`, a value of type `ty`. `None` when there is none,
+    /// reported unless `ty` is `Error`.
+    fn find_method(
+        &mut self,
+        ty: Option<&Type>,
+        receiver: &ast::Expr,
+        name: &ast::Ident,
+    ) -> Option<tir::FuncId> {
+        let ty = ty?;
         let d = match ty {
             Type::Class(class) => {
                 let info = &self.classes[class.0];
@@ -477,6 +624,7 @@ impl Checker {
                     no_member("method", &self.show(ty), name)
                 }
             }
+            Type::Optional(_) => may_be_none(receiver),
             _ => no_member("method", &self.show(ty), name),
         };
         self.diagnostics.push(d);
@@ -492,9 +640,9 @@ impl Checker {
             self.stray(args);
             return Err(Poisoned { ty: None });
         };
-        let checked = self.expr(&arg.value);
+        let checked = self.expr(&arg.value, None);
         let error = match type_of(&checked) {
-            Some(Type::Unit | Type::Class(_)) => wrong(),
+            Some(Type::Unit | Type::Class(_) | Type::Optional(_)) => wrong(),
             Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
             _ => {
                 let kind = checked
@@ -512,7 +660,7 @@ impl Checker {
     fn stray(&mut self, args: &[ast::Arg]) {
         for arg in args {
             // Only its diagnostics matter.
-            let _ = self.expr(&arg.value);
+            let _ = self.expr(&arg.value, Some(&UNKNOWN));
         }
     }
 }
@@ -529,6 +677,48 @@ pub(super) fn operator(op: ast::BinaryOp) -> Option<(tir::BinaryOp, Type)> {
         ast::BinaryOp::And => (tir::BinaryOp::And, Type::Bool),
         ast::BinaryOp::Or => (tir::BinaryOp::Or, Type::Bool),
     })
+}
+
+/// Whether `block`'s value is the bare literal `None`.
+fn bare_none(block: &ast::Block) -> bool {
+    matches!(
+        block.stmts.last(),
+        Some(ast::Stmt {
+            kind: ast::StmtKind::Expr(ast::Expr {
+                kind: ExprKind::NoneLit,
+                ..
+            }),
+            ..
+        })
+    )
+}
+
+/// What one branch of an `if` expects after the other, of type `ty`, when the `if` expects
+/// nothing: `ty` made optional; `Error` after `Error`; nothing after `unit` or `never`.
+fn after_branch(ty: Option<&Type>) -> Option<Type> {
+    match ty {
+        None => Some(UNKNOWN.clone()),
+        Some(Type::Unit | Type::Never) => None,
+        Some(ty @ Type::Optional(_)) => Some(ty.clone()),
+        Some(ty) => Some(Type::Optional(Box::new(ty.clone()))),
+    }
+}
+
+/// "`node` may be `None`", at the optional `receiver` of a `.`.
+fn may_be_none(receiver: &ast::Expr) -> Diagnostic {
+    let what = path(receiver).map_or_else(|| "this value".to_owned(), |p| format!("`{p}`"));
+    Diagnostic::error(receiver.span, format!("{what} may be `None`"))
+        .help("use `?.`, or unwrap it with `if let`")
+}
+
+/// A name, `self`, or a chain of fields over one, as written.
+fn path(e: &ast::Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Name(name) => Some(name.clone()),
+        ExprKind::SelfValue => Some("self".to_owned()),
+        ExprKind::Field { base, name } => Some(format!("{}.{}", path(base)?, name.name)),
+        _ => None,
+    }
 }
 
 /// "`P` has no field `z`": `owner` is the type as `show` quotes it.

@@ -772,6 +772,7 @@ mod tests {
             ("class", "class", "an expression"),
             ("is", "is", "an expression"),
             ("let self = 1", "self", "a variable name"),
+            ("let None = 1", "None", "a variable name"),
             (".", ".", "an expression"),
             ("?", "?", "an expression"),
             ("?.", "?.", "an expression"),
