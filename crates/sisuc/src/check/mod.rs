@@ -28,9 +28,26 @@ type CheckedBlock = Result<tir::Block, Poisoned>;
 
 /// A type of `None` is `Error`: its error is reported where the signature names it.
 struct Signature {
+    /// `f`, or `P.m` for a method.
+    name: String,
+    /// Without a method's `self`.
     params: Vec<Option<Type>>,
     ret: Option<Type>,
-    name_span: Span,
+}
+
+struct ClassInfo {
+    name: ast::Ident,
+    /// The first field of each name, in declaration order.
+    fields: Vec<FieldInfo>,
+    /// The first method of each name.
+    methods: HashMap<String, tir::FuncId>,
+}
+
+struct FieldInfo {
+    name: ast::Ident,
+    /// `None` is `Error`.
+    ty: Option<Type>,
+    mutable: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -54,12 +71,18 @@ struct Checker {
     function_ids: HashMap<String, tir::FuncId>,
     /// Indexed by `FuncId`, so a duplicate function has a signature of its own.
     signatures: Vec<Signature>,
+    /// Indexed by `ClassId`, so a duplicate class has fields and methods of its own.
+    classes: Vec<ClassInfo>,
+    /// The first class of each name.
+    class_ids: HashMap<String, tir::ClassId>,
     diagnostics: Vec<Diagnostic>,
     // The rest is per body.
     scopes: Vec<HashMap<String, Binding>>,
     locals: Vec<tir::Local>,
     /// `None` is `Error`.
     ret: Option<Type>,
+    /// The class of the method being checked, whose `self` is local 0.
+    self_class: Option<tir::ClassId>,
     /// Loops open around the code being checked; a `while` condition counts as inside.
     loop_depth: usize,
 }
@@ -69,33 +92,59 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
     let mut checker = Checker {
         function_ids: HashMap::new(),
         signatures: Vec::new(),
+        classes: Vec::new(),
+        class_ids: HashMap::new(),
         diagnostics: Vec::new(),
         scopes: Vec::new(),
         locals: Vec::new(),
         ret: None,
+        self_class: None,
         loop_depth: 0,
     };
-    checker.collect_signatures(program);
+    checker.collect_names(program);
+    let declared = checker.collect_signatures(program);
+    checker.never_constructed();
+    checker.check_main(&declared);
     // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
-    let functions: Vec<_> = program
-        .functions
-        .iter()
+    let functions: Vec<_> = declared
+        .into_iter()
         .enumerate()
-        .map(|(i, f)| checker.function(f, tir::FuncId(i)))
+        .map(|(i, (f, class))| checker.function(f, tir::FuncId(i), class))
         .collect();
+    let classes = checker.classes.iter().map(lower_class).collect();
     let mut diagnostics = checker.diagnostics;
     diagnostics.sort_by_key(|d| d.span.start);
     let failed = diagnostics.iter().any(|d| d.severity == Severity::Error);
     let program = functions
         .into_iter()
         .collect::<Option<_>>()
+        .zip(classes)
         .filter(|_| !failed)
-        .map(|functions| tir::Program { functions });
+        .map(|(functions, classes)| tir::Program { classes, functions });
     debug_assert!(
         program.is_some() || failed,
         "a missing program implies an error diagnostic"
     );
     (program, diagnostics)
+}
+
+/// The class, unless a field's type is `Error`.
+fn lower_class(class: &ClassInfo) -> Option<tir::Class> {
+    let fields = class
+        .fields
+        .iter()
+        .map(|f| {
+            Some(tir::Field {
+                name: f.name.name.clone(),
+                ty: f.ty.clone()?,
+                mutable: f.mutable,
+            })
+        })
+        .collect::<Option<_>>()?;
+    Some(tir::Class {
+        name: class.name.name.clone(),
+        fields,
+    })
 }
 
 /// The type of a checked expression; `None` is `Error`.
@@ -115,38 +164,192 @@ fn block_type(checked: &CheckedBlock) -> Option<&Type> {
 }
 
 impl Checker {
-    /// Records each function's signature under a `FuncId` in source order, then checks `main`.
-    fn collect_signatures(&mut self, program: &ast::Program) {
-        for f in &program.functions {
-            let name = &f.name;
-            if name.name == "print" {
-                self.diagnostics
-                    .push(duplicate(name).label("`print` is built in"));
-            } else if let Some(first) = self.function_ids.get(&name.name) {
-                let first = self.signatures[first.0].name_span;
-                self.diagnostics
-                    .push(duplicate(name).secondary(first, "first defined here"));
-            } else {
-                let id = tir::FuncId(self.signatures.len());
-                self.function_ids.insert(name.name.clone(), id);
+    /// Pass 1: gives every class a `ClassId` and records the first function and class of each
+    /// name, so that types and calls can name any of them. Classes and functions share a
+    /// namespace. `FuncId`s run in source order, a class's methods at its place.
+    fn collect_names(&mut self, program: &ast::Program) {
+        let mut first = HashMap::new();
+        let mut next_function = 0;
+        for item in &program.items {
+            match item {
+                ast::Item::Class(class) => {
+                    let id = tir::ClassId(self.classes.len());
+                    self.classes.push(ClassInfo {
+                        name: class.name.clone(),
+                        fields: Vec::new(),
+                        methods: HashMap::new(),
+                    });
+                    let name = &class.name;
+                    if matches!(name.name.as_str(), "i64" | "bool") {
+                        self.diagnostics.push(Diagnostic::error(
+                            name.span,
+                            format!("`{}` is a built-in type", name.name),
+                        ));
+                    } else if self.first_callable(&mut first, "class", name) {
+                        self.class_ids.insert(name.name.clone(), id);
+                    }
+                    next_function += class
+                        .members
+                        .iter()
+                        .filter(|m| matches!(m, ast::Member::Method(_)))
+                        .count();
+                }
+                ast::Item::Function(f) => {
+                    if self.first_callable(&mut first, "function", &f.name) {
+                        self.function_ids
+                            .insert(f.name.name.clone(), tir::FuncId(next_function));
+                    }
+                    next_function += 1;
+                }
             }
-            let params = f.params.iter().map(|p| self.resolve(&p.ty)).collect();
-            let ret = f
-                .ret
-                .as_ref()
-                .map_or(Some(Type::Unit), |ty| self.resolve(ty));
-            self.signatures.push(Signature {
-                params,
-                ret,
-                name_span: name.span,
-            });
         }
+    }
+
+    /// Whether `name` is the first function or class of its name; reports it when not.
+    fn first_callable(
+        &mut self,
+        first: &mut HashMap<String, Span>,
+        kind: &str,
+        name: &ast::Ident,
+    ) -> bool {
+        if name.name == "print" {
+            self.diagnostics
+                .push(duplicate(kind, name).label("`print` is built in"));
+            return false;
+        }
+        self.first_definition(first, kind, name)
+    }
+
+    /// Whether `name` is the first of its name in `first`, which it joins; reports it when not.
+    fn first_definition(
+        &mut self,
+        first: &mut HashMap<String, Span>,
+        kind: &str,
+        name: &ast::Ident,
+    ) -> bool {
+        if let Some(&span) = first.get(&name.name) {
+            self.diagnostics
+                .push(duplicate(kind, name).secondary(span, "first defined here"));
+            return false;
+        }
+        first.insert(name.name.clone(), name.span);
+        true
+    }
+
+    /// Pass 2: each class's fields and every signature, in `FuncId` order. Returns each
+    /// function with the class of a method. A class's fields and methods share a namespace.
+    fn collect_signatures<'a>(
+        &mut self,
+        program: &'a ast::Program,
+    ) -> Vec<(&'a ast::Function, Option<tir::ClassId>)> {
+        let mut declared = Vec::new();
+        let mut next_class = 0;
+        for item in &program.items {
+            let class = match item {
+                ast::Item::Function(f) => {
+                    self.signature(f, f.name.name.clone());
+                    declared.push((f, None));
+                    continue;
+                }
+                ast::Item::Class(class) => class,
+            };
+            let id = tir::ClassId(next_class);
+            next_class += 1;
+            let mut first = HashMap::new();
+            for member in &class.members {
+                match member {
+                    ast::Member::Field(field) => {
+                        let ty = self.resolve(&field.ty);
+                        if self.first_definition(&mut first, "field", &field.name) {
+                            self.classes[id.0].fields.push(FieldInfo {
+                                name: field.name.clone(),
+                                ty,
+                                mutable: field.mutable,
+                            });
+                        }
+                    }
+                    ast::Member::Method(method) => {
+                        let func = tir::FuncId(self.signatures.len());
+                        if self.first_definition(&mut first, "method", &method.name) {
+                            self.classes[id.0]
+                                .methods
+                                .insert(method.name.name.clone(), func);
+                        }
+                        self.signature(method, format!("{}.{}", class.name.name, method.name.name));
+                        declared.push((method, Some(id)));
+                    }
+                }
+            }
+        }
+        declared
+    }
+
+    fn signature(&mut self, f: &ast::Function, name: String) {
+        let params = f.params.iter().map(|p| self.resolve(&p.ty)).collect();
+        let ret = f
+            .ret
+            .as_ref()
+            .map_or(Some(Type::Unit), |ty| self.resolve(ty));
+        self.signatures.push(Signature { name, params, ret });
+    }
+
+    /// Reports each strongly connected component of non-optional class fields once
+    /// (overlapping cycles share one error), on the component's first class in source order,
+    /// at its first field into the component: no first object of such a class can exist.
+    fn never_constructed(&mut self) {
+        let reach: Vec<Vec<bool>> = (0..self.classes.len()).map(|c| self.reachable(c)).collect();
+        for (c, class) in self.classes.iter().enumerate() {
+            let in_cycle = |d: usize| reach[c][d] && reach[d][c];
+            if !in_cycle(c) || (0..c).any(in_cycle) {
+                continue;
+            }
+            let (field, target) = class
+                .fields
+                .iter()
+                .find_map(|f| match f.ty {
+                    Some(Type::Class(d)) if in_cycle(d.0) => Some((f, d)),
+                    _ => None,
+                })
+                .expect("a class on a cycle has a field into it");
+            let target = &self.classes[target.0].name.name;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    field.name.span,
+                    format!(
+                        "`{}` can never be constructed: field `{}` needs a `{target}`",
+                        class.name.name, field.name.name
+                    ),
+                )
+                .help(format!("make it optional: `{target}?`")),
+            );
+        }
+    }
+
+    /// The classes an object of class `from` holds through one field or more.
+    fn reachable(&self, from: usize) -> Vec<bool> {
+        let mut seen = vec![false; self.classes.len()];
+        let mut stack = vec![from];
+        while let Some(c) = stack.pop() {
+            for field in &self.classes[c].fields {
+                if let Some(Type::Class(d)) = field.ty
+                    && !seen[d.0]
+                {
+                    seen[d.0] = true;
+                    stack.push(d.0);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Reports a missing `main`, or one with parameters or a return type.
+    fn check_main(&mut self, declared: &[(&ast::Function, Option<tir::ClassId>)]) {
         match self.function_ids.get("main") {
             None => self
                 .diagnostics
                 .push(Diagnostic::error(Span::new(0, 0), "no `main` function")),
             Some(id) => {
-                let main = &program.functions[id.0];
+                let main = declared[id.0].0;
                 if !main.params.is_empty() || main.ret.is_some() {
                     self.diagnostics.push(Diagnostic::error(
                         main.name.span,
@@ -163,9 +366,12 @@ impl Checker {
             "i64" => Some(Type::I64),
             "bool" => Some(Type::Bool),
             name => {
+                if let Some(&id) = self.class_ids.get(name) {
+                    return Some(Type::Class(id));
+                }
                 self.diagnostics.push(
                     Diagnostic::error(ty.span, format!("unknown type `{name}`"))
-                        .help("the types are `i64` and `bool`"),
+                        .help("the types are `i64`, `bool` and classes"),
                 );
                 None
             }
@@ -175,16 +381,35 @@ impl Checker {
     /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
     /// is `Error` or its body failed; an `Error` parameter still yields one, and `check` drops
     /// it for the error behind it.
-    fn function(&mut self, f: &ast::Function, id: tir::FuncId) -> Option<tir::Function> {
+    /// A method, of `class`, gets `self` as its first local.
+    fn function(
+        &mut self,
+        f: &ast::Function,
+        id: tir::FuncId,
+        class: Option<tir::ClassId>,
+    ) -> Option<tir::Function> {
         let sig = &self.signatures[id.0];
-        let (param_types, ret) = (sig.params.clone(), sig.ret.clone());
+        let (name, param_types, ret) = (sig.name.clone(), sig.params.clone(), sig.ret.clone());
         self.ret.clone_from(&ret);
+        self.self_class = class;
         self.scopes.push(HashMap::new());
-        let params = f
-            .params
-            .iter()
-            .zip(param_types)
-            .map(|(p, ty)| self.declare(&p.name, ty, BindingKind::Param))
+        // `self` is a keyword, so it needs no binding: `ExprKind::SelfValue` reads local 0.
+        let receiver = class.map(|class| {
+            self.locals.push(tir::Local {
+                name: Some("self".into()),
+                ty: Type::Class(class),
+                mutable: false,
+            });
+            tir::LocalId(0)
+        });
+        let params = receiver
+            .into_iter()
+            .chain(
+                f.params
+                    .iter()
+                    .zip(param_types)
+                    .map(|(p, ty)| self.declare(&p.name, ty, BindingKind::Param)),
+            )
             .collect();
         let body = self.block(&f.body);
         self.pop_scope();
@@ -211,7 +436,7 @@ impl Checker {
             _ => {}
         }
         Some(tir::Function {
-            name: f.name.name.clone(),
+            name,
             params,
             ret: ret?,
             locals,
@@ -219,13 +444,12 @@ impl Checker {
         })
     }
 
-    /// A type as messages quote it: "`i64`".
-    #[expect(
-        clippy::unused_self,
-        reason = "class names come from the checker from Task 10"
-    )]
+    /// A type as messages quote it: "`i64`", "`Tree`".
     fn show(&self, ty: &Type) -> String {
-        format!("`{ty}`")
+        match ty {
+            Type::Class(id) => format!("`{}`", self.classes[id.0].name.name),
+            ty => format!("`{ty}`"),
+        }
     }
 
     fn mismatch(&self, span: Span, want: &Type, got: &Type) -> Diagnostic {
@@ -241,14 +465,29 @@ fn value_span(block: &ast::Block) -> Span {
     block.stmts.last().map_or(block.span, |s| s.span)
 }
 
+/// A `Block` expression of `stmts` then `value`, of type `ty`.
+fn block_expr(stmts: Vec<tir::Stmt>, value: Option<tir::Expr>, ty: Type, span: Span) -> tir::Expr {
+    let block = tir::Block {
+        stmts,
+        value: value.map(Box::new),
+        ty: ty.clone(),
+    };
+    tir::Expr {
+        kind: tir::ExprKind::Block(block),
+        ty,
+        span,
+    }
+}
+
 fn not_found(name: &str, span: Span) -> Diagnostic {
     Diagnostic::error(span, format!("cannot find `{name}` in this scope"))
 }
 
-fn duplicate(name: &ast::Ident) -> Diagnostic {
+/// `kind` is the second declaration's: "function", "class", "field" or "method".
+fn duplicate(kind: &str, name: &ast::Ident) -> Diagnostic {
     Diagnostic::error(
         name.span,
-        format!("function `{}` is defined twice", name.name),
+        format!("{kind} `{}` is defined twice", name.name),
     )
 }
 
@@ -406,7 +645,7 @@ mod tests {
             (1, 20),
             None,
             &[],
-            Some("the types are `i64` and `bool`"),
+            Some("the types are `i64`, `bool` and classes"),
         );
     }
 
@@ -858,7 +1097,7 @@ mod tests {
             (1, 9),
             None,
             &[],
-            Some("the types are `i64` and `bool`"),
+            Some("the types are `i64`, `bool` and classes"),
         );
     }
 
@@ -904,6 +1143,18 @@ mod tests {
             "fn main() { print(1 == true) }",
             "cannot compare `i64` with `bool`",
             (1, 19),
+        );
+    }
+
+    /// Temporary: Task 21 deletes this test with its diagnostic.
+    #[test]
+    fn equality_on_classes_not_supported_yet() {
+        errors(
+            "class E {}\nfn main() {\n    print(E() == E())\n    print(1 != E())\n}",
+            &[
+                ("`==` on classes is not supported yet", (3, 11)),
+                ("`!=` on classes is not supported yet", (4, 11)),
+            ],
         );
     }
 
@@ -1329,11 +1580,591 @@ mod tests {
     }
 
     #[test]
+    fn class_and_function_share_names() {
+        expect_error(
+            "class A {}\nfn A() {}\nfn main() {}",
+            "function `A` is defined twice",
+            (2, 4),
+            None,
+            &[(1, 7, "first defined here")],
+            None,
+        );
+    }
+
+    #[test]
+    fn class_after_function_of_same_name() {
+        expect_error(
+            "fn A() {}\nclass A {}\nfn main() {}",
+            "class `A` is defined twice",
+            (2, 7),
+            None,
+            &[(1, 4, "first defined here")],
+            None,
+        );
+    }
+
+    #[test]
+    fn class_defined_twice() {
+        // The `bool` argument shows that `X` still names the first class.
+        let src =
+            "class X {\n    let a: i64\n}\nclass X {\n    let a: bool\n}\nfn main() { X(a: true) }";
+        errors(
+            src,
+            &[
+                ("class `X` is defined twice", (4, 7)),
+                ("expected `i64`, found `bool`", (7, 18)),
+            ],
+        );
+        let secondary: Vec<_> = diags(src)[0]
+            .secondary
+            .iter()
+            .map(|(span, text)| (at(src, *span), text.clone()))
+            .collect();
+        assert_eq!(secondary, [((1, 7), "first defined here".to_owned())]);
+    }
+
+    #[test]
+    fn class_named_print() {
+        expect_error(
+            "class print {}\nfn main() {}",
+            "class `print` is defined twice",
+            (1, 7),
+            Some("`print` is built in"),
+            &[],
+            None,
+        );
+    }
+
+    #[test]
+    fn duplicate_member() {
+        expect_error(
+            "class A {\n    let x: i64\n    fn x(self) {}\n}\nfn main() {}",
+            "method `x` is defined twice",
+            (3, 8),
+            None,
+            &[(2, 9, "first defined here")],
+            None,
+        );
+    }
+
+    #[test]
+    fn duplicate_field() {
+        expect_error(
+            "class A {\n    fn x(self) {}\n    var x: i64\n}\nfn main() {}",
+            "field `x` is defined twice",
+            (3, 9),
+            None,
+            &[(2, 8, "first defined here")],
+            None,
+        );
+    }
+
+    #[test]
+    fn builtin_type_as_class() {
+        error(
+            "class i64 {}\nfn main() {}",
+            "`i64` is a built-in type",
+            (1, 7),
+        );
+    }
+
+    #[test]
+    fn never_constructed_self() {
+        expect_error(
+            "class Node {\n    let next: Node\n}\nfn main() {}",
+            "`Node` can never be constructed: field `next` needs a `Node`",
+            (2, 9),
+            None,
+            &[],
+            Some("make it optional: `Node?`"),
+        );
+    }
+
+    #[test]
+    fn never_constructed_cycle_of_two() {
+        expect_error(
+            "class A {\n    let b: B\n}\nclass B {\n    let a: A\n}\nfn main() {}",
+            "`A` can never be constructed: field `b` needs a `B`",
+            (2, 9),
+            None,
+            &[],
+            Some("make it optional: `B?`"),
+        );
+    }
+
+    #[test]
+    fn never_constructed_once_per_strongly_connected_component() {
+        // `A`, `B` and `C` form one component of two cycles, `E` another; `D` only points in.
+        errors(
+            "class A {\n    let b: B\n    let c: C\n}\nclass B {\n    let a: A\n}\nclass C {\n    let a: A\n}\nclass D {\n    let a: A\n}\nclass E {\n    let e: E\n}\nfn main() {}",
+            &[
+                (
+                    "`A` can never be constructed: field `b` needs a `B`",
+                    (2, 9),
+                ),
+                (
+                    "`E` can never be constructed: field `e` needs a `E`",
+                    (15, 9),
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn constructor_missing_label() {
+        expect_error(
+            "class P {\n    let x: i64\n}\nfn main() { P(1) }",
+            "this argument needs a label",
+            (4, 15),
+            None,
+            &[],
+            Some("label it with its field: `x: ...`"),
+        );
+    }
+
+    #[test]
+    fn constructor_unknown_label() {
+        error(
+            "class P {\n    let x: i64\n}\nfn main() { P(z: 1) }",
+            "`P` has no field `z`",
+            (4, 15),
+        );
+    }
+
+    #[test]
+    fn constructor_out_of_order() {
+        expect_error(
+            "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(y: 1, x: 2) }",
+            "expected field `x` here, found `y`",
+            (5, 15),
+            None,
+            &[],
+            Some("name the fields in declaration order: `x`, `y`"),
+        );
+    }
+
+    #[test]
+    fn constructor_missing_field() {
+        expect_error(
+            "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(x: 1) }",
+            "missing field `y`",
+            (5, 13),
+            None,
+            &[],
+            Some("name the fields in declaration order: `x`, `y`"),
+        );
+    }
+
+    #[test]
+    fn constructor_extra_argument() {
+        error(
+            "class P {\n    let x: i64\n}\nfn main() { P(x: 1, y: 2) }",
+            "too many arguments: `P` has 1 field",
+            (4, 21),
+        );
+        error(
+            "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(x: 1, y: 2, z: 3) }",
+            "too many arguments: `P` has 2 fields",
+            (5, 27),
+        );
+    }
+
+    #[test]
+    fn constructor_field_type() {
+        error(
+            "class P {\n    let x: i64\n}\nfn main() { P(x: true) }",
+            "expected `i64`, found `bool`",
+            (4, 18),
+        );
+    }
+
+    #[test]
+    fn label_outside_constructor() {
+        error(
+            "fn f(a: i64) {}\nfn main() { f(a: 1) }",
+            "labels on arguments come in milestone 10",
+            (2, 15),
+        );
+    }
+
+    #[test]
+    fn constructor_reports_its_first_mistake_and_later_expression_errors() {
+        let class = "class P {\n    let x: i64\n    let y: i64\n}\n";
+        errors(
+            &format!("{class}fn main() {{ P(1, nope) }}"),
+            &[
+                ("this argument needs a label", (5, 15)),
+                ("cannot find `nope` in this scope", (5, 18)),
+            ],
+        );
+        errors(
+            &format!("{class}fn main() {{ P(1, 2) }}"),
+            &[("this argument needs a label", (5, 15))],
+        );
+    }
+
+    #[test]
+    fn each_label_on_a_call_is_reported() {
+        errors(
+            "fn f(a: i64, b: i64) {}\nfn main() { f(a: 1, b: 2) }",
+            &[
+                ("labels on arguments come in milestone 10", (2, 15)),
+                ("labels on arguments come in milestone 10", (2, 21)),
+            ],
+        );
+    }
+
+    #[test]
+    fn labels_on_unknown_calls_are_reported() {
+        errors(
+            "class P {}\nfn main() { P().missing(x: 1 + true) }",
+            &[
+                ("`P` has no method `missing`", (2, 17)),
+                ("labels on arguments come in milestone 10", (2, 25)),
+                ("expected `i64`, found `bool`", (2, 32)),
+            ],
+        );
+        errors(
+            "fn main() { nope(x: 1 + true) }",
+            &[
+                ("cannot find function `nope`", (1, 13)),
+                ("labels on arguments come in milestone 10", (1, 18)),
+                ("expected `i64`, found `bool`", (1, 25)),
+            ],
+        );
+        errors(
+            "fn main() { nope.m(x: 1 + true) }",
+            &[
+                ("cannot find `nope` in this scope", (1, 13)),
+                ("labels on arguments come in milestone 10", (1, 20)),
+                ("expected `i64`, found `bool`", (1, 27)),
+            ],
+        );
+    }
+
+    #[test]
+    fn print_reports_labels_and_still_checks_its_arguments() {
+        errors(
+            "fn main() { print(z: 1, 2) }",
+            &[
+                ("`print` takes one `i64` or `bool`", (1, 13)),
+                ("labels on arguments come in milestone 10", (1, 19)),
+            ],
+        );
+        errors(
+            "class E {}\nfn main() { print(z: E()) }",
+            &[
+                ("`print` takes one `i64` or `bool`", (2, 13)),
+                ("labels on arguments come in milestone 10", (2, 19)),
+            ],
+        );
+    }
+
+    #[test]
+    fn unknown_field() {
+        error(
+            "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.size)\n}",
+            "`P` has no field `size`",
+            (6, 13),
+        );
+    }
+
+    #[test]
+    fn field_called_as_method() {
+        error(
+            "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.x())\n}",
+            "`x` is a field of `P`, not a method",
+            (6, 13),
+        );
+    }
+
+    #[test]
+    fn method_read_as_field() {
+        expect_error(
+            "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.m)\n}",
+            "`m` is a method of `P`, not a field",
+            (6, 13),
+            None,
+            &[],
+            Some("call it: `m()`"),
+        );
+    }
+
+    #[test]
+    fn unknown_method() {
+        error(
+            "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.nope())\n}",
+            "`P` has no method `nope`",
+            (6, 13),
+        );
+    }
+
+    #[test]
+    fn method_through_class_name() {
+        error(
+            "class Tree {\n    fn sum(self) -> i64 { 0 }\n}\nfn main() {\n    print(Tree.sum(Tree()))\n}",
+            "cannot find `Tree` in this scope",
+            (5, 11),
+        );
+    }
+
+    #[test]
+    fn unknown_field_type_poisons() {
+        errors(
+            "class T {\n    var x: Nope\n}\nfn main() { print(T(x: 1).x + true) }",
+            &[("unknown type `Nope`", (2, 12))],
+        );
+    }
+
+    #[test]
+    fn method_arity() {
+        error(
+            "class P {\n    fn m(self, a: i64) {}\n}\nfn main() { P().m() }",
+            "`P.m` takes 1 argument, found 0",
+            (4, 13),
+        );
+    }
+
+    #[test]
+    fn field_on_i64() {
+        error(
+            "fn main() {\n    let x = 1\n    print(x.f)\n}",
+            "`i64` has no field `f`",
+            (3, 13),
+        );
+    }
+
+    #[test]
+    fn method_on_i64() {
+        error(
+            "fn main() {\n    let x = 1\n    print(x.m())\n}",
+            "`i64` has no method `m`",
+            (3, 13),
+        );
+    }
+
+    #[test]
+    fn self_outside_method() {
+        error(
+            "fn main() { print(self) }",
+            "`self` is only available in a method",
+            (1, 19),
+        );
+    }
+
+    #[test]
+    fn bare_name_is_not_a_field() {
+        error(
+            "class P {\n    let x: i64\n    fn m(self) -> i64 { x }\n}\nfn main() {}",
+            "cannot find `x` in this scope",
+            (3, 25),
+        );
+    }
+
+    #[test]
+    fn assign_let_field() {
+        expect_error(
+            "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = 2\n}",
+            "cannot assign to `x`",
+            (6, 5),
+            None,
+            &[(2, 9, "declared with `let` here")],
+            Some("declare it with `var`"),
+        );
+    }
+
+    #[test]
+    fn print_class() {
+        error(
+            "class E {}\nfn main() { print(E()) }",
+            "`print` takes one `i64` or `bool`",
+            (2, 13),
+        );
+    }
+
+    #[test]
+    fn poisoned_receiver_checks_args() {
+        errors(
+            "fn main() { nope.m(1 + true) }",
+            &[
+                ("cannot find `nope` in this scope", (1, 13)),
+                ("expected `i64`, found `bool`", (1, 24)),
+            ],
+        );
+    }
+
+    #[test]
+    fn lowers_methods() {
+        assert_eq!(
+            lowered(
+                "class C {\n    var n: i64\n    fn bump(self, by: i64) {\n        self.n += by\n    }\n}\nfn main() {\n    let c = C(n: 1)\n    c.bump(2)\n    print(c.n)\n}"
+            ),
+            "(class C (var n i64))\n\
+             (fn C.bump ((self#0 C) (by#1 i64)) unit (block (block (let #2 self#0) (= (. #2 n) (+ (. #2 n) by#1)))))\n\
+             (fn main () unit (block (let c#0 (new C 1)) (call C.bump c#0 2) (print (. c#0 n))))"
+        );
+    }
+
+    #[test]
+    fn lowers_field_assignments() {
+        assert_eq!(
+            lowered(
+                "class B {\n    var f: i64\n}\nclass A {\n    var b: B\n}\nfn mk(a: A) -> A { a }\nfn main() {\n    let a = A(b: B(f: 1))\n    a.b.f = 2\n    mk(a).b = B(f: 3)\n}"
+            ),
+            "(class B (var f i64))\n\
+             (class A (var b B))\n\
+             (fn mk ((a#0 A)) A (block a#0))\n\
+             (fn main () unit (block (let a#0 (new A (new B 1))) (= (. (. a#0 b) f) 2) (= (. (call mk a#0) b) (new B 3))))"
+        );
+    }
+
+    #[test]
+    fn assign_field_type() {
+        error(
+            "class P {\n    var x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = true\n}",
+            "expected `i64`, found `bool`",
+            (6, 11),
+        );
+    }
+
+    #[test]
     fn never_as_print_argument() {
         error(
             "fn f(c: bool) -> i64 {\n    print(if c { return 1 } else { return 2 })\n    1\n}\nfn main() {}",
             "unreachable code",
             (2, 11),
+        );
+    }
+
+    /// The printed `g` function, once `g`'s source sits between the spill tests' shared classes
+    /// and functions and an empty `main`.
+    fn printed_g(g: &str) -> String {
+        let src = format!(
+            "class B {{}}\nclass P {{\n    var b: B\n    let n: i64\n}}\nfn make() -> B {{ B() }}\nfn f(b: B, n: i64) {{}}\n{g}\nfn main() {{}}"
+        );
+        lowered(&src)
+            .lines()
+            .find(|line| line.starts_with("(fn g "))
+            .expect("`g` is lowered")
+            .to_owned()
+    }
+
+    #[test]
+    fn spills_call_argument() {
+        assert_eq!(
+            printed_g(
+                "fn g(c: bool) -> i64 {\n    f(make(), if c { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (block (let #1 (call make)) (let #2 (if c#0 (block (return 0)) (block 1))) (call f #1 #2)) 2))"
+        );
+    }
+
+    #[test]
+    fn spills_keep_source_order() {
+        assert_eq!(
+            printed_g(
+                "fn one() -> i64 { 1 }\nfn h(a: i64, b: B, n: i64) {}\nfn g(c: bool) -> i64 {\n    h(one(), make(), if c { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (block (let #1 (call one)) (let #2 (call make)) (let #3 (if c#0 (block (return 0)) (block 1))) (call h #1 #2 #3)) 2))"
+        );
+    }
+
+    #[test]
+    fn spills_constructor_argument() {
+        assert_eq!(
+            printed_g(
+                "fn g(c: bool) -> P {\n    P(b: make(), n: if c { return P(b: B(), n: 0) } else { 1 })\n}"
+            ),
+            "(fn g ((c#0 bool)) P (block (block (let #1 (call make)) (let #2 (if c#0 (block (return (new P (new B) 0))) (block 1))) (new P #1 #2))))"
+        );
+    }
+
+    #[test]
+    fn spills_field_assignment_base() {
+        assert_eq!(
+            printed_g(
+                "fn g(c: bool, p: P) {\n    while true {\n        p.b = if c { break } else { make() }\n    }\n}"
+            ),
+            "(fn g ((c#0 bool) (p#1 P)) unit (block (loop (block (if true (block (block (let #2 p#1) (let #3 (if c#0 (block (break)) (block (call make)))) (= (. #2 b) #3))) (block (break)))))))"
+        );
+    }
+
+    #[test]
+    fn no_spill_without_exit() {
+        assert_eq!(
+            printed_g("fn g() {\n    f(make(), 1)\n}"),
+            "(fn g () unit (block (call f (call make) 1)))"
+        );
+    }
+
+    #[test]
+    fn no_spill_without_earlier_reference() {
+        assert_eq!(
+            printed_g(
+                "fn g(c: bool) -> i64 {\n    f(if c { return 0 } else { make() }, 1)\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (call f (if c#0 (block (return 0)) (block (call make))) 1) 2))"
+        );
+    }
+
+    #[test]
+    fn nested_loop_break_still_spills() {
+        assert_eq!(
+            printed_g(
+                "fn g() {\n    f(make(), if true { while true { break }\n 1 } else { 1 })\n}"
+            ),
+            "(fn g () unit (block (block (let #0 (call make)) (let #1 (if true (block (loop (block (if true (block (break)) (block (break))))) 1) (block 1))) (call f #0 #1))))"
+        );
+    }
+
+    #[test]
+    fn spills_method_receiver() {
+        assert_eq!(
+            printed_g(
+                "class Q {\n    fn m(self, n: i64) {}\n}\nfn q() -> Q { Q() }\nfn g(c: bool) -> i64 {\n    q().m(if c { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (block (let #1 (call q)) (let #2 (if c#0 (block (return 0)) (block 1))) (call Q.m #1 #2)) 2))"
+        );
+    }
+
+    /// `a.f op= e` reads its bound `a` as the assignment's base before `e` runs.
+    #[test]
+    fn spills_compound_field_assignment_base() {
+        assert_eq!(
+            printed_g(
+                "class Q {\n    var k: i64\n}\nfn g(c: bool, q: Q) {\n    while true {\n        q.k += if c { break } else { 1 }\n    }\n}"
+            ),
+            "(fn g ((c#0 bool) (q#1 Q)) unit (block (loop (block (if true (block (block (let #2 q#1) (block (let #3 #2) (let #4 (+ (. #2 k) (if c#0 (block (break)) (block 1)))) (= (. #3 k) #4)))) (block (break)))))))"
+        );
+    }
+
+    #[test]
+    fn spills_every_operand_through_the_last_exit() {
+        assert_eq!(
+            printed_g(
+                "fn one() -> i64 { 1 }\nfn h(b: B, x: i64, y: i64, z: i64) {}\nfn g(c: bool) -> i64 {\n    h(make(), if c { return 0 } else { 1 }, if c { return 1 } else { 2 }, one())\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (block (let #1 (call make)) (let #2 (if c#0 (block (return 0)) (block 1))) (let #3 (if c#0 (block (return 1)) (block 2))) (call h #1 #2 #3 (call one))) 2))"
+        );
+    }
+
+    #[test]
+    fn spills_for_an_exit_in_a_nested_assignment() {
+        assert_eq!(
+            printed_g(
+                "fn g(c: bool) -> i64 {\n    var x = 0\n    f(make(), if true {\n        x = if c { return 0 } else { 1 }\n        x\n    } else { 0 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (var x#1 0) (block (let #2 (call make)) (let #3 (if true (block (= x#1 (if c#0 (block (return 0)) (block 1))) x#1) (block 0))) (call f #2 #3)) 2))"
+        );
+    }
+
+    #[test]
+    fn no_spill_with_only_scalars_before_the_exit() {
+        assert_eq!(
+            printed_g(
+                "fn one() -> i64 { 1 }\nfn h2(a: i64, n: i64) {}\nfn g(c: bool) -> i64 {\n    h2(one(), if c { return 0 } else { 1 })\n    2\n}"
+            ),
+            "(fn g ((c#0 bool)) i64 (block (call h2 (call one) (if c#0 (block (return 0)) (block 1))) 2))"
         );
     }
 }

@@ -173,16 +173,25 @@ fn emit_ir(path: &str, source: &str, o2: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let context = Context::create();
-    let module = codegen::compile(&context, &program, path, source);
-    // `LLVMString`'s `Display` quotes and escapes the text; `to_string` does not.
-    let before = module.print_to_string().to_string();
     let pipeline = codegen::pipeline(o2);
-    match codegen::target_machine(o2).and_then(|machine| codegen::optimize(&module, &machine, o2)) {
-        Ok(()) => {
-            print!(
-                "; before {pipeline}\n{before}\n; after {pipeline}\n{}",
-                module.print_to_string().to_string()
-            );
+    let printed = codegen::target_machine(o2).and_then(|machine| {
+        let module = codegen::compile(&context, &program, path, source, &machine);
+        // `LLVMString`'s `Display` quotes and escapes the text; `to_string` does not.
+        let before = module.print_to_string().to_string();
+        codegen::optimize(&module, &machine, o2)?;
+        Ok(format!(
+            "; before {pipeline}\n{before}\n; after {pipeline}\n{}",
+            module.print_to_string().to_string()
+        ))
+    });
+    print_or_report(printed)
+}
+
+/// Prints `text`, or reports the error.
+fn print_or_report(text: Result<String, String>) -> ExitCode {
+    match text {
+        Ok(text) => {
+            print!("{text}");
             ExitCode::SUCCESS
         }
         Err(message) => {
@@ -198,17 +207,11 @@ fn emit_ir_raw(path: &str, source: &str) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let context = Context::create();
-    let module = codegen::compile(&context, &program, path, source);
-    match module.verify() {
-        Ok(()) => {
-            print!("{}", module.print_to_string().to_string());
-            ExitCode::SUCCESS
-        }
-        Err(message) => {
-            eprintln!("sisuc: {message}");
-            ExitCode::FAILURE
-        }
-    }
+    print_or_report(codegen::target_machine(false).and_then(|machine| {
+        let module = codegen::compile(&context, &program, path, source, &machine);
+        module.verify().map_err(|e| e.to_string())?;
+        Ok(module.print_to_string().to_string())
+    }))
 }
 
 /// Lexes, parses and checks `input`; prints every diagnostic. Fails if any is an error.
@@ -280,8 +283,8 @@ fn compile(
     o2: bool,
 ) -> Result<(), String> {
     let context = Context::create();
-    let module = codegen::compile(&context, program, path, source);
     let machine = codegen::target_machine(o2)?;
+    let module = codegen::compile(&context, program, path, source, &machine);
     codegen::optimize(&module, &machine, o2)?;
     let code = codegen::object_code(&module, &machine)?;
     // A name of its own, so a user's `<output>.o` is left alone; the nanoseconds pick a

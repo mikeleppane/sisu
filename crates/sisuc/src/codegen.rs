@@ -9,27 +9,63 @@ use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
-    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
 };
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use crate::diagnostic::{Span, line_col};
 use crate::tir::{
-    BinaryOp, Block, CompareOp, Expr, ExprKind, Function, Place, Program, Stmt, Type, UnaryOp,
+    BinaryOp, Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt,
+    Type, UnaryOp,
 };
 
-/// Compiles a program that passed `check` into an LLVM module.
+/// Compiles a program that passed `check` into an LLVM module for `machine`.
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
     program: &Program,
     path: &str,
     source: &str,
+    machine: &TargetMachine,
 ) -> Module<'ctx> {
     let module = context.create_module("main");
+    // The passes and the object file both read the target from the module.
+    let target_data = machine.get_target_data();
+    module.set_triple(&machine.get_triple());
+    module.set_data_layout(&target_data.get_data_layout());
     let i64_type = context.i64_type();
+    let ptr_type = context.ptr_type(AddressSpace::default());
     let void = context.void_type();
+
+    // Every class type exists before any body is set, so a field can name any class.
+    let classes: Vec<StructType> = program
+        .classes
+        .iter()
+        .map(|class| context.opaque_struct_type(&format!("sisu.{}", class.name)))
+        .collect();
+    // `sisu_alloc(size, align)` and `sisu_free(ptr, size, align)`, from the runtime.
+    let alloc = module.add_function(
+        "sisu_alloc",
+        ptr_type.fn_type(&[i64_type.into(), i64_type.into()], false),
+        None,
+    );
+    let free = module.add_function(
+        "sisu_free",
+        void.fn_type(&[ptr_type.into(), i64_type.into(), i64_type.into()], false),
+        None,
+    );
+    // The counting helpers each take one object; see `define_helpers`.
+    let helper =
+        |name: &str| module.add_function(name, void.fn_type(&[ptr_type.into()], false), None);
+    let rc_retain = helper("sisu_rc.retain");
+    let releases = program
+        .classes
+        .iter()
+        .map(|class| helper(&format!("sisu_rc.release.{}", class.name)))
+        .collect();
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
     // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
@@ -68,12 +104,31 @@ pub(crate) fn compile<'ctx>(
         print_int,
         print_bool,
         panic,
+        alloc,
+        rc_retain,
+        releases,
+        target_data,
         path,
         source,
+        classes,
         functions: Vec::new(),
         locals: Vec::new(),
+        types: Vec::new(),
+        live: Vec::new(),
         loops: Vec::new(),
     };
+    // A class is `{ i64 count, fields... }`: field `i` is element `i + 1`.
+    for (class, ty) in program.classes.iter().zip(&codegen.classes) {
+        let body: Vec<BasicTypeEnum> = std::iter::once(i64_type.into())
+            .chain(class.fields.iter().map(|field| {
+                codegen
+                    .llvm_type(&field.ty)
+                    .expect("checked: a field has a value type")
+            }))
+            .collect();
+        ty.set_body(&body, false);
+    }
+    codegen.define_helpers(program, free);
     // Declare every function first so that calls can refer to functions defined later.
     for f in &program.functions {
         codegen.declare(f);
@@ -100,10 +155,12 @@ enum Slot<'ctx> {
 }
 
 /// An open `loop`: `Break` branches to `end`, `Continue` and a body that falls through
-/// branch back to `body`.
+/// branch back to `body`. Both first release the locals above `depth`, the length of the
+/// live-locals stack when the loop was entered.
 struct LoopFrame<'ctx> {
     body: BasicBlock<'ctx>,
     end: BasicBlock<'ctx>,
+    depth: usize,
 }
 
 struct Codegen<'ctx, 'src> {
@@ -113,13 +170,25 @@ struct Codegen<'ctx, 'src> {
     print_int: FunctionValue<'ctx>,
     print_bool: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
+    alloc: FunctionValue<'ctx>,
+    /// `@sisu_rc.retain`, and `@sisu_rc.release.<Class>` indexed by `ClassId`.
+    rc_retain: FunctionValue<'ctx>,
+    releases: Vec<FunctionValue<'ctx>>,
+    /// The target's layout: the sizes and alignments of classes.
+    target_data: TargetData,
     /// The input path as given, and its text: panic messages name a position in it.
     path: &'src str,
     source: &'src str,
+    /// `%sisu.<Class>`, indexed by `ClassId`.
+    classes: Vec<StructType<'ctx>>,
     /// Indexed by `FuncId`.
     functions: Vec<FunctionValue<'ctx>>,
     /// The current function's locals, indexed by `LocalId`; `None` until bound, and for `unit`.
     locals: Vec<Option<Slot<'ctx>>>,
+    /// The current function's local types, indexed by `LocalId`.
+    types: Vec<Type>,
+    /// The counted locals in scope, newest last: each holds a reference to release.
+    live: Vec<LocalId>,
     loops: Vec<LoopFrame<'ctx>>,
 }
 
@@ -130,7 +199,238 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
+            Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
         }
+    }
+
+    /// The ABI size and alignment of an object of class `id`, from the target's data layout.
+    fn class_layout(&self, id: ClassId) -> (u64, u32) {
+        let ty = &self.classes[id.0];
+        (
+            self.target_data.get_abi_size(ty),
+            self.target_data.get_abi_alignment(ty),
+        )
+    }
+
+    /// A pointer to field `index` of `object`, whose type is `ty`.
+    fn field_ptr(&self, ty: &Type, object: PointerValue<'ctx>, index: usize) -> PointerValue<'ctx> {
+        let Type::Class(id) = ty else {
+            unreachable!("checked: only an object has fields")
+        };
+        // Element 0 is the count.
+        let element = u32::try_from(index + 1).expect("a class has fewer than 2^32 fields");
+        self.builder
+            .build_struct_gep(self.classes[id.0], object, element, "field")
+            .expect("the class has the field")
+    }
+
+    /// Field `index` of the object `base`, whose type is `ty`.
+    fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
+        let object = self
+            .expr(base)
+            .expect("checked: the base is an object")
+            .into_pointer_value();
+        let field = self.field_ptr(&base.ty, object, index);
+        let llvm_ty = self
+            .llvm_type(ty)
+            .expect("checked: a field has a value type");
+        let value = self
+            .builder
+            .build_load(llvm_ty, field, "load")
+            .expect("builder is positioned");
+        // Retain before releasing the base: the base's drop could release the field first.
+        self.retain(value, ty);
+        self.release(object.into(), &base.ty);
+        value
+    }
+
+    /// Defines the counting helpers, which take their object without taking ownership:
+    /// `@sisu_rc.retain` adds 1 to its count; `@sisu_rc.release.<C>` subtracts 1 and at 0
+    /// calls `@sisu_rc.drop.<C>`, which releases each counted field, then frees the object.
+    /// Both return at once on `null`.
+    fn define_helpers(&self, program: &Program, free: FunctionValue<'ctx>) {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let (object, done) = self.helper_entry(self.rc_retain);
+        self.add_to_count(object, 1);
+        self.branch_to(done);
+        for (i, class) in program.classes.iter().enumerate() {
+            let drop = self.module.add_function(
+                &format!("sisu_rc.drop.{}", class.name),
+                self.context.void_type().fn_type(&[ptr_type.into()], false),
+                None,
+            );
+            let (object, done) = self.helper_entry(self.releases[i]);
+            let count = self.add_to_count(object, -1);
+            let zero = self.int_compare(
+                IntPredicate::EQ,
+                count,
+                self.context.i64_type().const_zero(),
+            );
+            let drop_block = self.context.append_basic_block(self.releases[i], "drop");
+            self.builder
+                .build_conditional_branch(zero, drop_block, done)
+                .expect("builder is positioned");
+            self.builder.position_at_end(drop_block);
+            self.call(drop, &[object.into()]);
+            self.branch_to(done);
+
+            self.builder
+                .position_at_end(self.context.append_basic_block(drop, "entry"));
+            let object = param(drop);
+            let ty = Type::Class(ClassId(i));
+            for (index, field) in class.fields.iter().enumerate() {
+                if field.ty.is_counted() {
+                    let value = self
+                        .builder
+                        .build_load(ptr_type, self.field_ptr(&ty, object, index), "field")
+                        .expect("builder is positioned");
+                    self.release(value, &field.ty);
+                }
+            }
+            let (size, align) = self.class_layout(ClassId(i));
+            let i64_type = self.context.i64_type();
+            self.call(
+                free,
+                &[
+                    object.into(),
+                    i64_type.const_int(size, false).into(),
+                    i64_type.const_int(u64::from(align), false).into(),
+                ],
+            );
+            self.builder
+                .build_return(None)
+                .expect("builder is positioned");
+        }
+    }
+
+    /// Starts helper `function`, which returns at once when its object is `null`. Leaves the
+    /// builder in the block for a real object; returns the object and the returning block.
+    fn helper_entry(
+        &self,
+        function: FunctionValue<'ctx>,
+    ) -> (PointerValue<'ctx>, BasicBlock<'ctx>) {
+        let entry = self.context.append_basic_block(function, "entry");
+        let counted = self.context.append_basic_block(function, "object");
+        let done = self.context.append_basic_block(function, "done");
+        let object = param(function);
+        self.builder.position_at_end(entry);
+        let null = self
+            .builder
+            .build_is_null(object, "null")
+            .expect("builder is positioned");
+        self.builder
+            .build_conditional_branch(null, done, counted)
+            .expect("builder is positioned");
+        self.builder.position_at_end(done);
+        self.builder
+            .build_return(None)
+            .expect("builder is positioned");
+        self.builder.position_at_end(counted);
+        (object, done)
+    }
+
+    /// Adds `delta` to the count of `object`, element 0; returns the new count.
+    fn add_to_count(&self, object: PointerValue<'ctx>, delta: i64) -> IntValue<'ctx> {
+        let i64_type = self.context.i64_type();
+        let count = self
+            .builder
+            .build_load(i64_type, object, "count")
+            .expect("builder is positioned")
+            .into_int_value();
+        let count = self
+            .builder
+            .build_int_add(
+                count,
+                i64_type.const_int(delta.cast_unsigned(), false),
+                "count",
+            )
+            .expect("builder is positioned");
+        self.store(object, count.into());
+        count
+    }
+
+    fn call(&self, function: FunctionValue<'ctx>, args: &[BasicMetadataValueEnum<'ctx>]) {
+        self.builder
+            .build_call(function, args, "")
+            .expect("builder is positioned");
+    }
+
+    /// Adds 1 to the count of `value` when `ty` is counted.
+    fn retain(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
+        if ty.is_counted() {
+            self.call(self.rc_retain, &[value.into()]);
+        }
+    }
+
+    /// Releases the reference `value` holds when `ty` is counted.
+    fn release(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
+        if let Some(id) = ty.counted_class() {
+            self.call(self.releases[id.0], &[value.into()]);
+        }
+    }
+
+    /// Releases a value nobody keeps, if there is one.
+    fn discard(&self, value: Option<BasicValueEnum<'ctx>>, ty: &Type) {
+        if let Some(value) = value {
+            self.release(value, ty);
+        }
+    }
+
+    /// Releases the locals `live[depth..]`, newest first, without popping them.
+    fn release_to(&self, depth: usize) {
+        for local in self.live[depth..].iter().rev() {
+            let value = self
+                .load_local(*local)
+                .expect("a counted local has a value");
+            self.release(value, &self.types[local.0]);
+        }
+    }
+
+    /// The value of `local`, without retaining it; `None` for `unit`.
+    fn load_local(&self, local: LocalId) -> Option<BasicValueEnum<'ctx>> {
+        self.locals[local.0].map(|slot| match slot {
+            Slot::Value(value) => value,
+            Slot::Alloca(ptr, ty) => {
+                // Name the load after the local (the alloca carries its name).
+                let name = ptr.get_name().to_string_lossy().into_owned();
+                self.builder
+                    .build_load(ty, ptr, &name)
+                    .expect("builder is positioned")
+            }
+        })
+    }
+
+    /// `New`: allocates the object, then stores its count, 1, and each argument.
+    fn new_object(&mut self, class: ClassId, args: &[Expr]) -> PointerValue<'ctx> {
+        // Arguments run first: one that returns early then leaves no object behind.
+        let args: Vec<_> = args
+            .iter()
+            .map(|a| self.expr(a).expect("checked: an argument has a value"))
+            .collect();
+        let i64_type = self.context.i64_type();
+        let (size, align) = self.class_layout(class);
+        let object = self
+            .builder
+            .build_call(
+                self.alloc,
+                &[
+                    i64_type.const_int(size, false).into(),
+                    i64_type.const_int(u64::from(align), false).into(),
+                ],
+                "object",
+            )
+            .expect("builder is positioned")
+            .try_as_basic_value()
+            .basic()
+            .expect("`sisu_alloc` returns a pointer")
+            .into_pointer_value();
+        self.store(object, i64_type.const_int(1, false).into());
+        let ty = Type::Class(class);
+        for (index, arg) in args.into_iter().enumerate() {
+            let field = self.field_ptr(&ty, object, index);
+            self.store(field, arg);
+        }
+        object
     }
 
     fn declare(&mut self, f: &Function) {
@@ -166,15 +466,27 @@ impl<'ctx> Codegen<'ctx, '_> {
                 Some(Slot::Alloca(self.entry_alloca(ty, name), ty))
             })
             .collect();
+        self.types = f.locals.iter().map(|local| local.ty.clone()).collect();
+        // The parameters own their arguments: they are the bottom of the live-locals stack.
+        self.live = f
+            .params
+            .iter()
+            .copied()
+            .filter(|p| self.types[p.0].is_counted())
+            .collect();
         for (p, v) in f.params.iter().zip(function.get_param_iter()) {
             self.locals[p.0] = Some(Slot::Value(v));
         }
         let value = self.block(&f.body);
         if !self.terminated() {
             // The declared return type picks the `ret`: a unit function discards any body value.
-            let value = self
-                .llvm_type(&f.ret)
-                .map(|_| value.expect("checked: a body that falls through has the return type"));
+            let value = if self.llvm_type(&f.ret).is_some() {
+                Some(value.expect("checked: a body that falls through has the return type"))
+            } else {
+                self.discard(value, &f.body.ty);
+                None
+            };
+            self.release_to(0);
             self.builder
                 .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
                 .expect("builder is positioned");
@@ -223,20 +535,28 @@ impl<'ctx> Codegen<'ctx, '_> {
         (!self.terminated()).then(|| self.current_block())
     }
 
-    /// The block's value, `None` for `unit` or `never`.
+    /// The block's value, `None` for `unit` or `never`. A block that falls through releases
+    /// the locals it bound after evaluating its value; either way they leave the stack.
     fn block(&mut self, block: &Block) -> Option<BasicValueEnum<'ctx>> {
+        let start = self.live.len();
+        let mut value = None;
+        // A `never` statement ends the block; what follows is unreachable.
         for stmt in &block.stmts {
-            // A `never` statement ended the block; what follows is unreachable.
             if self.terminated() {
-                return None;
+                break;
             }
             self.stmt(stmt);
         }
-        let value = block.value.as_ref()?;
-        if self.terminated() {
-            return None;
+        if let Some(e) = &block.value
+            && !self.terminated()
+        {
+            value = self.expr(e);
         }
-        self.expr(value)
+        if !self.terminated() {
+            self.release_to(start);
+        }
+        self.live.truncate(start);
+        value
     }
 
     fn stmt(&mut self, stmt: &Stmt) {
@@ -249,6 +569,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                     Some(Slot::Alloca(ptr, _)) => self.store(ptr, value),
                     _ => self.locals[local.0] = Some(Slot::Value(value)),
                 }
+                if self.types[local.0].is_counted() {
+                    self.live.push(*local);
+                }
             }
             Stmt::Assign {
                 place: Place::Local(local),
@@ -257,13 +580,38 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let Some(value) = self.expr(value) else {
                     return;
                 };
-                let Some(Slot::Alloca(ptr, _)) = self.locals[local.0] else {
+                let Some(Slot::Alloca(ptr, ty)) = self.locals[local.0] else {
                     unreachable!("checked: only a `var` is assigned")
                 };
+                // The value first, then the store, then the release of the old value.
+                let counted = &self.types[local.0];
+                let old = counted.is_counted().then(|| self.load(ty, ptr));
                 self.store(ptr, value);
+                self.discard(old, counted);
+            }
+            Stmt::Assign {
+                place: Place::Field { base, index },
+                value,
+            } => {
+                // Left to right: the base, then the value, then the store, then the release
+                // of the old value, then of the base, which keeps the object alive until then.
+                let object = self
+                    .expr(base)
+                    .expect("checked: the base is an object")
+                    .into_pointer_value();
+                let ty = &value.ty;
+                let Some(value) = self.expr(value) else {
+                    return;
+                };
+                let field = self.field_ptr(&base.ty, object, *index);
+                let old = ty.is_counted().then(|| self.load(value.get_type(), field));
+                self.store(field, value);
+                self.discard(old, ty);
+                self.release(object.into(), &base.ty);
             }
             Stmt::Expr(e) => {
-                self.expr(e);
+                let value = self.expr(e);
+                self.discard(value, &e.ty);
             }
         }
     }
@@ -281,16 +629,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Int(n) => self.context.i64_type().const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
             ExprKind::Local(local) => {
-                return self.locals[local.0].map(|slot| match slot {
-                    Slot::Value(value) => value,
-                    Slot::Alloca(ptr, ty) => {
-                        // Name the load after the local (the alloca carries its name).
-                        let name = ptr.get_name().to_string_lossy().into_owned();
-                        self.builder
-                            .build_load(ty, ptr, &name)
-                            .expect("builder is positioned")
-                    }
-                });
+                let value = self.load_local(*local)?;
+                self.retain(value, &e.ty);
+                return Some(value);
             }
             ExprKind::Call { func, args } => {
                 let args: Vec<_> = args
@@ -328,6 +669,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
             ExprKind::Equal { negated, lhs, rhs } => {
+                if let Type::Class(_) = lhs.ty {
+                    unreachable!("checked: `==` never sees a class until Task 21");
+                }
                 let (l, r) = (self.value(lhs), self.value(rhs));
                 let predicate = if *negated {
                     IntPredicate::NE
@@ -346,27 +690,27 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return None;
             }
             ExprKind::Break => {
-                let end = self
-                    .loops
-                    .last()
-                    .expect("checked: `break` is in a loop")
-                    .end;
+                let frame = self.loops.last().expect("checked: `break` is in a loop");
+                let (end, depth) = (frame.end, frame.depth);
+                self.release_to(depth);
                 self.branch_to(end);
                 return None;
             }
             ExprKind::Continue => {
-                let body = self
-                    .loops
-                    .last()
-                    .expect("checked: `continue` is in a loop")
-                    .body;
+                let frame = self.loops.last().expect("checked: `continue` is in a loop");
+                let (body, depth) = (frame.body, frame.depth);
+                self.release_to(depth);
                 self.branch_to(body);
                 return None;
             }
+            ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
+            ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
+            ExprKind::Block(block) => return self.block(block),
             ExprKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| self.expr(e));
                 // The checker rejects a `never` return value; this keeps codegen safe anyway.
                 if !self.terminated() {
+                    self.release_to(0);
                     self.builder
                         .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
                         .expect("builder is positioned");
@@ -395,6 +739,13 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("builder is positioned")
     }
 
+    /// The value a place held before an assignment.
+    fn load(&self, ty: BasicTypeEnum<'ctx>, ptr: PointerValue<'ctx>) -> BasicValueEnum<'ctx> {
+        self.builder
+            .build_load(ty, ptr, "old")
+            .expect("builder is positioned")
+    }
+
     fn store(&self, ptr: PointerValue<'ctx>, value: BasicValueEnum<'ctx>) {
         self.builder
             .build_store(ptr, value)
@@ -408,14 +759,16 @@ impl<'ctx> Codegen<'ctx, '_> {
         let frame = LoopFrame {
             body: self.context.append_basic_block(function, "loop.body"),
             end: self.context.append_basic_block(function, "loop.end"),
+            depth: self.live.len(),
         };
         let (start, end) = (frame.body, frame.end);
         self.branch_to(start);
         self.builder.position_at_end(start);
         self.loops.push(frame);
-        self.block(body);
+        let value = self.block(body);
         self.loops.pop();
         if !self.terminated() {
+            self.discard(value, &body.ty);
             self.branch_to(start);
         }
         self.builder.position_at_end(end);
@@ -657,8 +1010,13 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_conditional_branch(cond, then_start, else_start)
             .expect("builder is positioned");
+        // A `unit` `if` discards its branches' values.
+        let discards = *ty == Type::Unit;
         self.builder.position_at_end(then_start);
         let then_value = self.block(then_block);
+        if discards && !self.terminated() {
+            self.discard(then_value, &then_block.ty);
+        }
         let then_end = self.open_block();
         self.builder.position_at_end(else_start);
         let Some(else_block) = else_block else {
@@ -671,6 +1029,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             return None;
         };
         let else_value = self.block(else_block);
+        if discards && !self.terminated() {
+            self.discard(else_value, &else_block.ty);
+        }
         let else_end = self.open_block();
         let arms: Vec<_> = [(then_value, then_end), (else_value, else_end)]
             .into_iter()
@@ -714,6 +1075,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
         phi.as_basic_value()
     }
+}
+
+/// The single parameter of a counting helper: the object.
+fn param(function: FunctionValue<'_>) -> PointerValue<'_> {
+    function
+        .get_nth_param(0)
+        .expect("a helper takes one object")
+        .into_pointer_value()
 }
 
 /// A target machine for the host `sisuc` runs on.
@@ -761,8 +1130,6 @@ pub(crate) fn object_code(
     module: &Module<'_>,
     machine: &TargetMachine,
 ) -> Result<MemoryBuffer<'static>, String> {
-    module.set_triple(&machine.get_triple());
-    module.set_data_layout(&machine.get_target_data().get_data_layout());
     module.verify().map_err(|e| e.to_string())?;
     machine
         .write_to_memory_buffer(module, FileType::Object)
@@ -781,7 +1148,8 @@ mod tests {
         let program = parse(&lex(src).expect("source lexes")).expect("source parses");
         let (program, diagnostics) = check(&program);
         let program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
-        let module = compile(context, &program, "test.sisu", src);
+        let machine = target_machine(false).expect("the host is a target");
+        let module = compile(context, &program, "test.sisu", src, &machine);
         if let Err(e) = module.verify() {
             panic!("{e}\n{}", module.print_to_string());
         }
@@ -911,11 +1279,7 @@ mod tests {
         .to_string();
         for (name, op) in [("d", "sdiv"), ("r", "srem")] {
             let header = format!("define i64 @sisu.{name}(");
-            let body = ir
-                .split(&header)
-                .nth(1)
-                .and_then(|rest| rest.split("\n}").next())
-                .unwrap_or_else(|| panic!("no {header} in\n{ir}"));
+            let body = function_body(&ir, &header);
             let lines: Vec<&str> = body.lines().map(str::trim).collect();
             let find = |wanted: &dyn Fn(&str) -> bool, what: &str| {
                 instruction(&lines, wanted).unwrap_or_else(|| panic!("no {what} in\n{body}"))
@@ -976,6 +1340,13 @@ mod tests {
         }
     }
 
+    /// The body of the function `header` starts: up to its closing `}`.
+    fn function_body<'a>(ir: &'a str, header: &str) -> &'a str {
+        ir.split_once(header)
+            .and_then(|(_, rest)| rest.split("\n}").next())
+            .unwrap_or_else(|| panic!("no {header} in\n{ir}"))
+    }
+
     /// The first instruction `<value> = <text>` in `lines` whose text is `wanted`: its line
     /// index, the value it defines and its text.
     fn instruction<'a>(
@@ -998,6 +1369,141 @@ mod tests {
             .unwrap_or_else(|| panic!("no constant {constant} in\n{ir}"));
         let call = format!("@sisu_panic(ptr {global}, i64 {})", message.len());
         assert!(ir.contains(&call), "missing {call:?} in\n{ir}");
+    }
+
+    #[test]
+    fn class_layout_comes_from_the_data_layout() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class Q {}\nclass P {\n    let x: i64\n    var y: bool\n    let q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    print(p.x)\n}",
+        )
+        .print_to_string()
+        .to_string();
+        for wanted in [
+            "%sisu.P = type { i64, i64, i1, ptr }",
+            "call ptr @sisu_alloc(i64 32, i64 8)",
+        ] {
+            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+        }
+        // Element 0 is the count, so field `i` is element `i + 1`.
+        for element in 1..=3 {
+            let gep = format!("i32 0, i32 {element}");
+            assert!(
+                ir.lines().any(|l| l.contains("getelementptr")
+                    && l.contains("%sisu.P, ptr ")
+                    && l.ends_with(&gep)),
+                "no field GEP to element {element} in\n{ir}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_class_allocates_its_count() {
+        let context = Context::create();
+        let ir = compiled(&context, "class E {}\nfn main() { E() }")
+            .print_to_string()
+            .to_string();
+        let lines: Vec<&str> = ir.lines().map(str::trim).collect();
+        let (_, object, _) = instruction(&lines, &|t| t == "call ptr @sisu_alloc(i64 8, i64 8)")
+            .unwrap_or_else(|| panic!("no 8-byte allocation in\n{ir}"));
+        let count = format!("store i64 1, ptr {object},");
+        assert!(
+            lines.iter().any(|l| l.starts_with(&count)),
+            "missing {count:?} in\n{ir}"
+        );
+    }
+
+    #[test]
+    fn method_symbols() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class P {\n    let x: i64\n\n    fn m(self) { print(self.x) }\n}\nfn main() { P(x: 1).m() }",
+        )
+        .print_to_string()
+        .to_string();
+        assert!(ir.contains("define void @sisu.P.m(ptr"), "{ir}");
+    }
+
+    #[test]
+    fn verifies_field_assignment_through_a_call() {
+        compiled(
+            &Context::create(),
+            "class C {\n    var n: i64\n}\nfn make() -> C { C(n: 0) }\nfn main() {\n    make().n = 1\n}",
+        );
+    }
+
+    #[test]
+    fn helpers_are_generated() {
+        let context = Context::create();
+        let ir = compiled(&context, "class P {}\nfn main() { P() }")
+            .print_to_string()
+            .to_string();
+        for wanted in [
+            "define void @sisu_rc.retain(ptr",
+            "define void @sisu_rc.release.P(ptr",
+            "define void @sisu_rc.drop.P(ptr",
+        ] {
+            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+        }
+    }
+
+    #[test]
+    fn helper_names_cannot_collide() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "fn retain() {}\nclass release {\n    fn Tree(self) {}\n}\nclass Tree {}\nfn main() {\n    retain()\n    release().Tree()\n}",
+        )
+        .print_to_string()
+        .to_string();
+        // The method `release.Tree` and the helper for class `Tree` must both keep their names:
+        // LLVM renames the second of two equal names with a numeric suffix.
+        for wanted in [
+            "define void @sisu.retain()",
+            "define void @sisu.release.Tree(ptr",
+            "define void @sisu_rc.release.Tree(ptr",
+        ] {
+            assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+        }
+        assert!(
+            !ir.contains("@sisu.release.Tree."),
+            "a renamed symbol in\n{ir}"
+        );
+    }
+
+    #[test]
+    fn field_read_retains_before_releasing_base() {
+        let context = Context::create();
+        let ir = compiled(
+            &context,
+            "class N {}\nclass C {\n    let next: N\n}\nfn make() -> C { C(next: N()) }\nfn main() { make().next }",
+        )
+        .print_to_string()
+        .to_string();
+        let main = function_body(&ir, "define void @sisu.main()");
+        let lines: Vec<&str> = main.lines().map(str::trim).collect();
+        let at = |wanted: &dyn Fn(&str) -> bool, what: &str| {
+            lines
+                .iter()
+                .position(|l| wanted(l))
+                .unwrap_or_else(|| panic!("no {what} in\n{main}"))
+        };
+        let (_, next, _) = instruction(&lines, &|t| t.starts_with("load ptr, ptr "))
+            .unwrap_or_else(|| panic!("no load of `next` in\n{main}"));
+        let order = [
+            at(&|l| l.starts_with(&format!("{next} = load ptr")), "load"),
+            at(
+                &|l| l == format!("call void @sisu_rc.retain(ptr {next})"),
+                "retain of the field",
+            ),
+            at(
+                &|l| l.starts_with("call void @sisu_rc.release.C(ptr "),
+                "release of the base",
+            ),
+        ];
+        assert!(order.is_sorted(), "{order:?} in\n{main}");
     }
 
     #[test]

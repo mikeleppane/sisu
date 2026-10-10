@@ -19,6 +19,10 @@ pub(crate) enum TokenKind {
     Return,
     Break,
     Continue,
+    Class,
+    NoneKw,
+    Is,
+    SelfKw,
     True,
     False,
     Plus,
@@ -48,6 +52,10 @@ pub(crate) enum TokenKind {
     Comma,
     Colon,
     Arrow,
+    Dot,
+    Question,
+    QuestionDot,
+    QuestionQuestion,
     Newline,
     Eof,
 }
@@ -73,6 +81,10 @@ impl TokenKind {
             TokenKind::Return => "Return",
             TokenKind::Break => "Break",
             TokenKind::Continue => "Continue",
+            TokenKind::Class => "Class",
+            TokenKind::NoneKw => "NoneKw",
+            TokenKind::Is => "Is",
+            TokenKind::SelfKw => "SelfKw",
             TokenKind::True => "True",
             TokenKind::False => "False",
             TokenKind::Plus => "Plus",
@@ -102,6 +114,10 @@ impl TokenKind {
             TokenKind::Comma => "Comma",
             TokenKind::Colon => "Colon",
             TokenKind::Arrow => "Arrow",
+            TokenKind::Dot => "Dot",
+            TokenKind::Question => "Question",
+            TokenKind::QuestionDot => "QuestionDot",
+            TokenKind::QuestionQuestion => "QuestionQuestion",
             TokenKind::Newline => "Newline",
             TokenKind::Eof => "Eof",
         }
@@ -123,6 +139,10 @@ impl TokenKind {
             TokenKind::Return => "return",
             TokenKind::Break => "break",
             TokenKind::Continue => "continue",
+            TokenKind::Class => "class",
+            TokenKind::NoneKw => "None",
+            TokenKind::Is => "is",
+            TokenKind::SelfKw => "self",
             TokenKind::True => "true",
             TokenKind::False => "false",
             TokenKind::Plus => "+",
@@ -152,6 +172,10 @@ impl TokenKind {
             TokenKind::Comma => ",",
             TokenKind::Colon => ":",
             TokenKind::Arrow => "->",
+            TokenKind::Dot => ".",
+            TokenKind::Question => "?",
+            TokenKind::QuestionDot => "?.",
+            TokenKind::QuestionQuestion => "??",
             TokenKind::Newline => return "end of line".to_string(),
             TokenKind::Eof => return "end of file".to_string(),
         };
@@ -250,11 +274,24 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 
 /// Whether `token` can end a statement (Go's rule).
 fn can_end_statement(token: Option<&Token>) -> bool {
-    use TokenKind::{Break, Continue, False, Ident, Int, RBrace, RParen, Return, True};
+    use TokenKind::{
+        Break, Continue, False, Ident, Int, NoneKw, Question, RBrace, RParen, Return, SelfKw, True,
+    };
     token.is_some_and(|t| {
         matches!(
             t.kind,
-            Ident(_) | Int(_) | True | False | Return | Break | Continue | RParen | RBrace
+            Ident(_)
+                | Int(_)
+                | True
+                | False
+                | Return
+                | Break
+                | Continue
+                | NoneKw
+                | SelfKw
+                | Question
+                | RParen
+                | RBrace
         )
     })
 }
@@ -345,6 +382,10 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "return" => TokenKind::Return,
         "break" => TokenKind::Break,
         "continue" => TokenKind::Continue,
+        "class" => TokenKind::Class,
+        "None" => TokenKind::NoneKw,
+        "is" => TokenKind::Is,
+        "self" => TokenKind::SelfKw,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         _ => TokenKind::Ident(text.to_string()),
@@ -375,9 +416,9 @@ fn int_literal(source: &str, start: usize, end: usize) -> Result<i64, Diagnostic
 /// The operator or punctuation starting with `c`, consuming a second char when it has one.
 fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
     use TokenKind::{
-        AndAnd, Arrow, Bang, Colon, Comma, Eq, EqEq, Ge, Gt, LBrace, LParen, Le, Lt, Minus,
-        MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq, RBrace, RParen, Slash, SlashEq,
-        Star, StarEq,
+        AndAnd, Arrow, Bang, Colon, Comma, Dot, Eq, EqEq, Ge, Gt, LBrace, LParen, Le, Lt, Minus,
+        MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq, QuestionDot, QuestionQuestion,
+        RBrace, RParen, Slash, SlashEq, Star, StarEq,
     };
     let mut eat = |want| chars.next_if(|&(_, n)| n == want).is_some();
     Some(match c {
@@ -408,6 +449,10 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
         '}' => RBrace,
         ',' => Comma,
         ':' => Colon,
+        '.' => Dot,
+        '?' if eat('.') => QuestionDot,
+        '?' if eat('?') => QuestionQuestion,
+        '?' => TokenKind::Question,
         _ => return None,
     })
 }
@@ -487,6 +532,52 @@ mod tests {
         assert_eq!(
             all_kinds("break\ncontinue"),
             [Break, Newline, Continue, Newline, Eof]
+        );
+    }
+
+    #[test]
+    fn class_and_optional_tokens() {
+        use TokenKind::{
+            Class, Colon, Dot, Eof, Is, Let, NoneKw, Question, QuestionDot, QuestionQuestion,
+            SelfKw, Var,
+        };
+        assert_eq!(
+            kinds("class None is self"),
+            [Class, NoneKw, Is, SelfKw, Eof]
+        );
+        assert_eq!(kinds("x?.f"), [ident("x"), QuestionDot, ident("f"), Eof]);
+        assert_eq!(
+            kinds("x ?? y"),
+            [ident("x"), QuestionQuestion, ident("y"), Eof]
+        );
+        assert_eq!(kinds("Tree??"), [ident("Tree"), QuestionQuestion, Eof]);
+        assert_eq!(kinds("Tree? ?"), [ident("Tree"), Question, Question, Eof]);
+        assert_eq!(kinds("a.b"), [ident("a"), Dot, ident("b"), Eof]);
+        assert_eq!(
+            all_kinds("var next: Tree?\nlet"),
+            [
+                Var,
+                ident("next"),
+                Colon,
+                ident("Tree"),
+                Question,
+                TokenKind::Newline,
+                Let,
+                Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn none_and_self_end_a_statement() {
+        use TokenKind::{Eof, Eq, Newline, NoneKw, SelfKw};
+        assert_eq!(
+            all_kinds("x = None\ny"),
+            [ident("x"), Eq, NoneKw, Newline, ident("y"), Newline, Eof]
+        );
+        assert_eq!(
+            all_kinds("self\ny"),
+            [SelfKw, Newline, ident("y"), Newline, Eof]
         );
     }
 
