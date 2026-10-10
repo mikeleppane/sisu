@@ -409,18 +409,7 @@ impl Checker {
         if !ty.optional {
             return Some(named);
         }
-        self.optional_of(named, ty.span)
-    }
-
-    /// `payload?`, as the type at `span` names it or the `if` join there infers it.
-    fn optional_of(&mut self, payload: Type, span: Span) -> Option<Type> {
-        // Temporary: Task 22 deletes this message when codegen lowers scalar optionals.
-        if matches!(payload, Type::I64 | Type::Bool) {
-            let message = format!("`{payload}?` is not supported yet");
-            self.diagnostics.push(Diagnostic::error(span, message));
-            return None;
-        }
-        Some(Type::Optional(Box::new(payload)))
+        Some(optional_of(named))
     }
 
     /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
@@ -537,6 +526,14 @@ fn block_expr(stmts: Vec<tir::Stmt>, value: Option<tir::Expr>, ty: Type, span: S
         kind: tir::ExprKind::Block(block),
         ty,
         span,
+    }
+}
+
+/// `ty?`; an optional is its own, as optionals do not nest.
+fn optional_of(ty: Type) -> Type {
+    match ty {
+        Type::Optional(_) => ty,
+        ty => Type::Optional(Box::new(ty)),
     }
 }
 
@@ -1228,18 +1225,6 @@ mod tests {
             "fn main() { print(1 == true) }",
             "cannot compare `i64` with `bool`",
             (1, 19),
-        );
-    }
-
-    /// Temporary: Task 21 deletes this test with its diagnostic.
-    #[test]
-    fn equality_on_classes_not_supported_yet() {
-        errors(
-            "class E {}\nfn main() {\n    print(E() == E())\n    print(1 != E())\n}",
-            &[
-                ("`==` on classes is not supported yet", (3, 11)),
-                ("`!=` on classes is not supported yet", (4, 11)),
-            ],
         );
     }
 
@@ -2412,51 +2397,6 @@ mod tests {
         );
     }
 
-    /// Temporary: Task 22 deletes this test when codegen lowers scalar optionals. The rejected
-    /// type is `Error`, so the `None` it would type draws nothing. An `if` that would join to
-    /// one is reported at its branch that is not `None`, and is `Error`: its use draws nothing.
-    #[test]
-    fn scalar_optional_is_not_supported_yet() {
-        errors(
-            "fn f(x: bool?) {}\nfn main() { let x: i64? = None }",
-            &[
-                ("`bool?` is not supported yet", (1, 9)),
-                ("`i64?` is not supported yet", (2, 20)),
-            ],
-        );
-        let joins = [
-            (
-                "if c { 1 } else { None }",
-                "`i64?` is not supported yet",
-                20,
-            ),
-            (
-                "if c { None } else { 1 }",
-                "`i64?` is not supported yet",
-                34,
-            ),
-            (
-                "if c { true } else { None }",
-                "`bool?` is not supported yet",
-                20,
-            ),
-            (
-                "if c { None } else { false }",
-                "`bool?` is not supported yet",
-                34,
-            ),
-        ];
-        for (value, message, col) in joins {
-            error(
-                &format!(
-                    "fn f(c: bool) {{\n    let x = {value}\n    print(x.v)\n}}\nfn main() {{}}"
-                ),
-                message,
-                (2, col),
-            );
-        }
-    }
-
     /// A `None` that its rule rejects fails that rule: what the rule makes is `Error`, so a
     /// later use draws nothing.
     #[test]
@@ -2683,6 +2623,206 @@ mod tests {
         f_contains(
             "fn f(l: T?) -> i64 {\n    var n = 0\n    var node = l\n    while let x = node {\n        n += 1\n        node = x.next\n    }\n    n\n}",
             "(loop (block (if-some x#3 node#2 (block (= n#1 (+ n#1 1)) (= node#2 (. x#3 next))) (block (break)))))",
+        );
+    }
+
+    #[test]
+    fn safe_call_on_non_optional() {
+        expect_error(
+            "class T {\n    let v: i64\n}\nfn f(t: T) -> i64? { t?.v }\nfn main() {}",
+            "`t` is not optional",
+            (4, 22),
+            None,
+            &[],
+            Some("use `.`"),
+        );
+    }
+
+    /// In `a?.b.c`, the `.c` applies to a `B?`.
+    #[test]
+    fn safe_chain_needs_each_step() {
+        expect_error(
+            "class A {\n    let b: B\n}\nclass B {\n    let c: i64\n}\nfn f(a: A?) -> i64? { a?.b.c }\nfn main() {}",
+            "`a?.b` may be `None`",
+            (7, 23),
+            None,
+            &[],
+            Some("use `?.`, or unwrap it with `if let`"),
+        );
+    }
+
+    #[test]
+    fn coalesce_left_not_optional() {
+        error(
+            "fn main() { print(1 ?? 2) }",
+            "the left side of `??` is not optional",
+            (1, 19),
+        );
+    }
+
+    #[test]
+    fn coalesce_never() {
+        error(
+            "fn f(x: i64?, c: bool) -> i64 {\n    x ?? if c { return 0 } else { return 1 }\n}\nfn main() {}",
+            "unreachable code",
+            (2, 10),
+        );
+    }
+
+    #[test]
+    fn coalesce_type() {
+        error(
+            "fn f(x: i64?) -> i64 { x ?? true }\nfn main() {}",
+            "expected `i64`, found `bool`",
+            (1, 29),
+        );
+    }
+
+    #[test]
+    fn equal_none_on_non_optional() {
+        error(
+            "class T {}\nfn f(x: T) -> bool { x == None }\nfn main() {}",
+            "`x` is not optional, so it is never `None`",
+            (2, 22),
+        );
+    }
+
+    #[test]
+    fn none_equals_none() {
+        errors(
+            "fn main() { print(None == None) }",
+            &[("cannot infer the type of `None`", (1, 19))],
+        );
+    }
+
+    #[test]
+    fn equal_unit() {
+        errors(
+            "fn g() {}\nfn main() { print(g() == g()) }",
+            &[
+                ("expression has no value", (2, 19)),
+                ("expression has no value", (2, 26)),
+            ],
+        );
+    }
+
+    #[test]
+    fn equal_two_classes() {
+        error(
+            "class A {}\nclass B {}\nfn f(a: A, b: B) -> bool { a == b }\nfn main() {}",
+            "cannot compare `A` with `B`",
+            (3, 28),
+        );
+    }
+
+    #[test]
+    fn is_none() {
+        expect_error(
+            "class T {}\nfn f(x: T?) -> bool { x is None }\nfn main() {}",
+            "use `==` to test for `None`",
+            (2, 23),
+            None,
+            &[],
+            Some("`x == None`"),
+        );
+    }
+
+    #[test]
+    fn is_on_integers() {
+        expect_error(
+            "fn main() { print(1 is 1) }",
+            "`is` needs objects; found `i64`",
+            (1, 19),
+            None,
+            &[],
+            Some("use `==` to compare values"),
+        );
+    }
+
+    /// The class the `?.`, `??`, `==` and `is` lowering tests share.
+    const C: &str = "class T {\n    let v: i64\n    let o: T?\n    fn m(self) {}\n}\n";
+
+    /// Asserts that `f`, lowered after `C` and before an empty `main`, prints `part`.
+    fn c_contains(f: &str, part: &str) {
+        let printed = lowered(&format!("{C}{f}\nfn main() {{}}"));
+        assert!(printed.contains(part), "{printed}");
+    }
+
+    #[test]
+    fn lowers_safe_field() {
+        c_contains(
+            "fn f(t: T?) -> i64? { t?.v }",
+            "(if-some #1 t#0 (block (wrap (. #1 v))) (block None))",
+        );
+    }
+
+    #[test]
+    fn safe_optional_field_not_wrapped() {
+        c_contains(
+            "fn f(t: T?) -> T? { t?.o }",
+            "(if-some #1 t#0 (block (. #1 o)) (block None))",
+        );
+    }
+
+    #[test]
+    fn lowers_safe_unit_method() {
+        c_contains(
+            "fn f(t: T?) { t?.m() }",
+            "(if-some #1 t#0 (block (call T.m #1)) (block))",
+        );
+    }
+
+    #[test]
+    fn lowers_coalesce() {
+        c_contains(
+            "fn f(x: i64?) -> i64 { x ?? 0 }",
+            "(if-some #1 x#0 (block #1) (block 0))",
+        );
+    }
+
+    #[test]
+    fn coalesce_with_optional_right() {
+        c_contains(
+            "fn f(x: i64?, y: i64?) -> i64? { x ?? y }",
+            "(if-some #2 x#0 (block (wrap #2)) (block y#1))",
+        );
+    }
+
+    /// `x ?? (y ?? 0)` is an `i64`, which the return type checks.
+    #[test]
+    fn coalesce_chain_is_not_optional() {
+        clean(&format!(
+            "{C}fn f(x: i64?, y: i64?) -> i64 {{ x ?? y ?? 0 }}\nfn main() {{}}"
+        ));
+    }
+
+    #[test]
+    fn equal_wraps_the_plain_side() {
+        c_contains(
+            "fn f(a: i64?, b: i64) -> bool { a == b }",
+            "(== a#0 (wrap b#1))",
+        );
+    }
+
+    /// A bare `None` on the left takes the type of the right side.
+    #[test]
+    fn none_on_the_left_takes_the_other_type() {
+        c_contains("fn f(t: T?) -> bool { None != t }", "(!= None t#0)");
+    }
+
+    #[test]
+    fn is_wraps_the_plain_side() {
+        c_contains(
+            "fn f(a: T, b: T?) -> bool { a is b }",
+            "(is (wrap a#0) b#1)",
+        );
+    }
+
+    #[test]
+    fn spills_equal() {
+        c_contains(
+            "fn make() -> T { T(v: 0, o: None) }\nfn f(c: bool) -> bool {\n    make() == if c { return false } else { make() }\n}",
+            "(block (let #1 (call make)) (let #2 (if c#0 (block (return false)) (block (call make)))) (== #1 #2))",
         );
     }
 }

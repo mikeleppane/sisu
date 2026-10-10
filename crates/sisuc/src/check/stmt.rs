@@ -401,7 +401,7 @@ impl Checker {
     }
 
     /// A new local with no source name, for a value the lowering binds.
-    fn fresh(&mut self, ty: Type) -> tir::LocalId {
+    pub(super) fn fresh(&mut self, ty: Type) -> tir::LocalId {
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
             name: None,

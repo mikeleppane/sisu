@@ -731,9 +731,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
             ExprKind::Equal { negated, lhs, rhs } => {
-                if let Type::Class(_) = lhs.ty {
-                    unreachable!("checked: `==` never sees a class until Task 21");
-                }
+                assert!(!lhs.ty.is_counted(), "`==` on classes lands in Task 22");
                 let (l, r) = (self.value(lhs), self.value(rhs));
                 let predicate = if *negated {
                     IntPredicate::NE
@@ -742,6 +740,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 };
                 self.int_compare(predicate, l, r)
             }
+            ExprKind::Is { .. } => panic!("`is` lands in Task 22"),
             ExprKind::If {
                 cond,
                 then_block,
