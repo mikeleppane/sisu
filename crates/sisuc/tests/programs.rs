@@ -44,7 +44,21 @@ fn run(name: &str) -> Output {
     Command::new(exe).output().expect("the program starts")
 }
 
-/// Runs `<name>.sisu` and checks that it exits 0, prints `<name>.out` and nothing on stderr.
+/// Runs `exe` under Valgrind; any leak or memory error makes it exit 1.
+fn valgrind(exe: &Path) -> Output {
+    Command::new("valgrind")
+        .args([
+            "--leak-check=full",
+            "--errors-for-leak-kinds=definite,indirect,possible",
+            "--error-exitcode=1",
+        ])
+        .arg(exe)
+        .output()
+        .expect("valgrind is required: install it with `apt install valgrind`")
+}
+
+/// Runs `<name>.sisu` and checks that it exits 0, prints `<name>.out` and nothing on stderr,
+/// then that it does the same under Valgrind.
 fn assert_prints_out_file(name: &str) {
     let expected =
         fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.out"))).expect("reads .out");
@@ -57,6 +71,15 @@ fn assert_prints_out_file(name: &str) {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+
+    let checked = valgrind(&Path::new(env!("CARGO_TARGET_TMPDIR")).join(name));
+    assert_eq!(
+        checked.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&checked.stdout), expected);
 }
 
 /// Checks that `out` is a panic: exit 101, `stdout`, and exactly the panic line on stderr.
