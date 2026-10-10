@@ -66,6 +66,15 @@ pub(crate) fn compile<'ctx>(
         .iter()
         .map(|class| helper(&format!("sisu_rc.release.{}", class.name)))
         .collect();
+    // Every eq helper exists before any body is set, so a field can compare any class.
+    let eq_type = context
+        .bool_type()
+        .fn_type(&[ptr_type.into(), ptr_type.into()], false);
+    let equals = program
+        .classes
+        .iter()
+        .map(|class| module.add_function(&format!("sisu_rc.eq.{}", class.name), eq_type, None))
+        .collect();
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
     // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
@@ -83,13 +92,7 @@ pub(crate) fn compile<'ctx>(
     // `sisu_panic(msg, len)` prints the message and exits; it never returns.
     let panic = module.add_function(
         "sisu_panic",
-        void.fn_type(
-            &[
-                context.ptr_type(AddressSpace::default()).into(),
-                i64_type.into(),
-            ],
-            false,
-        ),
+        void.fn_type(&[ptr_type.into(), i64_type.into()], false),
         None,
     );
     panic.add_attribute(
@@ -107,7 +110,7 @@ pub(crate) fn compile<'ctx>(
         alloc,
         rc_retain,
         releases,
-        equals: Vec::new(),
+        equals,
         target_data,
         path,
         source,
@@ -265,21 +268,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Both return at once on `null`. Drop does not release the chain field: it loads it,
     /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
     /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`.
-    fn define_helpers(&mut self, program: &Program, free: FunctionValue<'ctx>) {
+    fn define_helpers(&self, program: &Program, free: FunctionValue<'ctx>) {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        // Every eq helper exists before any body is set, so a field can compare any class.
-        let eq_type = self
-            .context
-            .bool_type()
-            .fn_type(&[ptr_type.into(), ptr_type.into()], false);
-        self.equals = program
-            .classes
-            .iter()
-            .map(|class| {
-                let name = format!("sisu_rc.eq.{}", class.name);
-                self.module.add_function(&name, eq_type, None)
-            })
-            .collect();
         let (object, done) = self.helper_entry(self.rc_retain);
         self.add_to_count(object, 1);
         self.branch_to(done);
