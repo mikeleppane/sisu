@@ -104,6 +104,11 @@ pub unsafe extern "C" fn sisu_free(ptr: *mut u8, size: usize, align: usize) {
 #[cfg(test)]
 mod tests {
     use super::{sisu_alloc, sisu_free};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Command;
+
+    const ABORT_CASE_VAR: &str = "SISU_RUNTIME_ABORT_CASE";
+    const SIGABRT: i32 = 6;
 
     #[expect(
         unsafe_code,
@@ -131,8 +136,55 @@ mod tests {
     #[test]
     fn alloc_honours_an_alignment_above_the_allocator_default() {
         let ptr = sisu_alloc(24, 4096);
+        assert!(!ptr.is_null());
         assert_eq!(ptr.addr() % 4096, 0, "pointer must be 4096-aligned");
         // SAFETY: `ptr` came from `sisu_alloc(24, 4096)` and is not used afterwards.
         unsafe { sisu_free(ptr, 24, 4096) };
+    }
+
+    /// Child entry point for the `alloc_aborts_*` tests. It returns at once
+    /// unless the parent set the env var, so a normal test run ignores it.
+    #[test]
+    fn abort_child() {
+        let Ok(case) = std::env::var(ABORT_CASE_VAR) else {
+            return;
+        };
+        let (size, align) = match case.as_str() {
+            "zero" => (0, 8),
+            "invalid_align" => (8, 3),
+            "overflow" => (usize::MAX - 8, 4096),
+            other => panic!("unknown abort case {other}"),
+        };
+        sisu_alloc(size, align);
+        // Reached only if `sisu_alloc` returned: exit normally so the parent sees no signal.
+    }
+
+    fn assert_child_aborts(case: &str) {
+        let exe = std::env::current_exe().expect("test binary path");
+        let status = Command::new(exe)
+            .args(["--exact", "tests::abort_child", "--nocapture"])
+            .env(ABORT_CASE_VAR, case)
+            .status()
+            .expect("spawn child test");
+        assert_eq!(
+            status.signal(),
+            Some(SIGABRT),
+            "child exited with {status:?}"
+        );
+    }
+
+    #[test]
+    fn alloc_aborts_on_zero_size() {
+        assert_child_aborts("zero");
+    }
+
+    #[test]
+    fn alloc_aborts_on_invalid_alignment() {
+        assert_child_aborts("invalid_align");
+    }
+
+    #[test]
+    fn alloc_aborts_when_layout_overflows() {
+        assert_child_aborts("overflow");
     }
 }
