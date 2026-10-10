@@ -49,4 +49,4 @@ Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/ag
 
 ### Docs
 
-Before you open a pull request, and after one merges, run the `update-docs` skill to bring the docs in line with the code. An agent without skill support follows `.claude/skills/update-docs/SKILL.md` directly.
+Before you open a pull request, run the `update-docs` skill to bring the docs in line with the code. After a merge, run it only when the user asks or the pull request skipped it. An agent without skill support follows `.claude/skills/update-docs/SKILL.md` directly.
