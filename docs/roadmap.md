@@ -127,6 +127,11 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 | 3 | `for x in xs` and ranges `0..n` | Most loops stop needing indexes |
 | 3 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value | Named limits, such as a sieve size, without global variables |
 | 4 | String interpolation `"x = {x}"` | The biggest single win for real programs |
+| 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. | A loop that ignores its counter needs no made-up name. Until then, `for` in milestone 3 needs a named variable |
+| 4 | Integer literals in hexadecimal, binary and octal: `0xFF`, `0b1010`, `0o17`, with digit separators | Bytes and bit masks, which `u8` brings in milestone 3, read as what they are |
+| 4 | A block as an expression: `let x = { let t = f(); t * 2 }`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
+| 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
+| 6 | Float literals in scientific notation: `3.0e-4` | Physics and graphics constants read as written |
 
 ### Portability rules
 
@@ -211,6 +216,38 @@ Order matters in two places:
 - Milestone 5 I/O comes before `Result`, so its functions report failure
   with an optional or a panic. Milestone 12 changes those signatures.
 
+### Smaller additions to milestones 7 to 11
+
+Each is small once its milestone's main feature exists:
+
+- Milestone 7: alternative patterns, `1 | 3 => ...`, and guards,
+  `n if n > 0 => ...`. The exhaustiveness check treats a guarded arm as
+  possibly not matching.
+- Milestone 8: type aliases, `type Index = Map<String, [i64]>`. An alias is
+  another name for the same type, so it adds no type safety; for a distinct
+  type, use a newtype (milestone 10). Also `echo x`, which prints `x` with its file
+  and line and returns `x`, so it can wrap any expression while debugging.
+  It needs the `Display`-like interface.
+- Milestone 10: a copy of a record with some fields changed,
+  `Point(..p, y: 0)`, as Gleam writes it and as Kotlin's `copy(y = 0)` does.
+  Label shorthand, `area(width:, height:)`, passes the local variables of the
+  same names.
+- Milestone 10: newtypes, as in Rust. A one-field record such as
+  `record UserId(value: i64)` is a distinct type: passing an `OrderId` or a
+  plain `i64` where a `UserId` is expected is a compile error. Because
+  records are values (ADR 0007), the compiler guarantees it costs nothing at
+  run time: no heap object and no reference count, and it is passed and
+  stored exactly as its field is, as Rust's `#[repr(transparent)]` promises.
+  Generics are monomorphized (milestone 8), so unlike Kotlin's `value class`
+  it is never boxed. It gets `==` and `print` like any record, but not its
+  field's operators: `Meters * Meters` is not `Meters`, so arithmetic is
+  written as methods. With milestone 11's opaque types, a newtype whose
+  constructor is private holds only checked values, such as
+  `Email.parse(s) -> Email?`.
+- Milestone 11: opaque types. The type is `pub`, but its constructor and
+  fields are private to its module, so other modules must build it through a
+  function that checks the value.
+
 ### Modules (milestone 11)
 
 - One file is one module, and its path names it: `src/geometry/shapes.si` is
@@ -244,6 +281,8 @@ These do not make code nicer to write, so they wait:
   - an unused variable or import;
   - code after `return`, `break` or `continue`, which never runs;
   - a `var` that is never reassigned ("use `let`"), as Swift and Kotlin warn;
+  - a name starting with `_`, such as `_score`, is exempt from the unused
+    variable lint, as in Rust and Gleam;
   - comparing a value that is not optional with `None`, which is always
     `false`. Milestone 2 makes it an error until lints exist.
 
@@ -300,6 +339,11 @@ These do not make code nicer to write, so they wait:
   Kotlin inlines lambda arguments. `@inline` on a recursive function is an
   error. From milestone 9, calls through closures cannot be inlined. At
   `-O2`, LLVM already inlines small functions, so this waits for a need.
+- More patterns after milestone 7: binding a whole sub-pattern with
+  `p as name`, and array patterns such as `[first, ..rest]`.
+- Doc comments, `///` before a declaration. The lexer drops comments today,
+  so they wait for the formatter, which must keep comments anyway, and for
+  the language server, which can show them.
 - Concurrency: threads, atomic reference counts, channels.
 - Self-hosting: the Sisu lexer and parser written in Sisu.
 
@@ -318,6 +362,18 @@ These do not make code nicer to write, so they wait:
 - Formatter options. One style ends style debates.
 - A separate linter. Lints are compiler warnings.
 - `import *`. A reader must always see where a name comes from.
+- Gleam's pipe `|>` and function captures `add(1, _)`. Method chains,
+  continuation lines (ADR 0001) and closures (milestone 9) already do this,
+  and two ways to write one call break "one obvious way".
+- Gleam's `use`, which turns the rest of a block into a callback. Gleam
+  needs it because it has no early return; Sisu has `return`, and `?` in
+  milestone 12.
+- Separate float operators such as Gleam's `+.`. The checker knows each
+  operand's type, so `+` can serve both, as long as milestone 6 keeps `i64`
+  and `f64` from mixing without a conversion.
+- Gleam's integer rules: on Erlang its `Int` has no size limit, and division
+  by zero gives `0`. Sisu's fixed-size integers panic on overflow and on a
+  zero divisor.
 - A package registry, for a long time. A registry means hosting, security
   and name squatting. If dependencies come, path and Git dependencies come
   first.
@@ -331,6 +387,11 @@ These do not make code nicer to write, so they wait:
 - **Generic arguments and `<`.** `f(a < b, c > d)` reads as two comparisons
   or as one generic call. Decide the syntax in milestone 8.
 - **Weak references or a cycle collector** (see above).
+- **Operators on newtypes.** Without them, `Meters` arithmetic needs
+  `a.plus(b)` or `a.value + b.value`, the same boilerplate Rust newtypes
+  carry. An opt-in such as Haskell's `deriving` would let a newtype keep its
+  field's `+` and `<`. Decide in milestone 10, against the rule that rules
+  out unrestricted operator overloading.
 - **Attribute syntax.** A marker on a declaration, such as `@inline`, needs
   one general form: `@name` or `@name(args)` on the line before it, as in
   Swift and Kotlin. Decide the form before the first attribute lands, so `@`
