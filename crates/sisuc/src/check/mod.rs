@@ -2395,6 +2395,11 @@ mod tests {
             "`print` takes one `i64` or `bool`",
             (5, 15),
         );
+        error(
+            "fn f(x: i64?) { print(x) }\nfn main() {}",
+            "`print` takes one `i64` or `bool`",
+            (1, 17),
+        );
     }
 
     /// A `None` that its rule rejects fails that rule: what the rule makes is `Error`, so a

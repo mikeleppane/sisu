@@ -19,8 +19,8 @@ use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use crate::diagnostic::{Span, line_col};
 use crate::tir::{
-    BinaryOp, Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt,
-    Type, UnaryOp,
+    BinaryOp, Block, Class, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program,
+    Stmt, Type, UnaryOp,
 };
 
 /// Compiles a program that passed `check` into an LLVM module for `machine`.
@@ -107,6 +107,7 @@ pub(crate) fn compile<'ctx>(
         alloc,
         rc_retain,
         releases,
+        equals: Vec::new(),
         target_data,
         path,
         source,
@@ -174,6 +175,8 @@ struct Codegen<'ctx, 'src> {
     /// `@sisu_rc.retain`, and `@sisu_rc.release.<Class>` indexed by `ClassId`.
     rc_retain: FunctionValue<'ctx>,
     releases: Vec<FunctionValue<'ctx>>,
+    /// `@sisu_rc.eq.<Class>`, indexed by `ClassId`.
+    equals: Vec<FunctionValue<'ctx>>,
     /// The target's layout: the sizes and alignments of classes.
     target_data: TargetData,
     /// The input path as given, and its text: panic messages name a position in it.
@@ -199,11 +202,19 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
-            // A class optional is the object's pointer, `null` for `None`.
-            Type::Class(_) | Type::Optional(_) => {
-                assert_class_optional(ty);
-                Some(self.context.ptr_type(AddressSpace::default()).into())
-            }
+            Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
+            Type::Optional(payload) => match self
+                .llvm_type(payload)
+                .expect("checked: an optional holds a value")
+            {
+                // A class optional is the object's pointer, `null` for `None`.
+                ptr @ BasicTypeEnum::PointerType(_) => Some(ptr),
+                // A scalar optional is `{ i1, T }`: whether it holds a value, then the value.
+                value => {
+                    let flag = self.context.bool_type().into();
+                    Some(self.context.struct_type(&[flag, value], false).into())
+                }
+            },
         }
     }
 
@@ -253,8 +264,22 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// calls `@sisu_rc.drop.<C>`, which releases each counted field, then frees the object.
     /// Both return at once on `null`. Drop does not release the chain field: it loads it,
     /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
-    fn define_helpers(&self, program: &Program, free: FunctionValue<'ctx>) {
+    /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`.
+    fn define_helpers(&mut self, program: &Program, free: FunctionValue<'ctx>) {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
+        // Every eq helper exists before any body is set, so a field can compare any class.
+        let eq_type = self
+            .context
+            .bool_type()
+            .fn_type(&[ptr_type.into(), ptr_type.into()], false);
+        self.equals = program
+            .classes
+            .iter()
+            .map(|class| {
+                let name = format!("sisu_rc.eq.{}", class.name);
+                self.module.add_function(&name, eq_type, None)
+            })
+            .collect();
         let (object, done) = self.helper_entry(self.rc_retain);
         self.add_to_count(object, 1);
         self.branch_to(done);
@@ -331,7 +356,116 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder
                 .build_return(None)
                 .expect("builder is positioned");
+            self.define_eq(ClassId(i), class);
         }
+    }
+
+    /// `@sisu_rc.eq.<C>(a, b)`: `true` when `a` and `b` are the same pointer (two `null`s
+    /// included), `false` when one is `null`, otherwise whether each pair of fields is equal,
+    /// compared in order up to the first difference. It neither retains nor releases.
+    fn define_eq(&self, id: ClassId, class: &Class) {
+        let function = self.equals[id.0];
+        let block = |name| self.context.append_basic_block(function, name);
+        let (entry, differ, objects) = (block("entry"), block("differ"), block("objects"));
+        let (equal, unequal) = (block("equal"), block("unequal"));
+        let bool_type = self.context.bool_type();
+        for (at, value) in [(equal, 1), (unequal, 0)] {
+            self.builder.position_at_end(at);
+            self.builder
+                .build_return(Some(&bool_type.const_int(value, false)))
+                .expect("builder is positioned");
+        }
+        let nth = |n| {
+            function
+                .get_nth_param(n)
+                .expect("eq takes two objects")
+                .into_pointer_value()
+        };
+        let (a, b) = (nth(0), nth(1));
+        let branch = |cond, then, other| {
+            self.builder
+                .build_conditional_branch(cond, then, other)
+                .expect("builder is positioned");
+        };
+        self.builder.position_at_end(entry);
+        branch(self.same_object(a, b), equal, differ);
+        self.builder.position_at_end(differ);
+        let null = |object| {
+            self.builder
+                .build_is_null(object, "null")
+                .expect("builder is positioned")
+        };
+        let either_null = self
+            .builder
+            .build_or(null(a), null(b), "either_null")
+            .expect("builder is positioned");
+        branch(either_null, unequal, objects);
+        self.builder.position_at_end(objects);
+        let ty = Type::Class(id);
+        for (index, field) in class.fields.iter().enumerate() {
+            let llvm_ty = self
+                .llvm_type(&field.ty)
+                .expect("checked: a field has a value type");
+            let load = |object| {
+                self.builder
+                    .build_load(llvm_ty, self.field_ptr(&ty, object, index), "field")
+                    .expect("builder is positioned")
+            };
+            let next = block("next");
+            branch(self.equal(&field.ty, load(a), load(b)), next, unequal);
+            self.builder.position_at_end(next);
+        }
+        self.branch_to(equal);
+    }
+
+    /// `a is b`: whether two class or class-optional values are the same pointer.
+    fn same_object(&self, a: PointerValue<'ctx>, b: PointerValue<'ctx>) -> IntValue<'ctx> {
+        self.builder
+            .build_int_compare(IntPredicate::EQ, a, b, "same")
+            .expect("builder is positioned")
+    }
+
+    /// Whether `lhs` and `rhs`, of type `ty`, are equal: `==` without releasing them.
+    fn equal(
+        &self,
+        ty: &Type,
+        lhs: BasicValueEnum<'ctx>,
+        rhs: BasicValueEnum<'ctx>,
+    ) -> IntValue<'ctx> {
+        if let Some(id) = ty.counted_class() {
+            return self
+                .builder
+                .build_call(self.equals[id.0], &[lhs.into(), rhs.into()], "eq")
+                .expect("builder is positioned")
+                .try_as_basic_value()
+                .basic()
+                .expect("eq returns a bool")
+                .into_int_value();
+        }
+        if !matches!(ty, Type::Optional(_)) {
+            return self.int_compare(IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value());
+        }
+        // `fa == fb && (!fa || va == vb)` on flags `f` and values `v`, with no branch.
+        let part = |pair: BasicValueEnum<'ctx>, index| {
+            self.builder
+                .build_extract_value(pair.into_struct_value(), index, "part")
+                .expect("a scalar optional is a pair")
+                .into_int_value()
+        };
+        let (fa, fb) = (part(lhs, 0), part(rhs, 0));
+        let flags = self.int_compare(IntPredicate::EQ, fa, fb);
+        let values = self.int_compare(IntPredicate::EQ, part(lhs, 1), part(rhs, 1));
+        let none = self
+            .builder
+            .build_not(fa, "none")
+            .expect("builder is positioned");
+        let values = self
+            .builder
+            .build_or(none, values, "values")
+            .expect("builder is positioned");
+        self.builder
+            .build_and(flags, values, "equal")
+            .expect("builder is positioned")
     }
 
     /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to
@@ -678,6 +812,31 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
+    /// `lhs == rhs`, or `!=` when `negated`; releases both operands after comparing them.
+    fn equal_expr(&mut self, negated: bool, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
+        let (l, r) = (self.operand(lhs), self.operand(rhs));
+        let equal = match lhs.ty {
+            Type::I64 | Type::Bool if negated => {
+                self.int_compare(IntPredicate::NE, l.into_int_value(), r.into_int_value())
+            }
+            _ if negated => {
+                let equal = self.equal(&lhs.ty, l, r);
+                self.builder
+                    .build_not(equal, "not")
+                    .expect("builder is positioned")
+            }
+            _ => self.equal(&lhs.ty, l, r),
+        };
+        self.release(l, &lhs.ty);
+        self.release(r, &rhs.ty);
+        equal
+    }
+
+    /// An operand of `==` or `is`.
+    fn operand(&mut self, e: &Expr) -> BasicValueEnum<'ctx> {
+        self.expr(e).expect("checked: an operand has a value")
+    }
+
     /// An expression the checker typed `i64` or `bool`.
     fn value(&mut self, e: &Expr) -> IntValue<'ctx> {
         self.expr(e)
@@ -730,17 +889,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
-            ExprKind::Equal { negated, lhs, rhs } => {
-                assert!(!lhs.ty.is_counted(), "`==` on classes lands in Task 22");
-                let (l, r) = (self.value(lhs), self.value(rhs));
-                let predicate = if *negated {
-                    IntPredicate::NE
-                } else {
-                    IntPredicate::EQ
-                };
-                self.int_compare(predicate, l, r)
+            ExprKind::Equal { negated, lhs, rhs } => self.equal_expr(*negated, lhs, rhs),
+            ExprKind::Is { lhs, rhs } => {
+                let (l, r) = (self.operand(lhs), self.operand(rhs));
+                let same = self.same_object(l.into_pointer_value(), r.into_pointer_value());
+                self.release(l, &lhs.ty);
+                self.release(r, &rhs.ty);
+                same
             }
-            ExprKind::Is { .. } => panic!("`is` lands in Task 22"),
             ExprKind::If {
                 cond,
                 then_block,
@@ -788,19 +944,35 @@ impl<'ctx> Codegen<'ctx, '_> {
         Some(value.into())
     }
 
-    /// `None`, `Wrap` and `IfSome`, on class optionals.
+    /// `None`, `Wrap` and `IfSome`: a class optional is a pointer, a scalar one a `{ i1, T }`.
     fn optional(&mut self, e: &Expr) -> Option<BasicValueEnum<'ctx>> {
         match &e.kind {
-            ExprKind::None => {
-                let ty = self
-                    .llvm_type(&e.ty)
-                    .expect("checked: `None` is an optional");
-                Some(ty.into_pointer_type().const_null().into())
-            }
-            // A class needs no wrapping: its pointer is never `null`.
+            // `null`, or `{ false, 0 }`.
+            ExprKind::None => Some(
+                self.llvm_type(&e.ty)
+                    .expect("checked: `None` is an optional")
+                    .const_zero(),
+            ),
             ExprKind::Wrap(operand) => {
-                assert_class_optional(&e.ty);
-                self.expr(operand)
+                let value = self.expr(operand)?;
+                // A class needs no wrapping: its pointer is never `null`.
+                if e.ty.is_counted() {
+                    return Some(value);
+                }
+                let pair = self
+                    .llvm_type(&e.ty)
+                    .expect("checked: `Wrap` makes an optional")
+                    .into_struct_type();
+                let some = self.context.bool_type().const_int(1, false);
+                let pair = self
+                    .builder
+                    .build_insert_value(pair.const_zero(), some, 0, "some")
+                    .expect("a scalar optional is a pair");
+                let pair = self
+                    .builder
+                    .build_insert_value(pair, value, 1, "wrap")
+                    .expect("a scalar optional is a pair");
+                Some(pair.as_basic_value_enum())
             }
             ExprKind::IfSome {
                 bind,
@@ -808,18 +980,26 @@ impl<'ctx> Codegen<'ctx, '_> {
                 then_block,
                 else_block,
             } => {
-                assert_class_optional(&scrutinee.ty);
-                // The scrutinee's reference moves into `bind`. On the `None` path it is `null`,
-                // so it holds nothing to release.
-                let object = self
+                // A class optional's reference moves into `bind`. On the `None` path it is
+                // `null`, so it holds nothing to release. A scalar pair binds its value.
+                let value = self
                     .expr(scrutinee)
-                    .expect("checked: the scrutinee is an optional")
-                    .into_pointer_value();
-                let some = self
-                    .builder
-                    .build_is_not_null(object, "some")
-                    .expect("builder is positioned");
-                let bind = Some((*bind, object.into()));
+                    .expect("checked: the scrutinee is an optional");
+                let (some, bound) = if scrutinee.ty.is_counted() {
+                    let some = self
+                        .builder
+                        .build_is_not_null(value.into_pointer_value(), "some")
+                        .expect("builder is positioned");
+                    (some, value)
+                } else {
+                    let part = |index, name| {
+                        self.builder
+                            .build_extract_value(value.into_struct_value(), index, name)
+                            .expect("a scalar optional is a pair")
+                    };
+                    (part(0, "some").into_int_value(), part(1, "value"))
+                };
+                let bind = Some((*bind, bound));
                 self.if_expr(some, then_block, bind, else_block.as_ref(), &e.ty)
             }
             _ => unreachable!("`expr` passes only optional nodes"),
@@ -1180,15 +1360,6 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
         phi.as_basic_value()
     }
-}
-
-/// Asserts that an optional is a class optional: codegen for `i64?` and `bool?` lands in
-/// Task 22.
-fn assert_class_optional(ty: &Type) {
-    assert!(
-        ty.is_counted(),
-        "codegen for `i64?` and `bool?` lands in Task 22"
-    );
 }
 
 /// The single parameter of a counting helper: the object.
@@ -1606,6 +1777,27 @@ mod tests {
             !ir.contains("@sisu.release.Tree."),
             "a renamed symbol in\n{ir}"
         );
+    }
+
+    #[test]
+    fn scalar_optional_is_a_pair() {
+        let context = Context::create();
+        let ir = compiled(&context, "fn f(x: i64?) -> i64? { x }\nfn main() {}")
+            .print_to_string()
+            .to_string();
+        assert!(
+            ir.contains("define { i1, i64 } @sisu.f({ i1, i64 }"),
+            "{ir}"
+        );
+    }
+
+    #[test]
+    fn eq_helper_per_class() {
+        let context = Context::create();
+        let ir = compiled(&context, "class T {}\nfn main() { print(T() == T()) }")
+            .print_to_string()
+            .to_string();
+        assert!(ir.contains("define i1 @sisu_rc.eq.T(ptr"), "{ir}");
     }
 
     #[test]
