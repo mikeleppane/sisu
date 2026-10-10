@@ -103,6 +103,22 @@ impl Checker {
             }
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Assign { target, value } => self.assign(stmt.span, target, value),
+            StmtKind::CompoundAssign { op, target, value } => {
+                // `x op= e` is `x = x op e`, the `op` spanning the statement.
+                let lhs = ast::Expr {
+                    kind: ast::ExprKind::Name(target.name.clone()),
+                    span: target.span,
+                };
+                let value = ast::Expr {
+                    kind: ast::ExprKind::Binary {
+                        op: *op,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(value.clone()),
+                    },
+                    span: stmt.span,
+                };
+                self.assign(stmt.span, target, &value)
+            }
             StmtKind::Expr(e) => self.expr(e).map(tir::Stmt::Expr),
         }
     }

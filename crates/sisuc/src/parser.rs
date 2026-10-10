@@ -243,22 +243,16 @@ impl Parser<'_> {
         };
         self.bump();
         let rhs = self.expr()?;
-        let span = target.span.to(self.last_span());
-        // `x += e` becomes `x = x + e`.
-        let value = match op {
-            None => rhs,
-            Some(op) => Expr {
-                kind: ExprKind::Binary {
-                    op,
-                    lhs: Box::new(target),
-                    rhs: Box::new(rhs),
-                },
-                span,
+        Ok(match op {
+            None => StmtKind::Assign {
+                target: ident,
+                value: rhs,
             },
-        };
-        Ok(StmtKind::Assign {
-            target: ident,
-            value,
+            Some(op) => StmtKind::CompoundAssign {
+                op,
+                target: ident,
+                value: rhs,
+            },
         })
     }
 
@@ -607,11 +601,11 @@ mod tests {
             ("a != b", "(!= a b)"),
             ("(a < b) < c", "(< (< a b) c)"),
             ("true && false", "(&& true false)"),
-            ("x += 1", "(= x (+ x 1))"),
-            ("x %= 2", "(= x (% x 2))"),
-            ("x -= 1", "(= x (- x 1))"),
-            ("x *= 2", "(= x (* x 2))"),
-            ("x /= 2", "(= x (/ x 2))"),
+            ("x += 1", "(+= x 1)"),
+            ("x %= 2", "(%= x 2)"),
+            ("x -= 1", "(-= x 1)"),
+            ("x *= 2", "(*= x 2)"),
+            ("x /= 2", "(/= x 2)"),
             ("(x) = 1", "(= x 1)"),
         ];
         for (src, expected) in rows {
@@ -629,10 +623,10 @@ mod tests {
         let tree = parsed("fn main() { x += 1 }");
         let stmt = &tree.functions[0].body.stmts[0];
         assert_eq!(stmt.span, Span::new(12, 18));
-        let StmtKind::Assign { value, .. } = &stmt.kind else {
-            panic!("not an assignment: {stmt}");
-        };
-        assert_eq!(value.span, stmt.span);
+        assert!(
+            matches!(stmt.kind, StmtKind::CompoundAssign { .. }),
+            "{stmt}"
+        );
     }
 
     #[test]

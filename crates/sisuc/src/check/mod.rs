@@ -724,6 +724,14 @@ mod tests {
     }
 
     #[test]
+    fn lowers_compound_assign() {
+        assert_eq!(
+            lowered("fn main() {\n    var x = 1\n    x *= 3\n    print(x)\n}"),
+            "(fn main () unit (block (var x#0 1) (= x#0 (* x#0 3)) (print x#0)))"
+        );
+    }
+
+    #[test]
     fn lowers_not_equal() {
         assert_eq!(
             lowered("fn f(a: i64) -> bool { a != 1 }\nfn main() {}"),

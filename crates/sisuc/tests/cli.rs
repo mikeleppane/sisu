@@ -65,6 +65,26 @@ fn emit_ast() {
 }
 
 #[test]
+fn emit_ast_keeps_compound_assign() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(
+        dir.join("emit_ast_compound.sisu"),
+        "fn main() {\n    var x = 1\n    x += 2\n}\n",
+    )
+    .expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "ast", "emit_ast_compound.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(fn main () unit (block (var x 1) (+= x 2)))\n"
+    );
+}
+
+#[test]
 fn parse_error_exits_1() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(dir.join("parse_error_exits_1.sisu"), "let x = 1\n").expect("writes");
