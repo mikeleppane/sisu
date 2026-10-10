@@ -159,6 +159,26 @@ fn temporaries() {
     if let n = list(0) { print(n.value) } else { print(0) }
 }
 
+// A literal `None` store releases what it replaces, and an `if let` on the emptied field takes
+// the `else` path.
+fn store_none() {
+    let t = Tree(value: 0, left: None, right: Tree(value: 5, left: None, right: None))
+    t.right = None
+    if let r = t.right { print(r.value) } else { print(-2) }
+    var x: Node? = list(2)
+    x = None
+    print(sum(x))
+}
+
+fn count(nodes: Node?, n: i64) -> i64 {
+    sum(nodes) + n
+}
+
+// `list(2)` is spilled before the `if let` that may return: the return releases it.
+fn spill_then_exit(l: Node?) -> i64 {
+    count(list(2), if let x = l { return x.value } else { 1 })
+}
+
 fn main() {
     print(sum(list(4)))
     print(return_in_if_let(list(3)))
@@ -179,4 +199,7 @@ fn main() {
     print(sum(second(None)))
     regrow()
     temporaries()
+    store_none()
+    print(spill_then_exit(list(3)))
+    print(spill_then_exit(None))
 }
