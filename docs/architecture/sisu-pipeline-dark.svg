@@ -446,7 +446,7 @@ svg[data-preset="editorial"][data-animation="trace"] [data-animate="node"] { ani
         </g>
         <g data-graph-role="automatic-crossover" style="--step:3">
           <path data-graph-role="automatic-crossover-underlay" d="M 820 230 L 890 230" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="checker" data-edge-to="codegen" data-edge-label="TIR" data-edge-key="3" data-edge-id="checker-to-codegen" data-composition-points="820,230;890,230" data-composition-crossover="halo" data-composition-independent="true" d="M 820 230 L 890 230" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+          <path data-edge-from="checker" data-edge-to="codegen" data-edge-label="tir" data-edge-key="3" data-edge-id="checker-to-codegen" data-composition-points="820,230;890,230" data-composition-crossover="halo" data-composition-independent="true" d="M 820 230 L 890 230" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:4">
           <path data-graph-role="automatic-crossover-underlay" d="M 955 260 L 955 380" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
@@ -559,15 +559,15 @@ svg[data-preset="editorial"][data-animation="trace"] [data-animate="node"] { ani
         <text x="955" y="424" class="t-muted" font-size="9" text-anchor="middle">mem2reg, x86-64 code</text>
         </g>
 
-        <g id="node-link" data-node-id="link" data-node-label="Link step" tabindex="0" role="button" aria-label="Focus Link step, link.rs runs cc, Architecture component" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="link.rs runs cc" data-node-context="Architecture component">
-          <title>Link step · link.rs runs cc · Architecture component</title>
+        <g id="node-link" data-node-id="link" data-node-label="cc" tabindex="0" role="button" aria-label="Focus cc, linker, run by link.rs, Architecture component" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="linker, run by link.rs" data-node-context="Architecture component">
+          <title>cc · linker, run by link.rs · Architecture component</title>
           <rect x="650" y="380" width="130" height="60" rx="6" class="c-mask"/>
           <rect x="650" y="380" width="130" height="60" rx="6" class="c-cloud" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(656 386) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" x="715" y="408" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Link step</text>
-        <text x="715" y="424" class="t-muted" font-size="9" text-anchor="middle">link.rs runs cc</text>
+          <text data-node-label="" x="715" y="408" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">cc</text>
+        <text x="715" y="424" class="t-muted" font-size="9" text-anchor="middle">linker, run by link.rs</text>
         </g>
 
         <g id="node-runtime" data-node-id="runtime" data-node-label="sisu-runtime" tabindex="0" role="button" aria-label="Focus sisu-runtime, libsisu_runtime.a, Architecture component" aria-pressed="false" data-node-kind="database" data-node-sublabel="libsisu_runtime.a" data-node-context="Architecture component">
@@ -607,9 +607,9 @@ svg[data-preset="editorial"][data-animation="trace"] [data-animate="node"] { ani
           <rect x="640" y="210" width="30" height="14" rx="3" class="c-mask"/>
           <text x="655" y="220" class="t-edge-emphasis" font-size="8" text-anchor="middle">AST</text>
         </g>
-        <g data-edge-from="checker" data-edge-to="codegen" data-edge-label="TIR" data-edge-key="3" data-edge-id="checker-to-codegen">
+        <g data-edge-from="checker" data-edge-to="codegen" data-edge-label="tir" data-edge-key="3" data-edge-id="checker-to-codegen">
           <rect x="840" y="210" width="30" height="14" rx="3" class="c-mask"/>
-          <text x="855" y="220" class="t-edge-emphasis" font-size="8" text-anchor="middle">TIR</text>
+          <text x="855" y="220" class="t-edge-emphasis" font-size="8" text-anchor="middle">tir</text>
         </g>
         <g data-edge-from="codegen" data-edge-to="llvm" data-edge-label="LLVM IR" data-edge-key="4" data-edge-id="codegen-to-llvm">
           <rect x="905.4000000000001" y="313" width="43.6" height="14" rx="3" class="c-mask"/>

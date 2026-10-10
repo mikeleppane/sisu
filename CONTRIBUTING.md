@@ -8,12 +8,12 @@ people and agents alike. This page is the route through them.
    pre-commit hook runs the same checks as CI.
 2. Read [AGENTS.md](AGENTS.md): the commands, the lint policy, and how to
    check facts about dependencies.
-3. Before a review, read [CODING_STANDARDS.md](CODING_STANDARDS.md): the rules
-   no linter can check.
+3. Read [CODING_STANDARDS.md](CODING_STANDARDS.md): the judgement calls that
+   reviewers check and no linter can.
 4. Use the words in [GLOSSARY.md](GLOSSARY.md), and read the decisions in
    [docs/adr](docs/adr) that touch your change.
-5. Finish with `cargo nextest run --workspace` and `prek run --all-files`
-   passing.
+5. Finish with `cargo nextest run --workspace`, `prek run --all-files` and
+   `cargo deny check` passing, as CI requires.
 
 Work is tracked as local Markdown issues under `.scratch/`, as
 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) describes.

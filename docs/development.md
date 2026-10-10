@@ -1,7 +1,7 @@
 # Developing Sisu
 
-How to build `sisuc`, compile a Sisu program with it, and run the same checks
-as CI. Sisu builds and runs on x86-64 Linux.
+This guide covers building `sisuc`, compiling a Sisu program with it, and
+running the same checks as CI. Sisu builds and runs on x86-64 Linux.
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ $ prek install                # run the checks on every commit
 ```console
 $ cargo build --workspace        # sisuc and the runtime library
 $ cargo nextest run --workspace  # unit tests and end-to-end programs
-$ prek run --all-files           # fmt, clippy, typos, file hygiene, as in CI
+$ prek run --all-files           # fmt, clippy, typos, file hygiene, shell and workflow lint, as in CI
 $ cargo deny check               # advisories, licenses, sources
 ```
 
@@ -51,12 +51,18 @@ $ ./fib
 832040
 ```
 
-Build with `--workspace`. `sisuc` links every program with
-`libsisu_runtime.a`, and looks for it in its own directory, where Cargo puts
-it only when it builds the whole workspace.
+`sisuc` links every program with `libsisu_runtime.a`, which it looks for
+next to its own executable. `cargo build --workspace` puts both files there;
+`cargo build -p sisuc` does not build the runtime.
 
-A program that breaks a rule gets a diagnostic on stderr, and `sisuc` exits
-with code 1:
+When a program breaks a rule, `sisuc` prints a diagnostic to stderr and exits
+with code 1. Take this `bad.sisu`:
+
+```
+fn main() {
+    let x: bool = 1
+}
+```
 
 ```console
 $ target/debug/sisuc bad.sisu bad
@@ -67,25 +73,26 @@ error: expected `bool`, found `i64`
   |                   ^
 ```
 
-A compiled program that fails at runtime, for example by dividing by zero,
-prints a panic and exits with code 101:
+When a compiled program fails at runtime, for example by dividing by zero,
+it prints a panic to stderr and exits with code 101:
 
 ```console
-$ ./divide
-sisu: panic at divide.sisu:2:11: division by zero
+$ target/debug/sisuc crates/sisuc/tests/programs/div_zero.sisu div_zero
+$ ./div_zero
+sisu: panic at crates/sisuc/tests/programs/div_zero.sisu:2:5: division by zero
 ```
 
 ## Look inside the compiler
 
-Each flag runs the pipeline up to one stage and prints what that stage
-produced. [Architecture](architecture.md) describes the stages.
+These flags run the pipeline up to one stage and stop there.
+[Architecture](architecture.md) describes the stages.
 
 | Command | Prints |
 | --- | --- |
 | `sisuc --emit tokens file.sisu` | The lexer's tokens |
 | `sisuc --emit ast file.sisu` | The parser's syntax tree |
 | `sisuc --emit ir file.sisu` | The LLVM IR, before and after `mem2reg` |
-| `sisuc --check file.sisu` | Only diagnostics; exits with code 1 on an error |
+| `sisuc --check file.sisu` | Only diagnostics; exits with code 1 if any is an error |
 
 ## Repository layout
 

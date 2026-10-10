@@ -14,6 +14,8 @@ end to end, from source text to a running binary, not to ship a production
 language. The compiler, `sisuc`, is written in Rust and drives LLVM 22 through
 [inkwell](https://github.com/TheDan64/inkwell).
 
+This program prints the 30th Fibonacci number, `832040`:
+
 ```
 fn fib(n: i64) -> i64 {
     if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
@@ -37,7 +39,7 @@ Milestone 1 is done. `sisuc` compiles:
   wrapping
 - error messages in the style of `rustc`, pointing at the code
 
-Classes, optionals and reference counting come next, in milestone 2.
+Milestone 2, in progress, adds classes, optionals and reference counting.
 
 ## Start here
 

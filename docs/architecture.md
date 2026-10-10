@@ -39,7 +39,8 @@ which is all that codegen reads.
 
 **Codegen** (`codegen.rs`). Walks `tir` and builds an LLVM module through the
 [inkwell](https://github.com/TheDan64/inkwell) bindings. Each Sisu function
-becomes an LLVM function named `sisu.<name>`, and a C `main` calls
+becomes an LLVM function named `sisu.<name>`. Codegen also emits a `main`
+with the C signature, which the C startup code calls and which runs
 `sisu.main`. Integer overflow and division by zero call `sisu_panic` instead
 of wrapping ([ADR 0003](adr/0003-arithmetic-panics.md)).
 
@@ -52,12 +53,11 @@ startup code and libc and writes the executable. The temporary file is
 removed whether or not the link succeeds.
 
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
-into every program. Generated code calls it for what is easier to write in
-Rust than to emit as IR: `sisu_print_int`, `sisu_print_bool` and
-`sisu_panic`.
+into every program. Generated code calls it to print values and to panic:
+`sisu_print_int`, `sisu_print_bool` and `sisu_panic`.
 
-**Diagnostics** (`diagnostic.rs`). Every stage reports problems as
-diagnostics, rendered in the style of `rustc`: the message, the
+**Diagnostics** (`diagnostic.rs`). The lexer, parser and checker report
+problems as diagnostics, rendered in the style of `rustc`: the message, the
 `file:line:col`, and the source line with the code underlined.
 
 ## Updating the diagram
@@ -68,8 +68,10 @@ for the [archify](https://github.com/tt-a1i/archify) diagram tool. After a
 change to the pipeline:
 
 1. Edit the JSON.
-2. Render it: `archify finalize architecture sisu-pipeline.json
-   sisu-pipeline.html --quality showcase`.
+2. From `docs/architecture`, render it with archify's command-line tool,
+   where `<archify>` is your archify checkout:
+   `node <archify>/bin/archify.mjs finalize architecture sisu-pipeline.json
+   sisu-pipeline.html --quality showcase`. The HTML lands next to the JSON.
 3. Open the HTML, and save **Export → SVG · Light** and **Export → SVG ·
    Dark** over `sisu-pipeline-light.svg` and `sisu-pipeline-dark.svg`.
 

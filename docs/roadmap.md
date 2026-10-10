@@ -1,7 +1,9 @@
 # Roadmap
 
 Sisu grows one milestone at a time. Each milestone ends with a program that
-proves it works, and its design is fixed in a spec before work starts.
+proves it works. Its design is settled in a working spec before work starts.
+The specs are not published. The decisions they settled are listed below,
+and the lasting ones are recorded as ADRs in [adr](adr).
 
 ## Milestones 1 to 6
 
@@ -16,11 +18,41 @@ These are adopted. Together they give Sisu a working imperative core.
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
+### Decided in milestone 1
+
+These came out of the review of the milestone 1 spec and are now part of it:
+
+- `let` immutable by default, `var` mutable (ADR 0002), with local type
+  inference.
+- `if` is an expression.
+- No semicolons; statements end at newlines (ADR 0001).
+- One built-in `print(e)` for `i64` and `bool` instead of `print_int`.
+- Compound assignment `+= -= *= /= %=`, desugared by the parser.
+- Digit separators: `100_000`.
+- Diagnostics in the style of rustc: the code underlined, secondary labels
+  such as "declared with `let` here", and a `help:` line.
+- `break` and `continue` scheduled for milestone 2.
+- From milestone 2, a line starting with `.` continues the previous line, so
+  method chains can be written one call per line (ADR 0001).
+
+### Decided in milestone 2
+
+These came out of the milestone 2 design and are now part of its spec:
+
+- Optionals for every type, `i64?` and `bool?` included, with `?.`, `??` and
+  `None` as the empty value. `None` becomes the `Option<T>` case in
+  milestone 8.
+- `if let` and `while let` for optionals, brought forward from milestone 7.
+- `==` compares classes structurally; `a is b` compares identity.
+- The checker reports every error in one run, using a poison type.
+- The checker builds a typed, desugared tree (`tir`) and codegen reads only
+  that.
+- Reference counting (ADR 0005).
+
 ## Beyond milestone 6
 
-Status: proposal, 2026-10-09. The two "adopted" sections record decisions
-already in the milestone 1 and 2 specs. Nothing else from here on is decided
-until it lands in a milestone spec or an ADR.
+Status: proposal, 2026-10-09. Nothing from here on is decided until it lands
+in a milestone spec or an ADR.
 
 The rest of this document collects what comes after milestone 6, and the
 ergonomic features that should be folded into milestones 2 to 6 while they
@@ -75,37 +107,6 @@ fn main() {
     print("Hello, {name}!")
 }
 ```
-
-## Already adopted in milestone 1
-
-These came out of the review of the milestone 1 spec and are now part of it:
-
-- `let` immutable by default, `var` mutable (ADR 0002), with local type
-  inference.
-- `if` is an expression.
-- No semicolons; statements end at newlines (ADR 0001).
-- One built-in `print(e)` for `i64` and `bool` instead of `print_int`.
-- Compound assignment `+= -= *= /= %=`, desugared by the parser.
-- Digit separators: `100_000`.
-- Diagnostics in the style of rustc: the code underlined, secondary labels
-  such as "declared with `let` here", and a `help:` line.
-- `break` and `continue` scheduled for milestone 2.
-- From milestone 2, a line starting with `.` continues the previous line, so
-  method chains can be written one call per line (ADR 0001).
-
-## Adopted in milestone 2
-
-These came out of the milestone 2 design and are now part of its spec:
-
-- Optionals for every type, `i64?` and `bool?` included, with `?.`, `??` and
-  `None` as the empty value. `None` becomes the `Option<T>` case in
-  milestone 8.
-- `if let` and `while let` for optionals, brought forward from milestone 7.
-- `==` compares classes structurally; `a is b` compares identity.
-- The checker reports every error in one run, using a poison type.
-- The checker builds a typed, desugared tree (`tir`) and codegen reads only
-  that.
-- Reference counting (ADR 0005).
 
 ## Fold into milestones 2 to 6
 

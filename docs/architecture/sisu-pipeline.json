@@ -23,7 +23,7 @@
     { "id": "codegen", "type": "backend", "label": "Codegen", "sublabel": "codegen.rs, inkwell", "pos": [890, 200], "size": [130, 60] },
     { "id": "diagnostics", "type": "frontend", "label": "Diagnostics", "sublabel": "rendered to stderr", "pos": [490, 40], "size": [130, 60] },
     { "id": "llvm", "type": "cloud", "label": "LLVM 22", "sublabel": "mem2reg, x86-64 code", "pos": [890, 380], "size": [130, 60] },
-    { "id": "link", "type": "cloud", "label": "Link step", "sublabel": "link.rs runs cc", "pos": [650, 380], "size": [130, 60] },
+    { "id": "link", "type": "cloud", "label": "cc", "sublabel": "linker, run by link.rs", "pos": [650, 380], "size": [130, 60] },
     { "id": "runtime", "type": "database", "label": "sisu-runtime", "sublabel": "libsisu_runtime.a", "pos": [650, 540], "size": [130, 60] },
     { "id": "binary", "type": "external", "label": "Executable", "sublabel": "native x86-64 Linux", "pos": [410, 380], "size": [130, 60] }
   ],
@@ -34,7 +34,7 @@
     { "id": "source-to-lexer", "from": "source", "to": "lexer", "label": "source text", "variant": "emphasis" },
     { "id": "lexer-to-parser", "from": "lexer", "to": "parser", "label": "tokens", "variant": "emphasis" },
     { "id": "parser-to-checker", "from": "parser", "to": "checker", "label": "AST", "variant": "emphasis" },
-    { "id": "checker-to-codegen", "from": "checker", "to": "codegen", "label": "TIR", "variant": "emphasis" },
+    { "id": "checker-to-codegen", "from": "checker", "to": "codegen", "label": "tir", "variant": "emphasis" },
     { "id": "codegen-to-llvm", "from": "codegen", "to": "llvm", "label": "LLVM IR", "variant": "emphasis" },
     { "id": "llvm-to-link", "from": "llvm", "to": "link", "label": "object file", "variant": "emphasis" },
     { "id": "link-to-binary", "from": "link", "to": "binary", "label": "links", "variant": "emphasis" },
