@@ -121,6 +121,8 @@ pub(crate) enum ExprKind {
     Bool(bool),
     None,
     Local(LocalId),
+    /// A read of a counted local that takes its reference; only `last_use` makes one.
+    Move(LocalId),
     Call {
         func: FuncId,
         args: Vec<Expr>,
@@ -210,7 +212,11 @@ impl Expr {
     /// Whether a `Return`, `Break` or `Continue` sits anywhere inside, a nested loop included.
     pub(crate) fn exits(&self) -> bool {
         match &self.kind {
-            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Local(_) => false,
+            ExprKind::Int(_)
+            | ExprKind::Bool(_)
+            | ExprKind::None
+            | ExprKind::Local(_)
+            | ExprKind::Move(_) => false,
             ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
             ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
                 args.iter().any(Expr::exits)
@@ -371,6 +377,11 @@ impl Printer<'_> {
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::None => f.write_str("None"),
             ExprKind::Local(id) => self.local(f, *id),
+            ExprKind::Move(id) => {
+                f.write_str("(move ")?;
+                self.local(f, *id)?;
+                f.write_str(")")
+            }
             ExprKind::Call { func, args } => {
                 write!(f, "(call {}", self.program.functions[func.0].name)?;
                 self.each(f, args)?;

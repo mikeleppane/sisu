@@ -175,9 +175,10 @@ fn zeroext(context: &Context) -> Attribute {
 /// Where a local's value lives.
 #[derive(Clone, Copy)]
 enum Slot<'ctx> {
-    /// A `let` binding or a parameter: an SSA value.
+    /// A `let` binding or a parameter that is not counted: an SSA value.
     Value(BasicValueEnum<'ctx>),
-    /// A `var`: an `alloca` of this type, loaded and stored until `mem2reg` promotes it.
+    /// A `var` or a counted local: an `alloca` of this type, loaded and stored until
+    /// `mem2reg` promotes it. A `Move` stores `null` into a counted local's slot.
     Alloca(PointerValue<'ctx>, BasicTypeEnum<'ctx>),
 }
 
@@ -337,6 +338,17 @@ impl<'ctx> Codegen<'ctx, '_> {
         })
     }
 
+    /// `Move`: the value of `local`, whose reference leaves its slot without a retain. The
+    /// slot then holds `null`, which releasing skips.
+    fn move_local(&self, local: LocalId) -> BasicValueEnum<'ctx> {
+        let Some(Slot::Alloca(ptr, ty)) = self.locals[local.0] else {
+            unreachable!("only a counted local moves, and every counted local has an `alloca`")
+        };
+        let value = self.builder.build_load(ty, ptr, "moved").expect(POSITIONED);
+        self.store(ptr, ty.const_zero());
+        value
+    }
+
     /// `New`: allocates the object, then stores its count, 1, and each argument.
     fn new_object(&mut self, class: ClassId, args: &[Expr]) -> PointerValue<'ctx> {
         // Arguments run first: one that returns early then leaves no object behind.
@@ -393,26 +405,24 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn define(&mut self, f: &Function, function: FunctionValue<'ctx>) {
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
-        // Every `var` gets its `alloca` up front, in the entry block: see `entry_alloca`.
+        // Every `var` and counted local gets its `alloca` up front, in the entry block: see
+        // `entry_alloca`.
         self.locals = f
             .locals
             .iter()
             .map(|local| {
-                let ty = self.llvm_type(&local.ty).filter(|_| local.mutable)?;
+                let ty = self
+                    .llvm_type(&local.ty)
+                    .filter(|_| local.mutable || local.ty.is_counted())?;
                 let name = local.name.as_deref().unwrap_or("");
                 Some(Slot::Alloca(self.entry_alloca(ty, name), ty))
             })
             .collect();
         self.types = f.locals.iter().map(|local| local.ty.clone()).collect();
         // The parameters own their arguments: they are the bottom of the live-locals stack.
-        self.live = f
-            .params
-            .iter()
-            .copied()
-            .filter(|p| self.types[p.0].is_counted())
-            .collect();
+        self.live = Vec::new();
         for (p, v) in f.params.iter().zip(function.get_param_iter()) {
-            self.locals[p.0] = Some(Slot::Value(v));
+            self.bind(*p, v);
         }
         let value = self.block(&f.body, None);
         if !self.terminated() {
@@ -627,6 +637,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.retain(value, &e.ty);
                 return Some(value);
             }
+            ExprKind::Move(local) => return Some(self.move_local(*local)),
             ExprKind::Call { func, args } => {
                 let args: Vec<_> = args
                     .iter()
@@ -698,18 +709,23 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return self.optional(e);
             }
             ExprKind::Return(value) => {
-                let value = value.as_ref().and_then(|e| self.expr(e));
-                // The checker rejects a `never` return value; this keeps codegen safe anyway.
-                if !self.terminated() {
-                    self.release_to(0);
-                    self.builder
-                        .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
-                        .expect(POSITIONED);
-                }
+                self.return_expr(value.as_deref());
                 return None;
             }
         };
         Some(value.into())
+    }
+
+    /// `return`: the value, then the release of every live local, then the `ret`.
+    fn return_expr(&mut self, value: Option<&Expr>) {
+        let value = value.and_then(|e| self.expr(e));
+        // The checker rejects a `never` return value; this keeps codegen safe anyway.
+        if !self.terminated() {
+            self.release_to(0);
+            self.builder
+                .build_return(value.as_ref().map(|v| v as &dyn BasicValue))
+                .expect(POSITIONED);
+        }
     }
 
     /// `None`, `Wrap` and `IfSome`: a class optional is a pointer, a scalar one a `{ i1, T }`.

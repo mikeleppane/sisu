@@ -1,0 +1,80 @@
+// Moves at run time: a read that is a counted local's last use takes its reference, and
+// every other read retains. Valgrind checks that no move frees what a later read needs.
+class Counter {
+    let n: i64
+
+    // `self` is read once, so the read moves it.
+    fn get(self) -> i64 {
+        self.n
+    }
+}
+
+fn total(a: [i64], b: [i64]) -> i64 {
+    a[0] + b[0]
+}
+
+fn grow(xs: [i64]) -> [i64] {
+    var ys = xs
+    ys[0] += 1
+    ys
+}
+
+// Read in the loop body, which stays live into the next iteration, then after the loop.
+fn in_loop() {
+    let xs = [1, 2]
+    var i = 0
+    while i < 2 {
+        print(xs[1])                  // 2, twice
+        i += 1
+    }
+    print(xs[0])                      // 1
+}
+
+// Read in one branch, then after the `if`.
+fn in_branch(c: bool) {
+    let xs = [3]
+    if c {
+        print(xs[0])                  // 3, when `c`
+    }
+    print(xs.len())                   // 1
+}
+
+// The `continue` path releases `ys`; the other path moves it.
+fn after_continue() {
+    var i = 0
+    while i < 3 {
+        i += 1
+        let ys = [i]
+        if i == 2 {
+            continue
+        }
+        print(ys[0])                  // 1, then 3
+    }
+}
+
+// The first argument retains, the second moves.
+fn twice() {
+    let x = [4]
+    print(total(x, x))                // 8
+}
+
+fn handover() {
+    var xs = [5]
+    xs = grow(xs)
+    print(xs[0])                      // 6
+}
+
+fn moved_self() {
+    let c = Counter(n: 7)
+    print(c.get())                    // 7
+}
+
+fn main() {
+    in_loop()
+    in_branch(true)
+    in_branch(false)
+    after_continue()
+    twice()
+    handover()
+    moved_self()
+}

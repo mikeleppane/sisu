@@ -3,11 +3,13 @@ use crate::check::check;
 use crate::lexer::lex;
 use crate::parser::parse;
 
-/// Lexes, parses, checks (no errors allowed) and compiles `src`, then verifies the module.
+/// Lexes, parses, checks (no errors allowed), marks last uses in and compiles `src`, then
+/// verifies the module.
 fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
     let program = parse(&lex(src).expect("source lexes")).expect("source parses");
     let (program, diagnostics) = check(&program);
-    let program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
+    let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
+    crate::last_use::mark(&mut program);
     let machine = target_machine(false).expect("the host is a target");
     let module = compile(context, &program, "test.sisu", src, &machine);
     if let Err(e) = module.verify() {
@@ -554,7 +556,8 @@ fn general_path_releases_base() {
 }
 
 /// An index built only from whitelisted nodes keeps the fast path; one with a call takes the
-/// general path, which releases the base before the element is printed.
+/// general path, which releases the base before the element is printed. `o` and `ys` are read
+/// again later, so the indexes read them without a move, which the whitelist excludes.
 #[test]
 fn fast_path_follows_the_index_whitelist() {
     let context = Context::create();
@@ -563,8 +566,8 @@ fn fast_path_follows_the_index_whitelist() {
         "class O {\n    let n: i64\n}\nfn g() -> i64 { 0 }\n\
          fn unary(xs: [i64], i: i64) -> [i64] {\n    print(xs[-i + 1])\n    xs\n}\n\
          fn convert(xs: [i64], b: u8) -> [i64] {\n    print(xs[i64(b)])\n    xs\n}\n\
-         fn field(xs: [i64], o: O) -> [i64] {\n    print(xs[o.n])\n    xs\n}\n\
-         fn length(xs: [i64], ys: [bool]) -> [i64] {\n    print(xs[ys.len()])\n    xs\n}\n\
+         fn field(xs: [i64], o: O) -> [i64] {\n    print(xs[o.n])\n    print(o.n)\n    xs\n}\n\
+         fn length(xs: [i64], ys: [bool]) -> [i64] {\n    print(xs[ys.len()])\n    print(ys.len())\n    xs\n}\n\
          fn call(xs: [i64]) -> [i64] {\n    print(xs[1 + g()])\n    xs\n}\nfn main() {}",
     )
     .print_to_string()
@@ -614,4 +617,16 @@ fn write_checks_bounds_before_unique() {
         .position(|l| l.starts_with("store i64 1, ptr "))
         .unwrap_or_else(|| panic!("no store of 1 in\n{body}"));
     assert!([bounds, unique, store].is_sorted(), "{body}");
+}
+
+/// `Move` takes the local's reference and leaves `null` in its slot, which releasing at the
+/// scope's end then skips.
+#[test]
+fn move_stores_null() {
+    let context = Context::create();
+    let ir = compiled(&context, "fn f(xs: [i64]) -> [i64] { xs }\nfn main() {}")
+        .print_to_string()
+        .to_string();
+    let body = function_body(&ir, "@sisu.f(");
+    assert!(body.contains("store ptr null, ptr %xs"), "{body}");
 }
