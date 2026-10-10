@@ -184,6 +184,14 @@ impl Parser<'_> {
                     StmtKind::Return(Some(self.expr()?))
                 }
             }
+            TokenKind::Break => {
+                self.bump();
+                StmtKind::Break
+            }
+            TokenKind::Continue => {
+                self.bump();
+                StmtKind::Continue
+            }
             TokenKind::Else => {
                 return Err(Diagnostic::error(
                     start,
@@ -502,6 +510,14 @@ mod tests {
         assert_eq!(
             body("fn f() -> i64 {\n    return 1\n}"),
             "(block (return 1))"
+        );
+    }
+
+    #[test]
+    fn break_and_continue() {
+        assert_eq!(
+            body("fn main() {\n    while c {\n        break\n        continue\n    }\n}"),
+            "(block (while c (block (break) (continue))))"
         );
     }
 

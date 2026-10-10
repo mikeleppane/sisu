@@ -99,7 +99,8 @@ enum Slot<'ctx> {
     Alloca(PointerValue<'ctx>, BasicTypeEnum<'ctx>),
 }
 
-/// An open `loop`: `Break` branches to `end`, a body that falls through back to `body`.
+/// An open `loop`: `Break` branches to `end`, `Continue` and a body that falls through
+/// branch back to `body`.
 struct LoopFrame<'ctx> {
     body: BasicBlock<'ctx>,
     end: BasicBlock<'ctx>,
@@ -351,6 +352,15 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .expect("checked: `break` is in a loop")
                     .end;
                 self.branch_to(end);
+                return None;
+            }
+            ExprKind::Continue => {
+                let body = self
+                    .loops
+                    .last()
+                    .expect("checked: `continue` is in a loop")
+                    .body;
+                self.branch_to(body);
                 return None;
             }
             ExprKind::Return(value) => {
@@ -707,7 +717,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 }
 
 /// A target machine for the host `sisuc` runs on.
-pub(crate) fn target_machine() -> Result<TargetMachine, String> {
+pub(crate) fn target_machine(o2: bool) -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())?;
     let triple = TargetMachine::get_default_triple();
     let target = Target::from_triple(&triple).map_err(|e| e.to_string())?;
@@ -717,18 +727,32 @@ pub(crate) fn target_machine() -> Result<TargetMachine, String> {
             &triple,
             "generic",
             "",
-            OptimizationLevel::None,
+            if o2 {
+                OptimizationLevel::Default
+            } else {
+                OptimizationLevel::None
+            },
             RelocMode::PIC,
             CodeModel::Default,
         )
         .ok_or_else(|| "LLVM cannot create a target machine for this host".to_string())
 }
 
-/// Verifies `module`, then runs `mem2reg`, which turns each `var`'s `alloca` into SSA values.
-pub(crate) fn run_mem2reg(module: &Module<'_>, machine: &TargetMachine) -> Result<(), String> {
+/// The pass pipeline: `default<O2>` with `-O2`, else `mem2reg`, which turns each `var`'s
+/// `alloca` into SSA values.
+pub(crate) fn pipeline(o2: bool) -> &'static str {
+    if o2 { "default<O2>" } else { "mem2reg" }
+}
+
+/// Verifies `module`, then runs the pipeline.
+pub(crate) fn optimize(
+    module: &Module<'_>,
+    machine: &TargetMachine,
+    o2: bool,
+) -> Result<(), String> {
     module.verify().map_err(|e| e.to_string())?;
     module
-        .run_passes("mem2reg", machine, PassBuilderOptions::create())
+        .run_passes(pipeline(o2), machine, PassBuilderOptions::create())
         .map_err(|e| e.to_string())
 }
 
