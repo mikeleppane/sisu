@@ -1127,6 +1127,38 @@ mod tests {
     }
 
     #[test]
+    fn compound_assign_to_param() {
+        expect_error(
+            "fn f(n: i64) {\n    n += 1\n}\nfn main() {}",
+            "cannot assign to `n`",
+            (2, 5),
+            None,
+            &[(1, 6, "declared as a parameter here")],
+            Some("copy it into a `var`: `var n = n`"),
+        );
+    }
+
+    #[test]
+    fn compound_assign_unknown_target_once() {
+        error(
+            "fn main() {\n    nope += 1\n}",
+            "cannot find `nope` in this scope",
+            (2, 5),
+        );
+    }
+
+    #[test]
+    fn compound_assign_unknown_target_and_bad_value() {
+        errors(
+            "fn main() {\n    nope += true + 1\n}",
+            &[
+                ("cannot find `nope` in this scope", (2, 5)),
+                ("expected `i64`, found `bool`", (2, 13)),
+            ],
+        );
+    }
+
+    #[test]
     fn assign_type() {
         error(
             "fn main() {\n    var x = 1\n    x = true\n}",

@@ -104,6 +104,10 @@ impl Checker {
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Assign { target, value } => self.assign(stmt.span, target, value),
             StmtKind::CompoundAssign { op, target, value } => {
+                // `assign` already reports an unknown target; a synthetic read would repeat it.
+                if self.lookup(&target.name).is_none() {
+                    return self.assign(stmt.span, target, value);
+                }
                 // `x op= e` is `x = x op e`, the `op` spanning the statement.
                 let lhs = ast::Expr {
                     kind: ast::ExprKind::Name(target.name.clone()),
