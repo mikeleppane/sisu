@@ -1,0 +1,25 @@
+// Counts the primes up to 100 000 with a sieve. `is_prime` is written in place and handed to
+// the caller: no copy, because every use of it is a last use or a write.
+fn sieve(n: i64) -> [bool] {
+    var is_prime = [true; n + 1]
+    is_prime[0] = false
+    is_prime[1] = false
+    for i in 2..n + 1 {
+        if is_prime[i] {
+            var j = i * i
+            while j <= n {
+                is_prime[j] = false
+                j += i
+            }
+        }
+    }
+    is_prime
+}
+
+fn main() {
+    var count = 0
+    for p in sieve(100_000) {
+        if p { count += 1 }
+    }
+    print(count) // 9592, the number of primes up to 100 000
+}

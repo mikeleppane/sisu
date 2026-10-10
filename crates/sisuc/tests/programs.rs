@@ -244,6 +244,107 @@ fn methods() {
     assert_prints_out_file("methods");
 }
 
+#[test]
+fn sieve() {
+    assert_prints_out_file("sieve");
+}
+
+/// The `N` of the `total heap usage: N allocs` line in Valgrind's stderr, thousands separators
+/// removed; panics when the line is missing.
+fn allocs_in(valgrind_stderr: &str) -> u64 {
+    let (_, after) = valgrind_stderr
+        .split_once("total heap usage: ")
+        .unwrap_or_else(|| panic!("no `total heap usage` line in:\n{valgrind_stderr}"));
+    let digits: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(|c| *c != ',')
+        .collect();
+    digits
+        .parse()
+        .unwrap_or_else(|_| panic!("no allocation count after `total heap usage: ` in:\n{after}"))
+}
+
+/// Runs `exe` under Valgrind and returns its stdout and `allocs_in` of its stderr. Valgrind runs
+/// without `-q`, which prints the heap summary.
+fn heap_allocs(exe: &Path) -> (String, u64) {
+    let out = Command::new("valgrind")
+        .args([
+            "--leak-check=full",
+            "--errors-for-leak-kinds=definite,indirect,possible",
+            "--error-exitcode=1",
+        ])
+        .arg(exe)
+        .output()
+        .expect("valgrind is required: install it with `apt install valgrind`");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{}: {stderr}", exe.display());
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        allocs_in(&stderr),
+    )
+}
+
+/// Builds `<name>.sisu` as written and with its first line `fn iterations() -> i64 { 1000 }`
+/// changed to `{ 0 }`, at `-O2` if `o2`, and returns both builds' stdout and the difference in
+/// allocations. The zero-iteration build is the baseline: the runtime's own allocations cancel.
+fn extra_allocs(name: &str, o2: bool) -> (String, String, i64) {
+    const FIRST_LINE: &str = "fn iterations() -> i64 { 1000 }\n";
+    let source = fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.sisu")))
+        .expect("reads the program");
+    let rest = source
+        .strip_prefix(FIRST_LINE)
+        .unwrap_or_else(|| panic!("{name}.sisu should start with `{}`", FIRST_LINE.trim_end()));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let baseline = format!("{name}_k0");
+    fs::write(
+        dir.join(format!("{baseline}.sisu")),
+        format!("{}{rest}", FIRST_LINE.replace("1000", "0")),
+    )
+    .expect("writes the baseline program");
+
+    let (stdout, allocs) = heap_allocs(&compile(Path::new(PROGRAMS), name, o2));
+    let (base_stdout, base_allocs) = heap_allocs(&compile(dir, &baseline, o2));
+    let extra = i64::try_from(allocs).expect("a count fits i64")
+        - i64::try_from(base_allocs).expect("a count fits i64");
+    (stdout, base_stdout, extra)
+}
+
+#[test]
+fn allocs_in_reads_grouped_counts() {
+    let stderr = "==1== total heap usage: 1,004 allocs, 1,004 frees, 9 bytes allocated";
+    assert_eq!(allocs_in(stderr), 1004);
+}
+
+#[test]
+#[should_panic(expected = "no `total heap usage` line")]
+fn allocs_in_panics_without_the_summary_line() {
+    allocs_in("==1== All heap blocks were freed -- no leaks are possible");
+}
+
+/// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
+const ALLOCATIONS: [(&str, &str, &str, i64); 3] = [
+    // `big = fill(big, i)` writes in place.
+    ("handover", "999\n", "0\n", 0),
+    // `saved` is live across each write, so each `fill` copies once.
+    ("copies", "499500\n1000\n", "0\n0\n", 1000),
+    // `for` over an array copies nothing.
+    ("walk", "10000000\n", "0\n", 0),
+];
+
+#[test]
+fn allocation_counts() {
+    for o2 in [false, true] {
+        for (name, stdout, base_stdout, extra) in ALLOCATIONS {
+            assert_eq!(
+                extra_allocs(name, o2),
+                (stdout.to_string(), base_stdout.to_string(), extra),
+                "{name} (o2: {o2})"
+            );
+        }
+    }
+}
+
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
     let exe = compile(Path::new(PROGRAMS), name, false);

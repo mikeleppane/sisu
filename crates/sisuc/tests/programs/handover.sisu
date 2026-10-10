@@ -1,0 +1,17 @@
+fn iterations() -> i64 { 1000 }
+
+// `big = fill(big, i)` hands the only reference to `fill`, so `ys[0] = v` finds the block
+// unshared and writes in place: the loop makes no copy.
+fn fill(xs: [i64], v: i64) -> [i64] {
+    var ys = xs
+    ys[0] = v
+    ys
+}
+
+fn main() {
+    var big = [0; 10_000]
+    for i in 0..iterations() {
+        big = fill(big, i)
+    }
+    print(big[0]) // the last i: 999 (0 with no iterations)
+}

@@ -1,0 +1,11 @@
+fn iterations() -> i64 { 1000 }
+
+// `for x in xs` borrows nothing and copies nothing: 1000 walks of 10 000 elements allocate nothing.
+fn main() {
+    let xs = [1; 10_000]
+    var total = 0
+    for round in 0..iterations() {
+        for x in xs { total += x }
+    }
+    print(total) // 1000 * 10 000 = 10000000 (0 with no iterations)
+}
