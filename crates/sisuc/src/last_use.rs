@@ -344,7 +344,7 @@ mod tests {
         has(
             "fn f(xs: [i64]) -> bool { 0 < xs.len() < xs.len() }",
             "f",
-            &["(len xs#0)", "(len (move xs#0))"],
+            &["(< 0 (len xs#0) < (len (move xs#0)))"],
         );
     }
 
