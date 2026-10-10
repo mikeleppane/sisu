@@ -208,6 +208,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn llvm_type(&self, ty: &Type) -> Option<BasicTypeEnum<'ctx>> {
         match ty {
             Type::I64 => Some(self.context.i64_type().into()),
+            Type::U8 => panic!("`u8` lands in Task 3"),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Unit | Type::Never => None,
             Type::Class(_) => Some(self.context.ptr_type(AddressSpace::default()).into()),
@@ -653,6 +654,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
             ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
             ExprKind::Block(block) => return self.block(block, None),
+            ExprKind::Convert(_) => panic!("Convert lands in Task 3"),
             ExprKind::None | ExprKind::Wrap(_) | ExprKind::IfSome { .. } => {
                 return self.optional(e);
             }

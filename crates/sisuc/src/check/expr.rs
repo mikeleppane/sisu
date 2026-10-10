@@ -1,8 +1,8 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
 use super::{
-    Binding, Checked, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, block_type, not_found,
-    optional_of, type_of, value_span, wrap, wrap_block,
+    Binding, Checked, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, block_type,
+    built_in_type, not_found, optional_of, payload, tail, type_of, value_span, wrap, wrap_block,
 };
 use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
 use crate::diagnostic::{Diagnostic, Span};
@@ -10,7 +10,8 @@ use crate::tir::{self, Type};
 
 impl Checker {
     /// `expected` is the type the context wants, `None` when it wants none. It only types a
-    /// `None`, and flows into `if` and `if let` branches and a block's value; it never wraps.
+    /// `None` and an integer literal, and flows into `if` and `if let` branches, a block's
+    /// value, arithmetic and unary `-`; it never wraps.
     pub(super) fn expr(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let node = |kind, ty| {
             Ok(tir::Expr {
@@ -20,7 +21,15 @@ impl Checker {
             })
         };
         match &e.kind {
-            ExprKind::Int(n) => node(tir::ExprKind::Int(*n), Type::I64),
+            ExprKind::Int(n) => {
+                let ty = literal_type(expected);
+                if ty == Type::U8 && *n > i64::from(u8::MAX) {
+                    let message = format!("`{n}` does not fit in `u8`");
+                    self.diagnostics.push(Diagnostic::error(e.span, message));
+                    return Err(Poisoned::typed(ty));
+                }
+                node(tir::ExprKind::Int(*n), ty)
+            }
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
             ExprKind::NoneLit => self.none(e.span, expected),
             ExprKind::Name(name) => match self.lookup(name) {
@@ -63,11 +72,10 @@ impl Checker {
             ExprKind::Coalesce { lhs, rhs } => self.coalesce(e.span, lhs, rhs),
             ExprKind::Is { lhs, rhs } => self.is(e.span, lhs, rhs),
             ExprKind::Unary { op, operand } => {
-                let want = match op {
-                    UnaryOp::Neg => Type::I64,
-                    UnaryOp::Not => Type::Bool,
+                let (want, (operand, mismatched)) = match op {
+                    UnaryOp::Neg => (Type::I64, self.negated(e.span, operand, expected)?),
+                    UnaryOp::Not => (Type::Bool, self.operand(operand, Some(&Type::Bool))),
                 };
-                let (operand, mismatched) = self.operand(operand, Some(&want));
                 typed(
                     e.span,
                     want,
@@ -78,7 +86,7 @@ impl Checker {
                     }),
                 )
             }
-            ExprKind::Binary { op, lhs, rhs } => self.binary(e.span, *op, lhs, rhs),
+            ExprKind::Binary { op, lhs, rhs } => self.binary(e.span, *op, lhs, rhs, expected),
             ExprKind::Compare { operands, ops } => self.compare(e.span, operands, ops),
             ExprKind::If {
                 cond,
@@ -101,19 +109,29 @@ impl Checker {
         }
     }
 
-    /// A comparison chain: every operand is an `i64`.
-    fn compare(&mut self, span: Span, operands: &[ast::Expr], ops: &[CompareOp]) -> Checked {
-        // Once an operand is `Error`, the rest expect `Error`, as in `binary`.
-        let mut want = Some(&Type::I64);
-        let (mut checked, mut mismatched) = (Vec::new(), false);
-        for operand in operands {
-            let (operand, m) = self.operand(operand, want);
-            if type_of(&operand).is_none() {
-                want = None;
-            }
-            mismatched |= m;
-            checked.push(operand);
+    /// The operand of unary `-`, `expected` passed down, and whether it was reported. A `u8`
+    /// operand is an error; any other is checked against `i64`.
+    fn negated(
+        &mut self,
+        span: Span,
+        operand: &ast::Expr,
+        expected: Option<&Type>,
+    ) -> Result<(Checked, bool), Poisoned> {
+        // A bare `None` expects an `i64`, as in `None + 1`.
+        let expected = expected.or_else(|| none_literal(operand).then_some(&Type::I64));
+        let checked = self.value(operand, expected);
+        if type_of(&checked) == Some(&Type::U8) {
+            self.diagnostics
+                .push(Diagnostic::error(span, "`u8` cannot be negative"));
+            return Err(Poisoned::error());
         }
+        Ok(self.against(operand, checked, Some(&Type::I64)))
+    }
+
+    /// A comparison chain: every operand is of one integer type.
+    fn compare(&mut self, span: Span, operands: &[ast::Expr], ops: &[CompareOp]) -> Checked {
+        let operands: Vec<_> = operands.iter().collect();
+        let (checked, _, mismatched) = self.integers(&operands, None);
         let operands = checked.into_iter().collect::<Result<Vec<_>, _>>().ok();
         typed(
             span,
@@ -146,19 +164,19 @@ impl Checker {
 
     /// `expect`, and whether it reported a mismatch. A mismatch is the failure of the rule
     /// that wants `want`, so that rule's expression is `Error`.
-    fn operand(&mut self, e: &ast::Expr, want: Option<&Type>) -> (Checked, bool) {
+    pub(super) fn operand(&mut self, e: &ast::Expr, want: Option<&Type>) -> (Checked, bool) {
         let checked = self.value(e, Some(want.unwrap_or(&UNKNOWN)));
         // `want` was rejected inside `e`, which `against` cannot tell from an `Error` operand.
         if matches!(checked, Err(Poisoned { mismatch: true, .. })) {
             return (checked, true);
         }
-        self.against(e.span, checked, want)
+        self.against(e, checked, want)
     }
 
-    /// `operand` for a value already checked, found at `span`.
+    /// `operand` for `e`, already checked.
     pub(super) fn against(
         &mut self,
-        span: Span,
+        e: &ast::Expr,
         checked: Checked,
         want: Option<&Type>,
     ) -> (Checked, bool) {
@@ -174,7 +192,7 @@ impl Checker {
                 };
                 return (wrapped, false);
             }
-            let d = self.mismatch(span, want, got);
+            let d = self.mismatch(e.span, Some(e), want, got);
             self.diagnostics.push(d);
             return (Err(Poisoned::error()), true);
         }
@@ -190,12 +208,66 @@ impl Checker {
         op: ast::BinaryOp,
         lhs: &ast::Expr,
         rhs: &ast::Expr,
+        expected: Option<&Type>,
     ) -> Checked {
         let Some((tir_op, want)) = operator(op) else {
             return self.equal(span, op == ast::BinaryOp::Ne, lhs, rhs);
         };
-        let lhs = self.operand(lhs, Some(&want));
-        self.arithmetic(span, tir_op, want, lhs, rhs)
+        if want == Type::Bool {
+            let lhs = self.operand(lhs, Some(&want));
+            return self.arithmetic(span, tir_op, want, lhs, rhs);
+        }
+        let (checked, ty, mismatched) = self.integers(&[lhs, rhs], expected);
+        let [l, r]: [Checked; 2] = checked
+            .try_into()
+            .unwrap_or_else(|_| panic!("`integers` returns one result per operand"));
+        let kind = l.ok().zip(r.ok()).map(|(l, r)| tir::ExprKind::Binary {
+            op: tir_op,
+            lhs: Box::new(l),
+            rhs: Box::new(r),
+        });
+        match ty {
+            Some(ty) => typed(span, ty, mismatched, kind),
+            None => Err(Poisoned::error()),
+        }
+    }
+
+    /// The operands of one integer operator, checked in source order; the type they share,
+    /// `None` when it is `Error`; and whether one was reported against it. The type is `u8`
+    /// when `expected` is `u8` or `u8?`. Otherwise the first concrete operand (of `rank` 0) is
+    /// checked first, with no expected type, and gives it: `u8` beside a `u8`, else `i64`.
+    /// With none, it is `i64`, so `None + 1` expects an `i64`. Once an operand is `Error`, the
+    /// later ones are checked against `Error`.
+    fn integers(
+        &mut self,
+        operands: &[&ast::Expr],
+        expected: Option<&Type>,
+    ) -> (Vec<Checked>, Option<Type>, bool) {
+        let mut first = None;
+        let ty = if literal_type(expected) == Type::U8 {
+            Some(Type::U8)
+        } else if let Some(k) = operands.iter().position(|e| rank(e) == 0) {
+            let checked = self.value(operands[k], None);
+            let ty = type_of(&checked).map(|ty| literal_type(Some(ty)));
+            first = Some((k, checked));
+            ty
+        } else {
+            Some(Type::I64)
+        };
+        let mut want = ty.clone();
+        let (mut checked, mut mismatched) = (Vec::with_capacity(operands.len()), false);
+        for (i, e) in operands.iter().enumerate() {
+            let (operand, m) = match first.take_if(|(k, _)| *k == i) {
+                Some((_, operand)) => self.against(e, operand, want.as_ref()),
+                None => self.operand(e, want.as_ref()),
+            };
+            if type_of(&operand).is_none() {
+                want = None;
+            }
+            mismatched |= m;
+            checked.push(operand);
+        }
+        (checked, ty, mismatched)
     }
 
     /// `lhs op rhs`, its `lhs` already checked against `want`, the type `op` takes.
@@ -216,11 +288,12 @@ impl Checker {
         typed(span, want, l_mismatched || r_mismatched, kind)
     }
 
-    /// `lhs == rhs`, or `!=`. The side that is not a bare `None` is checked first, and the
-    /// other expects its type made optional. A bare `None` beside a value that is not
-    /// optional is reported: the answer is fixed.
+    /// `lhs == rhs`, or `!=`. The side of lower `rank` is checked first, the left on a tie,
+    /// and the other expects its type made optional. A bare `None` beside a value that is not
+    /// optional is reported: the answer is fixed. So is a `u8` beside an `i64`, at the side
+    /// checked second.
     fn equal(&mut self, span: Span, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
-        let swapped = none_literal(lhs) && !none_literal(rhs);
+        let swapped = rank(rhs) < rank(lhs);
         let (first, second) = if swapped { (rhs, lhs) } else { (lhs, rhs) };
         let checked = self.value(first, None);
         let want = type_of(&checked).map_or_else(|| UNKNOWN.clone(), |ty| optional_of(ty.clone()));
@@ -232,6 +305,16 @@ impl Checker {
         {
             let message = format!("{} is not optional, so it is never `None`", quoted(first));
             self.diagnostics.push(Diagnostic::error(span, message));
+            return Err(Poisoned::error());
+        }
+        if let (Some(want), Some(got)) = (type_of(&checked), type_of(&other))
+            && matches!(
+                (payload(want), payload(got)),
+                (Type::U8, Type::I64) | (Type::I64, Type::U8)
+            )
+        {
+            let d = self.mismatch(second.span, Some(second), payload(want), got);
+            self.diagnostics.push(d);
             return Err(Poisoned::error());
         }
         let (l, r) = if swapped {
@@ -329,7 +412,7 @@ impl Checker {
         let ty = match type_of(&other) {
             Some(ty) if *ty == payload || *ty == optional => ty.clone(),
             Some(ty) => {
-                let d = self.mismatch(rhs.span, &payload, ty);
+                let d = self.mismatch(rhs.span, Some(rhs), &payload, ty);
                 self.diagnostics.push(d);
                 return Err(Poisoned::error());
             }
@@ -516,11 +599,11 @@ impl Checker {
     }
 
     /// The blocks of an `if` or `if let`, `then` checking the first, and their type: `unit`
-    /// without an `else`. With no `expected` type, the branch whose value is not a bare `None`
-    /// is checked first, and the other expects its type made optional. Then a `never` branch,
-    /// and after it an `Error` one, takes the other's type; a `T` and a `T?` join to `T?`, the
-    /// `T` branch wrapped; other types that differ are reported. A join that fails for a
-    /// branch that rejected `expected` is a mismatch too.
+    /// without an `else`. With no `expected` type, the branch whose value is of lower `rank`
+    /// is checked first, the first branch on a tie, and the other expects its type made
+    /// optional. Then a `never` branch, and after it an `Error` one, takes the other's type; a
+    /// `T` and a `T?` join to `T?`, the `T` branch wrapped; other types that differ are
+    /// reported. A join that fails for a branch that rejected `expected` is a mismatch too.
     fn branches(
         &mut self,
         then_block: &ast::Block,
@@ -532,7 +615,7 @@ impl Checker {
             return (then(self, None), None, Ok(Type::Unit));
         };
         let (mut first, mut other);
-        if expected.is_none() && bare_none(then_block) && !bare_none(else_block) {
+        if expected.is_none() && block_rank(else_block) < block_rank(then_block) {
             other = self.block(else_block, None);
             let after = after_branch(block_type(&other));
             first = then(self, after.as_ref());
@@ -560,9 +643,11 @@ impl Checker {
             // the mistake; without one, the `else` is, against the first branch.
             (Some(t), Some(o)) => {
                 let d = match expected.filter(|w| **w != UNKNOWN) {
-                    Some(w) if fits(w, &t) => self.mismatch(value_span(else_block), w, &o),
-                    Some(w) => self.mismatch(value_span(then_block), w, &t),
-                    None => self.mismatch(value_span(else_block), &t, &o),
+                    Some(w) if fits(w, &t) => {
+                        self.mismatch(value_span(else_block), tail(else_block), w, &o)
+                    }
+                    Some(w) => self.mismatch(value_span(then_block), tail(then_block), w, &t),
+                    None => self.mismatch(value_span(else_block), tail(else_block), &t, &o),
                 };
                 self.diagnostics.push(d);
                 None
@@ -578,6 +663,9 @@ impl Checker {
     fn call(&mut self, span: Span, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
         if callee.name == "print" {
             return self.print(span, args);
+        }
+        if let Some(to @ (Type::I64 | Type::U8)) = built_in_type(&callee.name) {
+            return self.convert(span, to, args);
         }
         if let Some(&class) = self.class_ids.get(&callee.name) {
             return self.construct(span, class, args);
@@ -649,8 +737,38 @@ impl Checker {
         }
     }
 
+    /// `to(arg)`: `u8(x)` takes an `i64`, `i64(x)` a `u8`. Its argument expects no type, so a
+    /// literal one is an `i64`.
+    fn convert(&mut self, span: Span, to: Type, args: &[ast::Arg]) -> Checked {
+        let labeled = self.labels(args);
+        let [arg] = args else {
+            let message = format!("`{to}` takes 1 argument, found {}", args.len());
+            self.diagnostics.push(Diagnostic::error(span, message));
+            self.stray(args);
+            return Err(Poisoned::error());
+        };
+        let from = if to == Type::U8 { Type::I64 } else { Type::U8 };
+        let checked = self.value(&arg.value, None);
+        let d = match type_of(&checked) {
+            Some(ty) if *ty == to => Diagnostic::error(
+                arg.value.span,
+                format!("{} is already {}", quoted(&arg.value), self.show(&to)),
+            ),
+            Some(ty) if *ty != from => self.mismatch(arg.value.span, Some(&arg.value), &from, ty),
+            _ => {
+                let kind = checked
+                    .ok()
+                    .filter(|_| !labeled)
+                    .map(|arg| tir::ExprKind::Convert(Box::new(arg)));
+                return typed(span, to, labeled, kind);
+            }
+        };
+        self.diagnostics.push(d);
+        Err(Poisoned::error())
+    }
+
     /// The node `kind` makes of `operands`, in a block after the bindings `spill` makes of them.
-    fn spilled(
+    pub(super) fn spilled(
         &mut self,
         span: Span,
         ty: Type,
@@ -821,7 +939,7 @@ impl Checker {
 
     fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
         // Not `value()`: a `unit` argument needs this message, not "expression has no value".
-        let wrong = || Diagnostic::error(span, "`print` takes one `i64` or `bool`");
+        let wrong = || Diagnostic::error(span, "`print` takes one `i64`, `u8` or `bool`");
         let labeled = self.labels(args);
         let [arg] = args else {
             self.diagnostics.push(wrong());
@@ -867,12 +985,44 @@ pub(super) fn operator(op: ast::BinaryOp) -> Option<(tir::BinaryOp, Type)> {
     })
 }
 
-/// Whether `block`'s value is the bare literal `None`.
-fn bare_none(block: &ast::Block) -> bool {
-    matches!(
-        block.stmts.last(),
-        Some(ast::Stmt { kind: ast::StmtKind::Expr(e), .. }) if none_literal(e)
-    )
+/// An integer literal, or `+ - * / %` and unary `-` over such operands only (spec rule 2).
+pub(super) fn int_literal(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) => true,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            operand,
+        } => int_literal(operand),
+        ExprKind::Binary { op, lhs, rhs } => {
+            operator(*op).is_some_and(|(_, ty)| ty == Type::I64)
+                && int_literal(lhs)
+                && int_literal(rhs)
+        }
+        _ => false,
+    }
+}
+
+/// The type literals take beside a value of type `ty`: `u8` if `ty` is `u8` or `u8?`, else `i64`.
+pub(super) fn literal_type(ty: Option<&Type>) -> Type {
+    match ty.map(payload) {
+        Some(Type::U8) => Type::U8,
+        _ => Type::I64,
+    }
+}
+
+/// Which side of an `if`, `if let` or `==` with no expected type is checked first, the lower
+/// first: a concrete value is 0, an `int_literal` 1, a bare `None` 2.
+fn rank(e: &ast::Expr) -> u8 {
+    match e.kind {
+        ExprKind::NoneLit => 2,
+        _ if int_literal(e) => 1,
+        _ => 0,
+    }
+}
+
+/// The `rank` of `block`'s value; a block that ends in no expression is concrete.
+fn block_rank(block: &ast::Block) -> u8 {
+    tail(block).map_or(0, rank)
 }
 
 /// Whether `e` is the bare literal `None`.
@@ -943,7 +1093,7 @@ fn quoted(e: &ast::Expr) -> String {
 }
 
 /// A name, `self`, or a chain of `.` and `?.` fields over one, as written.
-fn path(e: &ast::Expr) -> Option<String> {
+pub(super) fn path(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ExprKind::Name(name) => Some(name.clone()),
         ExprKind::SelfValue => Some("self".to_owned()),

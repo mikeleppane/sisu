@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::expr::{local, operator};
+use super::expr::{literal_type, local, operator};
 use super::{
     Binding, BindingKind, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, not_found, type_of,
 };
@@ -153,7 +153,7 @@ impl Checker {
             },
             StmtKind::CompoundAssign { op, target, value } => {
                 if let ast::ExprKind::Field { base, name, .. } = &target.kind {
-                    return self.compound_field(stmt.span, *op, target.span, base, name, value);
+                    return self.compound_field(stmt.span, *op, target, base, name, value);
                 }
                 let target = &place_name(target);
                 // `assign` already reports an unknown target; a synthetic read would repeat it.
@@ -312,12 +312,13 @@ impl Checker {
         }
     }
 
-    /// `a.f op= e` is `Block { let t = a; Assign { t.f, t.f op e } }`, so `a` runs once.
+    /// `a.f op= e` is `Block { let t = a; Assign { t.f, t.f op e } }`, so `a` runs once. `op`
+    /// takes `u8`s when the field is a `u8`, else `i64`s.
     fn compound_field(
         &mut self,
         span: Span,
         op: ast::BinaryOp,
-        target: Span,
+        target: &ast::Expr,
         base: &ast::Expr,
         name: &ast::Ident,
         value: &ast::Expr,
@@ -331,7 +332,8 @@ impl Checker {
             return Err(unit());
         };
         let (field_ty, writable) = self.assignable(span, class, index);
-        let (op, want) = operator(op).expect("the parser makes only arithmetic compound operators");
+        let (op, _) = operator(op).expect("the parser makes only arithmetic compound operators");
+        let want = literal_type(field_ty.as_ref());
         let temp = self.fresh(Type::Class(class));
         let temp_read = || tir::Expr {
             kind: ExprKind::Local(temp),
@@ -345,7 +347,7 @@ impl Checker {
                     index,
                 },
                 ty,
-                span: target,
+                span: target.span,
             }),
             None => Err(Poisoned::error()),
         };
