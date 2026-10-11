@@ -15,7 +15,8 @@ _Avoid_: mutable binding
 
 **Place**:
 An expression that names storage and can stand on the left of `=`: a
-variable or a `var` field, and later an array element.
+variable, a `var` field, or an element of an array held in a place, such as
+`grid[i][j]`.
 _Avoid_: lvalue
 
 **Block value**:
@@ -38,6 +39,28 @@ any type.
 The program stopping at runtime with `sisu: panic at <file>:<line>:<col>:
 <message>` on stderr and exit code 101.
 _Avoid_: trap, crash, abort
+
+## Arrays
+
+**Array**:
+A fixed-length sequence of values of one type, written `[T]`. An array is a
+value: binding it, passing it or storing it behaves as a copy.
+_Avoid_: list, vector (a growable collection, milestone 11)
+
+**Copy-on-write**:
+How arrays behave as values without copying eagerly: holders share one block,
+and a write to an element copies the block first when another holder exists.
+_Avoid_: lazy copy
+
+**Last use**:
+A read of a local after which the local is not read again before it is
+reassigned or goes out of scope. A last use hands over its reference instead
+of sharing it, so a write that follows can skip the copy.
+_Avoid_: move (the compiler's name for the node, not the language rule)
+
+**Range**:
+The `a..b` in a `for` header, covering `a` up to but not including `b`. It is
+not a value and appears nowhere else.
 
 ## Classes and objects
 
