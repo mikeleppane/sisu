@@ -44,15 +44,19 @@ $ cargo deny check               # advisories, licenses, sources
 ```
 
 Mutation testing changes the code that a branch touched, one mutant at a
-time, and reports each mutant the tests still pass. `.cargo/mutants.toml`
-leaves `.llvm/` out of its copy of the tree, so the command points the build
-at the original:
+time, and reports each mutant the tests still pass. The script mutates the
+diff from where the branch left `main`. On a branch stacked on another stage,
+pass that stage's tip as the base, so earlier stages stay out. Arguments after
+the base go to `cargo mutants`:
 
 ```console
-$ LLVM_SYS_221_PREFIX=$PWD/.llvm/22 cargo mutants --in-diff <(git diff $(git merge-base main HEAD))
+$ scripts/mutants.sh                  # changes since main
+$ scripts/mutants.sh feat/m3-writes   # changes since the stage below
+$ scripts/mutants.sh HEAD~1 --list    # list the mutants, run nothing
 ```
 
-Commit or stash first: the diff must match the files on disk.
+The diff includes uncommitted edits. A new file counts once `git add` tracks
+it.
 
 ## Compile and run a program
 
