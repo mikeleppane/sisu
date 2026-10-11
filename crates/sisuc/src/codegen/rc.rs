@@ -15,6 +15,7 @@ pub(super) enum Helper {
     Release,
     Drop,
     Eq,
+    Unique,
 }
 
 /// The type whose helpers a counted `ty` uses: a class or an array, with any `?` removed.
@@ -27,7 +28,7 @@ fn counted_core(ty: &Type) -> Option<&Type> {
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
-    /// Declares `sisu_rc.<release|drop|eq>.<name>` on first use and queues its body; `name` is a
+    /// Declares `sisu_rc.<release|drop|eq|unique>.<name>` on first use and queues its body; `name` is a
     /// class's name, or `[<element name>]` for an array (`[Node?]`, `[[i64]]`).
     pub(super) fn helper(&self, kind: Helper, ty: &Type) -> FunctionValue<'ctx> {
         let key = (kind, ty.clone());
@@ -46,6 +47,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .bool_type()
                     .fn_type(&[ptr_type.into(), ptr_type.into()], false),
             ),
+            Helper::Unique => ("unique", ptr_type.fn_type(&[ptr_type.into()], false)),
         };
         let function = self
             .module
@@ -60,8 +62,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// calls `@sisu_rc.drop.<C>`, which releases each counted field, then frees the object.
     /// Both return at once on `null`. Drop does not release the chain field: it loads it,
     /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
-    /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`. An array's `drop` and `eq`
-    /// come from `define_array_helper`. Defining a body can declare more helpers, so this
+    /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`. An array's `drop`, `eq` and
+    /// `unique` come from `define_array_helper`. Defining a body can declare more helpers, so this
     /// runs until none is left to define.
     pub(super) fn define_helpers(&self) {
         let (object, done) = self.helper_entry(self.rc_retain);
@@ -78,6 +80,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 (_, Type::Array(element)) => self.define_array_helper(kind, element, function),
                 (Helper::Drop, _) => self.define_drop(function, &ty),
                 (Helper::Eq, _) => self.define_eq(function, &ty),
+                (Helper::Unique, _) => unreachable!("only an array has a `unique` helper"),
             }
         }
     }
@@ -348,6 +351,19 @@ impl<'ctx> Codegen<'ctx, '_> {
         count
     }
 
+    /// Makes the array in `slot`, of array type `ty`, the only holder of its block:
+    /// `@sisu_rc.unique.[T]` copies the block into `slot` when another holder shares it.
+    /// Returns the block `slot` then holds.
+    pub(super) fn unique(&self, slot: PointerValue<'ctx>, ty: &Type) -> PointerValue<'ctx> {
+        self.builder
+            .build_call(self.helper(Helper::Unique, ty), &[slot.into()], "unique")
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("the generated `unique` helper should return a pointer")
+            .into_pointer_value()
+    }
+
     /// Adds 1 to the count of `value` when `ty` is counted.
     pub(super) fn retain(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
         if ty.is_counted() {
@@ -363,10 +379,10 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 }
 
-/// The single parameter of a counting helper: the object or array.
+/// The single parameter of a counting helper: the object or array, or `unique`'s slot.
 pub(super) fn param(function: FunctionValue<'_>) -> PointerValue<'_> {
     function
         .get_nth_param(0)
-        .expect("a counting helper should be declared with one object parameter")
+        .expect("a counting helper should be declared with one pointer parameter")
         .into_pointer_value()
 }

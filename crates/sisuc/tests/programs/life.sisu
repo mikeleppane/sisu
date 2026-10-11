@@ -1,0 +1,67 @@
+// Conway's Life on an 8x8 grid that wraps at the edges, starting from a glider. `step`
+// starts its result as the grid itself and writes it while it reads the grid: copy-on-write
+// keeps the two apart.
+fn alive(grid: [[bool]], x: i64, y: i64) -> i64 {
+    if grid[(y + 8) % 8][(x + 8) % 8] { 1 } else { 0 }
+}
+
+fn neighbors(grid: [[bool]], x: i64, y: i64) -> i64 {
+    var n = 0
+    for dy in 0..3 {
+        for dx in 0..3 {
+            if dx != 1 || dy != 1 {
+                n += alive(grid, x + dx - 1, y + dy - 1)
+            }
+        }
+    }
+    n
+}
+
+fn step(grid: [[bool]]) -> [[bool]] {
+    var next = grid
+    for y in 0..8 {
+        for x in 0..8 {
+            let n = neighbors(grid, x, y)
+            next[y][x] = n == 3 || (grid[y][x] && n == 2)
+        }
+    }
+    next
+}
+
+fn count(grid: [[bool]]) -> i64 {
+    var n = 0
+    for row in grid {
+        for cell in row {
+            if cell { n += 1 }
+        }
+    }
+    n
+}
+
+// The glider at (1, 0) (2, 1) (0, 2) (1, 2) (2, 2), shifted by `(dx, dy)`.
+fn glider(dx: i64, dy: i64) -> [[bool]] {
+    // Every row starts as one shared block.
+    var grid = [[false; 8]; 8]
+    let xs = [1, 2, 0, 1, 2]
+    let ys = [0, 1, 2, 2, 2]
+    for i in 0..5 {
+        grid[ys[i] + dy][xs[i] + dx] = true
+    }
+    grid
+}
+
+fn main() {
+    let start = glider(0, 0)
+    var grid = start
+    for i in 0..4 {
+        grid = step(grid)
+    }
+    print(count(grid))                // 5
+    // A glider moves one cell down and to the right every 4 steps.
+    print(grid == glider(1, 1))       // true
+    for i in 4..32 {
+        grid = step(grid)
+    }
+    // 32 steps move it 8 cells each way, all around the grid.
+    print(grid == start)              // true
+}

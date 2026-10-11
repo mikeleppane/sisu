@@ -391,7 +391,7 @@ impl Parser<'_> {
             TokenKind::PercentEq => Some(BinaryOp::Rem),
             _ => return Ok(StmtKind::Expr(target)),
         };
-        if !matches!(target.kind, ExprKind::Name(_) | ExprKind::Field { .. }) {
+        if !is_place(&target) {
             return Err(Diagnostic::error(
                 target.span,
                 "cannot assign to this expression",
@@ -741,6 +741,15 @@ impl Parser<'_> {
     }
 }
 
+/// A name, a field of any expression, or an index of a place.
+fn is_place(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Name(_) | ExprKind::Field { .. } => true,
+        ExprKind::Index { base, .. } => is_place(base),
+        _ => false,
+    }
+}
+
 /// Whether a `?.` sits anywhere in the chain of fields, calls and indexes that makes up `e`.
 fn goes_through_safe_access(e: &Expr) -> bool {
     match &e.kind {
@@ -970,6 +979,11 @@ mod tests {
             ("E()", "(call E)"),
             ("a[i].f = v", "(= (. (index a i) f) v)"),
             ("make().count = 1", "(= (. (call make) count) 1)"),
+            ("a.b[i].c[j] = v", "(= (index (. (index (. a b) i) c) j) v)"),
+            (
+                "make().cells[0] = 1",
+                "(= (index (. (call make) cells) 0) 1)",
+            ),
             ("a.f += 1", "(+= (. a f) 1)"),
             ("self.left = t", "(= (. self left) t)"),
             ("None", "None"),
@@ -1076,6 +1090,7 @@ mod tests {
             "a?.b.m().c = 1",
             "xs?.items[0].f = 1",
             "xs?.items[0].f += 1",
+            "xs?.a[0] = 1",
         ] {
             let full = format!("fn main() {{ {src} }}");
             let d = parse_diagnostic(&full);
@@ -1087,10 +1102,13 @@ mod tests {
 
     #[test]
     fn cannot_assign_to_expression() {
-        assert_eq!(
-            expr_err("1 + 2 = 3"),
-            ("cannot assign to this expression".to_string(), 1, 13)
-        );
+        for src in ["1 + 2 = 3", "f()[0] = 1"] {
+            assert_eq!(
+                expr_err(src),
+                ("cannot assign to this expression".to_string(), 1, 13),
+                "{src}"
+            );
+        }
     }
 
     #[test]
@@ -1390,8 +1408,6 @@ error: expected `=`, found end of line
             ("let r = 0..3", "ranges are only allowed in `for`", 22),
             ("f(0..3)", "ranges are only allowed in `for`", 16),
             ("for i in 0..1..2 {}", "expected `{`, found `..`", 26),
-            ("xs[0] = 1", "cannot assign to this expression", 13),
-            ("xs[0] += 1", "cannot assign to this expression", 13),
             ("[1; 2, 3]", "expected `]`, found `,`", 18),
             ("[1; 2; 3]", M, 18),
             ("f(1; 2)", M, 16),

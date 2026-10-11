@@ -584,3 +584,34 @@ fn fast_path_follows_the_index_whitelist() {
         assert_eq!(released, !fast, "{name}:\n{body}");
     }
 }
+
+/// An element write checks the index before `unique` copies the array, so an
+/// out-of-bounds write copies nothing, and stores the value into the unique array.
+#[test]
+fn write_checks_bounds_before_unique() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(xs: [i64]) -> [i64] {\n    var ys = xs\n    ys[0] = 1\n    ys\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "@sisu.f(");
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    let find = |wanted: &dyn Fn(&str) -> bool, what: &str| {
+        instruction(&lines, wanted)
+            .unwrap_or_else(|| panic!("no {what} in\n{body}"))
+            .0
+    };
+    // `check_bounds` panics when `index uge len`: `0 <= index < len` negated.
+    let bounds = find(&|t| t.starts_with("icmp uge i64 0, "), "bounds check");
+    let unique = find(
+        &|t| t.starts_with("call ptr @\"sisu_rc.unique.[i64]\"(ptr "),
+        "`unique` call",
+    );
+    let store = lines
+        .iter()
+        .position(|l| l.starts_with("store i64 1, ptr "))
+        .unwrap_or_else(|| panic!("no store of 1 in\n{body}"));
+    assert!([bounds, unique, store].is_sorted(), "{body}");
+}

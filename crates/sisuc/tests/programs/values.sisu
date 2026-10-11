@@ -1,0 +1,172 @@
+// Element writes give arrays value semantics: a write copies a shared array first, so no
+// other holder of it sees the change. Valgrind checks that every copy is freed exactly once.
+class Board {
+    var cells: [i64]
+
+    fn set(self, i: i64, v: i64) {
+        self.cells[i] = v
+    }
+}
+
+class Holder {
+    var saved: [i64]
+}
+
+class Node {
+    var v: i64
+}
+
+fn make() -> Board {
+    Board(cells: [0, 0])
+}
+
+fn copied() {
+    var a = [1, 2, 3]
+    let b = a
+    a[0] = 9
+    print(b[0])                       // 1
+    print(a[0])                       // 9
+}
+
+// Writes to its own copy of the caller's array.
+fn changed(xs: [i64]) -> i64 {
+    var ys = xs
+    ys[0] = 5
+    ys[0]
+}
+
+fn parameter() {
+    let mine = [1, 2]
+    print(changed(mine))              // 5
+    print(mine[0])                    // 1
+}
+
+fn nested() {
+    // Both rows start as one shared block.
+    var grid = [[0; 2]; 2]
+    grid[0][0] = 1
+    print(grid[0][0])                 // 1
+    print(grid[1][0])                 // 0
+}
+
+// The loop holds its own reference: it goes on over the array it started with.
+fn during_for() {
+    var xs = [1, 2, 3]
+    var total = 0
+    for x in xs {
+        xs[2] = 10
+        total += x
+    }
+    print(total)                      // 6
+    print(xs[2])                      // 10
+}
+
+fn compound() {
+    var xs = [0, 0]
+    let i = 1
+    xs[i] += 1
+    xs[i] += 1
+    print(xs[1])                      // 2
+    var grid = [[3; 2]; 2]
+    let y = 1
+    let x = 0
+    grid[y][x] *= 2
+    print(grid[1][0])                 // 6
+    print(grid[0][0])                 // 3
+}
+
+fn method() {
+    let board = Board(cells: [0, 0])
+    board.set(1, 7)
+    print(board.cells[1])             // 7
+}
+
+// A class is shared: both locals hold the one object, whose field the write changes. `saved`
+// shares the field's array, so the write stores a copy into the field.
+fn shared_object() {
+    let a = Board(cells: [1, 2])
+    let b = a
+    let saved = a.cells
+    a.cells[0] = 5
+    print(b.cells[0])                 // 5
+    print(saved[0])                   // 1
+}
+
+// Review Focus 2: after `rows[1] = rows[0]`, both slots hold one block.
+fn aliasing() {
+    var rows = [[1, 2], [3, 4]]
+    rows[1] = rows[0]
+    rows[1][0] = 9
+    print(rows[0][0])                 // 1
+    print(rows[1][0])                 // 9
+    var nodes = [Node(v: 1), Node(v: 2)]
+    nodes[0] = nodes[0]
+    nodes = nodes
+    print(nodes[0].v)                 // 1
+}
+
+// Stores `xs` into `h` while the write's value is evaluated.
+fn keep(h: Holder, xs: [i64]) -> i64 {
+    h.saved = xs
+    9
+}
+
+// The value comes before the uniqueness walk, so the write copies the array `h` now holds.
+fn value_first() {
+    var xs = [1]
+    let h = Holder(saved: [])
+    xs[0] = keep(h, xs)
+    print(h.saved[0])                 // 1
+    print(xs[0])                      // 9
+}
+
+// Prints `marker` so the output shows when an operand runs.
+fn traced(marker: i64, v: i64) -> i64 {
+    print(marker)
+    v
+}
+
+// A write runs each index once from the root outwards, then the value.
+fn operand_order() {
+    var grid = [[0, 0], [0, 0]]
+    grid[traced(100, 1)][traced(200, 0)] = traced(300, 4)
+    print(grid[1][0])                 // 4
+}
+
+// The value returns before the index is checked against the length.
+fn exits(c: bool) -> i64 {
+    var xs = [1]
+    xs[5] = if c { return 0 } else { 1 }
+    xs[0]
+}
+
+// The value returns after the field's object is evaluated.
+fn field_exits(c: bool) -> i64 {
+    let board = Board(cells: [1])
+    board.cells[0] = if c { return 2 } else { 1 }
+    board.cells[0]
+}
+
+// The index returns while the temporary object is held.
+fn index_exits(c: bool) -> i64 {
+    make().cells[if c { return 3 } else { 0 }] = 1
+    0
+}
+
+fn main() {
+    copied()
+    parameter()
+    nested()
+    during_for()
+    compound()
+    method()
+    // The temporary object is released after the write.
+    make().cells[0] = 1
+    shared_object()
+    aliasing()
+    value_first()
+    operand_order()                   // 100, 200, 300
+    print(exits(true))                // 0
+    print(field_exits(true))          // 2
+    print(index_exits(true))          // 3
+}

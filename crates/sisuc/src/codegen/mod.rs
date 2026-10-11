@@ -545,6 +545,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.discard(old, ty);
                 self.release(object.into(), &base.ty);
             }
+            Stmt::Assign {
+                place: place @ Place::Index { .. },
+                value,
+            } => self.assign_index(place, value),
             Stmt::Expr(e) => {
                 let value = self.expr(e);
                 self.discard(value, &e.ty);

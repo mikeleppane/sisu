@@ -3,10 +3,8 @@
 use std::collections::HashMap;
 
 use super::array::optional_array;
-use super::expr::{literal_type, local, operator};
-use super::{
-    Binding, BindingKind, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, not_found, type_of,
-};
+use super::expr::local;
+use super::{Binding, BindingKind, CheckedBlock, Checker, Poisoned, block_expr, type_of};
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::tir::{self, ExprKind, Type};
@@ -147,35 +145,9 @@ impl Checker {
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
-            StmtKind::Assign { target, value } => match &target.kind {
-                ast::ExprKind::Field { base, name, .. } => {
-                    self.assign_field(stmt.span, base, name, value)
-                }
-                _ => self.assign(stmt.span, &place_name(target), value),
-            },
+            StmtKind::Assign { target, value } => self.assign(stmt.span, target, value),
             StmtKind::CompoundAssign { op, target, value } => {
-                if let ast::ExprKind::Field { base, name, .. } = &target.kind {
-                    return self.compound_field(stmt.span, *op, target, base, name, value);
-                }
-                let target = &place_name(target);
-                // `assign` already reports an unknown target; a synthetic read would repeat it.
-                if self.lookup(&target.name).is_none() {
-                    return self.assign(stmt.span, target, value);
-                }
-                // `x op= e` is `x = x op e`, the `op` spanning the statement.
-                let lhs = ast::Expr {
-                    kind: ast::ExprKind::Name(target.name.clone()),
-                    span: target.span,
-                };
-                let value = ast::Expr {
-                    kind: ast::ExprKind::Binary {
-                        op: *op,
-                        lhs: Box::new(lhs),
-                        rhs: Box::new(value.clone()),
-                    },
-                    span: stmt.span,
-                };
-                self.assign(stmt.span, target, &value)
+                self.compound_assign(stmt.span, *op, target, value)
             }
             StmtKind::Expr(e) => self.expr(e, expected).map(tir::Stmt::Expr),
         }
@@ -391,138 +363,6 @@ impl Checker {
         }))
     }
 
-    /// `target = value`; a `let` or a parameter is reported, and `value` still checked.
-    fn assign(
-        &mut self,
-        span: Span,
-        target: &ast::Ident,
-        value: &ast::Expr,
-    ) -> Result<tir::Stmt, Poisoned> {
-        let binding = self.lookup(&target.name).map(|b| {
-            b.reassigned |= b.kind == BindingKind::Var;
-            (b.local, b.ty.clone(), b.kind, b.span)
-        });
-        let (local, want) = match binding {
-            None => {
-                self.diagnostics.push(not_found(&target.name, target.span));
-                (None, None)
-            }
-            Some((local, ty, kind, declared)) => {
-                let cannot_assign =
-                    || Diagnostic::error(span, format!("cannot assign to `{}`", target.name));
-                match kind {
-                    BindingKind::Var => {}
-                    BindingKind::Let => self.diagnostics.push(
-                        cannot_assign()
-                            .label("cannot assign twice")
-                            .secondary(declared, "declared with `let` here")
-                            .help("declare it with `var`"),
-                    ),
-                    BindingKind::Param => self.diagnostics.push(
-                        cannot_assign()
-                            .secondary(declared, "declared as a parameter here")
-                            .help(format!(
-                                "copy it into a `var`: `var {0} = {0}`",
-                                target.name
-                            )),
-                    ),
-                    BindingKind::Unwrapped(keyword) => self.diagnostics.push(
-                        cannot_assign().secondary(declared, format!("bound by `{keyword}` here")),
-                    ),
-                }
-                (Some(local), ty)
-            }
-        };
-        let value = self.expect(value, want.as_ref());
-        match (local, value) {
-            (Some(local), Ok(value)) => Ok(tir::Stmt::Assign {
-                place: tir::Place::Local(local),
-                value,
-            }),
-            _ => Err(Poisoned::typed(Type::Unit)),
-        }
-    }
-
-    /// `base.name = value`; a `let` field is reported, and `value` still checked.
-    fn assign_field(
-        &mut self,
-        span: Span,
-        base: &ast::Expr,
-        name: &ast::Ident,
-        value: &ast::Expr,
-    ) -> Result<tir::Stmt, Poisoned> {
-        let receiver = base;
-        let base = self.value(base, None);
-        let field = self.find_field(type_of(&base), receiver, name);
-        let (want, writable) = match field {
-            Some((class, index)) => self.assignable(span, class, index),
-            None => (None, false),
-        };
-        let value = self.expect(value, want.as_ref());
-        match (base, field, value) {
-            (Ok(base), Some((_, index)), Ok(value)) if writable => {
-                Ok(self.field_assign(span, base, index, value))
-            }
-            _ => Err(Poisoned::typed(Type::Unit)),
-        }
-    }
-
-    /// `a.f op= e` is `Block { let t = a; Assign { t.f, t.f op e } }`, so `a` runs once. `op`
-    /// takes `u8`s when the field is a `u8`, else `i64`s.
-    fn compound_field(
-        &mut self,
-        span: Span,
-        op: ast::BinaryOp,
-        target: &ast::Expr,
-        base: &ast::Expr,
-        name: &ast::Ident,
-        value: &ast::Expr,
-    ) -> Result<tir::Stmt, Poisoned> {
-        let unit = || Poisoned::typed(Type::Unit);
-        let receiver = base;
-        let base = self.value(base, None);
-        let Some((class, index)) = self.find_field(type_of(&base), receiver, name) else {
-            // Only its own mistakes are left to report.
-            let _ = self.expr(value, Some(&UNKNOWN));
-            return Err(unit());
-        };
-        let (field_ty, writable) = self.assignable(span, class, index);
-        let (op, _) = operator(op).expect(
-            "the parser should produce only arithmetic operators for a compound assignment",
-        );
-        let want = literal_type(field_ty.as_ref());
-        let temp = self.fresh(Type::Class(class));
-        let temp_read = || tir::Expr {
-            kind: ExprKind::Local(temp),
-            ty: Type::Class(class),
-            span: receiver.span,
-        };
-        let read = match field_ty {
-            Some(ty) => Ok(tir::Expr {
-                kind: ExprKind::Field {
-                    base: Box::new(temp_read()),
-                    index,
-                },
-                ty,
-                span: target.span,
-            }),
-            None => Err(Poisoned::error()),
-        };
-        let read = self.against(target, read, Some(&want));
-        let value = self.arithmetic(span, op, want, read, value);
-        let (Ok(base), Ok(value), true) = (base, value, writable) else {
-            return Err(unit());
-        };
-        let stmts = vec![
-            tir::Stmt::Let {
-                local: temp,
-                init: base,
-            },
-            self.field_assign(span, temp_read(), index, value),
-        ];
-        Ok(tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span)))
-    }
-
     /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let` or
     /// `while let`) binds it: the block cannot declare `name` again. The bound local, and the
     /// block.
@@ -537,26 +377,6 @@ impl Checker {
         self.scopes.push(HashMap::new());
         let bind = self.declare(name, ty, BindingKind::Unwrapped(keyword));
         (bind, self.scoped_block(block, expected))
-    }
-
-    /// The type of field `index` of `class`, which `span` assigns, and whether it may be
-    /// assigned: a `let` field is reported.
-    fn assignable(
-        &mut self,
-        span: Span,
-        class: tir::ClassId,
-        index: usize,
-    ) -> (Option<Type>, bool) {
-        let field = &self.classes[class.0].fields[index];
-        if !field.mutable {
-            let d = Diagnostic::error(span, format!("cannot assign to `{}`", field.name.name))
-                .secondary(field.name.span, "declared with `let` here")
-                .help("declare it with `var`");
-            let ty = field.ty.clone();
-            self.diagnostics.push(d);
-            return (ty, false);
-        }
-        (field.ty.clone(), true)
     }
 
     /// A new local with no source name, for a value the lowering binds.
@@ -607,28 +427,6 @@ impl Checker {
             })
             .collect();
         (spills, operands)
-    }
-
-    /// `base.index = value`, after `spill` binds what it must.
-    fn field_assign(
-        &mut self,
-        span: Span,
-        base: tir::Expr,
-        index: usize,
-        value: tir::Expr,
-    ) -> tir::Stmt {
-        let (mut stmts, operands) = self.spill(vec![base, value]);
-        let [base, value] = <[tir::Expr; 2]>::try_from(operands)
-            .expect("`spill` should return one operand per input");
-        let assign = tir::Stmt::Assign {
-            place: tir::Place::Field { base, index },
-            value,
-        };
-        if stmts.is_empty() {
-            return assign;
-        }
-        stmts.push(assign);
-        tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span))
     }
 
     /// Adds `name` to the innermost scope as a new local. A name already in that scope is
@@ -736,15 +534,4 @@ fn lower_loop(
         ty,
     };
     expr(ExprKind::Loop(looped), Type::Unit)
-}
-
-/// The variable a place names, when it is not a field.
-fn place_name(place: &ast::Expr) -> ast::Ident {
-    match &place.kind {
-        ast::ExprKind::Name(name) => ast::Ident {
-            name: name.clone(),
-            span: place.span,
-        },
-        _ => unreachable!("the parser makes only a name or a field a place"),
-    }
 }

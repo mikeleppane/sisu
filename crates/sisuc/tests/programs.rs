@@ -224,6 +224,16 @@ fn empty_arrays() {
     assert_prints_out_file("empty");
 }
 
+#[test]
+fn values() {
+    assert_prints_out_file("values");
+}
+
+#[test]
+fn life() {
+    assert_prints_out_file("life");
+}
+
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
     let exe = compile(Path::new(PROGRAMS), name, false);
@@ -378,6 +388,13 @@ fn panic_cases() {
         bounds_case("bounds_at_length", "5", "index 5 out of bounds for length 5"),
         bounds_case("bounds_above", "7", "index 7 out of bounds for length 5"),
         bounds_case("bounds_negative", "-1", "index -1 out of bounds for length 5"),
+        // The inner index is checked at its own level, after the outer one.
+        (
+            "write_bounds",
+            "fn main() {\n    var grid = [[false, false, false]]\n    grid[0][9] = true\n}\n"
+                .to_string(),
+            "3:13: index 9 out of bounds for length 3".to_string(),
+        ),
         (
             "length_negative",
             "fn main() {\n    let n = -1\n    let xs = [0; n]\n    print(xs.len())\n}\n"

@@ -101,6 +101,11 @@ pub(crate) enum Place {
         base: Expr,
         index: usize,
     },
+    /// Element `index` of the array in the place `base`.
+    Index {
+        base: Box<Place>,
+        index: Expr,
+    },
 }
 
 #[derive(Debug)]
@@ -262,9 +267,17 @@ impl Stmt {
     fn exits(&self) -> bool {
         match self {
             Stmt::Let { init: e, .. } | Stmt::Expr(e) => e.exits(),
-            Stmt::Assign { place, value } => {
-                matches!(place, Place::Field { base, .. } if base.exits()) || value.exits()
-            }
+            Stmt::Assign { place, value } => place.exits() || value.exits(),
+        }
+    }
+}
+
+impl Place {
+    fn exits(&self) -> bool {
+        match self {
+            Place::Local(_) => false,
+            Place::Field { base, .. } => base.exits(),
+            Place::Index { base, index } => base.exits() || index.exits(),
         }
     }
 }
@@ -342,10 +355,7 @@ impl Printer<'_> {
             }
             Stmt::Assign { place, value } => {
                 f.write_str("(= ")?;
-                match place {
-                    Place::Local(local) => self.local(f, *local)?,
-                    Place::Field { base, index } => self.field(f, base, *index)?,
-                }
+                self.place(f, place)?;
                 f.write_str(" ")?;
                 self.expr(f, value)?;
                 f.write_str(")")
@@ -447,6 +457,21 @@ impl Printer<'_> {
             self.block(f, block)?;
         }
         f.write_str(")")
+    }
+
+    /// A local, `(. base name)` or `(index place i)`.
+    fn place(&self, f: &mut fmt::Formatter<'_>, place: &Place) -> fmt::Result {
+        match place {
+            Place::Local(local) => self.local(f, *local),
+            Place::Field { base, index } => self.field(f, base, *index),
+            Place::Index { base, index } => {
+                f.write_str("(index ")?;
+                self.place(f, base)?;
+                f.write_str(" ")?;
+                self.expr(f, index)?;
+                f.write_str(")")
+            }
+        }
     }
 
     /// `(. base name)`.
