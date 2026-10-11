@@ -10,8 +10,8 @@ are `&& || !`, not `and or not`.
 | From | Take | Leave behind |
 | --- | --- | --- |
 | Python | Little punctuation, comparison chains, `for x in xs`, string interpolation, a full standard library | Dynamic typing, indentation as syntax |
-| Rust | `if` and blocks as expressions, enums with an exhaustive `match`, `Result` and `?`, overflow checks, diagnostics, trait-like interfaces | Lifetimes, the borrow checker, `;` deciding a block's value |
-| Swift/Kotlin | `let`/`var`, newline-terminated statements, `T?` with `?.` and `??`, reference counting, named and default arguments | Nothing yet |
+| Rust | `if` and blocks as expressions, `let mut` (ADR 0011), enums with an exhaustive `match`, `Result` and `?`, overflow checks, diagnostics, trait-like interfaces | Lifetimes, the borrow checker, `;` deciding a block's value |
+| Swift/Kotlin | `let`, newline-terminated statements, `T?` with `?.` and `??`, reference counting, named and default arguments | Nothing yet |
 
 Principles that every later syntax choice is checked against:
 
@@ -31,6 +31,7 @@ Principles that every later syntax choice is checked against:
 ## Consequences
 
 - Earlier decisions follow the rule: no `;` (ADR 0001), immutable by default
-  (ADR 0002), panics instead of wrapping (ADR 0003).
+  (ADR 0002, spelled `let mut` since ADR 0011), panics instead of wrapping
+  (ADR 0003).
 - A new feature names which family it comes from and why; a conflict is
   settled by the rule above, not case by case.

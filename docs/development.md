@@ -22,7 +22,7 @@ running the same checks as CI. Sisu builds and runs on x86-64 Linux.
 LLVM 22 lives inside the repository. `scripts/install-llvm.sh` downloads the
 official release (1.9 GB) and keeps only what the build needs in `.llvm/22`
 (about 360 MB). `.cargo/config.toml` points the build at it, and any system
-LLVM is left alone.
+LLVM is left alone. [Upgrading LLVM](llvm.md) covers moving to a new major.
 
 ## Set up a clone
 

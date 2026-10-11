@@ -25,11 +25,11 @@ way. See the milestone 2 spec, "Reference counting".
 
 ## Consequences
 
-- Cycles leak. Weak references or a cycle collector must come before data
-  structures with parent pointers (roadmap, before milestone 11).
+- Cycles leak unless one reference in the cycle is weak (ADR 0008).
 - Every copy of a reference costs an increment and a later decrement. A later
   optimization removes redundant pairs.
-- Counts are not atomic. Threads will need atomic counts.
+- Counts are not atomic. Concurrent tasks keep them that way by sharing no
+  objects (ADR 0010, proposed).
 - Drop follows a class's own-type field (a list's `next`) in a loop, so a
   list of any length frees in constant stack. Other references recurse: a
   tree once per level, a chain that alternates between classes once per

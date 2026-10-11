@@ -13,7 +13,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | --- | --- | --- | --- |
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
-| 3 | Arrays and `u8` | A prime sieve prints correct answers | Planned |
+| 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
 | 4 | Strings | A program reverses and compares strings | Planned |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
@@ -23,7 +23,7 @@ These are adopted. Together they give Sisu a working imperative core.
 These came out of the review of the milestone 1 spec and are now part of it:
 
 - `let` immutable by default, `var` mutable (ADR 0002), with local type
-  inference.
+  inference. Milestone 4 renames `var` to `let mut` (ADR 0011).
 - `if` is an expression.
 - No semicolons; statements end at newlines (ADR 0001).
 - One built-in `print(e)` for `i64` and `bool` instead of `print_int`.
@@ -59,7 +59,8 @@ These came out of the milestone 2 design and are now part of its spec:
 
 ## Beyond milestone 6
 
-Status: proposal, 2026-10-09. Nothing from here on is decided until it lands
+Status: proposal, 2026-10-09, revised 2026-10-11 after a review of the
+milestone order by gpt-6.1-sol. Nothing from here on is decided until it lands
 in a milestone spec or an ADR.
 
 The rest of this document collects what comes after milestone 6, and the
@@ -72,6 +73,9 @@ Sisu should be pleasant to write and easy to read. The roadmap is ordered by
 what makes everyday code nicer, not by compiler-theory depth. Features that
 only help the compiler (debug info, an optimizing IR, concurrency) wait until
 the language itself reads well.
+
+When values conflict, ADR 0006 orders them: correctness, then simplicity,
+then readability, then performance.
 
 Principles, recorded with the language mix in ADR 0004 so every later syntax
 choice is checked against them:
@@ -103,7 +107,7 @@ fn area(s: Shape) -> f64 {
 
 fn main() {
     let shapes = [Circle(1.0), Rect(2.0, 3.0)]
-    var total = 0.0
+    let mut total = 0.0
 
     for s in shapes {
         total += area(s)
@@ -116,22 +120,26 @@ fn main() {
 }
 ```
 
+The sample builds variants without the enum's name and without payload
+labels. Both are open decisions ("Names and namespaces", "Argument labels"),
+and the sample changes to match what they decide.
+
 ## Fold into milestones 2 to 6
 
 Each item is cheap when its milestone lands and expensive to retrofit:
 
 | Milestone | Add | Why |
 | --- | --- | --- |
-| Not scheduled | Reserve `import` and `pub` as keywords. Planned for milestone 2, it did not land. | A program that names a variable `import` would break when modules land in milestone 11 |
-| 3 | Array literals `[1, 2, 3]` | Data reads like data |
-| 3 | `for x in xs` and ranges `0..n` | Most loops stop needing indexes |
-| 3 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value | Named limits, such as a sieve size, without global variables |
-| 4 | String interpolation `"x = {x}"` | The biggest single win for real programs |
-| 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. | A loop that ignores its counter needs no made-up name. Until then, `for` in milestone 3 needs a named variable |
+| 4 | Reserve the keywords that later milestones bring: `import` and `pub` (planned for milestone 2, it did not land), `enum`, `match`, `record`, `type`, `weak`, `const`, `test` and `todo` | A program that names a variable `match` would break when that keyword lands |
+| 4 | `let mut` replaces `var`; a class field is bare, set once by the constructor, or `mut` (ADR 0011). `var` stays reserved, so using it gets an error with the help "use `let mut`". | Every program and test changes, so it is cheapest before strings and enums add more code |
+| 4 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value. Planned for milestone 3, it did not land. | Named limits, such as a sieve size, without global variables |
+| 4 | String interpolation `"x = {x}"`. `print(x)` and `"{x}"` go through one internal operation per type that turns a value into text. Milestone 8's `Display` interface replaces that operation, so neither is rewritten. | The biggest single win for real programs |
+| 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. Today `_` is an ordinary name, so a second `let _` in one scope is an error and `_` can be read. | A loop or a call whose value is not needed takes no made-up name |
 | 4 | Integer literals in hexadecimal, binary and octal: `0xFF`, `0b1010`, `0o17`, with digit separators | Bytes and bit masks, which `u8` brings in milestone 3, read as what they are |
-| 4 | A block as an expression: `let x = { let t = f(); t * 2 }`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
+| 4 | A block as an expression: `let x = {`, then statements on their own lines, then `}`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
 | 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
 | 6 | Float literals in scientific notation: `3.0e-4` | Physics and graphics constants read as written |
+| 6 | Tests in the source file: `test "add handles negatives" { assert(add(-1, 1) == 0) }`, with a built-in `assert`. A normal build drops `test` blocks; `sisuc --test`, later `sisu test`, builds a `main` that runs each one and reports which panicked. A test is in the same module, so it sees private names. A panic ends the whole process (`sisu_panic`), so the spec decides how the other tests still run: one child process per test, or stopping at the first failure. | Tests sit next to the code, as in Rust and Zig, with no test module or attribute. It needs only milestone 5's `panic`, and the compiler's own `tests/programs` can use it |
 
 ### Portability rules
 
@@ -145,7 +153,9 @@ that new targets stay cheap:
   pointers, never structs by value. How a struct is passed differs between
   x86-64, ARM64 and Windows. Clang applies those rules for C, but LLVM does
   not, so `sisuc` would have to implement them for each target.
-  `sisu_panic(msg, len)` already follows this rule.
+  `sisu_panic(msg, len)` already follows this rule. The runtime never builds
+  or reads a Sisu object either; text crosses as a pointer and a length
+  (ADR 0009).
 
 ## Early tooling
 
@@ -158,17 +168,24 @@ so it does not wait for the later goals:
   land and is not scheduled yet. It renames `sisuc` to `sisu` and adds two
   subcommands:
   - `sisu build` does what `sisuc` does today, with the same flags.
-  - `sisu run file.si` compiles to a temporary executable and runs it.
+  - `sisu run file.sisu` compiles to a temporary executable and runs it.
 
   Later subcommands are `sisu check` (type checking only), `sisu fmt`,
   `sisu test` and `sisu lsp`. No manifest at first: a single file, or a
-  directory whose entry point is `main.si`, builds without one. A `sisu.toml`
+  directory whose entry point is `main.sisu`, builds without one. A `sisu.toml`
   arrives only when a project needs dependencies.
 - A `-O2` flag, added in milestone 2. It runs LLVM's `default<O2>` pass
   pipeline in place of `mem2reg`, both for `--emit ir` and for the
   executable. Without the flag, only `mem2reg` runs, as in milestone 1.
   Comparing the IR with and without the flag shows what the optimizer
   removes.
+
+  `-O3` waits for a benchmark that it speeds up. In LLVM 22 it adds
+  non-trivial loop unswitching, argument promotion, call-site splitting and
+  a higher inlining threshold to O2; vectorization already runs at O2. The
+  extra passes cost compile time and code size and often gain nothing.
+  Until then, `opt -S -passes='default<O3>'` on `--emit ir-raw` output
+  shows the difference with no compiler change.
 - `--emit ir-raw`, added in milestone 2. It prints one module before any pass
   runs, so the output is a valid `.ll` file for LLVM's `opt` tool. (`--emit ir`
   prints two modules, before and after the pass pipeline.) With `opt` you can watch
@@ -184,6 +201,10 @@ so it does not wait for the later goals:
   `opt` must be version 22, because an older `opt` may not parse the IR.
   `scripts/install-llvm.sh` does not keep `bin/opt`. Decide whether it should,
   checking the GitHub Actions cache limit first.
+- A `--time` flag that prints how long each phase took: lexing, parsing,
+  checking, codegen, LLVM's passes and linking. CI compiles a large generated
+  `.sisu` file with it, so a change that slows the compiler shows up in the
+  change that made it.
 - A TextMate grammar for syntax highlighting in VS Code, from milestone 3,
   once classes and arrays fix most of the syntax. It is one JSON file and
   needs no compiler changes.
@@ -193,28 +214,120 @@ so it does not wait for the later goals:
   need no changes, but this is untested. On macOS, `cc` is Apple's clang, so
   tests that assume GNU tools or ELF files break. LLVM publishes no build for
   Intel Macs. Check which GitHub Actions runners the repository can use first.
+- A `--leaks` build mode that finds reference cycles (ADR 0008). The runtime
+  records each live allocation with the place it was made. When `main`
+  returns, every object still alive has leaked. Codegen emits, only in this
+  mode, a function per class that names the class and lists the objects its
+  fields point at, and the runtime calls it to print each cycle:
+  `Node` at `tree.sisu:14:16`, `.parent` back to the first `Node`. The runtime
+  never reads an object's layout itself (ADR 0009), and a normal build pays
+  nothing. Valgrind reports the lost bytes but not the class or the field.
 
 ## Proposed milestones 7 to 12
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 7 | Enums with payloads, `match` with destructuring and an exhaustiveness check, `if let` with enum patterns | The shape sample above runs; a non-exhaustive `match` is a compile error |
+| 7 | Enums with payloads, `match` with destructuring and an exhaustiveness check, `if let` with enum patterns | An evaluator over a recursive `enum Expr` of `Num(i64)`, `Add` and `Mul` prints correct results; a non-exhaustive `match` is a compile error. The shape sample runs once milestones 4 to 6 are done too |
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
-| 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | `words.filter(w => w.len() > 3).count()` runs |
+| 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
-| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`, string builder) | A word-frequency tool reads like a Python script |
+| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`, string builder) | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
 
-Order matters in two places:
+Order matters in these places:
 
 - Milestone 7 comes before generics, because `Option` and `Result` are
   enums. Optionals still change twice: milestone 2 builds `T?` into the
   compiler, and milestone 8 turns it into shorthand for the library
-  `Option<T>` (as in Swift). The syntax stays, so no program breaks.
+  `Option<T>` (as in Swift). The syntax stays, so no program breaks. Two
+  things must also stay: an optional class reference is a pointer that is
+  null for `None`, and `T?` of an optional is the same optional (see "Open
+  decisions").
 - Milestone 8 comes before the standard library, which needs generic
   collections.
-- Milestone 5 I/O comes before `Result`, so its functions report failure
-  with an optional or a panic. Milestone 12 changes those signatures.
+- Milestone 12 needs only enums and generics, so it can start as soon as
+  milestone 8 is done, before closures and records. The standard library
+  (milestone 11) then reports errors with `Result` from the start.
+- Milestone 5 covers standard input, output and error, the program's
+  arguments and environment variables. Their signatures never change: the
+  end of input is `None`, not an error, and a failed read or write panics
+  (ADR 0009). Opening, reading and writing files waits for `Result` in
+  milestone 12, so no I/O signature changes later.
+
+## Dependencies and parallel work
+
+A milestone's number names it; its prerequisites, not its number, fix when
+it can start. Work whose prerequisites are done can be built in parallel,
+each on its own branch. Several milestones split into parts with different
+prerequisites, so a part can start long before the rest.
+
+Parallel branches that touch the same compiler stage conflict when they
+merge, even when their designs are independent. Milestone 4's hexadecimal
+literals and milestone 6's floats both change the lexer's number scanner,
+for example. Land the smaller one first.
+
+### Prerequisites
+
+"Decision" means an entry in "Open decisions" that the milestone spec must
+settle before work starts.
+
+| Work | Needs | Unblocks |
+| --- | --- | --- |
+| Milestone 4: strings | Decisions: what a string is, same-scope shadowing | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
+| Milestone 5: standard streams, arguments, environment | 4 | The word-count tool |
+| Milestone 6: floats | Decision: floats | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
+| Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
+| Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), compiler-implemented interfaces (10), the standard library (11) |
+| Milestone 12: `Result` and `?` | 7, 8 | File I/O, the standard library (11), concurrency |
+| `weak` fields (ADR 0008) | Decision: the cycle part of equality and hashing | Closures that capture their owner |
+| Milestone 9: closures and function types | `weak` fields. Decisions: closure syntax, weak captures, argument labels | Iterator methods (9), concurrency |
+| Milestone 9: lazy iterator methods | 8, closures | The standard library (11) |
+| Milestone 10: named arguments, default parameters | Decision: argument labels | Records (10) |
+| Milestone 10: records, tuples, newtypes | 4 for `print`. Decisions: values with fields, argument labels | Compiler-implemented interfaces, tuple patterns in closure parameters (9) |
+| Milestone 10: compiler-implemented interfaces | 7, 8, records. Decision: equality and hashing | `Map` keys of user types (11) |
+| Milestone 11: modules and `pub` | Keywords reserved, a build of more than one file. Decision: names and namespaces | The standard library (11), opaque types (11) |
+| Milestone 11: standard library in Sisu | 8, 12, iterator methods (9), modules | Concurrency |
+| Concurrency | 8, 9, 11, 12 | |
+
+### What can start now
+
+With milestone 3 done, each of these tracks can run beside the others once
+the decisions it needs are settled:
+
+- **Decisions**: every entry in "Open decisions" is design work with no
+  code. Settle the shared ones first, because several tracks build on each:
+  values with fields, names and namespaces, argument labels, closure syntax,
+  and the cycle part of equality and hashing.
+- **The language core**: milestone 4, then 5. Milestone 6 can be built in
+  parallel and land after 4.
+- **Enums**: milestone 7. It does not need strings, floats or I/O.
+  `match` on strings waits for milestone 4.
+- **Closures**: `weak` fields, then closures and function types from
+  milestone 9. A function type names concrete types, such as
+  `(i64) -> bool`, so closures need no generics.
+- **Calls**: named arguments and default parameters from milestone 10.
+- **Modules**: modules and `pub` from milestone 11, after the keywords are
+  reserved and `sisuc` can build more than one file. A program of one file
+  still builds with no `import`.
+- **Small additions** from the table above, each a branch of its own:
+  `let mut` replacing `var` (land it first: it touches every test program),
+  reserved keywords, `const`, `_`, hexadecimal literals, block expressions
+  and `todo`. `panic("msg")` waits for milestone 4's strings, and `test`
+  blocks for `panic`.
+- **Tooling**: everything under "Early tooling", and from "Later and stretch
+  goals" parser error recovery, the lints whose features exist, linking with
+  `lld`, and debug info.
+
+Shared machinery also orders work that is otherwise independent. `weak`
+fields split a class object's count word in two (ADR 0008), while arrays and
+milestone 4's strings keep one count, so the shared `@sisu_rc.retain` splits
+by kind. Land `weak` fields and strings one after the other, not as two
+rewrites of `codegen/rc.rs` at once.
+
+Once 4 and 7 are done, milestone 8 starts. Once 8 is done, milestone 12 and
+the Sisu prelude can start, iterator methods once closures are done too, and
+compiler-implemented interfaces once records are done too. The standard
+library comes after them, and concurrency last.
 
 ### Smaller additions to milestones 7 to 11
 
@@ -229,39 +342,109 @@ Each is small once its milestone's main feature exists:
   and line and returns `x`, so it can wrap any expression while debugging.
   It needs the `Display`-like interface.
 - Milestone 8: `Hash` and `Ord` interfaces in the prelude. `Map` keys
-  (milestone 11) need `Hash`, and `sort` needs `Ord`. Built-in types
-  implement both.
+  (milestone 11) need `Hash`, and `sort` needs `Ord`. Which built-in types
+  implement them is an open decision: classes and floats need rules first
+  (see "Open decisions").
+- Milestone 8: a prelude written in Sisu, compiled with every program before
+  modules exist. Array `sum` and `contains` (milestone 3) and the string
+  methods (milestone 4) are built into the checker and codegen today. Once
+  generics exist, each one that Sisu code can express moves into the
+  prelude. What depends on a value's layout, such as an array's length,
+  element access and allocation, stays built in. Milestone 11 turns the
+  prelude into the standard library's first module.
+- Milestone 9: `for` over any iterator. Milestone 3's `for` lowers to a loop
+  over an array or a range. An iterator `for` lowers to a loop that calls
+  `next()` until it returns `None`, before the last-use pass runs, so a
+  `break` or `return` inside it still releases what the loop holds. A range
+  then becomes a value that can be passed and stored, so the glossary's
+  "range" entry changes with it.
+- Milestone 9: function types, written `(i64, i64) -> i64` as in Swift and
+  Kotlin. A named function and a closure have the same type, so a function
+  can take, return and store either. A closure that captures nothing is a
+  function pointer: codegen passes it a null environment. There is no split
+  into Rust's `Fn`, `FnMut` and `FnOnce`, because reference counting keeps
+  the captured values alive. A closure captures by value, so it gets a copy
+  of a record or an array (ADR 0007), and assigning to a captured `let mut` is a
+  compile error. Swift and Kotlin share the variable instead, which is hidden
+  shared state. A class that stores a closure capturing that same object is a
+  cycle, so the closure needs a way to capture weakly, as Swift's
+  `[weak self]` does (ADR 0008; see "Weak captures" in "Open decisions").
+- Milestone 9: `weak` fields (ADR 0008), at the latest. A stored closure
+  that captures its owner is the first cycle ordinary code makes without
+  meaning to.
+- Milestone 9, once tuples (milestone 10) exist: patterns in closure
+  parameters, so a closure can take a tuple apart. A tuple pattern keeps its
+  own parentheses, as Rust writes `|(k, v)|`: `entries.map(((k, v)) => k)` takes one tuple apart, and
+  `(k, v) => k` always has two parameters. The meaning is in the syntax, so
+  a reader does not need `map`'s signature to know which it is.
+- Milestone 10: records declare fields in the body, one per line, as
+  classes do (ADR 0011). A record's fields take no `mut`: nothing in
+  `let p` changes, and any field of `let mut p` can. A method that changes
+  its record takes `mut self` and is called only on a place that can change,
+  so `p.move_by(1, 2)` changes `p` with no copy. A record that contains
+  itself is an error whose help says to use a class.
 - Milestone 10: interfaces the compiler implements. A record or enum that
-  declares `Hash` or `Ord`, as in `record Point(x: i64, y: i64): Hash`, gets
+  declares `Hash` or `Ord` after its name, as in `record Point: Hash {`, gets
   the methods written by the compiler from its fields, in declaration order,
   as Swift synthesizes `Hashable` and `Comparable`. It is a compile error on
   the declaration when a field lacks the interface, not at a distant `Map`
-  that uses the type as a key. `==` and `print` need no declaration, because
-  every type has them. The list is fixed by the compiler: this replaces
+  that uses the type as a key. `==` and `print` need no declaration: a
+  record, enum or tuple has them when its fields do. Function values have
+  neither until "Equality, hashing and order" decides otherwise. The list is
+  fixed by the compiler: this replaces
   derive macros, not user code generation.
 - Milestone 10: a copy of a record with some fields changed,
   `Point(..p, y: 0)`, as Gleam writes it and as Kotlin's `copy(y = 0)` does.
   Label shorthand, `area(width:, height:)`, passes the local variables of the
   same names.
+- Milestone 10: default parameters, as in Kotlin. Only trailing parameters
+  take a default, and a named argument can skip one. The default expression
+  runs at each call, never once as in Python. At first a default cannot
+  refer to an earlier parameter.
+- Milestone 10: tuples, for returning more than one value. A tuple is a
+  record with no name: a value with the same layout, and the same type
+  wherever it is written. Its elements can have names, written name first
+  like parameters, `(q: i64, r: i64)`, or none, `(i64, i64)`. The names are
+  part of the type, so `(q: i64, r: i64)` is not `(a: i64, b: i64)`.
+
+  ```
+  fn divmod(a: i64, b: i64) -> (q: i64, r: i64) {
+      (a / b, a % b)
+  }
+
+  let res = divmod(7, 2)
+  print(res.q)
+  let (q, r) = divmod(7, 2)
+  ```
+
+  A literal without names, such as `(a / b, a % b)`, is accepted where the
+  checker already knows the tuple type. `.0` and `.1` read an element by
+  position, named or not. `let` and `for` take a tuple apart by position,
+  so `for (key, value) in map` works whatever the names are. A tuple has
+  `==` and `print`, and `Hash` and `Ord` when every element has them; it
+  declares no interfaces and has no methods. Use a record once the value
+  has a meaning of its own, or once a public API passes it around.
 - Milestone 10: newtypes, as in Rust. A one-field record such as
-  `record UserId(value: i64)` is a distinct type: passing an `OrderId` or a
+  `record UserId { value: i64 }` is a distinct type: passing an `OrderId` or a
   plain `i64` where a `UserId` is expected is a compile error. Because
   records are values (ADR 0007), the compiler guarantees it costs nothing at
-  run time: no heap object and no reference count, and it is passed and
-  stored exactly as its field is, as Rust's `#[repr(transparent)]` promises.
+  run time: no heap object of its own and no extra reference count, and it
+  is passed and stored exactly as its field is, as Rust's
+  `#[repr(transparent)]` promises.
   Generics are monomorphized (milestone 8), so unlike Kotlin's `value class`
   it is never boxed. It gets `==` and `print` like any record, but not its
   field's operators: `Meters * Meters` is not `Meters`, so arithmetic is
   written as methods. With milestone 11's opaque types, a newtype whose
   constructor is private holds only checked values, such as
-  `Email.parse(s) -> Email?`.
+  `Email.parse(s) -> Email?`. A newtype over a class or an array still
+  counts that reference, as the field alone would.
 - Milestone 11: opaque types. The type is `pub`, but its constructor and
   fields are private to its module, so other modules must build it through a
   function that checks the value.
 
 ### Modules (milestone 11)
 
-- One file is one module, and its path names it: `src/geometry/shapes.si` is
+- One file is one module, and its path names it: `src/geometry/shapes.sisu` is
   `geometry.shapes`. A parent file needs no `mod shapes` declaration, as in
   Rust. A directory is not a package either: in Go, a file uses names from
   sibling files without importing them, so it cannot be read on its own.
@@ -272,36 +455,182 @@ Each is small once its milestone's main feature exists:
 - Modules may import each other in a cycle. The checker sees the whole
   program at once, so this costs nothing.
 - Codegen puts the whole program into one LLVM module. Each symbol is
-  prefixed with its module path; `main` keeps its name. Separate compilation
-  and build caching wait until builds are slow.
+  prefixed with its module path; `main` keeps its name.
+- A `pub` function writes out its parameter and return types, with no
+  inference across modules. A module can then be compiled from the `pub`
+  signatures it imports, without their bodies.
+- Separate compilation and build caching wait until `--time` shows builds
+  are slow. Then codegen emits one LLVM module per Sisu module and LLVM
+  compiles them in parallel, as Rust's codegen units do. Each object file is
+  cached under a hash of its source and of the `pub` signatures it imports.
+  Monomorphized generics complicate this: a generic function's copy is
+  emitted in the module that uses it.
 - A small prelude is visible in every file without an import: `print`,
-  `Option` and `Result`.
+  `Option` and `Result`, each once it exists.
+- Each generated symbol carries its module path, the reference-count helpers
+  too: today `@sisu_rc.drop.<Class>` is named by the class alone, so two
+  modules with a class of the same name would clash.
+
+## Concurrency (after milestone 12)
+
+Status: proposal, 2026-10-10, revised after a review by gpt-6.1-sol. The
+memory model is ADR 0010 (proposed). Concurrency needs generics for
+`Channel<T>` (milestone 8) and closures for `spawn` (milestone 9).
+
+The model takes isolation from Elixir and typed channels from Go:
+
+- **Tasks share no objects (ADR 0010).** Every value that crosses into another
+  task is copied: a `spawn` capture, a `send`, a `join` result. Channel and
+  task handles are shared. A value that cannot be copied, such as a file
+  handle, is a compile error. Reference counts stay non-atomic, and data races
+  cannot happen.
+- **Typed, bounded channels.** `Channel<T>(capacity: n)` with `send`, `recv`,
+  `close` and `for x in ch`. A full channel makes `send` wait, so a fast
+  producer cannot fill memory.
+- **Actors are a library pattern, not a language feature**: a task that loops
+  over a channel of enum messages with `match`. Its state lives in that one
+  task and needs no lock.
+- **Structured tasks.** `scope(s => { s.spawn(...) })` ends only after every
+  task it started has ended, as with Kotlin's `coroutineScope`, Swift's
+  `TaskGroup` and Rust's `thread::scope`. No task outlives its scope, and
+  `join()` returns the task's result.
+- **One OS thread per task.** The runtime starts it with Rust `std::thread`
+  and builds channels from `Mutex` and `Condvar`. Following the portability
+  rules, runtime functions take and return only pointers and integers.
+- **A panic ends the whole program**, as `sisu_panic` does today.
+
+```rust
+fn main() {
+    let lines = Channel<String>(capacity: 100)
+    let total = scope(s => {
+        s.spawn(() => {
+            for line in read_lines("big.txt") { lines.send(line) }
+            lines.close()
+        })
+        let mut workers: List<Task<i64>> = []
+        for _ in 0..4 {
+            workers.push(s.spawn(() => {
+                let mut words = 0
+                for line in lines { words += word_count(line) }
+                words
+            }))
+        }
+        workers.map(w => w.join()).sum()
+    })
+    print("words: {total}")
+}
+```
+
+How it uses the machine:
+
+- **CPU-bound work** wants about one task per core (`cpu_count()`). Linux
+  spreads the threads across the cores, so the work runs in parallel.
+- **A blocked task** sleeps on a condition variable and uses no CPU.
+- **Thousands of tasks are practical, not millions.** Rust gives each thread
+  a 2 MiB stack by default, but that is address space: only the pages a task
+  touches use memory. Measured on Linux with Rust `std::thread`
+  (2026-10-10): starting and joining a thread takes about 30 µs, and 1,000
+  waiting threads use about 11 KB of memory each. The cost of copying a value
+  is not yet measured.
+
+The copy follows ADR 0010. Codegen generates `@sisu_rc.copy.<Class>` next to
+the drop glue. One visited map covers a whole crossing, so shared objects and
+cycles keep their shape. Like drop, it loops along a class's own-type field,
+so a long list copies in constant stack.
+
+The spec must settle these before work starts:
+
+- **Closing a channel.** Queued messages are still received after `close`.
+  Decide what `send` after `close` and a second `close` do, and who may close:
+  separate sender and receiver handles, as in Rust, prevent a receiver from
+  closing by mistake.
+- **Order.** Messages arrive in the order their `send` calls succeeded.
+- **Leaving a scope early** through `return` or `?`. Decide whether the scope
+  waits for its tasks or cancels them. Cancellation can only be cooperative,
+  at a channel wait; forcing a thread to stop is unsafe.
+- **`join`.** `join() -> T` now. When a task can die alone on a panic, add
+  `try_join() -> Result<T, Panic>`, so no program breaks.
+- **What crossing means** for a closure that captures closures, for an
+  iterator, for a `weak` field whose object is not part of the copy
+  (ADR 0008), and for an object in a top-level `const`.
+- **Lazy iterators.** Milestone 9's `map` is lazy, so mapping `s.spawn` over
+  a range and then `join` over the result would start each task and join it
+  before starting the next. The example collects the handles first for that
+  reason.
+
+The work splits into three milestones: copying across tasks; tasks and
+scopes; channels. The tests cover shared objects and cycles in a copy,
+closures inside closures, messages freed while still queued, a `close` racing
+with `send`, every way to leave a scope, and results passed back by `join`.
+
+Later, each with its own design:
+
+- `select` over several channels, and timeouts.
+- A task that dies alone on a panic. That needs a way to leave its frames and
+  free its objects, and channels and files it holds must be cleaned up. A
+  memory arena per task frees memory but cleans up nothing else.
+- `Shared<T>`, for deeply immutable data read by many tasks without copies.
+  The whole object graph must be safe to share, not only its root.
+- Many tasks on a few threads (M:N), as in Go. Task and channel semantics do
+  not depend on which thread runs a task, but blocking C calls, thread-local
+  state, stack limits and loops with no yield point all behave differently,
+  so this is not a drop-in change.
+- A deadlock report when every live task waits on a channel, `join` or
+  `scope`. Nothing outside the program can wake such tasks, but the check
+  must run under the runtime's lock, and a task waiting for I/O or a timer
+  does not count.
+- `Mutex<T>` and atomics. Defer them: a mutex that hands out references to
+  class objects would leak them to other tasks.
 
 ## Later and stretch goals
 
 These do not make code nicer to write, so they wait:
 
-- Weak references or a cycle collector. Reference counting leaks cycles, so a
-  doubly linked list or a parent-pointer tree leaks without one. Decide before
-  milestone 11 grows data structures that create cycles.
-- C FFI: `extern fn` to call libc or a C library.
-- A test runner: `test` blocks and `sisu test`.
+- C FFI: `extern fn` to call libc or a C library. A C pointer is an opaque
+  `CPtr` that Sisu code passes back to C, with no arithmetic and no
+  dereference. Basic I/O does not need it: the runtime owns that (ADR 0009).
+- Linking with `lld` (`-fuse-ld=lld`) when it is installed, because linking
+  time grows with the program.
 - Parser error recovery, so a syntax error does not hide the next one.
-- Lint checks as compiler warnings, as in Go's `vet` and `rustc`'s built-in
-  lints, with no separate tool and no configuration file:
+- More lint checks as compiler warnings, as in Go's `vet` and `rustc`'s
+  built-in lints, with no separate tool and no configuration file. The
+  checker already warns about code after `return`, `break` or `continue`, and
+  about a `var` (`let mut` from milestone 4) that is never reassigned, and
+  comparing a value that is not optional with `None` is an error. Still to
+  come:
+  - a class with no `mut` field that nothing compares with `is`, suggesting
+    `record` (ADR 0011);
   - an unused variable or import;
-  - code after `return`, `break` or `continue`, which never runs;
-  - a `var` that is never reassigned ("use `let`"), as Swift and Kotlin warn;
   - a name starting with `_`, such as `_score`, is exempt from the unused
     variable lint, as in Rust and Gleam;
-  - comparing a value that is not optional with `None`, which is always
-    `false`. Milestone 2 makes it an error until lints exist.
+  - `.0` or `.1` on a tuple outside a short closure, suggesting element
+    names or `let (a, b) = ...`;
+  - a cycle shape, suggesting `weak` (ADR 0008): two classes whose fields
+    point at each other, or a class with both a `[C]` and a `C?` field of its
+    own type. From milestone 9, also a closure stored in a field of the
+    object it captures.
 
   An attribute such as `@allow(unused)` could later silence one declaration.
 - Debug info (DWARF), so `gdb` steps through Sisu source.
-- A mid-level IR between `tir` and LLVM IR, for optimizations such as
-  reference-count elision. `tir` itself only records what the checker
-  understood; it does not optimize.
+- A mid-level IR, `mir`, between `tir` and LLVM IR. Each step down is a
+  lowering: it rewrites a feature with simpler parts, so the stages below
+  never see it. Rust has the same split: its HIR is a desugared tree, close
+  to `tir`, and its MIR is a control-flow graph of basic blocks. Swift's SIL and
+  Zig's AIR sit at the same level. `tir` only records what the checker
+  understood; it does not optimize, and codegen lowers it straight to LLVM IR
+  today.
+
+  `mir` is worth its cost only for what LLVM cannot know: the language's
+  rules. General optimization (inlining, loops, constants) stays with LLVM,
+  which does it better. The first of these needs introduces `mir`:
+  - Compiling `match` in milestone 7 into a decision tree, which is simpler
+    as basic blocks than as LLVM IR built directly from a tree.
+  - Reference-count elision: removing increment and decrement pairs that
+    cancel out, which is why Swift has SIL.
+
+  It brings its own `--emit mir` printer, and desugaring moves out of
+  codegen into the `tir`-to-`mir` step. The name follows `tir`; `sil` would
+  clash with Swift's.
 - Handing over an array held in a field or an element. The last-use rule
   moves only locals, so `self.cells = step(self.cells)` and
   `grid[i] = f(grid[i])` share the array with the call, and the first write
@@ -309,12 +638,15 @@ These do not make code nicer to write, so they wait:
   the place for the call and store the result back, with no new syntax, so
   ADR 0007 still holds. While the place is empty, the call must not reach it
   another way, for example through a shared object: that needs an
-  exclusivity check, as Swift enforces for `inout`. Until then, copy the
-  field into a local, set the field to `[]`, and assign it back. `inout`
-  parameters stay out (ADR 0007).
+  exclusivity check, as Swift enforces for `inout`. A `mut self` method
+  called on a field, `obj.pos.move_by(1, 2)`, needs the same check
+  (ADR 0011). Until then, copy the field into a local, set the field to `[]`,
+  and assign it back. `inout` parameters stay out (ADR 0007).
 - Link-time optimization with the runtime. Build `sisu-runtime` as LLVM
   bitcode and link it into the program's module, so LLVM can inline runtime
-  calls such as the reference-count increment and decrement.
+  calls such as `sisu_alloc` and `sisu_free`. The reference-count helpers
+  (`@sisu_rc.*`) are already generated into each program, so LLVM inlines
+  them today. Wait for a benchmark that shows allocation calls matter.
 - A formatter, `sisu fmt`, after milestone 7, once `enum` and `match` have
   fixed most of the syntax. It has one style and no options, as with `gofmt`
   and `zig fmt`. It must keep comments, but the lexer drops them today
@@ -355,7 +687,6 @@ These do not make code nicer to write, so they wait:
 - Doc comments, `///` before a declaration. The lexer drops comments today,
   so they wait for the formatter, which must keep comments anyway, and for
   the language server, which can show them.
-- Concurrency: threads, atomic reference counts, channels.
 - Self-hosting: the Sisu lexer and parser written in Sisu.
 
 ## Deliberately avoided
@@ -376,6 +707,11 @@ These do not make code nicer to write, so they wait:
   serialization or bindings, a script that writes ordinary `.sisu` files
   that are committed, as Go's `go generate` does. Runtime reflection is
   avoided for the same reason, and because it costs at run time.
+- Variadic parameters. An array costs two characters, `sum([1, 2, 3])`, and
+  uses a type that already exists. `print` is built in, and formatting uses
+  string interpolation.
+- Pointers in Sisu code. A class is already a reference, and records and
+  arrays are values. A raw pointer exists only as `CPtr` behind the C FFI.
 - Formatter options. One style ends style debates.
 - A separate linter. Lints are compiler warnings.
 - `import *`. A reader must always see where a name comes from.
@@ -391,6 +727,10 @@ These do not make code nicer to write, so they wait:
 - Gleam's integer rules: on Erlang its `Int` has no size limit, and division
   by zero gives `0`. Sisu's fixed-size integers panic on overflow and on a
   zero divisor.
+- `async` and `await`. They split functions into two kinds, and a function of
+  one kind cannot call the other freely. They also need LLVM's coroutine
+  lowering and an executor in the runtime. Tasks keep one kind of function.
+- Mutable memory shared between tasks (ADR 0010).
 - A package registry, for a long time. A registry means hosting, security
   and name squatting. If dependencies come, path and Git dependencies come
   first.
@@ -403,24 +743,119 @@ These do not make code nicer to write, so they wait:
   the error breaks no program.
 - **Generic arguments and `<`.** `f(a < b, c > d)` reads as two comparisons
   or as one generic call. Decide the syntax in milestone 8.
-- **Weak references or a cycle collector** (see above).
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
   `a.plus(b)` or `a.value + b.value`, the same boilerplate Rust newtypes
   carry. An opt-in such as Haskell's `deriving` would let a newtype keep its
   field's `+` and `<`. One candidate reuses the interfaces the compiler
-  implements (milestone 10): `record Meters(value: f64): Add, Ord` forwards
+  implements (milestone 10): `record Meters: Add, Ord { value: f64 }` forwards
   `+` and `<` to the field. The operators come from a fixed list and the
   compiler writes them, so this is not unrestricted operator overloading.
   Decide in milestone 10.
 - **Attribute syntax.** A marker on a declaration, such as `@inline`, needs
   one general form: `@name` or `@name(args)` on the line before it, as in
   Swift and Kotlin. Decide the form before the first attribute lands, so `@`
-  is not taken for something else. Later uses could include `@noinline`,
-  `@deprecated("...")` and `@test`.
+  is not taken for something else. Later uses could include `@noinline` and
+  `@deprecated("...")`. Tests use `test` blocks, not an attribute.
 - **What a string is.** LLVM sees only bytes, so Sisu decides this itself.
   Milestone 1 already reads UTF-8 source with ASCII identifiers. Decide before
   milestone 4:
   - whether strings are stored as UTF-8;
   - whether `len()` counts bytes or characters (Unicode scalars);
   - whether `s[i]` exists at all. Swift has no integer indexing on strings,
-    because it is slow and misleading for text that is not ASCII.
+    because it is slow and misleading for text that is not ASCII;
+  - where invalid UTF-8 from input is caught, in the runtime or in generated
+    code (ADR 0009);
+  - whether a string is a value shared until written, as arrays are
+    (ADR 0007);
+  - how a string literal, stored once in the program's read-only data, takes
+    part in reference counting without ever being freed;
+  - its header: one count, as arrays keep, not the split count of a class
+    object with `weak` fields (ADR 0008).
+- **Floats.** Decide before milestone 6:
+  - Literals. The number scanner reads only digits and separators today.
+    With floats, `0..n` must still be a range and `1.0` a float. Tuples
+    (milestone 10) read elements with `.0`, so `t.0.1` must read as two
+    element reads, not as the float `0.1`: Rust's lexer has to handle the
+    same case.
+  - What NaN, infinity and a division by zero do, checked against ADR 0003
+    and ADR 0006: a silent NaN is a wrong answer that does not stop the
+    program.
+  - Conversions. They follow `i64(x)` and `u8(x)`, which exist today. A float
+    converted to an integer that cannot hold it panics or is rejected, never
+    wraps.
+- **Values with fields.** Decide before milestone 7 or records (milestone
+  10), whichever starts first, because both build on it:
+  - Records and tuples are values with their fields inline: the newtype
+    promise (milestone 10) and ADR 0007 need that. Decide whether an enum is
+    the same, with its payload inline, or a heap object, which would make a
+    second layout.
+  - How a variant that holds its own enum, such as `Add(Expr, Expr)`, gets
+    its indirection, as Swift's `indirect` does.
+  - The copy and release code for a value whose fields hold references.
+    Build it once for every value with fields, so enums, records and tuples
+    share it and arrays of them release their elements.
+  - That `None` of an optional class reference stays a null pointer, in an
+    array too, so milestone 8's `Option<T>` changes no layout.
+- **Exclusivity.** A `mut self` method called on a field of an object,
+  `obj.pos.move_by(1, 2)`, and handing an array field to a call (see "Later
+  and stretch goals") both take a value out of a place for the length of a
+  call. The call must not reach that place another way, such as through a
+  shared object. Swift checks this at run time and panics. The other choice
+  is to leave the place empty or stale during the call, which needs no check
+  but lets such a read see the wrong value. Decide in milestone 10.
+- **Names and namespaces.** Decide before milestone 7 and modules
+  (milestone 11). The target sample writes `Circle(1.0)` with no enum name,
+  but two enums can both have a `Circle`, and classes and functions already
+  share one namespace. Modules add module names to it. The candidates are
+  `Shape.Circle` always, or Swift's `.circle` where the expected type is
+  known. Every generated symbol then carries its module path, as "Modules"
+  describes.
+- **Argument labels.** Decide before milestone 7, records, named arguments
+  and closures, which all pass labeled values. Today a class constructor must
+  name every field in declaration order, and any other labeled argument is an
+  error. Decide:
+  - whether an enum payload and a record are built like a class, with every
+    label, and whether a payload may leave its labels out, as the target
+    sample does;
+  - which calls may leave labels out, and whether labels may come in a
+    different order;
+  - whether labels and default values belong to a function type, so a call
+    through a closure keeps them. Swift dropped labels from function types;
+  - that arguments are evaluated left to right as written, which the
+    last-use pass already assumes, even when labels reorder them.
+- **Closure syntax.** Decide before milestone 7 and closures. `=>` ends both a
+  `match` arm, `Circle(r) => ...`, and a closure's parameters,
+  `w => w.len() > 3`, so a closure inside an arm reads
+  `n => xs.filter(x => x > n)`. Decide how the two parse together, and what
+  the newline rule (ADR 0001) does after `=>` at the end of a line.
+- **Weak captures.** Decide before closures. A closure stored in a field of
+  the object it captures is a cycle that a `weak` field cannot break
+  (ADR 0008). Decide how a closure captures one name weakly, as Swift's
+  `[weak self]` does, and what the closure sees once the object is gone.
+- **Nested optionals.** Decide before milestone 8. Milestone 2 rejects
+  `T??` and treats an optional of an optional as the same optional. The
+  library `Option<Option<T>>` nests: a `Map<K, V?>` lookup returns one. Decide
+  what `?.`, `??` and `if let` do on a nested `Option` in generic code, so
+  that no program written before milestone 8 changes meaning.
+- **Equality, hashing and order.** Decide before milestone 8. Decide the
+  first point before `weak` fields, which let programs build cycles on
+  purpose:
+  - `==` compares classes structurally (milestone 2). It returns at once when
+    both sides are the same object, but comparing two distinct object graphs
+    that contain cycles never ends. If `print` comes to cover classes, so
+    would printing one.
+  - A class object used as a `Map` key and then changed corrupts the map.
+    Hashing a class by identity does not fix this: two objects that are `==`
+    would hash differently. One option: classes get no compiler-written
+    `Hash` or `Ord`, and only values (numbers, `bool`, strings, enums,
+    records and tuples) do. A value that holds a class reference needs the
+    same rule.
+  - Floats: NaN is not equal to itself, and `-0.0 == 0.0`. Decide whether
+    `f64` implements `Ord` and `Hash`, or a total order is used, before
+    "built-in types implement both" is promised.
+  - Function values: whether they have `==` and `print`, and so what a
+    record or class that holds one gets.
+- **Integer widths and wrapping.** Decide before milestone 8. Sisu has
+  `i64` and `u8`. `Hash` needs a hash width and wrapping arithmetic, which
+  ADR 0003 adds in the milestone that first needs it. Other widths, such as
+  `i32` for the C FFI, can wait for the FFI.
