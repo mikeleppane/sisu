@@ -35,6 +35,13 @@ files = '(\.rs|Cargo\.toml|Cargo\.lock|clippy\.toml)$'
 pass_filenames = false
 
 [[repos.hooks]]
+id = "expect-messages"
+name = "expect messages say should"
+language = "system"
+entry = "scripts/check-expect-messages.sh"
+types = ["rust"]
+
+[[repos.hooks]]
 id = "typos"
 name = "typos"
 language = "system"

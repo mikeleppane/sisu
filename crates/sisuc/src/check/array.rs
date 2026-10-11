@@ -15,7 +15,7 @@ impl Checker {
         elements: &[ast::Expr],
         expected: Option<&Type>,
     ) -> Checked {
-        if let Some(element) = element_of(expected) {
+        if let Some(element) = expected_element(expected) {
             let element = element.clone();
             let (checked, mismatched): (Vec<_>, Vec<_>) = elements
                 .iter()
@@ -142,7 +142,7 @@ impl Checker {
         len: &ast::Expr,
         expected: Option<&Type>,
     ) -> Checked {
-        let element = element_of(expected).cloned();
+        let element = expected_element(expected).cloned();
         // Without an element type, a `None` or `[]` cannot be inferred, unless `expected` is
         // `UNKNOWN`.
         let hint = element.as_ref().or(expected.filter(|ty| **ty == UNKNOWN));
@@ -210,7 +210,8 @@ impl Checker {
         None
     }
 
-    /// `receiver.method(args)` on `receiver`, an array of type `ty`. The methods: `len()`.
+    /// `receiver.method(args)` on `receiver`, an array of type `ty`. The methods: `len()`,
+    /// `sum()` on an `[i64]`, and `contains(x)`, whose argument is checked as an element.
     pub(super) fn array_method(
         &mut self,
         span: Span,
@@ -219,15 +220,58 @@ impl Checker {
         method: &ast::Ident,
         args: &[ast::Arg],
     ) -> Checked {
-        let d = if method.name != "len" {
-            no_member("method", &self.show(ty), method)
-        } else if !args.is_empty() {
-            let message = format!("`len` takes 0 arguments, found {}", args.len());
-            Diagnostic::error(span, message)
-        } else {
-            let kind = receiver.ok().map(|r| tir::ExprKind::Len(Box::new(r)));
-            return typed(span, Type::I64, false, kind);
+        let Type::Array(element) = ty else {
+            unreachable!("`method_call` should pass an array type to `array_method`");
         };
+        let name = method.name.as_str();
+        let arity = match name {
+            "len" | "sum" => 0,
+            "contains" => 1,
+            _ => return self.rejected(no_member("method", &self.show(ty), method), args),
+        };
+        if args.len() != arity {
+            let plural = if arity == 1 { "" } else { "s" };
+            let message = format!(
+                "`{name}` takes {arity} argument{plural}, found {}",
+                args.len()
+            );
+            return self.rejected(Diagnostic::error(span, message), args);
+        }
+        match name {
+            "len" => {
+                let kind = receiver.ok().map(|r| tir::ExprKind::Len(Box::new(r)));
+                typed(span, Type::I64, false, kind)
+            }
+            "sum" if **element != Type::I64 => {
+                let message = format!("`sum` needs an `[i64]`, found {}", self.show(ty));
+                self.rejected(Diagnostic::error(method.span, message), args)
+            }
+            "sum" => {
+                let kind = receiver.ok().map(|r| tir::ExprKind::Sum(Box::new(r)));
+                typed(span, Type::I64, false, kind)
+            }
+            _ => {
+                let labeled = self.labels(args);
+                let (value, mismatched) = self.operand(&args[0].value, Some(element));
+                match (receiver, value) {
+                    (Ok(base), Ok(value)) if !labeled => {
+                        Ok(
+                            self.spilled(span, Type::Bool, vec![base, value], |operands| {
+                                let (base, value) = pair(operands);
+                                tir::ExprKind::Contains { base, value }
+                            }),
+                        )
+                    }
+                    _ => Err(Poisoned::of(
+                        (!labeled && !mismatched).then_some(Type::Bool),
+                    )),
+                }
+            }
+        }
+    }
+
+    /// Reports `d` for a method call that cannot be checked, and its arguments' own errors.
+    fn rejected(&mut self, d: Diagnostic, args: &[ast::Arg]) -> Checked {
         self.diagnostics.push(d);
         self.labels(args);
         self.stray(args);
@@ -242,7 +286,7 @@ pub(super) fn optional_array(base: &ast::Expr) -> Diagnostic {
 }
 
 /// `E`, when `expected` is `[E]` or `[E]?`.
-fn element_of(expected: Option<&Type>) -> Option<&Type> {
+fn expected_element(expected: Option<&Type>) -> Option<&Type> {
     match expected.map(payload) {
         Some(Type::Array(element)) => Some(element),
         _ => None,

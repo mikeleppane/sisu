@@ -1,5 +1,6 @@
 // Empty arrays: `[]` and `[v; 0]` have length 0, a `for` over one runs no times, and two
-// empty arrays are equal. `[[1]; 0]` releases `[1]` once.
+// empty arrays are equal. `sum()` of one is 0 and `contains` finds nothing. `[[1]; 0]`
+// releases `[1]` once.
 class Node {}
 
 fn main() {
@@ -9,6 +10,8 @@ fn main() {
         print(x)
     }
     print(a == [])          // true
+    print(a.sum())          // 0
+    print(a.contains(1))    // false
 
     let b: [[Node]] = []
     print(b.len())          // 0
@@ -16,6 +19,7 @@ fn main() {
         print(x.len())
     }
     print(b == [])          // true
+    print(b.contains([]))   // false
 
     let c = [[1]; 0]
     print(c.len())          // 0

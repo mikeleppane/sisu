@@ -32,13 +32,20 @@ the first error.
 It also stops at the first error.
 
 **Checker** (`check/`, `tir.rs`). Resolves every name, types every expression
-and lowers sugar: `while` and `while let` become loops, `?.` and `??` become
-`if let`, and `x += 1` becomes `x = x + 1`. It reports every error in one run: an
-expression that already failed gets the poison type, so one mistake produces
-one diagnostic. A program with no errors comes out as the typed tree, `tir`,
-which is all that codegen reads.
+and lowers sugar: `while`, `while let` and `for` become loops, `?.` and `??`
+become `if let`, and `x += 1` becomes `x = x + 1`. It reports every error in one
+run: an expression that already failed gets the poison type, so one mistake
+produces one diagnostic. A program with no errors comes out as the typed tree,
+`tir`, which is all that codegen reads.
 
-**Codegen** (`codegen.rs`). Walks `tir` and builds an LLVM module through the
+**Last use** (`last_use.rs`). Walks each function in `tir` backward and turns
+every read of a counted local that is its last use into a move. A move hands
+over the local's reference instead of sharing it, so a later write to the
+array it holds can skip the copy
+([ADR 0007](adr/0007-arrays-are-values.md)). The pass reports nothing; the
+driver runs it after the checker finds no errors.
+
+**Codegen** (`codegen/`). Walks `tir` and builds an LLVM module through the
 [inkwell](https://github.com/TheDan64/inkwell) bindings. Each Sisu function
 becomes an LLVM function named `sisu.<name>`, and each method one named
 `sisu.<Class>.<method>`. Codegen also emits a `main` with the C signature,
@@ -51,6 +58,12 @@ Objects live on the heap, with a reference count in front of their fields
 manage them: `sisu_rc.retain`, and for each class `sisu_rc.release.<Class>`,
 `sisu_rc.drop.<Class>` and `sisu_rc.eq.<Class>`, which `==` calls.
 
+An array is one counted heap block too: a header of two `i64`s, the count and
+the length, then the elements. Each array type gets the same helpers, such as
+`sisu_rc.release.[i64]`, plus `sisu_rc.unique.[i64]`, which copies the block
+before a write when another holder shares it. An index out of bounds calls
+`sisu_panic_bounds`.
+
 **LLVM 22**. Runs the `mem2reg` pass, which turns stack slots into registers,
 or with `-O2` the `default<O2>` pipeline. Then it emits x86-64 object code for
 the machine `sisuc` runs on.
@@ -62,8 +75,8 @@ removed whether or not the link succeeds.
 
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
 into every program. Generated code calls it to print values, to panic and to
-allocate and free objects: `sisu_print_int`, `sisu_print_bool`, `sisu_panic`,
-`sisu_alloc` and `sisu_free`.
+allocate and free objects and arrays: `sisu_print_int`, `sisu_print_bool`,
+`sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and `sisu_free`.
 
 **Diagnostics** (`diagnostic.rs`). The lexer, parser and checker report
 problems as diagnostics, rendered in the style of `rustc`: the message, the

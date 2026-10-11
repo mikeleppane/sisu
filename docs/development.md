@@ -39,20 +39,24 @@ $ cargo install --locked cargo-mutants  # mutation testing
 ```console
 $ cargo build --workspace        # sisuc and the runtime library
 $ cargo nextest run --workspace  # unit tests and end-to-end programs
-$ prek run --all-files           # fmt, clippy, typos, file hygiene, shell and workflow lint, as in CI
+$ prek run --all-files           # fmt, clippy, expect messages, typos, file hygiene, shell and workflow lint, as in CI
 $ cargo deny check               # advisories, licenses, sources
 ```
 
 Mutation testing changes the code that a branch touched, one mutant at a
-time, and reports each mutant the tests still pass. `.cargo/mutants.toml`
-leaves `.llvm/` out of its copy of the tree, so the command points the build
-at the original:
+time, and reports each mutant the tests still pass. The script mutates the
+diff from where the branch left `main`. On a branch stacked on another stage,
+pass that stage's tip as the base, so earlier stages stay out. Arguments after
+the base go to `cargo mutants`:
 
 ```console
-$ LLVM_SYS_221_PREFIX=$PWD/.llvm/22 cargo mutants --in-diff <(git diff $(git merge-base main HEAD))
+$ scripts/mutants.sh                  # changes since main
+$ scripts/mutants.sh feat/m3-writes   # changes since the stage below
+$ scripts/mutants.sh HEAD~1 --list    # list the mutants, run nothing
 ```
 
-Commit or stash first: the diff must match the files on disk.
+The diff includes uncommitted edits. A new file counts once `git add` tracks
+it.
 
 ## Compile and run a program
 
@@ -121,5 +125,5 @@ These flags run the pipeline up to one stage and stop there.
 | `crates/sisuc` | The compiler: lexer, parser, checker, codegen and linking. |
 | `crates/sisuc/tests/programs` | End-to-end programs, each with the output it must print. |
 | `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
-| `scripts` | `install-llvm.sh`. |
+| `scripts` | `install-llvm.sh`, `mutants.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
 | `docs` | Architecture, roadmap, decisions (`adr/`) and agent guides (`agents/`). |

@@ -122,8 +122,13 @@ impl Checker {
     ) -> Result<(Checked, bool), Poisoned> {
         // A bare `None` expects an `i64`, as in `None + 1`.
         let expected = expected.or_else(|| none_literal(operand).then_some(&Type::I64));
+        let before = self.diagnostics.len();
         let checked = self.value(operand, expected);
         if type_of(&checked) == Some(&Type::U8) {
+            // A literal's "does not fit" is moot once its negation is an error.
+            if matches!(operand.kind, ExprKind::Int(_)) {
+                self.diagnostics.truncate(before);
+            }
             self.diagnostics
                 .push(Diagnostic::error(span, "`u8` cannot be negative"));
             return Err(Poisoned::error());

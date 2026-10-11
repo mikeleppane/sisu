@@ -114,124 +114,221 @@ fn assert_panics(out: &Output, stdout: &str, stderr: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stderr), stderr);
 }
 
+/// One test per program in `tests/programs` that exits 0, named after the program unless it
+/// gives `test = "file"`, plus `OUT_FILE_PROGRAMS`, the list `every_program_has_a_run` checks.
+macro_rules! out_file_tests {
+    (@file $test:ident $file:literal) => {
+        $file
+    };
+    (@file $test:ident) => {
+        stringify!($test)
+    };
+    ($($test:ident $(= $file:literal)?),* $(,)?) => {
+        const OUT_FILE_PROGRAMS: &[&str] = &[$(out_file_tests!(@file $test $($file)?)),*];
+        $(
+            #[test]
+            fn $test() {
+                assert_prints_out_file(out_file_tests!(@file $test $($file)?));
+            }
+        )*
+    };
+}
+
+out_file_tests! {
+    hello,
+    fib,
+    semantics,
+    primes,
+    loops,
+    break_continue,
+    short_circuit,
+    loop_return,
+    bool_var,
+    objects,
+    ownership,
+    field_order,
+    unwrap,
+    list,
+    for_range_releases_the_body_tail = "for_range_drop",
+    drops,
+    tree,
+    optionals,
+    bytes,
+    unsigned,
+    arrays,
+    empty_arrays = "empty",
+    values,
+    life,
+    moves,
+    methods,
+    sieve,
+    handover,
+    copies,
+    walk,
+}
+
+/// The programs the small-stack tests run. They skip `assert_prints_out_file`: a million
+/// objects under Valgrind is too slow, and `deepchain` overflows on purpose.
+const SMALL_STACK: [&str; 3] = ["longlist", "rightskew", "deepchain"];
+
+/// Each program in `tests/programs` has exactly one kind of run: an `.out` file and a test from
+/// `out_file_tests!`, a `PANICS` row, or a small-stack test.
 #[test]
-fn hello() {
-    assert_prints_out_file("hello");
+fn every_program_has_a_run() {
+    let panics = PANICS.map(|(name, _, _)| name);
+    for entry in fs::read_dir(PROGRAMS).expect("tests/programs should be readable") {
+        let path = entry.expect("a directory entry should be readable").path();
+        // Tools may leave a directory here, such as `.claude/`; only files are programs.
+        if path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("a program's name should be UTF-8");
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("sisu") => {
+                let runs = [
+                    OUT_FILE_PROGRAMS.contains(&name),
+                    panics.contains(&name),
+                    SMALL_STACK.contains(&name),
+                ];
+                assert_eq!(
+                    runs.iter().filter(|run| **run).count(),
+                    1,
+                    "{name}.sisu should be in exactly one of `out_file_tests!`, `PANICS` and \
+                     `SMALL_STACK`"
+                );
+            }
+            Some("out") => assert!(
+                OUT_FILE_PROGRAMS.contains(&name),
+                "{name}.out should have a test in `out_file_tests!`"
+            ),
+            _ => panic!("{} is neither a program nor an `.out` file", path.display()),
+        }
+    }
+    for name in OUT_FILE_PROGRAMS {
+        assert!(
+            Path::new(PROGRAMS).join(format!("{name}.out")).exists(),
+            "{name} is in `out_file_tests!` but has no `{name}.out`"
+        );
+    }
+}
+
+/// The `N` of the `total heap usage: N allocs` line in Valgrind's stderr, thousands separators
+/// removed; panics when the line is missing.
+fn allocs_in(valgrind_stderr: &str) -> u64 {
+    let (_, after) = valgrind_stderr
+        .split_once("total heap usage: ")
+        .unwrap_or_else(|| panic!("no `total heap usage` line in:\n{valgrind_stderr}"));
+    let digits: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(|c| *c != ',')
+        .collect();
+    digits
+        .parse()
+        .unwrap_or_else(|_| panic!("no allocation count after `total heap usage: ` in:\n{after}"))
+}
+
+/// Runs `exe` under Valgrind and returns its stdout and `allocs_in` of its stderr. Valgrind runs
+/// without `-q`, which prints the heap summary.
+fn heap_allocs(exe: &Path) -> (String, u64) {
+    let out = valgrind(exe);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{}: {stderr}", exe.display());
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        allocs_in(&stderr),
+    )
+}
+
+/// Builds `<name>.sisu` as written and with its first line `fn iterations() -> i64 { 1000 }`
+/// changed to `{ 0 }`, at `-O2` if `o2`, and returns both builds' stdout and the difference in
+/// allocations. The zero-iteration build is the baseline: the runtime's own allocations cancel.
+fn extra_allocs(name: &str, o2: bool) -> (String, String, i64) {
+    const FIRST_LINE: &str = "fn iterations() -> i64 { 1000 }\n";
+    let source = fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.sisu")))
+        .expect("reads the program");
+    let rest = source
+        .strip_prefix(FIRST_LINE)
+        .unwrap_or_else(|| panic!("{name}.sisu should start with `{}`", FIRST_LINE.trim_end()));
+    let baseline = format!("{}{rest}", FIRST_LINE.replace("1000", "0"));
+
+    // Own file names, so these builds never share an executable with the test of `<name>.out`.
+    let (stdout, allocs) = heap_allocs(&compile_tmp(&format!("{name}_k1000"), &source, o2));
+    let (base_stdout, base_allocs) =
+        heap_allocs(&compile_tmp(&format!("{name}_k0"), &baseline, o2));
+    let extra = i64::try_from(allocs).expect("a count fits i64")
+        - i64::try_from(base_allocs).expect("a count fits i64");
+    (stdout, base_stdout, extra)
 }
 
 #[test]
-fn fib() {
-    assert_prints_out_file("fib");
+fn allocs_in_reads_grouped_counts() {
+    let stderr = "==1== total heap usage: 1,004 allocs, 1,004 frees, 9 bytes allocated";
+    assert_eq!(allocs_in(stderr), 1004);
 }
 
 #[test]
-fn semantics() {
-    assert_prints_out_file("semantics");
+#[should_panic(expected = "no `total heap usage` line")]
+fn allocs_in_panics_without_the_summary_line() {
+    allocs_in("==1== All heap blocks were freed -- no leaks are possible");
 }
 
+/// The `-O2` rows of `allocation_counts` only prove the hand-over if the call to `fill` is
+/// still there: the inliner would otherwise fold it into `main`.
 #[test]
-fn primes() {
-    assert_prints_out_file("primes");
+fn fill_call_survives_o2() {
+    for name in ["handover", "copies"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(PROGRAMS)
+            .args(["-O2", "--emit", "ir"])
+            .arg(format!("{name}.sisu"))
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let (_, after) = stdout
+            .split_once("\n; after default<O2>\n")
+            .unwrap_or_else(|| panic!("no `; after default<O2>` line in\n{stdout}"));
+        let (_, main_onward) = after
+            .split_once("define void @sisu.main()")
+            .unwrap_or_else(|| panic!("{name}: no `sisu.main` in\n{after}"));
+        let main = main_onward
+            .split("\n}")
+            .next()
+            .expect("split yields one piece");
+        assert!(main.contains("call ptr @sisu.fill("), "{name}: {main}");
+    }
 }
 
-#[test]
-fn loops() {
-    assert_prints_out_file("loops");
-}
+/// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
+const ALLOCATIONS: [(&str, &str, &str, i64); 3] = [
+    // `big = fill(big, i, 1)` writes in place.
+    ("handover", "999\n", "0\n", 0),
+    // `saved` is live across each write, so each `fill` copies once.
+    ("copies", "499500\n1000\n", "0\n0\n", 1000),
+    // `for` over an array copies nothing.
+    ("walk", "10000000\n", "0\n", 0),
+];
 
 #[test]
-fn break_continue() {
-    assert_prints_out_file("break_continue");
-}
-
-#[test]
-fn short_circuit() {
-    assert_prints_out_file("short_circuit");
-}
-
-#[test]
-fn loop_return() {
-    assert_prints_out_file("loop_return");
-}
-
-#[test]
-fn bool_var() {
-    assert_prints_out_file("bool_var");
-}
-
-#[test]
-fn objects() {
-    assert_prints_out_file("objects");
-}
-
-#[test]
-fn ownership() {
-    assert_prints_out_file("ownership");
-}
-
-#[test]
-fn field_order() {
-    assert_prints_out_file("field_order");
-}
-
-#[test]
-fn unwrap() {
-    assert_prints_out_file("unwrap");
-}
-
-#[test]
-fn list() {
-    assert_prints_out_file("list");
-}
-
-#[test]
-fn for_range_releases_the_body_tail() {
-    assert_prints_out_file("for_range_drop");
-}
-
-#[test]
-fn drops() {
-    assert_prints_out_file("drops");
-}
-
-#[test]
-fn tree() {
-    assert_prints_out_file("tree");
-}
-
-#[test]
-fn optionals() {
-    assert_prints_out_file("optionals");
-}
-
-#[test]
-fn bytes() {
-    assert_prints_out_file("bytes");
-}
-
-#[test]
-fn unsigned() {
-    assert_prints_out_file("unsigned");
-}
-
-#[test]
-fn arrays() {
-    assert_prints_out_file("arrays");
-}
-
-#[test]
-fn empty_arrays() {
-    assert_prints_out_file("empty");
-}
-
-#[test]
-fn values() {
-    assert_prints_out_file("values");
-}
-
-#[test]
-fn life() {
-    assert_prints_out_file("life");
+fn allocation_counts() {
+    for o2 in [false, true] {
+        for (name, stdout, base_stdout, extra) in ALLOCATIONS {
+            assert_eq!(
+                extra_allocs(name, o2),
+                (stdout.to_string(), base_stdout.to_string(), extra),
+                "{name} (o2: {o2})"
+            );
+        }
+    }
 }
 
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
@@ -363,31 +460,42 @@ fn panic_cases() {
                 .to_string(),
             "3:5: integer overflow".to_string(),
         ),
-        u8_case("u8_add", "let a: u8 = 255", "a + 1", "integer overflow"),
-        u8_case("u8_sub", "let a: u8 = 0", "a - 1", "integer overflow"),
-        u8_case("u8_mul", "let a: u8 = 16", "a * a", "integer overflow"),
-        u8_case("u8_div_zero", "let a: u8 = 0", "7 / a", "division by zero"),
-        u8_case(
+        print_case("u8_add", "let a: u8 = 255", "a + 1", "integer overflow"),
+        print_case("u8_sub", "let a: u8 = 0", "a - 1", "integer overflow"),
+        print_case("u8_mul", "let a: u8 = 16", "a * a", "integer overflow"),
+        print_case("u8_div_zero", "let a: u8 = 0", "7 / a", "division by zero"),
+        print_case(
             "u8_convert",
             "let a = 300",
             "u8(a)",
             "value does not fit in `u8`",
         ),
-        u8_case(
+        print_case(
             "u8_convert_256",
             "let a = 256",
             "u8(a)",
             "value does not fit in `u8`",
         ),
-        u8_case(
+        print_case(
             "u8_convert_negative",
             "let a = -1",
             "u8(a)",
             "value does not fit in `u8`",
         ),
-        bounds_case("bounds_at_length", "5", "index 5 out of bounds for length 5"),
+        sum_case("sum_overflow", "9_223_372_036_854_775_807, 1"),
+        // The total fits, but the running sum overflows at the second element.
+        sum_case("sum_overflow_midway", "9_223_372_036_854_775_807, 1, -1"),
+        bounds_case(
+            "bounds_at_length",
+            "5",
+            "index 5 out of bounds for length 5",
+        ),
         bounds_case("bounds_above", "7", "index 7 out of bounds for length 5"),
-        bounds_case("bounds_negative", "-1", "index -1 out of bounds for length 5"),
+        bounds_case(
+            "bounds_negative",
+            "-1",
+            "index -1 out of bounds for length 5",
+        ),
         // The inner index is checked at its own level, after the outer one.
         (
             "write_bounds",
@@ -403,26 +511,11 @@ fn panic_cases() {
         ),
         // 16 + 9_223_372_036_854_775_791 bytes is exactly `i64::MAX`, above the largest
         // size that rounds up to the alignment of 8 within it.
-        (
-            "length_too_large",
-            "fn main() {\n    let xs = [false; 9_223_372_036_854_775_791]\n    print(xs.len())\n}\n"
-                .to_string(),
-            "2:22: array is too large".to_string(),
-        ),
+        fill_case("length_too_large", "false", "9_223_372_036_854_775_791", 22),
         // 2^62 * 8 bytes overflows the multiply.
-        (
-            "length_overflows",
-            "fn main() {\n    let xs = [0; 4_611_686_018_427_387_904]\n    print(xs.len())\n}\n"
-                .to_string(),
-            "2:18: array is too large".to_string(),
-        ),
+        fill_case("length_overflows", "0", "4_611_686_018_427_387_904", 18),
         // (2^61 - 1) * 8 bytes is 2^64 - 8, which fits; adding the 16-byte header wraps.
-        (
-            "header_overflows",
-            "fn main() {\n    let xs = [0; 2_305_843_009_213_693_951]\n    print(xs.len())\n}\n"
-                .to_string(),
-            "2:18: array is too large".to_string(),
-        ),
+        fill_case("header_overflows", "0", "2_305_843_009_213_693_951", 18),
     ];
     for (name, source, position_and_message) in cases {
         for o2 in [false, true] {
@@ -439,7 +532,7 @@ fn panic_cases() {
 }
 
 /// A `panic_cases` row whose panic is at `print(<expr>)` on line 3, column 11.
-fn u8_case(
+fn print_case(
     name: &'static str,
     binding: &str,
     expr: &str,
@@ -449,6 +542,30 @@ fn u8_case(
         name,
         format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
         format!("3:11: {message}"),
+    )
+}
+
+/// A `panic_cases` row whose `xs.sum()`, over the elements `elements`, overflows.
+fn sum_case(name: &'static str, elements: &str) -> (&'static str, String, String) {
+    print_case(
+        name,
+        &format!("let xs = [{elements}]"),
+        "xs.sum()",
+        "integer overflow",
+    )
+}
+
+/// A `panic_cases` row for `[value; len]` on line 2, whose panic is at `len`, in column `col`.
+fn fill_case(
+    name: &'static str,
+    value: &str,
+    len: &str,
+    col: usize,
+) -> (&'static str, String, String) {
+    (
+        name,
+        format!("fn main() {{\n    let xs = [{value}; {len}]\n    print(xs.len())\n}}\n"),
+        format!("2:{col}: array is too large"),
     )
 }
 

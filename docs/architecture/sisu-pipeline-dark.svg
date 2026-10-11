@@ -523,15 +523,15 @@ svg[data-preset="editorial"][data-animation="trace"] [data-animate="node"] { ani
         <text x="755" y="244" class="t-muted" font-size="9" text-anchor="middle">check/</text>
         </g>
 
-        <g id="node-codegen" data-node-id="codegen" data-node-label="Codegen" tabindex="0" role="button" aria-label="Focus Codegen, codegen.rs, inkwell, sisuc (Rust)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="codegen.rs, inkwell" data-node-context="sisuc (Rust)">
-          <title>Codegen · codegen.rs, inkwell · sisuc (Rust)</title>
+        <g id="node-codegen" data-node-id="codegen" data-node-label="Codegen" tabindex="0" role="button" aria-label="Focus Codegen, codegen/, inkwell, sisuc (Rust)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="codegen/, inkwell" data-node-context="sisuc (Rust)">
+          <title>Codegen · codegen/, inkwell · sisuc (Rust)</title>
           <rect x="890" y="200" width="130" height="60" rx="6" class="c-mask"/>
           <rect x="890" y="200" width="130" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(896 206) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" x="955" y="228" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Codegen</text>
-        <text x="955" y="244" class="t-muted" font-size="9" text-anchor="middle">codegen.rs, inkwell</text>
+        <text x="955" y="244" class="t-muted" font-size="9" text-anchor="middle">codegen/, inkwell</text>
         </g>
 
         <g id="node-diagnostics" data-node-id="diagnostics" data-node-label="Diagnostics" tabindex="0" role="button" aria-label="Focus Diagnostics, rendered to stderr, sisuc (Rust)" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="rendered to stderr" data-node-context="sisuc (Rust)">

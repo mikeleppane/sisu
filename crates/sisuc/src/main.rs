@@ -4,6 +4,7 @@ mod ast;
 mod check;
 mod codegen;
 mod diagnostic;
+mod last_use;
 mod lexer;
 mod link;
 mod parser;
@@ -252,8 +253,8 @@ fn build(input: &Path, output: &Path, o2: bool) -> ExitCode {
     }
 }
 
-/// Lexes, parses and checks `source`; prints every diagnostic. Returns the program unless
-/// a diagnostic is an error.
+/// Lexes, parses, checks and marks last uses in `source`; prints every diagnostic. Returns
+/// the program unless a diagnostic is an error.
 fn front_end(path: &str, source: &str) -> Option<Program> {
     let program = match lexer::lex(source).and_then(|tokens| parser::parse(&tokens)) {
         Ok(program) => program,
@@ -264,7 +265,9 @@ fn front_end(path: &str, source: &str) -> Option<Program> {
     };
     let (program, diagnostics) = check::check(&program);
     report(path, source, &diagnostics);
-    program
+    let mut program = program?;
+    last_use::mark(&mut program);
+    Some(program)
 }
 
 /// Prints each diagnostic to stderr, followed by a blank line.

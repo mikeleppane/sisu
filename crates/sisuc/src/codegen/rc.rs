@@ -80,7 +80,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                 (_, Type::Array(element)) => self.define_array_helper(kind, element, function),
                 (Helper::Drop, _) => self.define_drop(function, &ty),
                 (Helper::Eq, _) => self.define_eq(function, &ty),
-                (Helper::Unique, _) => unreachable!("only an array has a `unique` helper"),
+                (Helper::Unique, _) => {
+                    unreachable!("only an array type should be queued for a `unique` helper")
+                }
             }
         }
     }
@@ -99,7 +101,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// object, then drops the chain's next object in a loop when its count reaches 0.
     fn define_drop(&self, drop: FunctionValue<'ctx>, ty: &Type) {
         let Type::Class(id) = ty else {
-            unreachable!("only a class has helpers")
+            unreachable!("only a class type should reach the class helper bodies")
         };
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let entry = self.context.append_basic_block(drop, "entry");
@@ -163,7 +165,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// compared in order up to the first difference. It neither retains nor releases.
     fn define_eq(&self, function: FunctionValue<'ctx>, ty: &Type) {
         let Type::Class(id) = ty else {
-            unreachable!("only a class has helpers")
+            unreachable!("only a class type should reach the class helper bodies")
         };
         let block = |name| self.context.append_basic_block(function, name);
         let (a, b, equal, unequal) = self.eq_entry(function);

@@ -121,6 +121,8 @@ pub(crate) enum ExprKind {
     Bool(bool),
     None,
     Local(LocalId),
+    /// A read of a counted local that takes its reference; only `last_use` makes one.
+    Move(LocalId),
     Call {
         func: FuncId,
         args: Vec<Expr>,
@@ -153,6 +155,13 @@ pub(crate) enum ExprKind {
     },
     /// `base.len()`.
     Len(Box<Expr>),
+    /// `base.sum()`, on an `[i64]`.
+    Sum(Box<Expr>),
+    /// `base.contains(value)`, by `==`.
+    Contains {
+        base: Box<Expr>,
+        value: Box<Expr>,
+    },
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,
@@ -210,7 +219,11 @@ impl Expr {
     /// Whether a `Return`, `Break` or `Continue` sits anywhere inside, a nested loop included.
     pub(crate) fn exits(&self) -> bool {
         match &self.kind {
-            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Local(_) => false,
+            ExprKind::Int(_)
+            | ExprKind::Bool(_)
+            | ExprKind::None
+            | ExprKind::Local(_)
+            | ExprKind::Move(_) => false,
             ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
             ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
                 args.iter().any(Expr::exits)
@@ -220,6 +233,7 @@ impl Expr {
             }
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
+            | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
             | ExprKind::Print(operand)
@@ -234,6 +248,10 @@ impl Expr {
             | ExprKind::Index {
                 base: lhs,
                 index: rhs,
+            }
+            | ExprKind::Contains {
+                base: lhs,
+                value: rhs,
             } => lhs.exits() || rhs.exits(),
             ExprKind::If {
                 cond,
@@ -371,6 +389,11 @@ impl Printer<'_> {
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::None => f.write_str("None"),
             ExprKind::Local(id) => self.local(f, *id),
+            ExprKind::Move(id) => {
+                f.write_str("(move ")?;
+                self.local(f, *id)?;
+                f.write_str(")")
+            }
             ExprKind::Call { func, args } => {
                 write!(f, "(call {}", self.program.functions[func.0].name)?;
                 self.each(f, args)?;
@@ -393,6 +416,8 @@ impl Printer<'_> {
             ExprKind::ArrayFill { value, len } => self.binary(f, "array-fill", value, len),
             ExprKind::Index { base, index } => self.binary(f, "index", base, index),
             ExprKind::Len(base) => self.unary(f, "len", base),
+            ExprKind::Sum(base) => self.unary(f, "sum", base),
+            ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
             ExprKind::Compare { operands, ops } => {

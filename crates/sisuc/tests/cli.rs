@@ -287,6 +287,22 @@ fn emit_tir() {
 }
 
 #[test]
+fn emit_tir_shows_moves() {
+    let out = run_on(
+        "emit_tir_shows_moves",
+        "fn f(xs: [i64]) -> [i64] { xs }\nfn main() {}\n",
+        &["--emit", "tir"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("(move xs#0)"));
+}
+
+#[test]
 fn emit_tir_error_prints_no_tir() {
     let out = run_on(
         "emit_tir_error_prints_no_tir",

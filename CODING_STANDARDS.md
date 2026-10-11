@@ -10,16 +10,21 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 - **Plan-pinned tests keep their expected values.** When behaviour grows, add a new case.
 - **Every surviving mutant is a finding.** Run `cargo mutants` on the diff (see `AGENTS.md`). Each survivor needs a test that kills it, or a note in the report on why it is equivalent.
 - **A call boundary is proven in `-O2` IR.** A test that relies on a value crossing a real call shows the `call` in the `-O2` output. Matching program output is not enough, because the inliner can fold the call away.
+- **An evaluation-order test fails on any swap.** Give each operand its own visible effect, such as a distinct `print` or a distinct panic, so that running any two in the other order changes the output. `cargo mutants` does not reorder operands, so no survivor flags a test that misses this.
+- **Programs that exit 0 run three ways.** Every such program in `crates/sisuc/tests/programs` goes through `assert_prints_out_file`: plain, under Valgrind, and at `-O2` under Valgrind. `every_program_has_a_run` checks that it is listed. Check each `.out` file by hand against the program, and comment each printed line with its value.
 - **Complexity is tested by timeout, not by timing.** Use an input large enough to hang on a quadratic path, and give the test a nextest `terminate-after` override in `.config/nextest.toml`. Never assert on wall-clock time.
 
 ## Staging work across tasks
 
 - **No reachable crash lands in a stage.** A feature that a later task implements is rejected by the checker until then, never left to a codegen panic. The diagnostic names the task that removes it.
+- **A stage's later arms panic by name.** Inside one stage, when a task adds a syntax or `tir` node that a later task of the same stage handles, the later code's match arm is `panic!("<node> lands in Task N")`, and Task N removes it. The stage's last task leaves none behind.
 - **A restriction on a type sits where the type is made.** Put it in the constructor every path goes through (as `optional_of` does), not where an annotation is read.
 
 ## Code
 
-- **An `expect` message states the invariant.** Write what should hold and why, with "should", naming the thing involved: `the checker should reject \`break\` outside a loop`. The panic then reads as a broken assumption. "builder is positioned" describes success, and the error that follows it reads as noise.
+- **An `expect` message states the invariant.** Write what should hold and why, with "should", naming the thing involved: `the checker should reject \`break\` outside a loop`. The panic then reads as a broken assumption. "builder is positioned" describes success, and the error that follows it reads as noise. A prek hook checks that non-test messages say "should"; the reviewer checks that they name the invariant and why it holds.
+
+- **Sizes come from `TargetData`.** Sizes and alignments in generated code are measured with LLVM's `TargetData`, never written as numbers. The 16-byte array header is two `i64`s measured the same way.
 
 ## Diagnostics
 

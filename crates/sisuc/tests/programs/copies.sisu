@@ -1,0 +1,26 @@
+fn iterations() -> i64 { 1000 }
+
+// Same `fill` as `handover.sisu`, recursive so that the `-O2` build keeps the call.
+fn fill(xs: [i64], v: i64, depth: i64) -> [i64] {
+    var ys = xs
+    if depth > 0 {
+        ys = fill(ys, v, depth - 1)
+    }
+    ys[0] = v
+    ys
+}
+
+// `saved` is live across the write, so each `fill` must copy: one allocation per iteration.
+fn main() {
+    var big = [0; 10_000]
+    var total = 0
+    for i in 0..iterations() {
+        let saved = big
+        big = fill(big, i + 1, 1)
+        total += saved[0]
+    }
+    // 0 + 1 + ... + 999 = 499500: at iteration `i`, `saved[0]` is `i`, the previous
+    // iteration's `i + 1`.
+    print(total)
+    print(big[0]) // the last i + 1: 1000 (0 with no iterations)
+}

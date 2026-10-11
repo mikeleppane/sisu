@@ -126,11 +126,19 @@ fn traced(marker: i64, v: i64) -> i64 {
     v
 }
 
-// A write runs each index once from the root outwards, then the value.
+// Prints `marker` and returns a new board.
+fn traced_board(marker: i64) -> Board {
+    print(marker)
+    Board(cells: [0, 0])
+}
+
+// A write runs each index once from the root outwards, then the value. A field root runs
+// its object first.
 fn operand_order() {
     var grid = [[0, 0], [0, 0]]
     grid[traced(100, 1)][traced(200, 0)] = traced(300, 4)
     print(grid[1][0])                 // 4
+    traced_board(400).cells[traced(500, 1)] = traced(600, 7)
 }
 
 // The value returns before the index is checked against the length.
@@ -165,7 +173,7 @@ fn main() {
     shared_object()
     aliasing()
     value_first()
-    operand_order()                   // 100, 200, 300
+    operand_order()                   // 100, 200, 300, 4, 400, 500, 600
     print(exits(true))                // 0
     print(field_exits(true))          // 2
     print(index_exits(true))          // 3

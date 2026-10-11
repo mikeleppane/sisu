@@ -1,5 +1,5 @@
-//! Arrays: literals and their element join, `[v; n]`, indexing, `len()`, and the rules that
-//! keep arrays values.
+//! Arrays: literals and their element join, `[v; n]`, indexing, `len()`, `sum()`,
+//! `contains()`, and the rules that keep arrays values.
 
 use super::*;
 
@@ -271,6 +271,81 @@ fn len_is_not_a_field() {
         None,
         &[],
         Some("call it: `len()`"),
+    );
+}
+
+#[test]
+fn sum_and_contains() {
+    contains(
+        "fn f(xs: [i64]) -> i64 { xs.sum() }\nfn main() {}",
+        &["(sum xs#0)"],
+    );
+    contains(
+        "fn f(xs: [u8?]) -> bool { xs.contains(5) }\nfn main() {}",
+        &["(contains xs#0 (wrap 5u8))"],
+    );
+    contains(
+        "fn f(m: [i64]?) -> bool? { m?.contains(1) }\nfn main() {}",
+        &["(contains #1 1)"],
+    );
+}
+
+#[test]
+fn contains_spills_for_an_exit_in_its_value() {
+    contains(
+        "fn f(xs: [[i64]], c: bool) -> bool { xs.contains(if c { return false } else { [1] }) }\nfn main() {}",
+        &[
+            "(block (let #2 xs#0) (let #3 (if c#1 (block (return false)) (block (array 1)))) (contains #2 #3))",
+        ],
+    );
+}
+
+#[test]
+fn sum_needs_an_i64_array() {
+    errors(
+        "fn f(xs: [bool]) { print(xs.sum()) }\nfn main() {}",
+        &[("`sum` needs an `[i64]`, found `[bool]`", (1, 29))],
+    );
+}
+
+#[test]
+fn contains_argument_is_an_element() {
+    errors(
+        "fn f(xs: [i64]) { print(xs.contains(true)) }\nfn main() {}",
+        &[("expected `i64`, found `bool`", (1, 37))],
+    );
+}
+
+/// A failed `contains` is `Error` when its argument is the problem, so a use of the result
+/// adds no error. A poisoned receiver with a good argument still has type `bool`.
+#[test]
+fn contains_poison() {
+    errors(
+        "fn f(xs: [i64]) {\n    let b = xs.contains(true)\n    print(b + 1)\n}\nfn main() {}",
+        &[("expected `i64`, found `bool`", (2, 25))],
+    );
+    errors(
+        "fn f(xs: [i64]) {\n    let b = xs.contains(v: 1)\n    print(b + 1)\n}\nfn main() {}",
+        &[("labels on arguments come in milestone 10", (2, 25))],
+    );
+    errors(
+        "fn f(g: [[i64]]) {\n    let b = g[nope].contains(1)\n    print(b + 1)\n}\nfn main() {}",
+        &[
+            ("cannot find `nope` in this scope", (2, 15)),
+            ("expected `i64`, found `bool`", (3, 11)),
+        ],
+    );
+}
+
+#[test]
+fn method_argument_counts() {
+    errors(
+        "fn f(xs: [i64]) { print(xs.sum(1)) }\nfn main() {}",
+        &[("`sum` takes 0 arguments, found 1", (1, 25))],
+    );
+    errors(
+        "fn f(xs: [i64]) { print(xs.contains()) }\nfn main() {}",
+        &[("`contains` takes 1 argument, found 0", (1, 25))],
     );
 }
 
