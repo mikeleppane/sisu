@@ -473,6 +473,16 @@ mod tests {
         assert!(f.ends_with("(print (len (move xs#0)))))"), "{f}");
     }
 
+    /// A last use inside an inner loop moves: rewriting reaches every loop depth.
+    #[test]
+    fn move_in_inner_loop() {
+        has(
+            "fn f(xs: [i64], c: bool) {\n    while c {\n        while c {\n            print(xs.len())\n            return\n        }\n    }\n}",
+            "f",
+            &["(len (move xs#0))"],
+        );
+    }
+
     #[test]
     fn scalars_never_move() {
         let printed = marked("fn f(n: i64) -> i64 { n }");

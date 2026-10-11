@@ -97,6 +97,8 @@ fn literal_does_not_fit() {
 fn u8_cannot_be_negative() {
     let message = "`u8` cannot be negative";
     errors("fn main() { let x: u8 = -1 }", &[(message, (1, 25))]);
+    // One diagnostic: the literal's size is not reported as well.
+    errors("fn main() { let x: u8 = -300 }", &[(message, (1, 25))]);
     errors(
         "fn f(b: u8) { print(-b) }\nfn main() {}",
         &[(message, (1, 21))],
