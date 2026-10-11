@@ -39,7 +39,7 @@ $ cargo install --locked cargo-mutants  # mutation testing
 ```console
 $ cargo build --workspace        # sisuc and the runtime library
 $ cargo nextest run --workspace  # unit tests and end-to-end programs
-$ prek run --all-files           # fmt, clippy, typos, file hygiene, shell and workflow lint, as in CI
+$ prek run --all-files           # fmt, clippy, expect messages, typos, file hygiene, shell and workflow lint, as in CI
 $ cargo deny check               # advisories, licenses, sources
 ```
 
