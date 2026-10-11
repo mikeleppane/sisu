@@ -10,6 +10,7 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 - **Plan-pinned tests keep their expected values.** When behaviour grows, add a new case.
 - **Every surviving mutant is a finding.** Run `cargo mutants` on the diff (see `AGENTS.md`). Each survivor needs a test that kills it, or a note in the report on why it is equivalent.
 - **A call boundary is proven in `-O2` IR.** A test that relies on a value crossing a real call shows the `call` in the `-O2` output. Matching program output is not enough, because the inliner can fold the call away.
+- **An evaluation-order test fails on any swap.** Give each operand its own visible effect, such as a distinct `print` or a distinct panic, so that running any two in the other order changes the output. `cargo mutants` does not reorder operands, so no survivor flags a test that misses this.
 - **Complexity is tested by timeout, not by timing.** Use an input large enough to hang on a quadratic path, and give the test a nextest `terminate-after` override in `.config/nextest.toml`. Never assert on wall-clock time.
 
 ## Staging work across tasks
