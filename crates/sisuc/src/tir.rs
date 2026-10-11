@@ -16,14 +16,15 @@ pub(crate) struct FuncId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ClassId(pub(crate) usize);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Type {
     I64,
+    U8,
     Bool,
     Unit,
     Never,
     Class(ClassId),
-    /// Holds `I64`, `Bool` or `Class`.
+    /// Holds `I64`, `U8`, `Bool` or `Class`.
     Optional(Box<Type>),
 }
 
@@ -128,6 +129,8 @@ pub(crate) enum ExprKind {
     },
     /// A `T` where a `T?` is expected.
     Wrap(Box<Expr>),
+    /// `u8(e)` or `i64(e)`: `e` converted to the node's own type.
+    Convert(Box<Expr>),
     Print(Box<Expr>),
     Unary {
         op: UnaryOp,
@@ -174,15 +177,10 @@ pub(crate) enum ExprKind {
 impl Type {
     /// Whether a value of this type is an owned reference, which codegen counts.
     pub(crate) fn is_counted(&self) -> bool {
-        self.counted_class().is_some()
-    }
-
-    /// The class whose count a value of this type holds a reference to, if any.
-    pub(crate) fn counted_class(&self) -> Option<ClassId> {
         match self {
-            Type::Class(id) => Some(*id),
-            Type::Optional(payload) => payload.counted_class(),
-            _ => None,
+            Type::Class(_) => true,
+            Type::Optional(payload) => payload.is_counted(),
+            _ => false,
         }
     }
 }
@@ -199,6 +197,7 @@ impl Expr {
             ExprKind::Compare { operands, .. } => operands.iter().any(Expr::exits),
             ExprKind::Field { base: operand, .. }
             | ExprKind::Wrap(operand)
+            | ExprKind::Convert(operand)
             | ExprKind::Print(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
             ExprKind::Binary { lhs, rhs, .. }
@@ -247,6 +246,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Type::I64 => "i64",
+            Type::U8 => "u8",
             Type::Bool => "bool",
             Type::Unit => "unit",
             Type::Never => "never",
@@ -328,6 +328,7 @@ impl Printer<'_> {
 
     fn expr(&self, f: &mut fmt::Formatter<'_>, expr: &Expr) -> fmt::Result {
         match &expr.kind {
+            ExprKind::Int(n) if expr.ty == Type::U8 => write!(f, "{n}u8"),
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::None => f.write_str("None"),
@@ -344,6 +345,7 @@ impl Printer<'_> {
             }
             ExprKind::Field { base, index } => self.field(f, base, *index),
             ExprKind::Wrap(operand) => self.unary(f, "wrap", operand),
+            ExprKind::Convert(operand) => self.unary(f, &expr.ty.to_string(), operand),
             ExprKind::Print(operand) => self.unary(f, "print", operand),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
@@ -414,7 +416,10 @@ impl Printer<'_> {
     /// `(. base name)`.
     fn field(&self, f: &mut fmt::Formatter<'_>, base: &Expr, index: usize) -> fmt::Result {
         let Type::Class(class) = base.ty else {
-            panic!("checked: a field's base is a class, not `{}`", base.ty)
+            panic!(
+                "the checker should only emit a field access on a class-typed base, not `{}`",
+                base.ty
+            )
         };
         f.write_str("(. ")?;
         self.expr(f, base)?;

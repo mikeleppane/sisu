@@ -17,6 +17,10 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 - **No reachable crash lands in a stage.** A feature that a later task implements is rejected by the checker until then, never left to a codegen panic. The diagnostic names the task that removes it.
 - **A restriction on a type sits where the type is made.** Put it in the constructor every path goes through (as `optional_of` does), not where an annotation is read.
 
+## Code
+
+- **An `expect` message states the invariant.** Write what should hold and why, with "should", naming the thing involved: `the checker should reject \`break\` outside a loop`. The panic then reads as a broken assumption. "builder is positioned" describes success, and the error that follows it reads as noise.
+
 ## Diagnostics
 
 - **One rule, one message.** A rule reports the same wording wherever it fires: lexer or parser, inside or outside brackets.
