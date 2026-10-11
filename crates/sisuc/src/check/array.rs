@@ -15,7 +15,7 @@ impl Checker {
         elements: &[ast::Expr],
         expected: Option<&Type>,
     ) -> Checked {
-        if let Some(element) = element_of(expected) {
+        if let Some(element) = expected_element(expected) {
             let element = element.clone();
             let (checked, mismatched): (Vec<_>, Vec<_>) = elements
                 .iter()
@@ -142,7 +142,7 @@ impl Checker {
         len: &ast::Expr,
         expected: Option<&Type>,
     ) -> Checked {
-        let element = element_of(expected).cloned();
+        let element = expected_element(expected).cloned();
         // Without an element type, a `None` or `[]` cannot be inferred, unless `expected` is
         // `UNKNOWN`.
         let hint = element.as_ref().or(expected.filter(|ty| **ty == UNKNOWN));
@@ -286,7 +286,7 @@ pub(super) fn optional_array(base: &ast::Expr) -> Diagnostic {
 }
 
 /// `E`, when `expected` is `[E]` or `[E]?`.
-fn element_of(expected: Option<&Type>) -> Option<&Type> {
+fn expected_element(expected: Option<&Type>) -> Option<&Type> {
     match expected.map(payload) {
         Some(Type::Array(element)) => Some(element),
         _ => None,

@@ -34,7 +34,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             BinaryOp::Sub => self.checked(&intrinsic("sub"), l, r, span),
             BinaryOp::Mul => self.checked(&intrinsic("mul"), l, r, span),
             BinaryOp::Div | BinaryOp::Rem => self.division(op == BinaryOp::Rem, signed, l, r, span),
-            BinaryOp::And | BinaryOp::Or => unreachable!("handled above"),
+            BinaryOp::And | BinaryOp::Or => unreachable!(
+                "`binary` should send `and` and `or` to `short_circuit` before this match"
+            ),
         }
     }
 

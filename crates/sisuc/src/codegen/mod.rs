@@ -265,7 +265,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// A pointer to field `index` of `object`, whose type is `ty`.
     fn field_ptr(&self, ty: &Type, object: PointerValue<'ctx>, index: usize) -> PointerValue<'ctx> {
         let Type::Class(id) = ty else {
-            unreachable!("checked: only an object has fields")
+            unreachable!("the checker should only allow field access on a class-typed value")
         };
         // Element 0 is the count.
         let element = u32::try_from(index + 1).expect(
@@ -342,7 +342,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// slot then holds `null`, which releasing skips.
     fn move_local(&self, local: LocalId) -> BasicValueEnum<'ctx> {
         let Some(Slot::Alloca(ptr, ty)) = self.locals[local.0] else {
-            unreachable!("only a counted local moves, and every counted local has an `alloca`")
+            unreachable!(
+                "a moved local should have an `alloca`, since only counted locals move and each has one"
+            )
         };
         let value = self.builder.build_load(ty, ptr, "moved").expect(POSITIONED);
         self.store(ptr, ty.const_zero());
@@ -371,7 +373,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED)
             .try_as_basic_value()
             .basic()
-            .expect("the runtime declares `sisu_alloc` as returning a pointer")
+            .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
             .into_pointer_value();
         self.store(object, i64_type.const_int(1, false).into());
         let ty = Type::Class(class);
@@ -527,7 +529,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                     return;
                 };
                 let Some(Slot::Alloca(ptr, ty)) = self.locals[local.0] else {
-                    unreachable!("checked: only a `var` is assigned")
+                    unreachable!(
+                        "the checker should only let a `var` be assigned, and every `var` has an `alloca`"
+                    )
                 };
                 // The value first, then the store, then the release of the old value.
                 let counted = &self.types[local.0];
@@ -790,7 +794,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let bind = Some((*bind, bound));
                 self.if_expr(some, then_block, bind, else_block.as_ref(), &e.ty)
             }
-            _ => unreachable!("`expr` passes only optional nodes"),
+            _ => unreachable!("`expr` should pass `optional` only optional nodes"),
         }
     }
 

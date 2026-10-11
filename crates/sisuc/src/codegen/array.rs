@@ -114,7 +114,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED)
             .try_as_basic_value()
             .basic()
-            .expect("the runtime declares `sisu_alloc` as returning a pointer")
+            .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
             .into_pointer_value();
         self.store(array, i64_type.const_int(1, false).into());
         self.store(self.len_ptr(array), len.into());
@@ -165,7 +165,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         // values and never indexes into an aggregate, so the index list is valid for its
         // pointee type. `inbounds` is sound because the block holds the header and then its
         // length's elements, `offset` is where the elements start, and every caller passes
-        // an index below the length: `check_bounds` proved it, or a loop counts up to it.
+        // an index below the length: `check_bounds` proved it, a loop counts up to it, or
+        // `array_lit` stores at the constant indexes `0..n` of a block it just sized to `n`.
         // `unique` passes 0, whose address is at most one past the block's end, which
         // `inbounds` allows.
         unsafe {
@@ -514,7 +515,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             Helper::Drop => self.define_array_drop(element, function),
             Helper::Eq => self.define_array_eq(element, function),
             Helper::Unique => self.define_array_unique(element, function),
-            Helper::Release => unreachable!("`define_helpers` defines every `release` itself"),
+            Helper::Release => {
+                unreachable!("`define_helpers` should define every `release` itself")
+            }
         }
     }
 
