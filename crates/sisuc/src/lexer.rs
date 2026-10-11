@@ -1157,13 +1157,16 @@ mod tests {
 
     #[test]
     fn bracket_on_new_line_inside_brackets() {
-        let d = lex("fn main() { (a\n[0]) }").expect_err("source fails to lex");
-        assert_eq!(d.message, "`[` cannot start a line here");
-        assert_eq!(d.span, Span::new(15, 16));
-        assert_eq!(
-            d.help.as_deref(),
-            Some("add a comma, or put `[` on the line of its array")
-        );
+        for src in ["fn main() { (a\n[0]) }", "fn main() { [a\n[0]] }"] {
+            let d = lex(src).expect_err("source fails to lex");
+            assert_eq!(d.message, "`[` cannot start a line here", "{src}");
+            assert_eq!(d.span, Span::new(15, 16), "{src}");
+            assert_eq!(
+                d.help.as_deref(),
+                Some("add a comma, or put `[` on the line of its array"),
+                "{src}"
+            );
+        }
     }
 
     #[test]

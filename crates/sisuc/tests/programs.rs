@@ -531,12 +531,9 @@ fn panic_cases() {
             "u8(a)",
             "value does not fit in `u8`",
         ),
-        print_case(
-            "sum_overflow",
-            "let xs = [9_223_372_036_854_775_807, 1]",
-            "xs.sum()",
-            "integer overflow",
-        ),
+        sum_case("sum_overflow", "9_223_372_036_854_775_807, 1"),
+        // The total fits, but the running sum overflows at the second element.
+        sum_case("sum_overflow_midway", "9_223_372_036_854_775_807, 1, -1"),
         bounds_case(
             "bounds_at_length",
             "5",
@@ -594,6 +591,16 @@ fn print_case(
         name,
         format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
         format!("3:11: {message}"),
+    )
+}
+
+/// A `panic_cases` row whose `xs.sum()`, over the elements `elements`, overflows.
+fn sum_case(name: &'static str, elements: &str) -> (&'static str, String, String) {
+    print_case(
+        name,
+        &format!("let xs = [{elements}]"),
+        "xs.sum()",
+        "integer overflow",
     )
 }
 

@@ -82,10 +82,16 @@ fn main() {
         if i == 4 { break }
         print(i)                      // 0, 2, 3
     }
+    for i in 3..3 {
+        print(i)                      // never runs: the range is empty
+    }
+    print(-1)                         // -1
     deep(a)
 
     let order = [side(1); count(2)]   // 1, then 2
     print(order.len())                // 2
+    let listed = [side(3), side(4)]   // 3, then 4
+    print(listed.len())               // 2
     print(literal_exit(true))         // 0
     print(literal_exit(false))        // 2
     print(fill_exit(true))            // 0
