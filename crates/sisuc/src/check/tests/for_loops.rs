@@ -1,0 +1,136 @@
+//! `for` over arrays and ranges: the lowering, what the header accepts, and the loop variable.
+
+use super::*;
+
+#[test]
+fn lowers_for_over_array() {
+    contains(
+        "fn f(xs: [i64]) { for x in xs { print(x) } }\nfn main() {}",
+        &[
+            "(block (let #1 xs#0) (let #2 (len #1)) (var #3 0) (loop (block (if (< #3 #2) (block (let x#4 (index #1 #3)) (= #3 (+ #3 1)) (block (print x#4))) (block (break))))))",
+        ],
+    );
+}
+
+#[test]
+fn lowers_for_over_range() {
+    contains(
+        "fn f(n: i64) { for i in 0..n { print(i) } }\nfn main() {}",
+        &[
+            "(block (var #1 0) (let #2 n#0) (loop (block (if (< #1 #2) (block (let i#3 #1) (= #1 (+ #1 1)) (block (print i#3))) (block (break))))))",
+        ],
+    );
+}
+
+#[test]
+fn range_bounds_are_i64() {
+    errors(
+        "fn f(b: u8) { for i in 0..b {} }\nfn main() {}",
+        &[("expected `i64`, found `u8`", (1, 27))],
+    );
+}
+
+#[test]
+fn range_start_is_i64() {
+    errors(
+        "fn f(b: u8) { for i in b..0 {} }\nfn main() {}",
+        &[("expected `i64`, found `u8`", (1, 24))],
+    );
+}
+
+#[test]
+fn loop_variable_has_the_element_type() {
+    clean("fn f(xs: [u8]) { for x in xs { let y: u8 = x } }\nfn main() {}");
+    errors(
+        "fn f(xs: [u8]) { for x in xs { let y: bool = x } }\nfn main() {}",
+        &[("expected `bool`, found `u8`", (1, 46))],
+    );
+}
+
+#[test]
+fn for_needs_array() {
+    expect_error(
+        "fn main() { for x in 5 {} }",
+        "`for` needs an array or a range; this is `i64`",
+        (1, 22, "5"),
+        None,
+        &[],
+        None,
+    );
+}
+
+#[test]
+fn for_over_an_optional_array() {
+    expect_error(
+        "fn f(m: [i64]?) { for x in m {} }\nfn main() {}",
+        "`m` may be `None`",
+        (1, 28, "m"),
+        None,
+        &[],
+        Some("unwrap it with `if let`"),
+    );
+}
+
+#[test]
+fn loop_variable_is_immutable() {
+    expect_error(
+        "fn f(xs: [i64]) {\n    for x in xs {\n        x = 1\n    }\n}\nfn main() {}",
+        "cannot assign to `x`",
+        (3, 9, "x = 1"),
+        None,
+        &[(2, 9, "bound by `for` here")],
+        None,
+    );
+}
+
+#[test]
+fn loop_variable_ends_with_the_loop() {
+    errors(
+        "fn f(xs: [i64]) {\n    for x in xs {}\n    print(x)\n}\nfn main() {}",
+        &[("cannot find `x` in this scope", (3, 11))],
+    );
+}
+
+/// The outer `x` is `bool`, the loop's is `i64`: each typed use clean pins which one it resolves to.
+#[test]
+fn loop_variable_shadows_an_outer_binding() {
+    clean(
+        "fn f(xs: [i64]) {\n    let x = true\n    for x in xs {\n        let a: i64 = x\n    }\n    let b: bool = x\n}\nfn main() {}",
+    );
+}
+
+#[test]
+fn break_and_continue_work_in_for() {
+    clean(
+        "fn f(xs: [i64]) {\n    for x in xs {\n        if x == 1 { continue }\n        if x == 2 { break }\n    }\n}\nfn main() {}",
+    );
+}
+
+#[test]
+fn for_has_no_value() {
+    error(
+        "fn f(xs: [i64]) -> i64 { for x in xs {} }\nfn main() {}",
+        "function `f` must return `i64`, but its body has no value",
+        (1, 41),
+    );
+}
+
+#[test]
+fn for_poison() {
+    errors(
+        "fn main() {\n    for x in nope { print(x + true) }\n}",
+        &[("cannot find `nope` in this scope", (2, 14))],
+    );
+}
+
+#[test]
+fn bad_range_bound_still_checks_the_body() {
+    // `i` is `i64` whatever the bounds are, so the body's own error is real.
+    errors(
+        "fn main() {\n    for i in nope..3 { print(i + true) }\n}",
+        &[
+            ("cannot find `nope` in this scope", (2, 14)),
+            ("expected `i64`, found `bool`", (2, 34)),
+        ],
+    );
+}

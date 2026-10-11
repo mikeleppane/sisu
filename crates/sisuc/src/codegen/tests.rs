@@ -464,3 +464,123 @@ fn u8_compare_is_unsigned() {
     .to_string();
     assert!(ir.contains("icmp ult i8"), "missing `icmp ult i8` in\n{ir}");
 }
+
+/// A block is the 16-byte header, then the elements at their ABI size.
+#[test]
+fn literal_allocates_header_and_elements() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn main() {\n    let a = [1, 2, 3]\n    let b = [true, false]\n    let c: [i64?] = [None, 1]\n}",
+    )
+    .print_to_string()
+    .to_string();
+    // 16 + 3 * 8, 16 + 2 * 1 and 16 + 2 * 16 bytes, aligned to the header's 8.
+    for wanted in [
+        "call ptr @sisu_alloc(i64 40, i64 8)",
+        "call ptr @sisu_alloc(i64 18, i64 8)",
+        "call ptr @sisu_alloc(i64 48, i64 8)",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+}
+
+/// Reading `xs[i]` from a local neither retains nor releases the array.
+#[test]
+fn fast_path_skips_base_count() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(xs: [i64]) -> [i64] {\n    print(xs[0] + xs[1])\n    xs\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "define ptr @sisu.f(ptr");
+    let (before, _) = body
+        .split_once("call void @sisu_print_int(")
+        .unwrap_or_else(|| panic!("no print in\n{body}"));
+    for unwanted in ["@sisu_rc.retain(", "@\"sisu_rc.release.[i64]\"("] {
+        assert!(
+            !before.contains(unwanted),
+            "{unwanted:?} before the print in\n{body}"
+        );
+    }
+}
+
+/// Only `drop.[[Node]]` asks for `release.[Node]`: the worklist must define it too.
+#[test]
+fn nested_array_helpers_are_defined() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class Node {}\nfn main() {\n    let g = [[Node()]]\n}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "define void @\"sisu_rc.drop.[[Node]]\"(ptr",
+        "define void @\"sisu_rc.release.[Node]\"(ptr",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+}
+
+/// A base that is not a local is released, after the element is loaded.
+#[test]
+fn general_path_releases_base() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn make() -> [i64] { [1] }\nfn f() -> i64 { make()[0] }\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "define i64 @sisu.f()");
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    // `f` returns the element it loaded.
+    let element = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("ret i64 "))
+        .unwrap_or_else(|| panic!("no `ret i64` in\n{body}"));
+    let load = lines
+        .iter()
+        .position(|l| l.starts_with(&format!("{element} = load i64, ptr ")))
+        .unwrap_or_else(|| panic!("no load of {element} in\n{body}"));
+    let release = lines
+        .iter()
+        .position(|l| l.starts_with("call void @\"sisu_rc.release.[i64]\"(ptr "))
+        .unwrap_or_else(|| panic!("no release of the base in\n{body}"));
+    assert!(load < release, "{body}");
+}
+
+/// An index built only from whitelisted nodes keeps the fast path; one with a call takes the
+/// general path, which releases the base before the element is printed.
+#[test]
+fn fast_path_follows_the_index_whitelist() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class O {\n    let n: i64\n}\nfn g() -> i64 { 0 }\n\
+         fn unary(xs: [i64], i: i64) -> [i64] {\n    print(xs[-i + 1])\n    xs\n}\n\
+         fn convert(xs: [i64], b: u8) -> [i64] {\n    print(xs[i64(b)])\n    xs\n}\n\
+         fn field(xs: [i64], o: O) -> [i64] {\n    print(xs[o.n])\n    xs\n}\n\
+         fn length(xs: [i64], ys: [bool]) -> [i64] {\n    print(xs[ys.len()])\n    xs\n}\n\
+         fn call(xs: [i64]) -> [i64] {\n    print(xs[1 + g()])\n    xs\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for (name, fast) in [
+        ("unary", true),
+        ("convert", true),
+        ("field", true),
+        ("length", true),
+        ("call", false),
+    ] {
+        let body = function_body(&ir, &format!("define ptr @sisu.{name}("));
+        let (before, _) = body
+            .split_once("call void @sisu_print_int(")
+            .unwrap_or_else(|| panic!("no print in\n{body}"));
+        let released = before.contains("@\"sisu_rc.release.[i64]\"(");
+        assert_eq!(released, !fast, "{name}:\n{body}");
+    }
+}

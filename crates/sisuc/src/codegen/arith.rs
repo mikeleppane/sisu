@@ -50,8 +50,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// `lhs op rhs` through `intrinsic`, an `llvm.{s,u}*.with.overflow` overloaded on the
-    /// operands' width, that returns the wrapped result and an overflow flag; the flag
-    /// branches to an "integer overflow" panic.
+    /// operands' width; the overflow flag branches to an "integer overflow" panic.
     pub(super) fn checked(
         &self,
         intrinsic: &str,
@@ -59,6 +58,19 @@ impl<'ctx> Codegen<'ctx, '_> {
         rhs: IntValue<'ctx>,
         span: Span,
     ) -> IntValue<'ctx> {
+        let (result, overflow) = self.overflowing(intrinsic, lhs, rhs);
+        self.panic_if(overflow, span, "integer overflow");
+        result
+    }
+
+    /// `lhs op rhs` through `intrinsic`, as for `checked`: the wrapped result and the
+    /// overflow flag.
+    pub(super) fn overflowing(
+        &self,
+        intrinsic: &str,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+    ) -> (IntValue<'ctx>, IntValue<'ctx>) {
         let function = Intrinsic::find(intrinsic)
             .expect("LLVM should provide the `llvm.*.with.overflow` intrinsics by name")
             .get_declaration(&self.module, &[lhs.get_type().into()])
@@ -77,9 +89,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect("the overflow pair should have a value at index 0 and a flag at index 1")
                 .into_int_value()
         };
-        let (result, overflow) = (field(0, "result"), field(1, "overflow"));
-        self.panic_if(overflow, span, "integer overflow");
-        result
+        (field(0, "result"), field(1, "overflow"))
     }
 
     /// `lhs / rhs` or `lhs % rhs`: panics on a zero divisor, then, when `signed`, on

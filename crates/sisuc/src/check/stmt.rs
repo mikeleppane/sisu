@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use super::array::optional_array;
 use super::expr::{literal_type, local, operator};
 use super::{
     Binding, BindingKind, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, not_found, type_of,
@@ -142,6 +143,7 @@ impl Checker {
                     },
                 )))
             }
+            StmtKind::For { name, source, body } => self.for_loop(stmt.span, name, source, body),
             StmtKind::Return(value) => self.return_stmt(stmt.span, value.as_ref()),
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
@@ -177,6 +179,159 @@ impl Checker {
             }
             StmtKind::Expr(e) => self.expr(e, expected).map(tir::Stmt::Expr),
         }
+    }
+
+    /// `for`, lowered to a `Loop` as in the spec's table: over an array `s` through `s[i]`
+    /// with `i < s.len()`, over a range through `i < end`. The locals are the source's, the
+    /// fresh ones, then the loop variable.
+    fn for_loop(
+        &mut self,
+        span: Span,
+        name: &ast::Ident,
+        source: &ast::ForSource,
+        body: &ast::Block,
+    ) -> Result<tir::Stmt, Poisoned> {
+        let expr = |kind, ty| tir::Expr { kind, ty, span };
+        let (header, bound) = match source {
+            ast::ForSource::Array(e) => self.for_array(span, e),
+            ast::ForSource::Range { start, end } => self.for_range(span, start, end),
+        };
+        self.loop_depth += 1;
+        let (x, body) = self.unwrapping_block("for", name, bound, body, None);
+        self.loop_depth -= 1;
+        let (Some(header), Ok(body)) = (header, body) else {
+            return Err(Poisoned::typed(Type::Unit));
+        };
+        // The body keeps its own type, so codegen releases a counted tail value.
+        let body_ty = body.ty.clone();
+        let ForHeader {
+            mut stmts,
+            counter,
+            limit,
+            item,
+        } = header;
+        let at = |local_id| local(local_id, Type::I64, span);
+        let next = ExprKind::Binary {
+            op: tir::BinaryOp::Add,
+            lhs: Box::new(at(counter)),
+            rhs: Box::new(expr(ExprKind::Int(1), Type::I64)),
+        };
+        // The counter moves on before the body runs, so `continue` needs nothing more.
+        let then_block = tir::Block {
+            stmts: vec![
+                tir::Stmt::Let {
+                    local: x,
+                    init: item,
+                },
+                tir::Stmt::Assign {
+                    place: tir::Place::Local(counter),
+                    value: expr(next, Type::I64),
+                },
+                tir::Stmt::Expr(expr(ExprKind::Block(body), body_ty)),
+            ],
+            value: None,
+            ty: Type::Unit,
+        };
+        let cond = ExprKind::Compare {
+            operands: vec![at(counter), at(limit)],
+            ops: vec![tir::CompareOp::Lt],
+        };
+        stmts.push(tir::Stmt::Expr(lower_loop(
+            then_block,
+            span,
+            |then_block, exit| ExprKind::If {
+                cond: Box::new(expr(cond, Type::Bool)),
+                then_block,
+                else_block: Some(exit),
+            },
+        )));
+        Ok(tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span)))
+    }
+
+    /// The header of `for x in e`, and the type of `x`: the element type, `None` (`Error`) when
+    /// `e` is no array.
+    fn for_array(&mut self, span: Span, e: &ast::Expr) -> (Option<ForHeader>, Option<Type>) {
+        let checked = self.value(e, None);
+        let (element, d) = match type_of(&checked) {
+            Some(Type::Array(element)) => (Some((**element).clone()), None),
+            Some(Type::Optional(payload)) if matches!(**payload, Type::Array(_)) => {
+                (None, Some(optional_array(e)))
+            }
+            Some(ty) => {
+                let message = format!("`for` needs an array or a range; this is {}", self.show(ty));
+                (None, Some(Diagnostic::error(e.span, message)))
+            }
+            None => (None, None),
+        };
+        self.diagnostics.extend(d);
+        let ty = type_of(&checked).cloned().unwrap_or(Type::Unit);
+        let array = self.fresh(ty.clone());
+        let len = self.fresh(Type::I64);
+        let counter = self.fresh_var(Type::I64);
+        let (Ok(checked), Some(element)) = (checked, element.clone()) else {
+            return (None, element);
+        };
+        let expr = |kind, ty| tir::Expr { kind, ty, span };
+        let read = || local(array, ty.clone(), e.span);
+        let stmts = vec![
+            tir::Stmt::Let {
+                local: array,
+                init: checked,
+            },
+            tir::Stmt::Let {
+                local: len,
+                init: expr(ExprKind::Len(Box::new(read())), Type::I64),
+            },
+            tir::Stmt::Let {
+                local: counter,
+                init: expr(ExprKind::Int(0), Type::I64),
+            },
+        ];
+        let item = ExprKind::Index {
+            base: Box::new(read()),
+            index: Box::new(local(counter, Type::I64, span)),
+        };
+        let header = ForHeader {
+            stmts,
+            counter,
+            limit: len,
+            item: expr(item, element.clone()),
+        };
+        (Some(header), Some(element))
+    }
+
+    /// The header of `for x in start..end`, and the type of `x`, `i64`.
+    fn for_range(
+        &mut self,
+        span: Span,
+        start: &ast::Expr,
+        end: &ast::Expr,
+    ) -> (Option<ForHeader>, Option<Type>) {
+        let start = self.expect(start, Some(&Type::I64));
+        let end = self.expect(end, Some(&Type::I64));
+        let counter = self.fresh_var(Type::I64);
+        let limit = self.fresh(Type::I64);
+        let (Ok(start), Ok(end)) = (start, end) else {
+            return (None, Some(Type::I64));
+        };
+        let stmts = vec![
+            tir::Stmt::Let {
+                local: counter,
+                init: start,
+            },
+            tir::Stmt::Let {
+                local: limit,
+                init: end,
+            },
+        ];
+        let item = local(counter, Type::I64, span);
+        let header = ForHeader {
+            stmts,
+            counter,
+            limit,
+            item,
+        };
+        (Some(header), Some(Type::I64))
     }
 
     /// `return`, of type `never` even when it fails.
@@ -406,11 +561,20 @@ impl Checker {
 
     /// A new local with no source name, for a value the lowering binds.
     pub(super) fn fresh(&mut self, ty: Type) -> tir::LocalId {
+        self.fresh_local(ty, false)
+    }
+
+    /// `fresh`, mutable: a counter the lowering steps.
+    fn fresh_var(&mut self, ty: Type) -> tir::LocalId {
+        self.fresh_local(ty, true)
+    }
+
+    fn fresh_local(&mut self, ty: Type, mutable: bool) -> tir::LocalId {
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
             name: None,
             ty,
-            mutable: false,
+            mutable,
         });
         local
     }
@@ -531,6 +695,15 @@ impl Checker {
             .rev()
             .find_map(|scope| scope.get_mut(name))
     }
+}
+
+/// What a `for` binds before its `Loop`: `stmts` bind the source and the counter, which runs
+/// to `limit`, and `item` is the value of the loop variable for the current counter.
+struct ForHeader {
+    stmts: Vec<tir::Stmt>,
+    counter: tir::LocalId,
+    limit: tir::LocalId,
+    item: tir::Expr,
 }
 
 /// The type a statement gives its block when it comes last.

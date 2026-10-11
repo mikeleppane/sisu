@@ -1,6 +1,7 @@
 //! The checker: signatures, scopes, names and types. It lowers the program to `tir` as it
 //! checks, and records every error instead of stopping at the first.
 
+mod array;
 mod expr;
 mod stmt;
 
@@ -403,18 +404,23 @@ impl Checker {
 
     /// `None`, reported at the name without its `?`, for an unknown type.
     fn resolve(&mut self, ty: &ast::TypeExpr) -> Option<Type> {
-        let name = ty.name.as_str();
-        let named = if let Some(named) = built_in_type(name) {
-            named
-        } else if let Some(&id) = self.class_ids.get(name) {
-            Type::Class(id)
-        } else {
-            let span = Span::new(ty.span.start, ty.span.start + name.len());
-            self.diagnostics.push(
-                Diagnostic::error(span, format!("unknown type `{name}`"))
-                    .help("the types are `i64`, `u8`, `bool` and classes"),
-            );
-            return None;
+        let named = match &ty.kind {
+            ast::TypeKind::Array(element) => Type::Array(Box::new(self.resolve(element)?)),
+            ast::TypeKind::Name(name) => {
+                if let Some(named) = built_in_type(name) {
+                    named
+                } else if let Some(&id) = self.class_ids.get(name) {
+                    Type::Class(id)
+                } else {
+                    let span = Span::new(ty.span.start, ty.span.start + name.len());
+                    self.diagnostics.push(
+                        Diagnostic::error(span, format!("unknown type `{name}`")).help(
+                            "the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`",
+                        ),
+                    );
+                    return None;
+                }
+            }
         };
         if !ty.optional {
             return Some(named);
@@ -507,6 +513,7 @@ impl Checker {
     fn type_name(&self, ty: &Type) -> String {
         match ty {
             Type::Class(id) => self.classes[id.0].name.name.clone(),
+            Type::Array(element) => format!("[{}]", self.type_name(element)),
             Type::Optional(payload) => format!("{}?", self.type_name(payload)),
             ty => ty.to_string(),
         }

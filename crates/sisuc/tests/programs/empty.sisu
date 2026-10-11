@@ -1,0 +1,26 @@
+// Empty arrays: `[]` and `[v; 0]` have length 0, a `for` over one runs no times, and two
+// empty arrays are equal. `[[1]; 0]` releases `[1]` once.
+class Node {}
+
+fn main() {
+    let a: [i64] = []
+    print(a.len())          // 0
+    for x in a {
+        print(x)
+    }
+    print(a == [])          // true
+
+    let b: [[Node]] = []
+    print(b.len())          // 0
+    for x in b {
+        print(x.len())
+    }
+    print(b == [])          // true
+
+    let c = [[1]; 0]
+    print(c.len())          // 0
+    for x in c {
+        print(x[0])
+    }
+    print(c == [[2]; 0])    // true
+}

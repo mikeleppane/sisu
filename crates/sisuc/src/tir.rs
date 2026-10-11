@@ -24,7 +24,9 @@ pub(crate) enum Type {
     Unit,
     Never,
     Class(ClassId),
-    /// Holds `I64`, `U8`, `Bool` or `Class`.
+    /// `[T]`.
+    Array(Box<Type>),
+    /// Holds `I64`, `U8`, `Bool`, `Class` or `Array`.
     Optional(Box<Type>),
 }
 
@@ -132,6 +134,20 @@ pub(crate) enum ExprKind {
     /// `u8(e)` or `i64(e)`: `e` converted to the node's own type.
     Convert(Box<Expr>),
     Print(Box<Expr>),
+    /// `[a, b]`.
+    ArrayLit(Vec<Expr>),
+    /// `[value; len]`.
+    ArrayFill {
+        value: Box<Expr>,
+        len: Box<Expr>,
+    },
+    /// `base[index]`.
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+    /// `base.len()`.
+    Len(Box<Expr>),
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,
@@ -178,7 +194,7 @@ impl Type {
     /// Whether a value of this type is an owned reference, which codegen counts.
     pub(crate) fn is_counted(&self) -> bool {
         match self {
-            Type::Class(_) => true,
+            Type::Class(_) | Type::Array(_) => true,
             Type::Optional(payload) => payload.is_counted(),
             _ => false,
         }
@@ -194,15 +210,26 @@ impl Expr {
             ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
                 args.iter().any(Expr::exits)
             }
-            ExprKind::Compare { operands, .. } => operands.iter().any(Expr::exits),
+            ExprKind::Compare { operands, .. } | ExprKind::ArrayLit(operands) => {
+                operands.iter().any(Expr::exits)
+            }
             ExprKind::Field { base: operand, .. }
+            | ExprKind::Len(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
             | ExprKind::Print(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
             ExprKind::Binary { lhs, rhs, .. }
             | ExprKind::Equal { lhs, rhs, .. }
-            | ExprKind::Is { lhs, rhs } => lhs.exits() || rhs.exits(),
+            | ExprKind::Is { lhs, rhs }
+            | ExprKind::ArrayFill {
+                value: lhs,
+                len: rhs,
+            }
+            | ExprKind::Index {
+                base: lhs,
+                index: rhs,
+            } => lhs.exits() || rhs.exits(),
             ExprKind::If {
                 cond,
                 then_block,
@@ -252,6 +279,7 @@ impl fmt::Display for Type {
             Type::Never => "never",
             // A class's name lives in the program: `Program::type_name` prints it.
             Type::Class(id) => return write!(f, "class#{}", id.0),
+            Type::Array(element) => return write!(f, "[{element}]"),
             Type::Optional(payload) => return write!(f, "{payload}?"),
         })
     }
@@ -347,6 +375,14 @@ impl Printer<'_> {
             ExprKind::Wrap(operand) => self.unary(f, "wrap", operand),
             ExprKind::Convert(operand) => self.unary(f, &expr.ty.to_string(), operand),
             ExprKind::Print(operand) => self.unary(f, "print", operand),
+            ExprKind::ArrayLit(elements) => {
+                f.write_str("(array")?;
+                self.each(f, elements)?;
+                f.write_str(")")
+            }
+            ExprKind::ArrayFill { value, len } => self.binary(f, "array-fill", value, len),
+            ExprKind::Index { base, index } => self.binary(f, "index", base, index),
+            ExprKind::Len(base) => self.unary(f, "len", base),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
             ExprKind::Compare { operands, ops } => {
@@ -466,9 +502,10 @@ impl Program {
     }
 
     /// A type as `--emit tir` prints it: a class by its name.
-    fn type_name(&self, ty: &Type) -> String {
+    pub(crate) fn type_name(&self, ty: &Type) -> String {
         match ty {
             Type::Class(id) => self.classes[id.0].name.clone(),
+            Type::Array(element) => format!("[{}]", self.type_name(element)),
             Type::Optional(payload) => format!("{}?", self.type_name(payload)),
             ty => ty.to_string(),
         }

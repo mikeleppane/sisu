@@ -3,6 +3,8 @@ use crate::diagnostic::line_col;
 use crate::lexer::lex;
 use crate::parser::parse;
 
+mod arrays;
+mod for_loops;
 mod u8;
 
 fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
@@ -18,6 +20,14 @@ fn lowered(src: &str) -> String {
     let (program, ds) = checked(src);
     assert!(ds.is_empty(), "{ds:?}");
     program.expect("no errors").to_string()
+}
+
+/// Asserts that `src` checks clean and its `tir` contains each of `parts`.
+fn contains(src: &str, parts: &[&str]) {
+    let printed = lowered(src);
+    for part in parts {
+        assert!(printed.contains(part), "{part} in {printed}");
+    }
 }
 
 /// Asserts the diagnostics are exactly these errors, in order: `(message, (line, col))`,
@@ -165,7 +175,7 @@ fn unknown_type() {
         (1, 20, "str"),
         None,
         &[],
-        Some("the types are `i64`, `u8`, `bool` and classes"),
+        Some("the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`"),
     );
 }
 
@@ -640,7 +650,7 @@ fn unknown_type_in_signature() {
         (1, 9, "str"),
         None,
         &[],
-        Some("the types are `i64`, `u8`, `bool` and classes"),
+        Some("the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`"),
     );
 }
 

@@ -10,8 +10,8 @@ use crate::tir::{self, Type};
 
 impl Checker {
     /// `expected` is the type the context wants, `None` when it wants none. It only types a
-    /// `None` and an integer literal, and flows into `if` and `if let` branches, a block's
-    /// value, arithmetic and unary `-`; it never wraps.
+    /// `None`, a `[]` and an integer literal, and flows into `if` and `if let` branches, a
+    /// block's value, array elements, arithmetic and unary `-`; it never wraps.
     pub(super) fn expr(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let node = |kind, ty| {
             Ok(tir::Expr {
@@ -31,6 +31,9 @@ impl Checker {
                 node(tir::ExprKind::Int(*n), ty)
             }
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
+            ExprKind::ArrayLit(elements) => self.array_lit(e.span, elements, expected),
+            ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
+            ExprKind::Index { base, index } => self.index(e.span, base, index),
             ExprKind::NoneLit => self.none(e.span, expected),
             ExprKind::Name(name) => match self.lookup(name) {
                 Some(Binding {
@@ -348,6 +351,12 @@ impl Checker {
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
             // Once an operand is `Error`, the later one is not held to `is`.
             let Some(ty) = type_of(checked) else { break };
+            if matches!(payload(ty), Type::Array(_)) {
+                let message = "`is` compares class objects; arrays are values";
+                self.diagnostics
+                    .push(Diagnostic::error(side.span, message).help("use `==`"));
+                return Err(Poisoned::error());
+            }
             if !ty.is_counted() {
                 let message = format!("`is` needs objects; found {}", self.show(ty));
                 self.diagnostics
@@ -693,6 +702,10 @@ impl Checker {
         method: &ast::Ident,
         args: &[ast::Arg],
     ) -> Checked {
+        if let Some(ty @ Type::Array(_)) = type_of(&receiver) {
+            let ty = ty.clone();
+            return self.array_method(span, receiver, &ty, method, args);
+        }
         let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method) else {
             self.labels(args);
             self.stray(args);
@@ -790,7 +803,7 @@ impl Checker {
     }
 
     /// Reports each labeled argument, as only a constructor takes labels. Whether there was one.
-    fn labels(&mut self, args: &[ast::Arg]) -> bool {
+    pub(super) fn labels(&mut self, args: &[ast::Arg]) -> bool {
         let mut labeled = false;
         for label in args.iter().filter_map(|a| a.label.as_ref()) {
             self.diagnostics.push(Diagnostic::error(
@@ -897,6 +910,11 @@ impl Checker {
                     no_member("field", &self.show(ty), name)
                 }
             }
+            Type::Array(_) if name.name == "len" => Diagnostic::error(
+                name.span,
+                format!("`len` is a method of {}, not a field", self.show(ty)),
+            )
+            .help("call it: `len()`"),
             Type::Optional(_) => may_be_none(receiver),
             _ => no_member("field", &self.show(ty), name),
         };
@@ -950,6 +968,10 @@ impl Checker {
         };
         let checked = self.expr(&arg.value, None);
         let error = match type_of(&checked) {
+            Some(ty) if matches!(payload(ty), Type::Array(_)) => {
+                Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
+                    .help("print each element in a `for` loop")
+            }
             Some(Type::Unit | Type::Class(_) | Type::Optional(_)) => wrong(),
             Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
             _ => {
@@ -965,7 +987,7 @@ impl Checker {
     }
 
     /// Checks the arguments of a call that cannot take them, for their own mistakes.
-    fn stray(&mut self, args: &[ast::Arg]) {
+    pub(super) fn stray(&mut self, args: &[ast::Arg]) {
         for arg in args {
             // Only its diagnostics matter.
             let _ = self.expr(&arg.value, Some(&UNKNOWN));
@@ -1013,10 +1035,11 @@ pub(super) fn literal_type(ty: Option<&Type>) -> Type {
 }
 
 /// Which side of an `if`, `if let` or `==` with no expected type is checked first, the lower
-/// first: a concrete value is 0, an `int_literal` 1, a bare `None` 2.
-fn rank(e: &ast::Expr) -> u8 {
-    match e.kind {
+/// first: a concrete value is 0, an `int_literal` 1, a bare `None` or `[]` 2.
+pub(super) fn rank(e: &ast::Expr) -> u8 {
+    match &e.kind {
         ExprKind::NoneLit => 2,
+        ExprKind::ArrayLit(elements) if elements.is_empty() => 2,
         _ if int_literal(e) => 1,
         _ => 0,
     }
@@ -1028,7 +1051,7 @@ fn block_rank(block: &ast::Block) -> u8 {
 }
 
 /// Whether `e` is the bare literal `None`.
-fn none_literal(e: &ast::Expr) -> bool {
+pub(super) fn none_literal(e: &ast::Expr) -> bool {
     matches!(e.kind, ExprKind::NoneLit)
 }
 
@@ -1069,7 +1092,7 @@ fn if_some(
 }
 
 /// Whether a branch of type `ty` fits the expected `want`: as is, or as its payload.
-fn fits(want: &Type, ty: &Type) -> bool {
+pub(super) fn fits(want: &Type, ty: &Type) -> bool {
     want == ty || matches!(want, Type::Optional(payload) if **payload == *ty)
 }
 
@@ -1090,7 +1113,7 @@ fn may_be_none(receiver: &ast::Expr) -> Diagnostic {
 }
 
 /// `e` as messages quote it: its path in backticks, or "this value".
-fn quoted(e: &ast::Expr) -> String {
+pub(super) fn quoted(e: &ast::Expr) -> String {
     path(e).map_or_else(|| "this value".to_owned(), |p| format!("`{p}`"))
 }
 
@@ -1107,7 +1130,7 @@ pub(super) fn path(e: &ast::Expr) -> Option<String> {
 }
 
 /// "`P` has no field `z`": `owner` is the type as `show` quotes it.
-fn no_member(kind: &str, owner: &str, name: &ast::Ident) -> Diagnostic {
+pub(super) fn no_member(kind: &str, owner: &str, name: &ast::Ident) -> Diagnostic {
     Diagnostic::error(name.span, format!("{owner} has no {kind} `{}`", name.name))
 }
 
@@ -1155,7 +1178,12 @@ fn misplaced(
 /// The node `kind` makes, of type `ty`. `kind` is `None` when an operand failed; the node
 /// keeps `ty`, which its rule fixes whatever its operands are, unless the rule itself
 /// reported a `mismatched` operand: a rule that failed makes its expression `Error`.
-fn typed(span: Span, ty: Type, mismatched: bool, kind: Option<tir::ExprKind>) -> Checked {
+pub(super) fn typed(
+    span: Span,
+    ty: Type,
+    mismatched: bool,
+    kind: Option<tir::ExprKind>,
+) -> Checked {
     match kind {
         Some(kind) => Ok(tir::Expr { kind, ty, span }),
         None => Err(Poisoned::of((!mismatched).then_some(ty))),
