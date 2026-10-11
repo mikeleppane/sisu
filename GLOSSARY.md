@@ -48,8 +48,9 @@ value: binding it, passing it or storing it behaves as a copy.
 _Avoid_: list, vector (a growable collection, milestone 11)
 
 **Copy-on-write**:
-How arrays behave as values without copying eagerly: holders share one block,
-and a write to an element copies the block first when another holder exists.
+How arrays and strings behave as values without copying eagerly: holders
+share one block, and a write (to an array element, or `+=` on a string)
+copies the block first when another holder exists.
 _Avoid_: lazy copy
 
 **Last use**:
@@ -61,6 +62,19 @@ _Avoid_: move (the compiler's name for the node, not the language rule)
 **Range**:
 The `a..b` in a `for` header, covering `a` up to but not including `b`. It is
 not a value and appears nowhere else.
+
+## Text
+
+**`string`**:
+A sequence of bytes that is always valid UTF-8. A string is a value, like an
+array. Two strings are equal when their bytes are equal; there is no Unicode
+normalisation.
+_Avoid_: str, text
+
+**`char`**:
+One Unicode scalar value: a code point that is not a surrogate.
+_Avoid_: character (readers take it to mean what they see, which can be
+several scalar values)
 
 ## Classes and objects
 
@@ -158,6 +172,12 @@ A reference, held in a `weak` field, that does not keep its object alive and
 reads as `None` once the object has been dropped.
 _Avoid_: unowned
 
+**Counted type**:
+A type whose values are shared blocks carrying a reference count: classes,
+arrays and strings, and optionals of them. Copying such a value copies a
+pointer and raises the count; `i64`, `u8`, `bool` and `char` are copied whole and are not counted.
+_Avoid_: reference type, heap type
+
 **Owned reference**:
-A reference that its holder must release exactly once. Every expression of
-class or array type yields one.
+A reference that its holder must release exactly once. Every expression of a
+counted type yields one.

@@ -336,7 +336,7 @@ Each is small once its milestone's main feature exists:
 - Milestone 7: alternative patterns, `1 | 3 => ...`, and guards,
   `n if n > 0 => ...`. The exhaustiveness check treats a guarded arm as
   possibly not matching.
-- Milestone 8: type aliases, `type Index = Map<String, [i64]>`. An alias is
+- Milestone 8: type aliases, `type Index = Map<string, [i64]>`. An alias is
   another name for the same type, so it adds no type safety; for a distinct
   type, use a newtype (milestone 10). Also `echo x`, which prints `x` with its file
   and line and returns `x`, so it can wrap any expression while debugging.
@@ -501,7 +501,7 @@ The model takes isolation from Elixir and typed channels from Go:
 
 ```rust
 fn main() {
-    let lines = Channel<String>(capacity: 100)
+    let lines = Channel<string>(capacity: 100)
     let total = scope(s => {
         s.spawn(() => {
             for line in read_lines("big.txt") { lines.send(line) }
