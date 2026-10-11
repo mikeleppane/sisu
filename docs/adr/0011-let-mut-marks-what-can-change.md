@@ -29,7 +29,7 @@ with no commas, as statements end at a newline (ADR 0001):
 
 ```
 class Player {
-    name: String
+    name: string
     mut hp: i64
 
     fn hit(self, damage: i64) {
