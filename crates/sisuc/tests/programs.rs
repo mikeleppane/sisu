@@ -114,154 +114,105 @@ fn assert_panics(out: &Output, stdout: &str, stderr: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stderr), stderr);
 }
 
-#[test]
-fn hello() {
-    assert_prints_out_file("hello");
+/// One test per program in `tests/programs` that exits 0, named after the program unless it
+/// gives `test = "file"`, plus `OUT_FILE_PROGRAMS`, the list `every_program_has_a_run` checks.
+macro_rules! out_file_tests {
+    (@file $test:ident $file:literal) => {
+        $file
+    };
+    (@file $test:ident) => {
+        stringify!($test)
+    };
+    ($($test:ident $(= $file:literal)?),* $(,)?) => {
+        const OUT_FILE_PROGRAMS: &[&str] = &[$(out_file_tests!(@file $test $($file)?)),*];
+        $(
+            #[test]
+            fn $test() {
+                assert_prints_out_file(out_file_tests!(@file $test $($file)?));
+            }
+        )*
+    };
 }
 
-#[test]
-fn fib() {
-    assert_prints_out_file("fib");
+out_file_tests! {
+    hello,
+    fib,
+    semantics,
+    primes,
+    loops,
+    break_continue,
+    short_circuit,
+    loop_return,
+    bool_var,
+    objects,
+    ownership,
+    field_order,
+    unwrap,
+    list,
+    for_range_releases_the_body_tail = "for_range_drop",
+    drops,
+    tree,
+    optionals,
+    bytes,
+    unsigned,
+    arrays,
+    empty_arrays = "empty",
+    values,
+    life,
+    moves,
+    methods,
+    sieve,
+    handover,
+    copies,
+    walk,
 }
 
-#[test]
-fn semantics() {
-    assert_prints_out_file("semantics");
-}
+/// The programs the small-stack tests run. They skip `assert_prints_out_file`: a million
+/// objects under Valgrind is too slow, and `deepchain` overflows on purpose.
+const SMALL_STACK: [&str; 3] = ["longlist", "rightskew", "deepchain"];
 
+/// Each program in `tests/programs` has exactly one kind of run: an `.out` file and a test from
+/// `out_file_tests!`, a `PANICS` row, or a small-stack test.
 #[test]
-fn primes() {
-    assert_prints_out_file("primes");
-}
-
-#[test]
-fn loops() {
-    assert_prints_out_file("loops");
-}
-
-#[test]
-fn break_continue() {
-    assert_prints_out_file("break_continue");
-}
-
-#[test]
-fn short_circuit() {
-    assert_prints_out_file("short_circuit");
-}
-
-#[test]
-fn loop_return() {
-    assert_prints_out_file("loop_return");
-}
-
-#[test]
-fn bool_var() {
-    assert_prints_out_file("bool_var");
-}
-
-#[test]
-fn objects() {
-    assert_prints_out_file("objects");
-}
-
-#[test]
-fn ownership() {
-    assert_prints_out_file("ownership");
-}
-
-#[test]
-fn field_order() {
-    assert_prints_out_file("field_order");
-}
-
-#[test]
-fn unwrap() {
-    assert_prints_out_file("unwrap");
-}
-
-#[test]
-fn list() {
-    assert_prints_out_file("list");
-}
-
-#[test]
-fn for_range_releases_the_body_tail() {
-    assert_prints_out_file("for_range_drop");
-}
-
-#[test]
-fn drops() {
-    assert_prints_out_file("drops");
-}
-
-#[test]
-fn tree() {
-    assert_prints_out_file("tree");
-}
-
-#[test]
-fn optionals() {
-    assert_prints_out_file("optionals");
-}
-
-#[test]
-fn bytes() {
-    assert_prints_out_file("bytes");
-}
-
-#[test]
-fn unsigned() {
-    assert_prints_out_file("unsigned");
-}
-
-#[test]
-fn arrays() {
-    assert_prints_out_file("arrays");
-}
-
-#[test]
-fn empty_arrays() {
-    assert_prints_out_file("empty");
-}
-
-#[test]
-fn values() {
-    assert_prints_out_file("values");
-}
-
-#[test]
-fn life() {
-    assert_prints_out_file("life");
-}
-
-#[test]
-fn moves() {
-    assert_prints_out_file("moves");
-}
-
-#[test]
-fn methods() {
-    assert_prints_out_file("methods");
-}
-
-#[test]
-fn sieve() {
-    assert_prints_out_file("sieve");
-}
-
-#[test]
-fn handover() {
-    assert_prints_out_file("handover");
-}
-
-#[test]
-fn copies() {
-    assert_prints_out_file("copies");
-}
-
-#[test]
-fn walk() {
-    assert_prints_out_file("walk");
+fn every_program_has_a_run() {
+    let panics = PANICS.map(|(name, _, _)| name);
+    for entry in fs::read_dir(PROGRAMS).expect("tests/programs should be readable") {
+        let path = entry.expect("a directory entry should be readable").path();
+        // Tools may leave a directory here, such as `.claude/`; only files are programs.
+        if path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("a program's name should be UTF-8");
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("sisu") => {
+                let runs = [
+                    OUT_FILE_PROGRAMS.contains(&name),
+                    panics.contains(&name),
+                    SMALL_STACK.contains(&name),
+                ];
+                assert_eq!(
+                    runs.iter().filter(|run| **run).count(),
+                    1,
+                    "{name}.sisu should be in exactly one of `out_file_tests!`, `PANICS` and \
+                     `SMALL_STACK`"
+                );
+            }
+            Some("out") => assert!(
+                OUT_FILE_PROGRAMS.contains(&name),
+                "{name}.out should have a test in `out_file_tests!`"
+            ),
+            _ => panic!("{} is neither a program nor an `.out` file", path.display()),
+        }
+    }
+    for name in OUT_FILE_PROGRAMS {
+        assert!(
+            Path::new(PROGRAMS).join(format!("{name}.out")).exists(),
+            "{name} is in `out_file_tests!` but has no `{name}.out`"
+        );
+    }
 }
 
 /// The `N` of the `total heap usage: N allocs` line in Valgrind's stderr, thousands separators
