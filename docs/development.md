@@ -125,5 +125,5 @@ These flags run the pipeline up to one stage and stop there.
 | `crates/sisuc` | The compiler: lexer, parser, checker, codegen and linking. |
 | `crates/sisuc/tests/programs` | End-to-end programs, each with the output it must print. |
 | `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
-| `scripts` | `install-llvm.sh`. |
+| `scripts` | `install-llvm.sh`, `mutants.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
 | `docs` | Architecture, roadmap, decisions (`adr/`) and agent guides (`agents/`). |

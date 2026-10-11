@@ -142,4 +142,4 @@ _Avoid_: refcount, retain count
 
 **Owned reference**:
 A reference that its holder must release exactly once. Every expression of
-class type yields one.
+class or array type yields one.
