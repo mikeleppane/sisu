@@ -60,7 +60,7 @@ this table.
   `github:TheDan64/inkwell` shows whether `master` has it; `master` can carry
   the released version number with unreleased features.
 - inkwell API changes: `code_diff` on `crates:inkwell` between our version and
-  the target. Read the changes to the types and methods `codegen.rs` uses.
+  the target. Read the changes to the types and methods `codegen/` uses.
 
 ## Bump checklist
 
@@ -96,4 +96,4 @@ Then:
    `crates/sisuc/tests/cli.rs`. A new LLVM can optimize differently; change
    such a test only once the new output is understood.
 5. Read the LLVM release notes for changes to the C API, to the pass pipeline
-   names that `codegen.rs` passes to `run_passes`, and to the target defaults.
+   names that `codegen/mod.rs` passes to `run_passes`, and to the target defaults.

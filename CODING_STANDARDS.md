@@ -2,6 +2,14 @@
 
 Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enforce the mechanical rules (`[workspace.lints]` in `Cargo.toml`). This file holds the judgement calls that no check can make. Report a broken rule as a finding, with file:line.
 
+## Reviewing
+
+- **Approve against the done condition.** Approve when every line of the task's done condition holds in the diff and the code, the fix reaches the cause the task names and not only its repro, and the diff adds no wrong output, crash, leak, unsound IR or newly rejected valid program. Check a cheap claim yourself with a repro or a test. When the task states no done condition, write the bar you applied above your verdict. Everything else is a nit, and a nit never blocks.
+- **Block regressions, not old gaps.** Compare with the code before the diff. A defect the diff introduces blocks. A defect the old code had too is a nit: the diff names it in a comment or doc note, and fixing it is a separate task.
+- **A nit names what it changes.** Give the input whose output, diagnostic or cost changes, or mark the nit "comment only". Drop a nit whose change no test could observe.
+- **A comment's facts were observed.** A comment or doc that states run-time behavior, such as a printed value, an order, or what the OS or a library does, matches a real run or the cited source. Check each such claim in the diff. A wrong one blocks.
+- **Export a commit to build it.** `git -C <repo> archive <sha> | tar -x -C <scratch dir>` gives a clean copy to build, run or mutate; link `.llvm` into it from the repository. Do not use `git worktree add`: it leaves an entry in the shared `.git` that a sandbox cannot prune.
+
 ## Tests
 
 - **A test proves its name.** It must fail when the contract it names breaks. For example, a test that byte offsets are not character offsets needs non-ASCII input. A test that a line break inside `( )` inserts no `Newline` needs the break after a token that could end a statement.
