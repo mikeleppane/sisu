@@ -1,6 +1,7 @@
-"""Checks that relative links and image sources in Markdown files resolve, anchors included, and
-that each repository path written as code in prose, such as `crates/sisuc/src/main.rs`, is
-tracked by git or ignored on purpose.
+"""Checks that relative links and image sources in Markdown files resolve, anchors included, that
+each repository path written as code in prose, such as `crates/sisuc/src/main.rs`, is tracked by
+git or ignored on purpose, and that each Rust file named by its last parts, such as `lexer.rs` or
+`check/mod.rs`, ends a tracked path.
 
 Usage: python3 check_links.py FILE.md... Prints each broken link or path and exits 1 if any.
 """
@@ -16,6 +17,9 @@ FENCE = re.compile(r'^(```|~~~).*?^\1[^\n]*$', re.M | re.S)
 # A code span naming a path under one of the repository's top-level directories. Placeholders
 # such as `<name>` and globs such as `*.md` do not match, so they are not checked.
 REPO_PATH = re.compile(r'`((?:crates|docs|scripts|\.agents|\.cargo|\.config|\.github)/[\w./-]*)`')
+# A code span naming a Rust file without its directory, such as `lexer.rs`. A module that
+# becomes a directory leaves such names stale.
+RUST_FILE = re.compile(r'`(?!(?:crates|docs|scripts|\.agents|\.cargo|\.config|\.github)/)([\w-]+(?:/[\w-]+)*\.rs)`')
 ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -80,6 +84,10 @@ for md in map(Path, sys.argv[1:]):
     for path in REPO_PATH.findall(prose(md)):
         if not in_repo(path):
             print(f'{md}: missing path `{path}`')
+            bad += 1
+    for name in RUST_FILE.findall(prose(md)):
+        if not any(path == name or path.endswith('/' + name) for path in TRACKED):
+            print(f'{md}: no tracked file ends with `{name}`')
             bad += 1
 print('broken:', bad)
 sys.exit(1 if bad else 0)
