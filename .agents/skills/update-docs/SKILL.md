@@ -38,14 +38,14 @@ Read each target below before you decide it needs no edit.
 | Flags or usage text in `crates/sisuc/src/main.rs` | The "Look inside the compiler" table in `docs/development.md`; the Driver card in `docs/architecture/sisu-pipeline.json` |
 | A stage, or what passes between stages: the lexer, parser and AST (`lexer.rs`, `parser.rs`, `ast.rs`), the checker (`check.rs` or `check/`) and `tir.rs`, codegen (`codegen.rs`, including symbol names and LLVM passes), linking (`link.rs`), diagnostics (`diagnostic.rs`); also which stage lowers which sugar | The stage paragraphs in `docs/architecture.md`; the diagram (step 4); the "Compiler" terms in `GLOSSARY.md` |
 | Functions exported by `crates/runtime` | The Runtime paragraph in `docs/architecture.md`; the Runtime card in the diagram JSON |
-| A language feature added, removed or renamed (a program in `crates/sisuc/tests/programs` added or changed) | "What works today" in `README.md`; `GLOSSARY.md` for the terms |
+| A language feature added, removed or renamed (a case in `crates/sisuc/tests/run` added or changed) | "What works today" in `README.md`; `GLOSSARY.md` for the terms |
 | A milestone starting or finishing | The milestone line in `README.md`; the milestone table in `docs/roadmap.md` |
 | A choice the pull request body names as hard to reverse, with the alternatives it rejected | A new ADR in `docs/adr/`, numbered after the last one, following `docs/agents/domain.md`; "Decided in milestone N" in `docs/roadmap.md`. Any other choice gets no ADR. |
 | Behavior that a "Decided in milestone N" bullet in `docs/roadmap.md` describes | Rewrite the bullet to the current fact and name the milestone that changed it, for example "desugared by the checker (moved from the parser in milestone 2)" |
 | Diagnostic or panic text, or an exit code | The sample outputs and exit codes in `docs/development.md` |
 | The toolchain or a prerequisite (`rust-toolchain.toml`, `scripts/`, `.cargo/`), a command, how tests run (`crates/sisuc/tests/*.rs`), CI (`.github/workflows/`, `prek.toml`), dependency policy (`deny.toml`) or lint policy (`[workspace.lints]` in `Cargo.toml`) | "Prerequisites" and "Build and test" in `docs/development.md`; "Commands" and "Code rules" in `AGENTS.md`; step 5 of `CONTRIBUTING.md` |
 | A top-level directory or crate | "Repository layout" in `docs/development.md`; the crate list in `AGENTS.md` |
-| `crates/sisuc/tests/programs/fib.sisu` | The example in `README.md`, which must stay identical to it |
+| `crates/sisuc/tests/run/fib.sisu` | The example in `README.md`, which must stay identical to it |
 
 If no row matches, report "no doc changes needed" and why. Do not edit to
 show activity.
@@ -92,7 +92,7 @@ gitignored, and the docs do not link to it.
 ```console
 $ python3 .agents/skills/update-docs/scripts/check_links.py README.md CONTRIBUTING.md AGENTS.md GLOSSARY.md docs/*.md docs/adr/*.md docs/agents/*.md
 broken: 0
-$ awk '/^```/{n++;next} n==1' README.md | diff - crates/sisuc/tests/programs/fib.sisu
+$ awk '/^```/{n++;next} n==1' README.md | diff - crates/sisuc/tests/run/fib.sisu
 $ prek run --files <each changed file>
 ```
 
