@@ -1,3 +1,8 @@
+experimental = ["setup-scripts"]
+
+[scripts.setup.build-runtime]
+command = "cargo build --quiet -p sisu-runtime"
+
 [profile.ci]
 # Report every failure, not just the first.
 fail-fast = false
@@ -7,3 +12,15 @@ failure-output = "immediate-final"
 [[profile.default.overrides]]
 filter = 'test(long_gaps_lex_correctly)'
 slow-timeout = { period = "10s", terminate-after = 3 }
+
+[[profile.default.scripts]]
+filter = "package(sisuc) & kind(test)"
+setup = "build-runtime"
+
+# Valgrind tests are slow and memory hungry, so cap how many run at once.
+[test-groups]
+valgrind = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = "binary(programs) & (test(allocation_counts) | test(valgrind_reports_a_cycle))"
+test-group = "valgrind"

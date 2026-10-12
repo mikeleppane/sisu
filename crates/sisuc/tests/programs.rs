@@ -6,65 +6,28 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod support;
+
 const PROGRAMS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
 const MIN: &str = "    let min = -9_223_372_036_854_775_807 - 1";
 const MAX: &str = "    let big = 9_223_372_036_854_775_807";
 
-/// `sisuc [-O2] <input> <output>`, run from `dir`, once the runtime archive is built.
-fn sisuc(dir: &Path, input: &str, output: &Path, o2: bool) -> Command {
-    // `cargo nextest run` does not build the runtime archive that `sisuc` links
-    // against, so build it here. This is a no-op when it is up to date.
-    let built = Command::new(env!("CARGO"))
-        .args(["build", "--quiet", "-p", "sisu-runtime"])
-        .status()
-        .expect("cargo starts");
-    assert!(built.success(), "building sisu-runtime failed");
-
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sisuc"));
-    command.current_dir(dir);
-    if o2 {
-        command.arg("-O2");
-    }
-    command.arg(input).arg(output);
-    command
-}
-
 /// Compiles `<dir>/<name>.sisu`, run from `dir`, into `<CARGO_TARGET_TMPDIR>/<name>`, or
 /// `<name>-O2` with `o2`.
-fn compile(dir: &Path, name: &str, o2: bool) -> PathBuf {
+fn compile_to_tmp(dir: &Path, name: &str, o2: bool) -> PathBuf {
     let exe = Path::new(env!("CARGO_TARGET_TMPDIR")).join(if o2 {
         format!("{name}-O2")
     } else {
         name.to_string()
     });
-    let out = sisuc(dir, &format!("{name}.sisu"), &exe, o2)
-        .output()
-        .expect("sisuc starts");
-    assert!(
-        out.status.success(),
-        "sisuc failed on {name}.sisu:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    support::compile(dir, name, &exe, o2);
     exe
 }
 
 /// Compiles, at `-O2` if `o2`, and runs `tests/programs/<name>.sisu`.
 fn run(name: &str, o2: bool) -> Output {
-    let exe = compile(Path::new(PROGRAMS), name, o2);
+    let exe = compile_to_tmp(Path::new(PROGRAMS), name, o2);
     Command::new(exe).output().expect("the program starts")
-}
-
-/// Runs `exe` under Valgrind; any leak or memory error makes it exit 1.
-fn valgrind(exe: &Path) -> Output {
-    Command::new("valgrind")
-        .args([
-            "--leak-check=full",
-            "--errors-for-leak-kinds=definite,indirect,possible",
-            "--error-exitcode=1",
-        ])
-        .arg(exe)
-        .output()
-        .expect("valgrind is required: install it with `apt install valgrind`")
 }
 
 /// Runs `<name>.sisu` and checks that it exits 0, prints `<name>.out` and nothing on stderr,
@@ -73,7 +36,7 @@ fn valgrind(exe: &Path) -> Output {
 fn assert_prints_out_file(name: &str) {
     let expected =
         fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.out"))).expect("reads .out");
-    let exe = compile(Path::new(PROGRAMS), name, false);
+    let exe = compile_to_tmp(Path::new(PROGRAMS), name, false);
     let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(
         out.status.code(),
@@ -84,13 +47,13 @@ fn assert_prints_out_file(name: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 
-    let o2 = compile(Path::new(PROGRAMS), name, true);
+    let o2 = compile_to_tmp(Path::new(PROGRAMS), name, true);
     assert!(
         fs::read(&exe).expect("reads plain build") != fs::read(&o2).expect("reads -O2 build"),
         "{name}: -O2 build is identical to the plain build"
     );
     for exe in [exe, o2] {
-        let checked = valgrind(&exe);
+        let checked = support::valgrind(&exe);
         let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
         assert_eq!(
             checked.status.code(),
@@ -234,7 +197,7 @@ fn allocs_in(valgrind_stderr: &str) -> u64 {
 /// Runs `exe` under Valgrind and returns its stdout and `allocs_in` of its stderr. Valgrind runs
 /// without `-q`, which prints the heap summary.
 fn heap_allocs(exe: &Path) -> (String, u64) {
-    let out = valgrind(exe);
+    let out = support::valgrind(exe);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{}: {stderr}", exe.display());
     (
@@ -333,7 +296,7 @@ fn allocation_counts() {
 
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
-    let exe = compile(Path::new(PROGRAMS), name, false);
+    let exe = compile_to_tmp(Path::new(PROGRAMS), name, false);
     Command::new("sh")
         .args(["-c", r#"ulimit -c 0 && ulimit -s 256 && exec "$0""#])
         .arg(exe)
@@ -423,7 +386,7 @@ fn panics_survive_o2() {
 fn compile_tmp(name: &str, source: &str, o2: bool) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(dir.join(format!("{name}.sisu")), source).expect("writes");
-    compile(dir, name, o2)
+    compile_to_tmp(dir, name, o2)
 }
 
 #[test]
@@ -616,7 +579,7 @@ fn valgrind_reports_a_cycle() {
     let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
-    let checked = valgrind(&exe);
+    let checked = support::valgrind(&exe);
     let stderr = String::from_utf8_lossy(&checked.stderr);
     assert_eq!(checked.status.code(), Some(1), "{stderr}");
     // A loss record, not the summary line, which also prints `definitely lost: 0 bytes`.
@@ -652,7 +615,7 @@ fn output_naming_the_input_is_refused() {
     let input = dir.join("overwrite_input.sisu");
     fs::write(&input, source).expect("writes");
     for output in ["overwrite_input.sisu", "./overwrite_input.sisu"] {
-        let out = sisuc(dir, "overwrite_input.sisu", Path::new(output), false)
+        let out = support::sisuc(dir, "overwrite_input.sisu", Path::new(output), false)
             .output()
             .expect("sisuc starts");
         assert_eq!(out.status.code(), Some(1), "output {output}");
@@ -684,7 +647,7 @@ fn existing_object_file_survives_a_build() {
     fs::write(dir.join("keep_object.sisu"), "fn main() {}\n").expect("writes");
     fs::write(dir.join("keep_object.o"), "not sisuc's").expect("writes");
     let tmp = empty_dir("keep_object_tmp");
-    let out = sisuc(dir, "keep_object.sisu", &dir.join("keep_object"), false)
+    let out = support::sisuc(dir, "keep_object.sisu", &dir.join("keep_object"), false)
         .env("TMPDIR", &tmp)
         .output()
         .expect("sisuc starts");
@@ -708,7 +671,7 @@ fn failed_link_leaves_no_object_file() {
     // `cc` cannot write an executable over a directory.
     let output = empty_dir("link_fails");
     let tmp = empty_dir("link_fails_tmp");
-    let out = sisuc(dir, "link_fails.sisu", &output, false)
+    let out = support::sisuc(dir, "link_fails.sisu", &output, false)
         .env("TMPDIR", &tmp)
         .output()
         .expect("sisuc starts");
@@ -727,7 +690,7 @@ fn build_tmp(name: &str, source: &str) -> (Output, PathBuf) {
     let exe = dir.join(name);
     // It is absent on the first run, so a failure here is expected and harmless.
     let _ = fs::remove_file(&exe);
-    let out = sisuc(dir, &format!("{name}.sisu"), &exe, false)
+    let out = support::sisuc(dir, &format!("{name}.sisu"), &exe, false)
         .output()
         .expect("sisuc starts");
     (out, exe)
