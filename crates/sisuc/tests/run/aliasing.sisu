@@ -9,7 +9,12 @@ class Bag {
     mut items: [i64]
 }
 
-fn set(b: Box, v: i64) {
+// Recursive so that the inliner cannot fold it into its callers at `-O2`: the write must cross
+// a real call. The test finds the `call` in the `-O2` IR.
+fn set(b: Box, v: i64, depth: i64) {
+    if depth > 0 {
+        set(b, v, depth - 1)
+    }
     b.v = v
 }
 
@@ -62,14 +67,14 @@ fn shared_object() {
 // A function writes a field of its argument; an array copy shares its objects.
 fn through_call() {
     let a = Box(v: 1)
-    set(a, 7)
+    set(a, 7, 1)
     print(a.v)                        // 7
     let xs = [a, Box(v: 2)]
-    set(xs[1], 8)
+    set(xs[1], 8, 1)
     print(xs[1].v)                    // 8
     let mut ys = xs
     ys[1] = Box(v: 3)
-    set(ys[0], 9)
+    set(ys[0], 9, 1)
     print(a.v)                        // 9
     print(xs[1].v)                    // 8
 }

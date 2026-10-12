@@ -122,11 +122,17 @@ fn allocs_in_panics_without_the_summary_line() {
     allocs_in("==1== All heap blocks were freed -- no leaks are possible");
 }
 
-/// The `-O2` rows of `allocation_counts` only prove the hand-over if the call to `fill` is
-/// still there: the inliner would otherwise fold it into `main`.
+/// Each test that needs a value to cross a real call proves it only while the call is still in
+/// the `-O2` IR: the inliner would otherwise fold it into its caller. The `-O2` rows of
+/// `allocation_counts` need each `fill` call in `main`; `aliasing.sisu` needs each of its three
+/// `set` calls in `through_call`.
 #[test]
-fn fill_call_survives_o2() {
-    for name in ["handover", "copies"] {
+fn calls_survive_o2() {
+    for (name, caller, call, count) in [
+        ("handover", "main", "call ptr @sisu.fill(", 1),
+        ("copies", "main", "call ptr @sisu.fill(", 1),
+        ("aliasing", "through_call", "call void @sisu.set(", 3),
+    ] {
         let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
             .current_dir(RUN)
             .args(["-O2", "--emit", "ir"])
@@ -143,14 +149,15 @@ fn fill_call_survives_o2() {
         let (_, after) = stdout
             .split_once("\n; after default<O2>\n")
             .unwrap_or_else(|| panic!("no `; after default<O2>` line in\n{stdout}"));
-        let (_, main_onward) = after
-            .split_once("define void @sisu.main()")
-            .unwrap_or_else(|| panic!("{name}: no `sisu.main` in\n{after}"));
-        let main = main_onward
+        let header = format!("define void @sisu.{caller}()");
+        let (_, caller_onward) = after
+            .split_once(&header)
+            .unwrap_or_else(|| panic!("{name}: no `{header}` in\n{after}"));
+        let body = caller_onward
             .split("\n}")
             .next()
             .expect("split yields one piece");
-        assert!(main.contains("call ptr @sisu.fill("), "{name}: {main}");
+        assert_eq!(body.matches(call).count(), count, "{name}: {body}");
     }
 }
 
