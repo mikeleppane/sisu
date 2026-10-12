@@ -24,7 +24,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use self::rc::Helper;
-use crate::diagnostic::{Span, line_col};
+use crate::diagnostic::{LineIndex, Span};
 use crate::tir::{
     Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt, Type,
     UnaryOp,
@@ -123,6 +123,7 @@ pub(crate) fn compile<'ctx>(
         target_data,
         path,
         source,
+        lines: LineIndex::new(source),
         classes,
         functions: Vec::new(),
         locals: Vec::new(),
@@ -222,6 +223,8 @@ struct Codegen<'ctx, 'src> {
     /// The input path as given, and its text: panic messages name a position in it.
     path: &'src str,
     source: &'src str,
+    /// The line starts of `source`, so that a panic site costs a binary search.
+    lines: LineIndex,
     /// `%sisu.<Class>`, indexed by `ClassId`.
     classes: Vec<StructType<'ctx>>,
     /// Indexed by `FuncId`.
@@ -890,7 +893,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `<path>:<line>:<col>` for the start of `span`.
     fn location(&self, span: Span) -> String {
-        let (line, col) = line_col(self.source, span.start);
+        let (line, col) = self.lines.line_col(self.source, span.start);
         format!("{}:{line}:{col}", self.path)
     }
 

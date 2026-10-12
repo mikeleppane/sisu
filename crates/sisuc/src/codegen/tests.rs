@@ -765,3 +765,15 @@ fn move_stores_null() {
         "{body}"
     );
 }
+
+/// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
+/// update the override there. Each `+=` is an overflow panic site, and finding its line and
+/// column from the start of the text made codegen quadratic in the number of sites.
+#[test]
+fn many_panic_sites_compile_in_linear_time() {
+    let src = format!(
+        "fn main() {{\n    let mut x = 0\n{}    print(x)\n}}\n",
+        "    x += 1\n".repeat(100_000)
+    );
+    compiled(&Context::create(), &src);
+}

@@ -110,12 +110,29 @@ impl Diagnostic {
     }
 }
 
+/// The byte offset where each line of a source starts, so that a position costs a binary
+/// search, not a scan from the start.
+pub(crate) struct LineIndex(Vec<usize>);
+
+impl LineIndex {
+    pub(crate) fn new(source: &str) -> LineIndex {
+        let breaks = source.match_indices('\n').map(|(i, _)| i + 1);
+        LineIndex(std::iter::once(0).chain(breaks).collect())
+    }
+
+    /// The 1-based line and column of byte `offset` in the `source` that built the index; the
+    /// column counts chars, not bytes.
+    pub(crate) fn line_col(&self, source: &str, offset: usize) -> (usize, usize) {
+        // Line starts at or before `offset`; the first is 0, so there is at least one.
+        let line = self.0.partition_point(|&start| start <= offset);
+        let line_start = self.0[line - 1];
+        (line, source[line_start..offset].chars().count() + 1)
+    }
+}
+
 /// The 1-based line and column of byte `offset`; the column counts chars, not bytes.
 pub(crate) fn line_col(source: &str, offset: usize) -> (usize, usize) {
-    let before = &source[..offset];
-    let line = before.matches('\n').count() + 1;
-    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
-    (line, before[line_start..].chars().count() + 1)
+    LineIndex::new(source).line_col(source, offset)
 }
 
 #[cfg(test)]
@@ -127,6 +144,50 @@ mod tests {
         assert_eq!(line_col("ää x", 5), (1, 4));
         assert_eq!(line_col("ää\nx", 5), (2, 1));
         assert_eq!(line_col("", 0), (1, 1));
+    }
+
+    #[test]
+    fn line_index_agrees_with_a_scan_at_every_offset() {
+        // The reference counts from the start of the text, as `line_col` did before the index.
+        fn scan(source: &str, offset: usize) -> (usize, usize) {
+            let before = &source[..offset];
+            let line = before.matches('\n').count() + 1;
+            let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+            (line, before[line_start..].chars().count() + 1)
+        }
+        for source in [
+            "",
+            "ää x",
+            "ää\nx",
+            "\n",
+            "a\n\nöö€b\n",
+            "x\nyy\nä",
+            "\n\nä\n",
+        ] {
+            let index = LineIndex::new(source);
+            for offset in (0..=source.len()).filter(|&i| source.is_char_boundary(i)) {
+                assert_eq!(
+                    index.line_col(source, offset),
+                    scan(source, offset),
+                    "{source:?} at {offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn line_index_pins_first_last_and_post_break_positions() {
+        let source = "ä\nbö€\nc";
+        let index = LineIndex::new(source);
+        assert_eq!(index.line_col(source, 0), (1, 1));
+        // Right before and right after a line break.
+        assert_eq!(index.line_col(source, 2), (1, 2));
+        assert_eq!(index.line_col(source, 3), (2, 1));
+        // After the multi-byte chars of line 2, then the break.
+        assert_eq!(index.line_col(source, 9), (2, 4));
+        assert_eq!(index.line_col(source, 10), (3, 1));
+        // The end of the text, after the last character.
+        assert_eq!(index.line_col(source, source.len()), (3, 2));
     }
 
     #[test]
