@@ -9,8 +9,9 @@ class Bag {
     mut items: [i64]
 }
 
-// Recursive so that the inliner cannot fold it into its callers at `-O2`: the write must cross
-// a real call.
+// Recursive so that the inliner cannot fold it into its callers at `-O2`, and called with three
+// different depths so that constant propagation across functions cannot unroll it: the write
+// must cross a real call.
 // o2-calls: through_call set 3
 fn set(b: Box, v: i64, depth: i64) {
     if depth > 0 {
@@ -71,11 +72,11 @@ fn through_call() {
     set(a, 7, 1)
     print(a.v)                        // 7
     let xs = [a, Box(v: 2)]
-    set(xs[1], 8, 1)
+    set(xs[1], 8, 2)
     print(xs[1].v)                    // 8
     let mut ys = xs
     ys[1] = Box(v: 3)
-    set(ys[0], 9, 1)
+    set(ys[0], 9, 3)
     print(a.v)                        // 9
     print(xs[1].v)                    // 8
 }

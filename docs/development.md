@@ -72,7 +72,13 @@ A `run/` case whose output depends on a value crossing a real call says so
 with a marker line, `// o2-calls: <caller> <callee> <count>`. The test then
 checks that the `-O2` IR of `<caller>` holds exactly `<count>` calls to
 `<callee>`, because the inliner can fold a call away and keep the output
-the same. A recursive callee keeps its calls; see `handover.sisu`.
+the same. Every function except the C `main` is internal, so `-O2` inlines
+a caller with one call site and the caller vanishes from the IR. When that
+happens the check counts the calls to `<callee>` in the whole module outside
+`<callee>` itself, and it first asserts that `<caller>` was the only function
+that called `<callee>` before `-O2`. Interprocedural constant propagation
+also runs on internal functions, so a callee that keeps its calls recurses to
+a depth that the call sites do not fix; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack
 tests in `programs.rs` run.
 

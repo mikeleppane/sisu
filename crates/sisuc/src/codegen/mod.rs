@@ -12,7 +12,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::module::Module;
+use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
@@ -76,7 +76,7 @@ pub(crate) fn compile<'ctx>(
     let rc_retain = module.add_function(
         "sisu_rc.retain",
         void.fn_type(&[ptr_type.into()], false),
-        None,
+        Some(Linkage::Internal),
     );
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
@@ -444,9 +444,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             Some(ret) => ret.fn_type(&params, false),
             None => self.context.void_type().fn_type(&params, false),
         };
-        let function = self
-            .module
-            .add_function(&format!("sisu.{}", f.name), fn_type, None);
+        let function = self.module.add_function(
+            &format!("sisu.{}", f.name),
+            fn_type,
+            Some(Linkage::Internal),
+        );
         self.functions.push(function);
     }
 

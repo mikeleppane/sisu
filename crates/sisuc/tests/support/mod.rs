@@ -227,8 +227,58 @@ fn case_dir(source: &Path) -> PathBuf {
 
 /// The marker a `tests/run` case puts on its own line to prove a call boundary: with
 /// `// o2-calls: <caller> <callee> <count>`, the `-O2` IR of `<caller>` holds exactly `<count>`
-/// calls to `<callee>`, so the inliner kept the calls the case relies on.
+/// calls to `<callee>`, so the inliner kept the calls the case relies on. Every function but
+/// the C `main` is internal, so `-O2` inlines a caller with one call site and the caller
+/// vanishes from the IR. Its calls then sit in whatever it was inlined into, so the check counts
+/// the calls to `<callee>` in the whole module, outside `<callee>` itself; that only means
+/// "the calls of `<caller>`" if `<caller>` is the only function that called `<callee>` before
+/// `-O2`, which the check also asserts.
 const O2_CALLS: &str = "// o2-calls:";
+
+/// The `define` blocks of `ir`, each as its header line and its text.
+fn functions(ir: &str) -> impl Iterator<Item = (&str, &str)> {
+    ir.split("\ndefine ")
+        .skip(1)
+        .map(|function| (function.lines().next().unwrap_or_default(), function))
+}
+
+/// The calls to `@sisu.<callee>(` in `text`.
+fn calls_to(text: &str, callee: &str) -> usize {
+    let target = format!("@sisu.{callee}(");
+    text.lines()
+        .filter(|line| line.contains("call ") && line.contains(&target))
+        .count()
+}
+
+/// Whether `header` is the `define` line of `@sisu.<name>(`.
+fn defines(header: &str, name: &str) -> bool {
+    header.contains(&format!("@sisu.{name}("))
+}
+
+/// The calls to `callee` that `-O2` keeps for `outer`: those in `outer`'s own function if it is
+/// still there, else those in the functions other than `callee`, where `outer` was inlined to.
+fn o2_calls_kept(
+    path: &Path,
+    (before, optimized): (&str, &str),
+    outer: &str,
+    callee: &str,
+) -> usize {
+    if let Some((_, body)) = functions(optimized).find(|(header, _)| defines(header, outer)) {
+        return calls_to(body, callee);
+    }
+    for (header, body) in functions(before) {
+        assert!(
+            defines(header, outer) || defines(header, callee) || calls_to(body, callee) == 0,
+            "{}: `{outer}` is gone after -O2, so its calls to `{callee}` cannot be told apart \
+             from another caller's; `{header}` calls `{callee}` too",
+            path.display()
+        );
+    }
+    functions(optimized)
+        .filter(|(header, _)| !defines(header, callee))
+        .map(|(_, body)| calls_to(body, callee))
+        .sum()
+}
 
 /// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, run once if any.
 fn o2_calls(path: &Path) {
@@ -256,7 +306,7 @@ fn o2_calls(path: &Path) {
         String::from_utf8_lossy(&out.stderr)
     );
     let ir = String::from_utf8_lossy(&out.stdout);
-    let (_, optimized) = ir
+    let modules = ir
         .split_once("\n; after default<O2>\n")
         .unwrap_or_else(|| panic!("{}: no `; after default<O2>` line", path.display()));
     for marker in markers {
@@ -276,25 +326,14 @@ fn o2_calls(path: &Path) {
                 path.display()
             )
         });
-        let header = format!("@sisu.{outer}(");
-        let body = optimized
-            .split("\ndefine ")
-            .find(|function| function.lines().next().is_some_and(|l| l.contains(&header)))
-            .unwrap_or_else(|| panic!("{}: no `{outer}` in the -O2 IR", path.display()))
-            .split("\n}")
-            .next()
-            .expect("split yields one piece");
-        let target = format!("@sisu.{callee}(");
-        let kept = body
-            .lines()
-            .filter(|line| line.contains("call ") && line.contains(&target))
-            .count();
+        let kept = o2_calls_kept(path, modules, outer, callee);
         assert_eq!(
             kept,
             count,
             "{}: -O2 keeps {kept} calls to `{callee}` in `{outer}`, not {count}; make `{callee}` \
-             recurse so the inliner keeps it\n{body}",
-            path.display()
+             recurse, and not to a depth the call sites fix, so the optimizer keeps it\n{}",
+            path.display(),
+            modules.1
         );
     }
 }

@@ -345,7 +345,10 @@ fn ir_sections(stdout: &str) -> (&str, &str) {
         .split_once("\n; after mem2reg\n")
         .unwrap_or_else(|| panic!("no `; after mem2reg` line in\n{stdout}"));
     for section in [before, after] {
-        assert!(section.contains("define void @sisu.main()"), "{section}");
+        assert!(
+            section.contains("define internal void @sisu.main()"),
+            "{section}"
+        );
     }
     (before, after)
 }

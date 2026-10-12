@@ -867,6 +867,45 @@ fn o2_calls_marker_fails_on_an_inlined_call() {
     );
 }
 
+/// `main` is inlined into the C `main` and vanishes, but the marker still counts its calls to
+/// the recursive `down`, which keeps them.
+const COUNTS_DOWN: &str = "fn down(n: i64) -> i64 {\n    if n > 0 { down(n - 1) + 1 } else { 0 }\n}\n\n\
+     fn main() {\n    print(down(5))\n    print(down(2))\n}\n";
+
+#[test]
+fn o2_calls_marker_counts_the_calls_of_an_inlined_caller() {
+    let dir = fixture(
+        "o2_calls_marker_counts_the_calls_of_an_inlined_caller",
+        &[
+            (
+                "a.sisu",
+                &format!("// o2-calls: main down 2\n{COUNTS_DOWN}"),
+            ),
+            ("a.out", "5\n2\n"),
+        ],
+    );
+    support::run(&dir.join("a.sisu"), false);
+}
+
+/// Once the caller is gone its calls cannot be told apart from another function's.
+#[test]
+fn o2_calls_marker_fails_when_another_function_calls_the_callee() {
+    let dir = fixture(
+        "o2_calls_marker_fails_when_another_function_calls_the_callee",
+        &[
+            (
+                "a.sisu",
+                &format!(
+                    "// o2-calls: main down 2\n{COUNTS_DOWN}fn other() -> i64 {{ down(7) }}\n"
+                ),
+            ),
+            ("a.out", "5\n2\n"),
+        ],
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(message.contains("calls `down` too"), "{message}");
+}
+
 #[test]
 fn o2_calls_marker_must_name_caller_callee_and_count() {
     let dir = fixture(

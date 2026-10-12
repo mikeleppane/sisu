@@ -1,6 +1,7 @@
 fn iterations() -> i64 { 1000 }
 
-// Same `fill` as `handover.sisu`, recursive so that the `-O2` build keeps the call.
+// Same `fill` as `handover.sisu`, recursive and called with a depth of 1 or 2 so that the `-O2`
+// build keeps the call.
 // o2-calls: main fill 1
 fn fill(xs: [i64], v: i64, depth: i64) -> [i64] {
     let mut ys = xs
@@ -17,7 +18,7 @@ fn main() {
     let mut total = 0
     for i in 0..iterations() {
         let saved = big
-        big = fill(big, i + 1, 1)
+        big = fill(big, i + 1, i % 2 + 1)
         total += saved[0]
     }
     // 0 + 1 + ... + 999 = 499500: at iteration `i`, `saved[0]` is `i`, the previous

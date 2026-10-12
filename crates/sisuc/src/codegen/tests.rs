@@ -145,7 +145,7 @@ fn division_guards_precede_the_division() {
     .print_to_string()
     .to_string();
     for (name, op) in [("d", "sdiv"), ("r", "srem")] {
-        let header = format!("define i64 @sisu.{name}(");
+        let header = format!("define internal i64 @sisu.{name}(");
         let body = function_body(&ir, &header);
         let lines: Vec<&str> = body.lines().map(str::trim).collect();
         let find = |wanted: &dyn Fn(&str) -> bool, what: &str| {
@@ -290,7 +290,7 @@ fn method_symbols() {
     )
     .print_to_string()
     .to_string();
-    assert!(ir.contains("define void @sisu.P.m(ptr"), "{ir}");
+    assert!(ir.contains("define internal void @sisu.P.m(ptr"), "{ir}");
 }
 
 #[test]
@@ -308,9 +308,9 @@ fn helpers_are_generated() {
         .print_to_string()
         .to_string();
     for wanted in [
-        "define void @sisu_rc.retain(ptr",
-        "define void @sisu_rc.release.P(ptr",
-        "define void @sisu_rc.drop.P(ptr",
+        "define internal void @sisu_rc.retain(ptr",
+        "define internal void @sisu_rc.release.P(ptr",
+        "define internal void @sisu_rc.drop.P(ptr",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
@@ -325,14 +325,14 @@ fn drop_loops_on_the_chain_field() {
     )
     .print_to_string()
     .to_string();
-    let node = function_body(&ir, "define void @sisu_rc.drop.Node(ptr");
+    let node = function_body(&ir, "define internal void @sisu_rc.drop.Node(ptr");
     assert!(node.contains("phi ptr"), "no loop in\n{node}");
     assert_eq!(node.matches("@sisu_free(").count(), 1, "{node}");
     for unwanted in ["@sisu_rc.drop.Node(", "@sisu_rc.release.Node("] {
         assert!(!node.contains(unwanted), "{unwanted:?} in\n{node}");
     }
     // `right` is the chain field; only `left` is released, by recursion.
-    let tree = function_body(&ir, "define void @sisu_rc.drop.Tree(ptr");
+    let tree = function_body(&ir, "define internal void @sisu_rc.drop.Tree(ptr");
     assert_eq!(tree.matches("@sisu_rc.release.Tree(").count(), 1, "{tree}");
     assert!(!tree.contains("@sisu_rc.drop.Tree("), "{tree}");
 }
@@ -410,8 +410,8 @@ fn eq_loops_on_the_chain_field() {
     .to_string();
     // The chain field is compared in a loop, in either field order: no `eq` calls itself.
     for (class, header) in [
-        ("Node", "define i1 @sisu_rc.eq.Node(ptr"),
-        ("First", "define i1 @sisu_rc.eq.First(ptr"),
+        ("Node", "define internal i1 @sisu_rc.eq.Node(ptr"),
+        ("First", "define internal i1 @sisu_rc.eq.First(ptr"),
     ] {
         let body = function_body(&ir, header);
         assert!(body.contains("phi ptr"), "no loop in\n{body}");
@@ -432,9 +432,9 @@ fn helper_names_cannot_collide() {
     // The method `release.Tree` and the helper for class `Tree` must both keep their names:
     // LLVM renames the second of two equal names with a numeric suffix.
     for wanted in [
-        "define void @sisu.retain()",
-        "define void @sisu.release.Tree(ptr",
-        "define void @sisu_rc.release.Tree(ptr",
+        "define internal void @sisu.retain()",
+        "define internal void @sisu.release.Tree(ptr",
+        "define internal void @sisu_rc.release.Tree(ptr",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
@@ -451,7 +451,7 @@ fn scalar_optional_is_a_pair() {
         .print_to_string()
         .to_string();
     assert!(
-        ir.contains("define { i1, i64 } @sisu.f({ i1, i64 }"),
+        ir.contains("define internal { i1, i64 } @sisu.f({ i1, i64 }"),
         "{ir}"
     );
 }
@@ -467,7 +467,7 @@ fn scalar_not_equal_is_one_icmp_ne() {
     .print_to_string()
     .to_string();
     for (name, ty) in [("f", "i64"), ("g", "i1")] {
-        let body = function_body(&ir, &format!("define i1 @sisu.{name}("));
+        let body = function_body(&ir, &format!("define internal i1 @sisu.{name}("));
         assert!(body.contains(&format!("icmp ne {ty} ")), "{body}");
         assert!(!body.contains("icmp eq"), "{body}");
         assert!(!body.contains("xor"), "{body}");
@@ -480,7 +480,7 @@ fn eq_helper_per_class() {
     let ir = compiled(&context, "class T {}\nfn main() { print(T() == T()) }")
         .print_to_string()
         .to_string();
-    assert!(ir.contains("define i1 @sisu_rc.eq.T(ptr"), "{ir}");
+    assert!(ir.contains("define internal i1 @sisu_rc.eq.T(ptr"), "{ir}");
 }
 
 #[test]
@@ -492,7 +492,7 @@ fn field_read_retains_before_releasing_base() {
     )
     .print_to_string()
     .to_string();
-    let main = function_body(&ir, "define void @sisu.main()");
+    let main = function_body(&ir, "define internal void @sisu.main()");
     let lines: Vec<&str> = main.lines().map(str::trim).collect();
     let at = |wanted: &dyn Fn(&str) -> bool, what: &str| {
         lines
@@ -576,18 +576,18 @@ fn rc_checks_guard_retain_release_and_exit() {
     let ir = compiled_with(&context, &src, true)
         .print_to_string()
         .to_string();
-    let retain = function_body(&ir, "define void @sisu_rc.retain(ptr");
+    let retain = function_body(&ir, "define internal void @sisu_rc.retain(ptr");
     assert_count_checked(retain, 0, &|t| {
         t.starts_with("add i64 ") && t.ends_with(", 1")
     });
-    let release = function_body(&ir, "define void @sisu_rc.release.P(ptr");
+    let release = function_body(&ir, "define internal void @sisu_rc.release.P(ptr");
     assert_count_checked(release, 1, &|t| {
         t.starts_with("add i64 ") && t.ends_with(", -1")
     });
     let fill = function_body(&ir, "@sisu.fill(");
     // The loop's counter steps with `add nuw`; the count gains its extra references with `add`.
     assert_count_checked(fill, 0, &|t| t.starts_with("add i64 "));
-    let unique = function_body(&ir, "define ptr @\"sisu_rc.unique.[i64]\"(ptr");
+    let unique = function_body(&ir, "define internal ptr @\"sisu_rc.unique.[i64]\"(ptr");
     assert_count_checked(unique, 1, &|t| {
         t.starts_with("icmp eq i64 ") && t.ends_with(", 1")
     });
@@ -630,13 +630,36 @@ fn plain_build_has_no_rc_checks() {
     }
 }
 
+/// Only the C entry point is visible outside the module: every other function, helpers
+/// included, is internal, so `-O2` can inline and specialise it.
+#[test]
+fn only_main_is_external() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        &format!(
+            "class P {{\n    next: P?\n}}\nfn f(xs: [[i64]], p: P) -> [[i64]] {{ xs }}\n{FIB}"
+        ),
+    )
+    .print_to_string()
+    .to_string();
+    let defined: Vec<&str> = ir.lines().filter(|l| l.starts_with("define ")).collect();
+    assert!(defined.len() > 4, "{ir}");
+    for line in defined {
+        assert!(
+            line.starts_with("define i32 @main(") || line.starts_with("define internal "),
+            "{line}"
+        );
+    }
+}
+
 #[test]
 fn user_function_names_are_prefixed() {
     let context = Context::create();
     let ir = compiled(&context, FIB).print_to_string().to_string();
     for wanted in [
-        "define i64 @sisu.fib(i64",
-        "define void @sisu.main()",
+        "define internal i64 @sisu.fib(i64",
+        "define internal void @sisu.main()",
         "define i32 @main()",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
@@ -652,7 +675,10 @@ fn u8_add_uses_unsigned_overflow() {
     )
     .print_to_string()
     .to_string();
-    for wanted in ["define i8 @sisu.f(i8", "@llvm.uadd.with.overflow.i8"] {
+    for wanted in [
+        "define internal i8 @sisu.f(i8",
+        "@llvm.uadd.with.overflow.i8",
+    ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
 }
@@ -699,7 +725,7 @@ fn fast_path_skips_base_count() {
     )
     .print_to_string()
     .to_string();
-    let body = function_body(&ir, "define ptr @sisu.f(ptr");
+    let body = function_body(&ir, "define internal ptr @sisu.f(ptr");
     let (before, _) = body
         .split_once("call void @sisu_print_int(")
         .unwrap_or_else(|| panic!("no print in\n{body}"));
@@ -757,8 +783,11 @@ fn len_and_field_of_a_local_skip_base_count() {
     .print_to_string()
     .to_string();
     for (header, release) in [
-        ("define ptr @sisu.len(ptr", "@\"sisu_rc.release.[i64]\"("),
-        ("define ptr @sisu.field(ptr", "@sisu_rc.release.O("),
+        (
+            "define internal ptr @sisu.len(ptr",
+            "@\"sisu_rc.release.[i64]\"(",
+        ),
+        ("define internal ptr @sisu.field(ptr", "@sisu_rc.release.O("),
     ] {
         let body = function_body(&ir, header);
         let (before, _) = body
@@ -772,7 +801,7 @@ fn len_and_field_of_a_local_skip_base_count() {
         }
     }
     // `a` takes a reference to the field's array, and nothing else is counted before the print.
-    let body = function_body(&ir, "define ptr @sisu.counted(ptr");
+    let body = function_body(&ir, "define internal ptr @sisu.counted(ptr");
     let (before, _) = body
         .split_once("call void @sisu_print_int(")
         .unwrap_or_else(|| panic!("no print in\n{body}"));
@@ -792,8 +821,11 @@ fn len_and_field_of_a_value_release_the_base() {
     .print_to_string()
     .to_string();
     for (header, release) in [
-        ("define i64 @sisu.len()", "@\"sisu_rc.release.[i64]\"("),
-        ("define i64 @sisu.field()", "@sisu_rc.release.O("),
+        (
+            "define internal i64 @sisu.len()",
+            "@\"sisu_rc.release.[i64]\"(",
+        ),
+        ("define internal i64 @sisu.field()", "@sisu_rc.release.O("),
     ] {
         let body = function_body(&ir, header);
         assert!(body.contains(release), "no {release:?} in\n{body}");
@@ -811,8 +843,8 @@ fn nested_array_helpers_are_defined() {
     .print_to_string()
     .to_string();
     for wanted in [
-        "define void @\"sisu_rc.drop.[[Node]]\"(ptr",
-        "define void @\"sisu_rc.release.[Node]\"(ptr",
+        "define internal void @\"sisu_rc.drop.[[Node]]\"(ptr",
+        "define internal void @\"sisu_rc.release.[Node]\"(ptr",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
@@ -828,7 +860,7 @@ fn general_path_releases_base() {
     )
     .print_to_string()
     .to_string();
-    let body = function_body(&ir, "define i64 @sisu.f()");
+    let body = function_body(&ir, "define internal i64 @sisu.f()");
     let lines: Vec<&str> = body.lines().map(str::trim).collect();
     // `f` returns the element it loaded.
     let element = lines
@@ -873,7 +905,7 @@ fn fast_path_follows_the_index_whitelist() {
         ("call", false),
         ("moved", false),
     ] {
-        let body = function_body(&ir, &format!("define ptr @sisu.{name}("));
+        let body = function_body(&ir, &format!("define internal ptr @sisu.{name}("));
         let (before, _) = body
             .split_once("call void @sisu_print_int(")
             .unwrap_or_else(|| panic!("no print in\n{body}"));

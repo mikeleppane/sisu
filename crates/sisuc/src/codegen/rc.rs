@@ -3,6 +3,7 @@
 //! defined by `define_helpers` in one worklist pass.
 
 use inkwell::basic_block::BasicBlock;
+use inkwell::module::Linkage;
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -49,9 +50,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             ),
             Helper::Unique => ("unique", ptr_type.fn_type(&[ptr_type.into()], false)),
         };
-        let function = self
-            .module
-            .add_function(&format!("sisu_rc.{prefix}.{name}"), fn_type, None);
+        let function = self.module.add_function(
+            &format!("sisu_rc.{prefix}.{name}"),
+            fn_type,
+            Some(Linkage::Internal),
+        );
         self.helpers.borrow_mut().insert(key.clone(), function);
         self.pending.borrow_mut().push(key);
         function
