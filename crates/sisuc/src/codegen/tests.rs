@@ -711,6 +711,36 @@ fn fast_path_skips_base_count() {
     }
 }
 
+/// The runtime's print functions touch only memory the module cannot reach (their buffer,
+/// `errno`) and never unwind, but they can exit the process, so they are not `willreturn`.
+#[test]
+fn print_declarations_carry_attributes() {
+    let context = Context::create();
+    let ir = compiled(&context, "fn main() { print(1)\n    print(true) }")
+        .print_to_string()
+        .to_string();
+    for name in ["sisu_print_int", "sisu_print_bool"] {
+        let declaration = ir
+            .lines()
+            .find(|line| line.starts_with("declare ") && line.contains(&format!("@{name}(")))
+            .unwrap_or_else(|| panic!("no declaration of {name} in\n{ir}"));
+        let (_, group) = declaration
+            .rsplit_once(" #")
+            .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
+        let attributes = ir
+            .lines()
+            .find(|line| line.starts_with(&format!("attributes #{group} = ")))
+            .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"));
+        for wanted in [
+            "nounwind",
+            "memory(inaccessiblemem: readwrite, errnomem: readwrite)",
+        ] {
+            assert!(attributes.contains(wanted), "{name}: {attributes}");
+        }
+        assert!(!attributes.contains("willreturn"), "{name}: {attributes}");
+    }
+}
+
 /// `xs.len()` and `o.n` on a local neither retain nor release the base: the local keeps it
 /// alive. A counted field read still retains the field.
 #[test]

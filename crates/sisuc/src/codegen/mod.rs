@@ -81,16 +81,8 @@ pub(crate) fn compile<'ctx>(
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
     // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
-    let print_int = module.add_function(
-        "sisu_print_int",
-        void.fn_type(&[i64_type.into()], false),
-        None,
-    );
-    let print_bool = module.add_function(
-        "sisu_print_bool",
-        void.fn_type(&[context.bool_type().into()], false),
-        None,
-    );
+    let print_int = declare_print(&module, "sisu_print_int", i64_type.into());
+    let print_bool = declare_print(&module, "sisu_print_bool", context.bool_type().into());
     print_bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
     // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
     // index, length)` prints a bounds panic and exits.
@@ -173,6 +165,34 @@ fn declare_noreturn<'ctx>(
     function.add_attribute(
         AttributeLoc::Function,
         context.create_enum_attribute(Attribute::get_named_enum_kind_id("noreturn"), 0),
+    );
+    function
+}
+
+/// Declares the runtime print function `name`, which takes one `param` and returns nothing.
+/// The runtime is built with `panic = "abort"`, so it never unwinds. A print takes no
+/// pointer, so it reaches no memory of the module: it uses only the runtime's own buffer and
+/// state (inaccessible memory) and can set `errno`. It can also exit the process, so there
+/// is no `willreturn`.
+fn declare_print<'ctx>(
+    module: &Module<'ctx>,
+    name: &str,
+    param: BasicMetadataTypeEnum<'ctx>,
+) -> FunctionValue<'ctx> {
+    // LLVM 22's `MemoryEffects` encoding (`llvm/Support/ModRef.h`): two bits per location,
+    // `Ref` 1 and `Mod` 2, lowest first: `ArgMem`, `InaccessibleMem`, `ErrnoMem`, then
+    // everything else. So this is `ErrnoMem` 3, `InaccessibleMem` 3, `ArgMem` 0, and none for
+    // the rest, globals included.
+    const MEMORY: u64 = 0b11_11_00;
+    let context = module.get_context();
+    let function = module.add_function(name, context.void_type().fn_type(&[param], false), None);
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("nounwind"), 0),
+    );
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("memory"), MEMORY),
     );
     function
 }

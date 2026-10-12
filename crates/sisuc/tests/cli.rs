@@ -461,3 +461,27 @@ fn emit_ir_o2() {
         assert!(after.contains(wanted), "missing {wanted:?} in\n{after}");
     }
 }
+
+/// A `print` that may never run does not make the loop reload the array's length: the
+/// runtime's print functions write only memory the module cannot reach, so `-O2` proves
+/// every `xs[i]` in range from the loop bound and drops both bounds checks.
+#[test]
+fn print_in_a_loop_keeps_no_bounds_check_at_o2() {
+    let source = "fn main() {\n    let xs = [1; 10_000]\n    let mut total = 0\n\
+                  for round in 0..1000 {\n        for i in 0..10_000 {\n\
+                  if xs[i] == 0 { print(i) }\n            total += xs[i]\n        }\n    }\n\
+                  print(total)\n}\n";
+    let out = run_on("print_in_a_loop", source, &["-O2", "--emit", "ir"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (before, after) = stdout
+        .split_once("\n; after default<O2>\n")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert!(before.contains("call void @sisu_panic_bounds("), "{before}");
+    assert!(!after.contains("call void @sisu_panic_bounds("), "{after}");
+}
