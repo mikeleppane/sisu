@@ -228,72 +228,48 @@ fn case_dir(source: &Path) -> PathBuf {
 /// The marker a `tests/run` case puts on its own line to prove a call boundary: with
 /// `// o2-calls: <caller> <callee> <count>`, the `-O2` IR of `<caller>` holds exactly `<count>`
 /// calls to `<callee>`, so the inliner kept the calls the case relies on. Every function but
-/// the C `main` is internal, so `-O2` inlines a caller with one call site and the caller
-/// vanishes from the IR. Its calls then sit in whatever it was inlined into, so the check counts
-/// the calls to `<callee>` in the whole module, outside `<callee>` itself; that only means
-/// "the calls of `<caller>`" if `<caller>` is the only function that called `<callee>` before
-/// `-O2`, which the check also asserts.
+/// the C `main` is internal, so `-O2` would inline a caller with one call site and the caller
+/// would vanish from the IR. The check therefore builds with `SISU_KEEP_FUNCTIONS` set to its
+/// callers, which marks them `noinline` for `sisuc --emit ir` and nothing else.
 const O2_CALLS: &str = "// o2-calls:";
 
-/// The `define` blocks of `ir`, each as its header line and its text.
-fn functions(ir: &str) -> impl Iterator<Item = (&str, &str)> {
+/// The body of the function `name` in `ir`, if `ir` defines it.
+fn function_text<'a>(ir: &'a str, name: &str) -> Option<&'a str> {
+    let header = format!("@sisu.{name}(");
     ir.split("\ndefine ")
         .skip(1)
-        .map(|function| (function.lines().next().unwrap_or_default(), function))
-}
-
-/// The calls to `@sisu.<callee>(` in `text`.
-fn calls_to(text: &str, callee: &str) -> usize {
-    let target = format!("@sisu.{callee}(");
-    text.lines()
-        .filter(|line| line.contains("call ") && line.contains(&target))
-        .count()
-}
-
-/// Whether `header` is the `define` line of `@sisu.<name>(`.
-fn defines(header: &str, name: &str) -> bool {
-    header.contains(&format!("@sisu.{name}("))
-}
-
-/// The calls to `callee` that `-O2` keeps for `outer`: those in `outer`'s own function if it is
-/// still there, else those in the functions other than `callee`, where `outer` was inlined to.
-fn o2_calls_kept(
-    path: &Path,
-    (before, optimized): (&str, &str),
-    outer: &str,
-    callee: &str,
-) -> usize {
-    if let Some((_, body)) = functions(optimized).find(|(header, _)| defines(header, outer)) {
-        return calls_to(body, callee);
-    }
-    for (header, body) in functions(before) {
-        assert!(
-            defines(header, outer) || defines(header, callee) || calls_to(body, callee) == 0,
-            "{}: `{outer}` is gone after -O2, so its calls to `{callee}` cannot be told apart \
-             from another caller's; `{header}` calls `{callee}` too",
-            path.display()
-        );
-    }
-    functions(optimized)
-        .filter(|(header, _)| !defines(header, callee))
-        .map(|(_, body)| calls_to(body, callee))
-        .sum()
+        .find(|function| function.lines().next().is_some_and(|l| l.contains(&header)))
+        .and_then(|function| function.split("\n}").next())
 }
 
 /// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, run once if any.
 fn o2_calls(path: &Path) {
     let source = fs::read_to_string(path).expect("reads the case");
-    let markers: Vec<&str> = source
+    let markers: Vec<[&str; 3]> = source
         .lines()
         .filter_map(|line| line.trim().strip_prefix(O2_CALLS))
+        .map(|marker| {
+            marker
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{}: `{O2_CALLS}{marker}` is not `<caller> <callee> <count>`",
+                        path.display()
+                    )
+                })
+        })
         .collect();
     if markers.is_empty() {
         return;
     }
+    let callers: Vec<&str> = markers.iter().map(|[caller, _, _]| *caller).collect();
     let dir = path.parent().expect("a case should sit in a directory");
     let name = path.file_name().expect("a case should have a file name");
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
         .current_dir(dir)
+        .env("SISU_KEEP_FUNCTIONS", callers.join(","))
         .args(["-O2", "--emit", "ir"])
         .arg(name)
         .output()
@@ -306,34 +282,36 @@ fn o2_calls(path: &Path) {
         String::from_utf8_lossy(&out.stderr)
     );
     let ir = String::from_utf8_lossy(&out.stdout);
-    let modules = ir
+    let (before, optimized) = ir
         .split_once("\n; after default<O2>\n")
         .unwrap_or_else(|| panic!("{}: no `; after default<O2>` line", path.display()));
-    for marker in markers {
-        let [outer, callee, count] = marker
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "{}: `{O2_CALLS}{marker}` is not `<caller> <callee> <count>`",
-                    path.display()
-                )
-            });
+    for [outer, callee, count] in markers {
         let count: usize = count.parse().unwrap_or_else(|_| {
             panic!(
-                "{}: `{O2_CALLS}{marker}` count is not a number",
+                "{}: `{O2_CALLS} {outer} {callee} {count}` count is not a number",
                 path.display()
             )
         });
-        let kept = o2_calls_kept(path, modules, outer, callee);
+        for function in [outer, callee] {
+            assert!(
+                function_text(before, function).is_some(),
+                "{}: no function named `{function}`",
+                path.display()
+            );
+        }
+        let body = function_text(optimized, outer)
+            .unwrap_or_else(|| panic!("{}: no `{outer}` in the -O2 IR", path.display()));
+        let target = format!("@sisu.{callee}(");
+        let kept = body
+            .lines()
+            .filter(|line| line.contains("call ") && line.contains(&target))
+            .count();
         assert_eq!(
             kept,
             count,
             "{}: -O2 keeps {kept} calls to `{callee}` in `{outer}`, not {count}; make `{callee}` \
-             recurse, and not to a depth the call sites fix, so the optimizer keeps it\n{}",
-            path.display(),
-            modules.1
+             recurse, and not to a depth the call sites fix, so the optimizer keeps it\n{body}",
+            path.display()
         );
     }
 }

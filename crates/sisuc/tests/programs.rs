@@ -124,7 +124,7 @@ fn allocs_in_panics_without_the_summary_line() {
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
 const ALLOCATIONS: [(&str, &str, &str, i64); 3] = [
-    // `big = fill(big, i, 1)` writes in place.
+    // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
     ("copies", "499500\n1000\n", "0\n0\n", 1000),
@@ -867,43 +867,60 @@ fn o2_calls_marker_fails_on_an_inlined_call() {
     );
 }
 
-/// `main` is inlined into the C `main` and vanishes, but the marker still counts its calls to
-/// the recursive `down`, which keeps them.
-const COUNTS_DOWN: &str = "fn down(n: i64) -> i64 {\n    if n > 0 { down(n - 1) + 1 } else { 0 }\n}\n\n\
-     fn main() {\n    print(down(5))\n    print(down(2))\n}\n";
+/// `outer` is called twice, so `-O2` inlines it into `main` twice, and its `down(0)` folds to a
+/// constant each time while `down(n)` keeps its call. `down` recurses, and `outer` is called
+/// with different arguments, so the call survives.
+const OUTER_CALLS_DOWN: &str = "fn down(n: i64) -> i64 {\n    if n > 0 { down(n - 1) + 1 } else { 0 }\n}\n\n\
+     fn outer(n: i64) -> i64 {\n    down(0) + down(n)\n}\n\n\
+     fn main() {\n    print(outer(5))\n    print(outer(2))\n}\n";
 
+/// A marker counts the calls in the caller's own body: `outer` keeps one call to `down`, not
+/// the two that its inlined copies in `main` add up to.
 #[test]
-fn o2_calls_marker_counts_the_calls_of_an_inlined_caller() {
-    let dir = fixture(
-        "o2_calls_marker_counts_the_calls_of_an_inlined_caller",
-        &[
-            (
-                "a.sisu",
-                &format!("// o2-calls: main down 2\n{COUNTS_DOWN}"),
-            ),
-            ("a.out", "5\n2\n"),
-        ],
+fn o2_calls_marker_counts_inside_the_caller() {
+    let case = |name: &str, count: u32| {
+        fixture(
+            name,
+            &[
+                (
+                    "a.sisu",
+                    &format!("// o2-calls: outer down {count}\n{OUTER_CALLS_DOWN}"),
+                ),
+                ("a.out", "5\n2\n"),
+            ],
+        )
+    };
+    support::run(
+        &case("o2_calls_marker_counts_inside_the_caller_1", 1).join("a.sisu"),
+        false,
     );
-    support::run(&dir.join("a.sisu"), false);
+    let dir = case("o2_calls_marker_counts_inside_the_caller_2", 2);
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("-O2 keeps 1 calls to `down` in `outer`, not 2"),
+        "{message}"
+    );
 }
 
-/// Once the caller is gone its calls cannot be told apart from another function's.
 #[test]
-fn o2_calls_marker_fails_when_another_function_calls_the_callee() {
-    let dir = fixture(
-        "o2_calls_marker_fails_when_another_function_calls_the_callee",
-        &[
-            (
-                "a.sisu",
-                &format!(
-                    "// o2-calls: main down 2\n{COUNTS_DOWN}fn other() -> i64 {{ down(7) }}\n"
+fn o2_calls_marker_names_a_missing_function() {
+    for (marker, missing) in [("outr down 1", "outr"), ("outer dwn 1", "dwn")] {
+        let dir = fixture(
+            "o2_calls_marker_names_a_missing_function",
+            &[
+                (
+                    "a.sisu",
+                    &format!("// o2-calls: {marker}\n{OUTER_CALLS_DOWN}"),
                 ),
-            ),
-            ("a.out", "5\n2\n"),
-        ],
-    );
-    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
-    assert!(message.contains("calls `down` too"), "{message}");
+                ("a.out", "5\n2\n"),
+            ],
+        );
+        let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+        assert!(
+            message.contains(&format!("no function named `{missing}`")),
+            "{message}"
+        );
+    }
 }
 
 #[test]

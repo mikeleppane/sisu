@@ -226,6 +226,11 @@ fn emit_ir(path: &str, source: &str, o2: bool) -> ExitCode {
     let pipeline = codegen::pipeline(o2);
     let printed = codegen::target_machine(o2).and_then(|machine| {
         let module = codegen::compile(&context, &program, path, source, &machine, false);
+        // For the `o2-calls` check in the tests (`docs/development.md`); `--emit ir` only, so
+        // no executable is affected, and not in the usage text.
+        if let Ok(names) = std::env::var("SISU_KEEP_FUNCTIONS") {
+            codegen::keep_functions(&module, &names);
+        }
         // `LLVMString`'s `Display` quotes and escapes the text; `to_string` does not.
         let before = module.print_to_string().to_string();
         codegen::optimize(&module, &machine, o2)?;

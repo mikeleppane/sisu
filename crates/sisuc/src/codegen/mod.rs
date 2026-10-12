@@ -1155,6 +1155,20 @@ pub(crate) fn pipeline(o2: bool) -> &'static str {
     if o2 { "default<O2>" } else { "mem2reg" }
 }
 
+/// Marks each Sisu function in `names`, comma separated, `noinline` so that the optimizer keeps
+/// it. The `o2-calls` check uses this to read a caller's own calls; a name that is not a
+/// function is skipped.
+pub(crate) fn keep_functions(module: &Module<'_>, names: &str) {
+    let noinline = module
+        .get_context()
+        .create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
+    for name in names.split(',') {
+        if let Some(function) = module.get_function(&format!("sisu.{name}")) {
+            function.add_attribute(AttributeLoc::Function, noinline);
+        }
+    }
+}
+
 /// Verifies `module`, then runs the pipeline.
 pub(crate) fn optimize(
     module: &Module<'_>,

@@ -72,13 +72,17 @@ A `run/` case whose output depends on a value crossing a real call says so
 with a marker line, `// o2-calls: <caller> <callee> <count>`. The test then
 checks that the `-O2` IR of `<caller>` holds exactly `<count>` calls to
 `<callee>`, because the inliner can fold a call away and keep the output
-the same. Every function except the C `main` is internal, so `-O2` inlines
-a caller with one call site and the caller vanishes from the IR. When that
-happens the check counts the calls to `<callee>` in the whole module outside
-`<callee>` itself, and it first asserts that `<caller>` was the only function
-that called `<callee>` before `-O2`. Interprocedural constant propagation
-also runs on internal functions, so a callee that keeps its calls recurses to
-a depth that the call sites do not fix; see `handover.sisu`.
+the same. Every function except the C `main` is internal, so `-O2` would
+inline a caller with one call site and the caller would vanish from the IR.
+The check therefore runs `sisuc -O2 --emit ir` with the environment variable
+`SISU_KEEP_FUNCTIONS` set to the callers of its markers, comma separated.
+That marks them `noinline` in the module and changes nothing else; `sisuc`
+reads it only for `--emit ir`, and the usage text does not mention it. The
+check counts the calls to `<callee>` in the body of `<caller>` after `-O2`,
+and fails with "no function named" if `<caller>` or `<callee>` does not
+exist. Interprocedural constant propagation also runs on internal functions,
+so a callee that keeps its calls recurses to a depth that the call sites do
+not fix; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack
 tests in `programs.rs` run.
 
