@@ -1,0 +1,85 @@
+// Optionals that hold counted payloads: objects and arrays in fields, locals and arrays. The
+// harness's leak checks prove each overwritten payload is released once.
+class Obj {
+    v: i64
+}
+
+class Slot {
+    mut item: Obj?
+    mut list: [i64]?
+}
+
+// An optional field overwritten with another object, with `None`, and back.
+fn field_overwrite() {
+    let s = Slot(item: Obj(v: 1), list: [1, 2])
+    let held = s.item
+    s.item = Obj(v: 2)
+    print(s.item?.v ?? 0)             // 2
+    print(held?.v ?? 0)               // 1
+    s.item = None
+    print(s.item == None)             // true
+    s.item = held
+    print(s.item?.v ?? 0)             // 1
+    s.list = None
+    print(s.list?.len() ?? -1)        // -1
+    s.list = [7, 8, 9]
+    print(s.list?.len() ?? -1)        // 3
+}
+
+// `??` with a counted default, used and unused.
+fn coalesce() {
+    let none: Obj? = None
+    let a = none ?? Obj(v: 5)
+    print(a.v)                        // 5
+    let some: Obj? = Obj(v: 6)
+    let b = some ?? Obj(v: 7)
+    print(b.v)                        // 6
+    print((none ?? Obj(v: 8)).v)      // 8
+    let xs: [i64]? = None
+    let ys = xs ?? [1, 2]
+    print(ys.len())                   // 2
+    let zs: [i64]? = [3]
+    print((zs ?? [4, 5])[0])          // 3
+}
+
+// The binding hides an outer name of another type until the block ends.
+fn shadow() {
+    let x = Obj(v: 9)
+    let m: Obj? = Obj(v: 4)
+    if let x = m {
+        print(x.v)                    // 4
+    }
+    print(x.v)                        // 9
+    let xs: [i64]? = [1, 2, 3]
+    if let xs = xs {
+        print(xs.len())               // 3
+    }
+    print(xs?.len() ?? 0)             // 3
+}
+
+fn in_array() {
+    let mut slots: [Obj?] = [Obj(v: 1), None, Obj(v: 3)]
+    let kept = slots[0]
+    slots[0] = None
+    slots[1] = Obj(v: 2)
+    let mut total = 0
+    for s in slots {
+        total += s?.v ?? 0
+    }
+    print(total)                      // 5
+    print(kept?.v ?? 0)               // 1
+    let copy = slots
+    slots[2] = None
+    print(copy[2]?.v ?? 0)            // 3
+    print(slots[2] == None)           // true
+    let lists: [[i64]?] = [[1, 2], None]
+    print(lists[0]?.len() ?? 0)       // 2
+    print(lists[1]?.len() ?? 0)       // 0
+}
+
+fn main() {
+    field_overwrite()
+    coalesce()
+    shadow()
+    in_array()
+}

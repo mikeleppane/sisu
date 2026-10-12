@@ -1,0 +1,131 @@
+// A counted local, an object and an array, is live on each exit path. The harness runs this
+// under Valgrind and `--rc-checks`, so a missed or doubled release fails it. `ownership.sisu`
+// and `unwrap.sisu` cover these exits with objects in `while`; these add arrays and `for`.
+class Obj {
+    v: i64
+}
+
+// `return` from a `while` inside a `for` releases both loops' locals and the function's.
+fn nested_return(n: i64) -> i64 {
+    let o = Obj(v: 1)
+    let xs = [1, 2]
+    for i in 0..n {
+        let a = [i]
+        let mut j = 0
+        while j < n {
+            let b = Obj(v: j)
+            let ys = [j, j]
+            if i * j == 2 { return o.v + xs[1] + a[0] + b.v + ys[0] }
+            j += 1
+        }
+    }
+    -1
+}
+
+fn while_exits() {
+    let mut i = 0
+    let mut sum = 0
+    while i < 10 {
+        i += 1
+        let o = Obj(v: i)
+        let xs = [i, i * 10]
+        if i == 2 { continue }
+        if i == 4 { break }
+        sum += o.v + xs[1]
+    }
+    print(sum)                        // 11 + 33 = 44
+    print(i)                          // 4
+}
+
+fn for_exits() {
+    let keep = Obj(v: 100)
+    let mut sum = 0
+    for i in 0..10 {
+        let o = Obj(v: i)
+        let xs = [o, keep]
+        if i % 2 == 1 { continue }
+        if i == 6 { break }
+        sum += xs[0].v + xs[1].v
+    }
+    print(sum)                        // 100 + 102 + 104 = 306
+    let objs = [Obj(v: 1), Obj(v: 2), Obj(v: 3)]
+    for x in objs {
+        let ys = [x.v]
+        if x.v == 1 { continue }
+        if x.v == 3 { break }
+        print(ys[0])                  // 2
+    }
+}
+
+fn if_let_return(m: Obj?) -> i64 {
+    let xs = [1, 2, 3]
+    if let o = m {
+        let ys = [o.v]
+        return ys[0] + xs.len()
+    }
+    xs[0]
+}
+
+// `if let` inside a `while`, on an element of an array of optionals.
+fn find(xs: [Obj?], want: i64) -> i64 {
+    let o = Obj(v: 0)
+    let arr = [7]
+    let mut i = 0
+    while i < xs.len() {
+        if let x = xs[i] {
+            let a = [x.v]
+            if x.v == want { return a[0] + arr[0] + o.v }
+        }
+        i += 1
+    }
+    -1
+}
+
+fn shrink(xs: [i64]) -> [i64]? {
+    if xs[0] == 0 { None } else { [xs[0] - 1, xs[0]] }
+}
+
+// `while let` over an optional array, returning from inside.
+fn while_let_return(start: i64, stop: i64) -> i64 {
+    let o = Obj(v: 5)
+    let mut cur: [i64]? = [start]
+    while let xs = cur {
+        let b = Obj(v: xs[0])
+        if xs[0] == stop { return b.v + o.v }
+        cur = shrink(xs)
+    }
+    -1
+}
+
+// Each assignment releases the only reference to the old value.
+fn reassign() {
+    let mut o = Obj(v: 1)
+    o = Obj(v: 2)
+    let mut xs = [1, 2, 3]
+    xs = [4]
+    let mut i = 0
+    while i < 3 {
+        i += 1
+        xs = [i]
+        o = Obj(v: i * 10)
+    }
+    print(o.v + xs[0])                // 33
+    let mut g = [[1], [2]]
+    g = [[3]]
+    print(g[0][0])                    // 3
+}
+
+fn main() {
+    print(nested_return(3))           // 8
+    print(nested_return(2))           // -1
+    while_exits()
+    for_exits()
+    print(if_let_return(Obj(v: 4)))   // 7
+    print(if_let_return(None))        // 1
+    let some: [Obj?] = [None, Obj(v: 3), Obj(v: 5)]
+    print(find(some, 5))              // 12
+    print(find(some, 4))              // -1
+    print(while_let_return(3, 1))     // 6
+    print(while_let_return(3, 9))     // -1
+    reassign()
+}
