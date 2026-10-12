@@ -37,7 +37,8 @@ any type.
 
 **Panic**:
 The program stopping at runtime with `sisu: panic at <file>:<line>:<col>:
-<message>` on stderr and exit code 101.
+<message>` on stderr and exit code 101. A failed write to standard output has
+no location: `sisu: panic: <message>`.
 _Avoid_: trap, crash, abort
 
 **RC check**:

@@ -29,7 +29,8 @@ newlines, not semicolons
 the first error.
 
 **Parser** (`parser.rs`, `ast.rs`). Turns tokens into a syntax tree, the AST.
-It also stops at the first error.
+It also stops at the first error, and it rejects a program that nests deeper
+than 256 levels, because every later stage walks the tree recursively.
 
 **Checker** (`check/`, `tir.rs`). Resolves every name, types every expression
 and lowers sugar: `while`, `while let` and `for` become loops, `?.` and `??`
@@ -78,9 +79,11 @@ removed whether or not the link succeeds.
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
 into every program. Generated code calls it to print values, to panic and to
 allocate and free objects and arrays: `sisu_print_int`, `sisu_print_bool`,
-`sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and `sisu_free`. The
-runtime counts the blocks that are allocated and not yet freed. A program
-built with `--rc-checks` calls `sisu_rc_fault` when a count check fails, and
+`sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and
+`sisu_free`. The print functions write into a buffer that the runtime owns,
+and `main` calls `sisu_flush_stdout` before it returns. The runtime counts
+the blocks that are allocated and not yet freed. A program built with
+`--rc-checks` calls `sisu_rc_fault` when a count check fails, and
 `sisu_rc_check_exit` at a normal exit, which fails when that number is not
 zero. Both exit with code 102.
 
