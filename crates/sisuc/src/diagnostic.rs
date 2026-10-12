@@ -95,6 +95,11 @@ impl Diagnostic {
             first.expect("a diagnostic should have a primary span"),
             last.expect("a diagnostic should have a primary span"),
         );
+        // Start one line early. The renderer sizes the line-number gutter from the newlines
+        // before the last span's end, counted with `lines().count() - 1`, which reads an empty
+        // prefix as one newline too many; the whole source never has an empty prefix there. A
+        // window with a line before it matches, and folding hides that line.
+        let first = first.saturating_sub(1).max(1);
         let from = lines.0[first - 1];
         let to = lines.0.get(last).copied().unwrap_or(source.len());
         let level = match self.severity {
@@ -342,6 +347,16 @@ error: cannot assign to `n`
                 Diagnostic::error(between("ää\r\nöö x\r\n€€", "x", "€€"), "m"),
             ),
             ("ää\r\nöö\r\n", Diagnostic::warning(Span::new(11, 11), "m")),
+            // An empty span at the start of line 10: the renderer sizes the gutter from the
+            // newlines before the span, and an empty window prefix counts one too many.
+            (
+                "1\n2\n3\n4\n5\n6\n7\n8\n9\nx",
+                Diagnostic::error(Span::new(18, 18), "m"),
+            ),
+            (
+                "\n\n\n\n\n\n\r\n//\r\n€\r\n }",
+                Diagnostic::error(Span::new(17, 17), "m"),
+            ),
             // The line numbers grow from one digit to two.
             (
                 twelve,
