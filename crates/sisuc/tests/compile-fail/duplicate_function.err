@@ -1,0 +1,9 @@
+error: function `f` is defined twice
+ --> duplicate_function.sisu:3:4
+  |
+1 | fn f() {}
+  |    - first defined here
+2 |
+3 | fn f() {}
+  |    ^
+

@@ -1,0 +1,5 @@
+fn main() {
+    let maybe: i64? = 1
+    let n: i64 = maybe
+    print(n)
+}

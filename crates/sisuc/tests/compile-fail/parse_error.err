@@ -1,0 +1,6 @@
+error: expected a variable name, found `=`
+ --> parse_error.sisu:2:9
+  |
+2 |     let = 1
+  |         ^
+

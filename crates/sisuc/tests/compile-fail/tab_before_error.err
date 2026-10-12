@@ -1,0 +1,6 @@
+error: cannot find `missing` in this scope
+ --> tab_before_error.sisu:2:8
+  |
+2 |     print(missing)
+  |           ^^^^^^^
+

@@ -6,7 +6,8 @@
 repo = "builtin"
 hooks = [
   { id = "trailing-whitespace" },
-  { id = "end-of-file-fixer" },
+  # Compile-fail cases need a source with no final newline and stderr snapshots that end in one blank line.
+  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/compile-fail/' },
   { id = "mixed-line-ending" },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files" },

@@ -1,8 +1,9 @@
-//! One test per file in `tests/run` and `tests/run-fail`. A `run` case exits 0 and prints its
-//! `.out`; a `run_fail` case panics with its `.out` on stdout and its `.err` on stderr. Every
-//! file in either directory must belong to a case.
+//! One test per file in `tests/run`, `tests/run-fail` and `tests/compile-fail`. A `run` case exits
+//! 0 and prints its `.out`; a `run_fail` case panics with its `.out` on stdout and its `.err` on
+//! stderr; a `compile_fail` case is rejected by `sisuc --check` with its `.err` on stderr. Every
+//! file in these directories must belong to a case.
 //!
-//! `SISU_BLESS=1` rewrites the `.out` and `.err` files of passing builds. It never creates one.
+//! `SISU_BLESS=1` rewrites the `.out` and `.err` files of passing cases. It never creates one.
 
 use std::path::Path;
 
@@ -52,9 +53,29 @@ fn run_fail_orphans(path: &Path) -> datatest_stable::Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "datatest-stable accepts only test functions that return a `Result`"
+)]
+fn compile_fail(path: &Path) -> datatest_stable::Result<()> {
+    support::compile_fail(path, bless());
+    Ok(())
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "datatest-stable accepts only test functions that return a `Result`"
+)]
+fn compile_fail_orphans(path: &Path) -> datatest_stable::Result<()> {
+    support::orphan_check(path);
+    Ok(())
+}
+
 datatest_stable::harness! {
     { test = run, root = "tests/run", pattern = r"\.sisu$" },
     { test = run_fail, root = "tests/run-fail", pattern = r"\.sisu$" },
     { test = run_orphans, root = "tests/run" },
     { test = run_fail_orphans, root = "tests/run-fail" },
+    { test = compile_fail, root = "tests/compile-fail", pattern = r"\.sisu$" },
+    { test = compile_fail_orphans, root = "tests/compile-fail" },
 }

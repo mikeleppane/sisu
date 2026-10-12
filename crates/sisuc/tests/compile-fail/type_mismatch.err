@@ -1,0 +1,6 @@
+error: expected `bool`, found `i64`
+ --> type_mismatch.sisu:6:22
+  |
+6 |     let flag: bool = double(4)
+  |                      ^^^^^^^^^
+

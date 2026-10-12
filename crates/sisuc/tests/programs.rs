@@ -649,6 +649,21 @@ fn bless_writes_neither_file_when_one_is_missing() {
     assert!(!dir.join("a.err").exists());
 }
 
+/// A program that compiles is no compile-fail case, whatever its `.err` holds.
+#[test]
+fn compile_fail_rejects_a_valid_program() {
+    let dir = fixture(
+        "compile_fail_rejects_a_valid_program",
+        &[("a.sisu", "fn main() {}\n"), ("a.err", "")],
+    );
+    let message = panic_message(|| support::compile_fail(&dir.join("a.sisu"), true));
+    assert!(message.contains("Some(0)"), "{message}");
+    assert_eq!(
+        fs::read_to_string(dir.join("a.err")).expect("reads a.err"),
+        ""
+    );
+}
+
 /// Without bless a wrong `.out` fails and stays as it was; bless rewrites it, and the run then
 /// passes without bless.
 #[test]

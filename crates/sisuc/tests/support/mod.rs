@@ -120,6 +120,30 @@ pub(crate) fn run_fail(path: &Path, bless: bool) {
     );
 }
 
+/// Checks a `tests/compile-fail` case: `sisuc --check <name>.sisu`, run from the source's
+/// directory, exits 1 with empty stdout and `<name>.err` on stderr. With `bless`, rewrites
+/// `<name>.err` instead, after the exit code and stdout checks passed.
+pub(crate) fn compile_fail(path: &Path, bless: bool) {
+    let dir = path.parent().expect("a case should sit in a directory");
+    let name = path.file_name().expect("a case should have a file name");
+    let sisuc = Path::new(env!("CARGO_BIN_EXE_sisuc"));
+    let out = Command::new(sisuc)
+        .current_dir(dir)
+        .arg("--check")
+        .arg(name)
+        .output()
+        .expect("sisuc starts");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "{}: {stderr}", path.display());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "",
+        "{}",
+        path.display()
+    );
+    expect_files(&[(path.with_extension("err"), stderr)], bless);
+}
+
 /// Passes for a `.sisu` file, and for an `.out` or `.err` beside a `.sisu` of the same name;
 /// panics on any other file, naming it.
 pub(crate) fn orphan_check(path: &Path) {

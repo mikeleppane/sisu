@@ -1,0 +1,6 @@
+error: unexpected character `ä`
+ --> multibyte_span.sisu:3:9
+  |
+3 |     let ä = 1
+  |         ^
+
