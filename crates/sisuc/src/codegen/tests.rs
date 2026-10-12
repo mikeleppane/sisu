@@ -364,7 +364,7 @@ fn drop_frees_with_the_allocated_layout() {
     // The class: `P` is 32 bytes aligned to 8 (see `class_layout_comes_from_the_data_layout`),
     // and the block is the drop function's own argument.
     assert!(ir.contains("call ptr @sisu_alloc(i64 32, i64 8)"), "{ir}");
-    let class = function_body(&ir, "define void @sisu_rc.drop.P(ptr");
+    let class = function_body(&ir, "define internal void @sisu_rc.drop.P(ptr");
     let (pointer, size, align) = free(class);
     assert!(
         class.trim_start().starts_with(&format!("{pointer})")),
@@ -374,7 +374,10 @@ fn drop_frees_with_the_allocated_layout() {
     // An array: the 16-byte header plus `len` elements, aligned to 8; the element sizes are
     // those of `literal_allocates_header_and_elements`, recomputed from the length.
     for (helper, element_size) in [("[i64]", 8), ("[bool]", 1), ("[i64?]", 16)] {
-        let body = function_body(&ir, &format!("define void @\"sisu_rc.drop.{helper}\"(ptr"));
+        let body = function_body(
+            &ir,
+            &format!("define internal void @\"sisu_rc.drop.{helper}\"(ptr"),
+        );
         let (pointer, size, align) = free(body);
         assert!(
             body.trim_start().starts_with(&format!("{pointer})")),
