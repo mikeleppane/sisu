@@ -513,8 +513,10 @@ mod tests {
                     const RLIMIT_NOFILE: i32 = 7;
                     assert_eq!(setrlimit(RLIMIT_NOFILE, &[32, 32]), 0);
                     // `dup(0)` takes the lowest free slot, so it fills the table without a second
-                    // open file. It needs descriptor 0 open: with 0 closed it fails at once, the
-                    // table stays empty and the `print` below succeeds.
+                    // open file. Descriptor 0 is open here: std's startup reopens a closed one on
+                    // /dev/null. Were it closed just before the loop, `dup` would fail at once, the
+                    // table would stay unfilled, the `print` would succeed and the parent's
+                    // expected exit 101 would fail.
                     while dup(0) >= 0 {}
                 }
                 sisu_print_int(5);
