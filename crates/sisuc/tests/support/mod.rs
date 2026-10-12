@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// `sisuc [-O2] <input> <output>`, run from `dir`, once the runtime archive is built.
+/// `sisuc [-O2] <input> <output>`, run from `dir`, after asserting the runtime archive exists.
 pub(crate) fn sisuc(dir: &Path, input: &str, output: &Path, o2: bool) -> Command {
     let sisuc = Path::new(env!("CARGO_BIN_EXE_sisuc"));
     assert!(
@@ -25,8 +25,9 @@ pub(crate) fn compile(dir: &Path, name: &str, exe: &Path, o2: bool) {
     let out = sisuc(dir, &format!("{name}.sisu"), exe, o2)
         .output()
         .expect("sisuc starts");
-    assert!(
-        out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(0),
         "sisuc failed on {name}.sisu:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
