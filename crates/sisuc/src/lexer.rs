@@ -9,7 +9,8 @@ use crate::diagnostic::{Diagnostic, Span, line_col};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
     Ident(String),
-    Int(i64),
+    /// The magnitude of an integer literal: at most `MIN_MAGNITUDE`, which only a unary `-` accepts.
+    Int(u64),
     Fn,
     Let,
     Mut,
@@ -458,8 +459,16 @@ fn keyword_or_ident(text: &str) -> TokenKind {
     }
 }
 
-/// Parses `source[start..end]`, a run of digits and `_`, as an `i64`.
-fn int_literal(source: &str, start: usize, end: usize) -> Result<i64, Diagnostic> {
+/// The magnitude of `i64::MIN`, the one literal that fits `i64` only after a unary `-`.
+pub(crate) const MIN_MAGNITUDE: u64 = 1 << 63;
+
+/// The one error for a literal that no `i64` holds, wherever it is found.
+pub(crate) fn literal_too_large(span: Span) -> Diagnostic {
+    Diagnostic::error(span, "integer literal is too large for `i64`")
+}
+
+/// Parses `source[start..end]`, a run of digits and `_`, as a magnitude of at most `MIN_MAGNITUDE`.
+fn int_literal(source: &str, start: usize, end: usize) -> Result<u64, Diagnostic> {
     let text = &source[start..end];
     for (i, _) in text.match_indices('_') {
         let is_digit = |j: usize| text.as_bytes().get(j).is_some_and(u8::is_ascii_digit);
@@ -471,12 +480,11 @@ fn int_literal(source: &str, start: usize, end: usize) -> Result<i64, Diagnostic
             ));
         }
     }
-    text.replace('_', "").parse().map_err(|_| {
-        Diagnostic::error(
-            Span::new(start, end),
-            "integer literal is too large for `i64`",
-        )
-    })
+    text.replace('_', "")
+        .parse()
+        .ok()
+        .filter(|&n| n <= MIN_MAGNITUDE)
+        .ok_or_else(|| literal_too_large(Span::new(start, end)))
 }
 
 /// The operator or punctuation starting with `c`, consuming a second char when it has one.
@@ -766,16 +774,24 @@ mod tests {
     fn max_literal() {
         assert_eq!(
             kinds("9223372036854775807"),
-            [TokenKind::Int(i64::MAX), TokenKind::Eof]
+            [TokenKind::Int(9_223_372_036_854_775_807), TokenKind::Eof]
+        );
+    }
+
+    /// The magnitude of `i64::MIN` lexes: the parser decides whether a `-` precedes it.
+    #[test]
+    fn min_magnitude_literal() {
+        assert_eq!(
+            kinds("9223372036854775808"),
+            [TokenKind::Int(MIN_MAGNITUDE), TokenKind::Eof]
         );
     }
 
     #[test]
     fn literal_too_large() {
-        assert_eq!(
-            err("9223372036854775808"),
-            ("integer literal is too large for `i64`".to_string(), 1, 1)
-        );
+        let message = "integer literal is too large for `i64`".to_string();
+        assert_eq!(err("9223372036854775809"), (message.clone(), 1, 1));
+        assert_eq!(err("99999999999999999999999"), (message, 1, 1));
     }
 
     #[test]

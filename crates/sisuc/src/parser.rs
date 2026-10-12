@@ -5,7 +5,7 @@ use crate::ast::{
     Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, Span};
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
 
 /// Parses `tokens`, which must end with `Eof`. Stops at the first error.
 pub(crate) fn parse(tokens: &[Token]) -> Result<Program, Diagnostic> {
@@ -627,6 +627,15 @@ impl Parser<'_> {
         let saved = self.depth;
         self.descend()?;
         let start = self.bump().span;
+        if matches!(op, UnaryOp::Neg) && self.at_min_literal() {
+            // `i64::MIN` has no positive twin, so `-9223372036854775808` is one literal.
+            let literal = self.bump().span;
+            self.depth = saved;
+            return Ok(Expr {
+                span: start.to(literal),
+                kind: ExprKind::Int(i64::MIN),
+            });
+        }
         let operand = self.unary()?;
         self.depth = saved;
         Ok(Expr {
@@ -636,6 +645,17 @@ impl Parser<'_> {
                 operand: Box::new(operand),
             },
         })
+    }
+
+    /// Whether the next token is the magnitude of `i64::MIN` that nothing postfix follows. A `.`,
+    /// `?.` or `[` would apply to the literal before the `-` does, so that literal is too large.
+    fn at_min_literal(&self) -> bool {
+        // `Int` is never `Eof`, so the token after it exists.
+        self.at(&TokenKind::Int(MIN_MAGNITUDE))
+            && !matches!(
+                self.tokens[self.pos + 1].kind,
+                TokenKind::Dot | TokenKind::QuestionDot | TokenKind::LBracket
+            )
     }
 
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
@@ -725,6 +745,8 @@ impl Parser<'_> {
         let token = self.peek().clone();
         let kind = match token.kind {
             TokenKind::Int(n) => {
+                // `MIN_MAGNITUDE` fits only as the operand of a `-`, which `unary` takes first.
+                let n = i64::try_from(n).map_err(|_| literal_too_large(token.span))?;
                 self.bump();
                 ExprKind::Int(n)
             }
@@ -941,6 +963,42 @@ mod tests {
             program("fn f(a: i64, b: bool) -> i64 { a }"),
             "(fn f ((a i64) (b bool)) i64 (block a))"
         );
+    }
+
+    /// A `-` applied directly to 2^63 is the one literal `i64::MIN`, with the `-` in its span.
+    #[test]
+    fn minus_min_magnitude_is_one_literal() {
+        assert_eq!(
+            body("fn main() { -9223372036854775808 }"),
+            "(block -9223372036854775808)"
+        );
+        assert_eq!(
+            body("fn main() { -   9_223_372_036_854_775_808 }"),
+            "(block -9223372036854775808)"
+        );
+        let f = first_fn("fn main() { 1 - -9223372036854775808 }");
+        let StmtKind::Expr(sum) = &f.body.stmts[0].kind else {
+            panic!("expected an expression statement")
+        };
+        assert_eq!(sum.to_string(), "(- 1 -9223372036854775808)");
+        assert_eq!((sum.span.start, sum.span.end), (12, 36));
+    }
+
+    /// Anywhere else 2^63 is the one "too large" error, at the literal. The lexer rejects larger.
+    #[test]
+    fn min_magnitude_elsewhere_is_too_large() {
+        let message = "integer literal is too large for `i64`".to_string();
+        for (src, col) in [
+            ("fn main() { 9223372036854775808 }", 13),
+            ("fn main() { -(9223372036854775808) }", 15),
+            ("fn main() { 1 - 9223372036854775808 }", 17),
+            // The `.` and `[` bind tighter than the `-`, so they apply to the literal.
+            ("fn main() { -9223372036854775808.x }", 14),
+            ("fn main() { -9223372036854775808?.x }", 14),
+            ("fn main() { -9223372036854775808[0] }", 14),
+        ] {
+            assert_eq!(parse_err(src), (message.clone(), 1, col), "{src}");
+        }
     }
 
     #[test]

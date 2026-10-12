@@ -99,6 +99,11 @@ fn u8_cannot_be_negative() {
     errors("fn main() { let x: u8 = -1 }", &[(message, (1, 25))]);
     // One diagnostic: the literal's size is not reported as well.
     errors("fn main() { let x: u8 = -300 }", &[(message, (1, 25))]);
+    // The smallest `i64` is one literal that is negative, not a `u8` that does not fit.
+    errors(
+        "fn main() { let x: u8 = -9223372036854775808 }",
+        &[(message, (1, 25))],
+    );
     errors(
         "fn f(b: u8) { print(-b) }\nfn main() {}",
         &[(message, (1, 21))],

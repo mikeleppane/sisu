@@ -23,8 +23,7 @@ impl Checker {
         match &e.kind {
             ExprKind::Int(n) => {
                 let ty = literal_type(expected);
-                if ty == Type::U8 && *n > i64::from(u8::MAX) {
-                    let message = format!("`{n}` does not fit in `u8`");
+                if let Some(message) = u8_literal_error(*n).filter(|_| ty == Type::U8) {
                     self.diagnostics.push(Diagnostic::error(e.span, message));
                     return Err(Poisoned::typed(ty));
                 }
@@ -1045,6 +1044,15 @@ pub(super) fn int_literal(e: &ast::Expr) -> bool {
                 && int_literal(rhs)
         }
         _ => false,
+    }
+}
+
+/// Why the literal `n` is not a `u8`. Only `-9223372036854775808` parses to a negative literal.
+fn u8_literal_error(n: i64) -> Option<String> {
+    match n {
+        ..0 => Some("`u8` cannot be negative".to_string()),
+        0..=255 => None,
+        _ => Some(format!("`{n}` does not fit in `u8`")),
     }
 }
 
