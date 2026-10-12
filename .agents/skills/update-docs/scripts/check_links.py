@@ -1,9 +1,11 @@
 """Checks that relative links and image sources in Markdown files resolve, anchors included, and
-that each repository path written as code in prose, such as `crates/sisuc/src/main.rs`, exists.
+that each repository path written as code in prose, such as `crates/sisuc/src/main.rs`, is
+tracked by git or ignored on purpose.
 
 Usage: python3 check_links.py FILE.md... Prints each broken link or path and exits 1 if any.
 """
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,6 +17,23 @@ FENCE = re.compile(r'^(```|~~~).*?^\1[^\n]*$', re.M | re.S)
 # such as `<name>` and globs such as `*.md` do not match, so they are not checked.
 REPO_PATH = re.compile(r'`((?:crates|docs|scripts|\.agents|\.cargo|\.config|\.github)/[\w./-]*)`')
 ROOT = Path(__file__).resolve().parents[4]
+
+
+def git(*args):
+    return subprocess.run(['git', '-C', str(ROOT), *args], capture_output=True, text=True)
+
+
+# What a clean checkout holds: each tracked file and each directory above one. Checking the
+# working tree instead would pass on local files that CI's checkout lacks.
+TRACKED = set()
+for name in git('ls-files', '-z').stdout.split('\0'):
+    parts = name.split('/')
+    TRACKED.update('/'.join(parts[:i]) for i in range(1, len(parts) + 1))
+
+
+def in_repo(path):
+    """Tracked, or ignored on purpose, like the local-only `docs/superpowers/`."""
+    return path.rstrip('/') in TRACKED or git('check-ignore', '-q', path).returncode == 0
 
 
 def prose(path):
@@ -59,7 +78,7 @@ for md in map(Path, sys.argv[1:]):
             print(f'{md}: missing anchor {target}')
             bad += 1
     for path in REPO_PATH.findall(prose(md)):
-        if not (ROOT / path).exists():
+        if not in_repo(path):
             print(f'{md}: missing path `{path}`')
             bad += 1
 print('broken:', bad)
