@@ -2,7 +2,8 @@
 # LLVM warm-up exercises; kept locally, never committed.
 /warmup/
 # Project-local LLVM, installed by scripts/install-llvm.sh.
-/.llvm/
+# No trailing slash, so it also matches the symlink a worktree makes to the main checkout's copy.
+/.llvm
 # CodeGraph index, built locally by `codegraph init`.
 /.codegraph/
 # Specs and plans: internal design docs, kept locally, never committed.
