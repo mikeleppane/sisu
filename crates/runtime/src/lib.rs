@@ -15,7 +15,7 @@ static LIVE: AtomicU64 = AtomicU64::new(0);
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_int(value: i64) {
-    println!("{value}");
+    print_line(format_args!("{value}"));
 }
 
 /// Prints `true` or `false` and a newline to standard output. Sisu's `print` calls this
@@ -26,7 +26,18 @@ pub extern "C" fn sisu_print_int(value: i64) {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_bool(value: bool) {
-    println!("{value}");
+    print_line(format_args!("{value}"));
+}
+
+/// Writes `line` and a newline to standard output. A failed write is a Sisu panic:
+/// `println!` would panic and, with `panic = "abort"`, kill the program with SIGABRT.
+/// A pipe with no reader still kills the program with SIGPIPE, as it does a C program.
+fn print_line(line: std::fmt::Arguments<'_>) {
+    if let Err(error) = writeln!(std::io::stdout(), "{line}") {
+        exit_with_panic(format_args!(
+            "sisu: panic: standard output could not be written: {error}"
+        ));
+    }
 }
 
 /// Prints `sisu: panic at <msg>` to standard error and exits with code 101.
@@ -82,7 +93,29 @@ pub unsafe extern "C" fn sisu_panic_bounds(
     ))
 }
 
+// `signal(2)`, declared here to avoid a dependency. `handler` is a function address or
+// `SIG_IGN`; the previous handler is not needed.
+#[expect(
+    unsafe_code,
+    reason = "declares a libc function; the runtime is linked against libc"
+)]
+unsafe extern "C" {
+    fn signal(signum: i32, handler: usize) -> usize;
+}
+
+/// `SIGPIPE` and `SIG_IGN` on Linux.
+const SIGPIPE: i32 = 13;
+const SIG_IGN: usize = 1;
+
 fn exit_with_panic(message: std::fmt::Arguments<'_>) -> ! {
+    // A Sisu program keeps the default SIGPIPE action for standard output, but a panic must
+    // exit 101 even when nothing reads standard error.
+    // SAFETY: `signal` gets a valid signal number and `SIG_IGN`; it only changes the
+    // process's signal disposition.
+    #[expect(unsafe_code, reason = "calls libc `signal`")]
+    unsafe {
+        signal(SIGPIPE, SIG_IGN);
+    }
     // `eprintln!` panics on a failed write, which would abort before exit code 101.
     let _ = writeln!(std::io::stderr(), "{message}");
     std::process::exit(101)

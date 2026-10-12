@@ -362,6 +362,67 @@ fn largest_array_reaches_the_allocator() {
     }
 }
 
+/// What the runtime prints when a `print` cannot write to standard output.
+const STDOUT_WRITE_PANIC: &str =
+    "sisu: panic: standard output could not be written: No space left on device (os error 28)\n";
+
+/// A failed write in `print` of an `i64` or a `bool` is a Sisu panic: one stderr line, exit
+/// code 101, no Rust panic text and no abort.
+#[test]
+fn print_to_a_full_stdout_panics_with_exit_101() {
+    for (name, arg) in [("print_full_int", "1"), ("print_full_bool", "true")] {
+        let source = format!("fn main() {{\n    print({arg})\n}}\n");
+        for o2 in [false, true] {
+            let full = File::options()
+                .write(true)
+                .open("/dev/full")
+                .expect("/dev/full exists on Linux");
+            let out = Command::new(compile_tmp(name, &source, o2))
+                .stdout(full)
+                .output()
+                .expect("the program starts");
+            assert_eq!(out.status.code(), Some(101), "{name}: {:?}", out.status);
+            assert_eq!(String::from_utf8_lossy(&out.stderr), STDOUT_WRITE_PANIC);
+        }
+    }
+}
+
+/// A pipe whose read end is closed: a write to the other end raises SIGPIPE.
+fn broken_pipe() -> std::io::PipeWriter {
+    let (reader, writer) = std::io::pipe().expect("creates a pipe");
+    drop(reader);
+    writer
+}
+
+/// A Sisu panic whose stderr has no reader still exits 101: the runtime ignores SIGPIPE
+/// before it writes the panic line. This runs a compiled program, because the libtest child
+/// of a runtime unit test starts with SIGPIPE ignored already.
+#[test]
+fn panic_exits_101_when_stderr_is_a_closed_pipe() {
+    let source = "fn main() {\n    let xs = [1, 2]\n    let i = 2\n    print(xs[i])\n}\n";
+    for o2 in [false, true] {
+        let status = Command::new(compile_tmp("panic_closed_stderr", source, o2))
+            .stderr(broken_pipe())
+            .status()
+            .expect("the program starts");
+        assert_eq!(status.code(), Some(101), "{status:?}");
+    }
+}
+
+/// Standard output with no reader keeps the default SIGPIPE action: the program dies by
+/// signal 13, as a C program does.
+#[test]
+fn print_into_a_closed_stdout_pipe_dies_by_sigpipe() {
+    let source = "fn main() {\n    print(1)\n}\n";
+    for o2 in [false, true] {
+        let status = Command::new(compile_tmp("print_closed_stdout", source, o2))
+            .stdout(broken_pipe())
+            .status()
+            .expect("the program starts");
+        assert_eq!(status.signal(), Some(13), "{status:?}");
+    }
+}
+
 /// A `panic_cases` row that reads `xs[i]` from a 5-element `xs`, with `i` bound to `index`;
 /// the panic is at `i`, on line 4, column 14.
 fn bounds_case(name: &'static str, index: &str, message: &str) -> (&'static str, String, String) {

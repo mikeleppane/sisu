@@ -133,6 +133,18 @@ $ ./div_zero
 sisu: panic at crates/sisuc/tests/run-fail/div_zero.sisu:2:5: division by zero
 ```
 
+A `print` that cannot write to standard output is a panic too, for example
+when the disk is full:
+
+```console
+$ ./program >/dev/full
+sisu: panic: standard output could not be written: No space left on device (os error 28)
+```
+
+A pipe with no reader is the exception, as in C: writing to it kills the
+program with SIGPIPE. A panic ignores SIGPIPE on its way out, so it exits with
+code 101 even when nothing reads standard error.
+
 ## Look inside the compiler
 
 These flags run the pipeline up to one stage and stop there.
