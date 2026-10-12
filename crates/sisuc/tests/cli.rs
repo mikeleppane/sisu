@@ -258,6 +258,62 @@ fn unreadable_input_exits_1() {
     );
 }
 
+/// Runs `sisuc --check` on a file named `name` that holds `bytes`; returns the exit code and stderr.
+fn check_bytes(name: &str, bytes: &[u8]) -> (Option<i32>, String) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join(name), bytes).expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--check", name])
+        .output()
+        .expect("sisuc starts");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into(),
+    )
+}
+
+#[test]
+fn invalid_utf8_on_line_two_is_a_diagnostic_at_its_line_and_column() {
+    // Line 1 holds two non-ASCII chars on four bytes: the column counts chars, not bytes.
+    let name = "invalid_utf8_line_two.sisu";
+    let (code, stderr) = check_bytes(name, b"// \xc3\xa4\xc3\xa4\nfn main() {\xff}\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:2:12\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn invalid_utf8_at_the_start_is_a_diagnostic() {
+    let name = "invalid_utf8_start.sisu";
+    let (code, stderr) = check_bytes(name, b"\xff\nfn main() {}\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:1:1\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_truncated_character_at_end_of_file_is_a_diagnostic() {
+    // `\xe2\x82` starts the three-byte `€` and stops.
+    let name = "invalid_utf8_truncated.sisu";
+    let (code, stderr) = check_bytes(name, b"fn main() {}\n\xe2\x82");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:2:1\n"
+        )),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn mem2reg_removes_every_alloca() {
     // `loops.sisu` declares `let mut sq` inside the loop body: its `alloca` must still sit in the

@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use diagnostic::{Diagnostic, LineIndex};
+use diagnostic::{Diagnostic, LineIndex, Span};
 use inkwell::context::Context;
 use tir::Program;
 
@@ -154,10 +154,26 @@ fn run() -> ExitCode {
     }
 }
 
-/// Reads `input`, or prints why it cannot.
+/// Reads `input`, or prints why it cannot. Text that is not UTF-8 is a diagnostic at its first
+/// invalid byte, rendered over the valid text before it, so the renderer never sees bad UTF-8.
 fn read(input: &Path) -> Option<String> {
-    fs::read_to_string(input)
-        .inspect_err(|e| eprintln!("sisuc: cannot read {}: {e}", input.to_string_lossy()))
+    let path = input.to_string_lossy();
+    let bytes = fs::read(input)
+        .inspect_err(|e| eprintln!("sisuc: cannot read {path}: {e}"))
+        .ok()?;
+    String::from_utf8(bytes)
+        .inspect_err(|e| {
+            let valid_up_to = e.utf8_error().valid_up_to();
+            // The valid text, then U+FFFD where the bad byte is, so the position is the bad
+            // byte's even when it starts a line or ends the file.
+            let shown = String::from_utf8_lossy(&e.as_bytes()[..valid_up_to]) + "\u{FFFD}";
+            let at = Span::new(valid_up_to, shown.len());
+            report(
+                &path,
+                &shown,
+                &[Diagnostic::error(at, "source is not valid UTF-8")],
+            );
+        })
         .ok()
 }
 
