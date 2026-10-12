@@ -689,9 +689,9 @@ impl Checker {
         let Some(&func) = self.function_ids.get(&callee.name) else {
             self.diagnostics.push(Diagnostic::error(
                 callee.span,
-                format!("cannot find function `{}`", callee.name),
+                format!("cannot find function or class `{}`", callee.name),
             ));
-            self.labels(args);
+            // No `labels`: the name may be a misspelled class, whose labels are correct.
             self.stray(args);
             return Err(Poisoned::error());
         };
@@ -963,7 +963,6 @@ impl Checker {
     }
 
     fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
-        // Not `value()`: a `unit` argument needs this message, not "expression has no value".
         let wrong = || Diagnostic::error(span, "`print` takes one `i64`, `u8` or `bool`");
         let labeled = self.labels(args);
         let [arg] = args else {
@@ -977,7 +976,11 @@ impl Checker {
                 Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
                     .help("print each element in a `for` loop")
             }
-            Some(Type::Unit | Type::Class(_) | Type::Optional(_)) => wrong(),
+            Some(ty @ Type::Class(_)) => {
+                Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
+            }
+            Some(Type::Optional(_)) => wrong(),
+            Some(Type::Unit) => Diagnostic::error(arg.value.span, "expression has no value"),
             Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
             _ => {
                 let kind = checked

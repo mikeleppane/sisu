@@ -1,0 +1,6 @@
+error: cannot print `P`
+ --> print_object.sisu:6:11
+  |
+6 |     print(P(x: 1))
+  |           ^^^^^^^
+

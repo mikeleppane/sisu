@@ -196,7 +196,7 @@ fn unknown_name() {
 fn unknown_function() {
     expect_error(
         "fn main() { g() }",
-        "cannot find function `g`",
+        "cannot find function or class `g`",
         (1, 13, "g"),
         None,
         &[],
@@ -337,7 +337,10 @@ fn failed_call_still_checks_arguments() {
         (
             "unknown function",
             "fn main() {\n    g(1 + true)\n}",
-            vec![("cannot find function `g`", (2, 5)), (MISMATCH, (2, 11))],
+            vec![
+                ("cannot find function or class `g`", (2, 5)),
+                (MISMATCH, (2, 11)),
+            ],
         ),
         (
             "arity",
@@ -458,8 +461,8 @@ fn failed_rule_makes_its_expression_error() {
         (
             "print unit argument",
             "fn main() {\n    let x = print(print(1))\n    print(x)\n}".into(),
-            "`print` takes one `i64`, `u8` or `bool`",
-            (2, 13),
+            "expression has no value",
+            (2, 19),
         ),
         (
             "if branches",
@@ -745,8 +748,8 @@ fn print_two_arguments() {
 fn print_unit_argument() {
     error(
         "fn g() {}\nfn main() { print(g()) }",
-        "`print` takes one `i64`, `u8` or `bool`",
-        (2, 13),
+        "expression has no value",
+        (2, 19),
     );
 }
 
@@ -1410,7 +1413,7 @@ fn each_label_on_a_call_is_reported() {
 }
 
 #[test]
-fn labels_on_unknown_calls_are_reported() {
+fn labels_on_unknown_methods_are_reported() {
     errors(
         "class P {}\nfn main() { P().missing(x: 1 + true) }",
         &[
@@ -1420,19 +1423,28 @@ fn labels_on_unknown_calls_are_reported() {
         ],
     );
     errors(
-        "fn main() { nope(x: 1 + true) }",
-        &[
-            ("cannot find function `nope`", (1, 13)),
-            ("labels on arguments come in milestone 10", (1, 18)),
-            ("expected `i64`, found `bool`", (1, 25)),
-        ],
-    );
-    errors(
         "fn main() { nope.m(x: 1 + true) }",
         &[
             ("cannot find `nope` in this scope", (1, 13)),
             ("labels on arguments come in milestone 10", (1, 20)),
             ("expected `i64`, found `bool`", (1, 27)),
+        ],
+    );
+}
+
+/// A call to an unknown name may be a misspelled constructor, whose labels are correct: only
+/// the name is reported, and the arguments are still checked.
+#[test]
+fn misspelled_constructor_is_one_error() {
+    errors(
+        "class N {\n    v: i64\n}\nfn main() { Nod(v: 1) }",
+        &[("cannot find function or class `Nod`", (4, 13))],
+    );
+    errors(
+        "fn main() { nope(x: 1 + true) }",
+        &[
+            ("cannot find function or class `nope`", (1, 13)),
+            ("expected `i64`, found `bool`", (1, 25)),
         ],
     );
 }
@@ -1449,8 +1461,8 @@ fn print_reports_labels_and_still_checks_its_arguments() {
     errors(
         "class E {}\nfn main() { print(z: E()) }",
         &[
-            ("`print` takes one `i64`, `u8` or `bool`", (2, 13)),
             ("labels on arguments come in milestone 10", (2, 19)),
+            ("cannot print `E`", (2, 22)),
         ],
     );
 }
@@ -1572,8 +1584,8 @@ fn assign_bare_field() {
 fn print_class() {
     error(
         "class E {}\nfn main() { print(E()) }",
-        "`print` takes one `i64`, `u8` or `bool`",
-        (2, 13),
+        "cannot print `E`",
+        (2, 19),
     );
 }
 
@@ -2544,5 +2556,19 @@ fn spills_equal() {
         C,
         "fn make() -> T { T(v: 0, o: None) }\nfn f(c: bool) -> bool {\n    make() == if c { return false } else { make() }\n}",
         "(block (let #1 (call make)) (let #2 (if c#0 (block (return false)) (block (call make)))) (== #1 #2))",
+    );
+}
+
+/// `print` of a value it cannot print names the argument, not the call; a bad argument count
+/// stays on the whole call.
+#[test]
+fn print_argument_errors_sit_on_the_argument() {
+    errors(
+        "class P {\n    x: i64\n}\nfn nothing() {}\nfn main() {\n    print(P(x: 1))\n    print(nothing())\n    print([1])\n}",
+        &[
+            ("cannot print `P`", (6, 11)),
+            ("expression has no value", (7, 11)),
+            ("cannot print `[i64]`", (8, 11)),
+        ],
     );
 }
