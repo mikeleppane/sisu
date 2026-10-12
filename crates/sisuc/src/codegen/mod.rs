@@ -36,7 +36,8 @@ const POSITIONED: &str =
 
 /// Compiles a program that passed `check` into an LLVM module for `machine`. With `rc_checks`,
 /// a retain or release of an object whose count is below 1 calls `sisu_rc_fault`, and `@main`
-/// calls `sisu_rc_check_exit` after `sisu.main` returns.
+/// calls `sisu_rc_check_exit` after `sisu.main` returns. `@main` always calls
+/// `sisu_flush_stdout` first.
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
     program: &Program,
@@ -467,7 +468,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
-    /// `define i32 @main()`, which the C startup code calls: runs `sisu.main`, returns 0.
+    /// `define i32 @main()`, which the C startup code calls: runs `sisu.main`, flushes standard
+    /// output, returns 0.
     fn c_main(&self) {
         let i32_type = self.context.i32_type();
         let main = self
@@ -482,8 +484,11 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_call(sisu_main, &[], "")
             .expect(POSITIONED);
+        let void = self.context.void_type().fn_type(&[], false);
+        // `print` buffers; this delivers what is left, or panics if standard output fails.
+        let flush = self.module.add_function("sisu_flush_stdout", void, None);
+        self.call(flush, &[]);
         if self.rc_fault.is_some() {
-            let void = self.context.void_type().fn_type(&[], false);
             let check_exit = self.module.add_function("sisu_rc_check_exit", void, None);
             self.call(check_exit, &[]);
         }

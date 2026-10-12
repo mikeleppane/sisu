@@ -133,8 +133,15 @@ $ ./div_zero
 sisu: panic at crates/sisuc/tests/run-fail/div_zero.sisu:2:5: division by zero
 ```
 
-A `print` that cannot write to standard output is a panic too, for example
-when the disk is full:
+`print` writes into a buffer that the runtime owns, as C stdio does: a line
+at a time when standard output is a terminal, in blocks of 8 KiB otherwise.
+The runtime flushes the buffer when `main` returns, before every Sisu panic
+message, and before the `--rc-checks` exit message, so a panic's stdout lines
+come out before its stderr line. A program that an outside signal kills, such
+as a stack overflow, loses what is still in the buffer.
+
+A `print` or the final flush that cannot write to standard output is a panic
+too, for example when the disk is full:
 
 ```console
 $ ./program >/dev/full

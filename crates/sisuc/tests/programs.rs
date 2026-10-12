@@ -199,8 +199,10 @@ fn equal_long_lists_compare_in_constant_stack() {
 fn deepchain_overflows_the_same_stack() {
     let out = run_in_small_stack("deepchain");
     assert_eq!(out.status.signal(), Some(11), "{:?}", out.status);
-    // It dies in the drop, after `print`: stdout is line-buffered.
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+    // It dies in the drop, after `print`, but stdout is a pipe and so block-buffered: the
+    // runtime flushes only on a normal exit or a Sisu panic, so a signal loses the line, as
+    // it does in a C program.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
 }
 
 /// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu` and compiles it from there, at
@@ -435,6 +437,125 @@ fn print_into_a_closed_stdout_pipe_dies_by_sigpipe() {
             .status()
             .expect("the program starts");
         assert_eq!(status.signal(), Some(13), "{status:?}");
+    }
+}
+
+/// Runs `exe` with standard output and standard error both writing to one pipe and returns
+/// what arrived, in order, with the exit status.
+fn run_with_merged_output(exe: &Path) -> (std::process::ExitStatus, String) {
+    use std::io::Read;
+    let (mut reader, writer) = std::io::pipe().expect("creates a pipe");
+    let mut command = Command::new(exe);
+    command
+        .stdout(writer.try_clone().expect("clones the pipe"))
+        .stderr(writer);
+    let mut child = command.spawn().expect("the program starts");
+    // The command holds the last write ends; drop them so the read ends at EOF.
+    drop(command);
+    let mut merged = String::new();
+    reader.read_to_string(&mut merged).expect("reads the pipe");
+    (child.wait().expect("the program ends"), merged)
+}
+
+/// Buffered `print` lines come out before the panic line, in order.
+#[test]
+fn prints_then_a_panic_flush_stdout_before_the_panic_line() {
+    let source = "fn main() {\n    let xs = [1, 2]\n    let i = 2\n    print(1)\n    print(true)\n    print(xs[i])\n}\n";
+    for o2 in [false, true] {
+        let (status, merged) =
+            run_with_merged_output(&compile_tmp("prints_then_panic", source, o2));
+        assert_eq!(status.code(), Some(101), "{status:?}");
+        let mut lines = merged.lines();
+        assert_eq!(lines.next(), Some("1"), "{merged}");
+        assert_eq!(lines.next(), Some("true"), "{merged}");
+        let panic_line = lines.next().expect("a panic line follows");
+        assert!(
+            panic_line.starts_with("sisu: panic at ")
+                && panic_line.ends_with(": index 2 out of bounds for length 2"),
+            "{merged}"
+        );
+        assert_eq!(lines.next(), None, "{merged}");
+    }
+}
+
+/// Output is buffered: only the final flush at the end of `main` fails, and it ends the
+/// program with the one panic line, not a second error when the process exits.
+#[test]
+fn prints_then_a_normal_exit_into_a_full_stdout_panics_once() {
+    let source = "fn main() {\n    print(1)\n    print(false)\n    print(3)\n}\n";
+    for o2 in [false, true] {
+        let full = File::options()
+            .write(true)
+            .open("/dev/full")
+            .expect("/dev/full exists on Linux");
+        let out = Command::new(compile_tmp("prints_then_full", source, o2))
+            .stdout(full)
+            .output()
+            .expect("the program starts");
+        assert_eq!(out.status.code(), Some(101), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stderr), STDOUT_WRITE_PANIC);
+    }
+}
+
+/// An `--rc-checks` program that leaks exits 102 and still delivers what it printed.
+#[test]
+fn rc_checks_exit_flushes_stdout() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("rc_flush.sisu"), LEAKS_A_CYCLE).expect("writes");
+    let exe = dir.join("rc_flush");
+    support::compile(dir, "rc_flush", &exe, &["--rc-checks"]);
+    let (status, merged) = run_with_merged_output(&exe);
+    assert_eq!(status.code(), Some(102), "{status:?}");
+    assert_eq!(merged, "1\nsisu: rc check: live objects at exit: 1\n");
+}
+
+/// Output goes out in blocks while the program runs: a program that prints 3000 lines and
+/// then dies by a stack overflow leaves whole blocks on a pipe and loses only the tail.
+#[test]
+fn full_blocks_of_output_survive_a_crash() {
+    let source = "fn dive(n: i64) -> i64 {\n    dive(n + 1) + 1\n}\nfn main() {\n    let mut i = 0\n    while i < 3000 {\n        print(i)\n        i += 1\n    }\n    print(dive(0))\n}\n";
+    let exe = compile_tmp("blocks_then_crash", source, false);
+    let out = Command::new("sh")
+        .args(["-c", r#"ulimit -c 0 && exec "$0""#])
+        .arg(exe)
+        .output()
+        .expect("sh starts");
+    assert_eq!(out.status.signal(), Some(11), "{:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let all: String = (0..3000).map(|i| i.to_string() + "\n").collect();
+    assert!(stdout.len() >= 8192, "{} bytes", stdout.len());
+    assert!(stdout.len() < all.len(), "the tail is still in the buffer");
+    assert!(all.starts_with(&*stdout), "whole lines, in order");
+    assert!(stdout.ends_with('\n'), "{stdout:?}");
+}
+
+/// `print` collects its output in one buffer, however much the program prints.
+#[test]
+fn print_allocates_one_buffer() {
+    let program = |limit: u32| {
+        format!(
+            "fn main() {{\n    let mut i = 0\n    while i < {limit} {{\n        print(i)\n        i += 1\n    }}\n}}\n"
+        )
+    };
+    let (_, one) = heap_allocs(&compile_tmp("one_buffer_k1", &program(1), false));
+    let (_, many) = heap_allocs(&compile_tmp("one_buffer_k20000", &program(20_000), false));
+    assert_eq!(many, one);
+}
+
+/// Enough output to fill the buffer many times arrives whole and in order.
+#[test]
+fn a_long_output_to_a_file_is_complete() {
+    let source = "fn main() {\n    let mut i = 0\n    while i < 100_000 {\n        print(i)\n        i += 1\n    }\n}\n";
+    let numbers: Vec<String> = (0..100_000).map(|i| i.to_string()).collect();
+    let expected = numbers.join("\n") + "\n";
+    for o2 in [false, true] {
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_output.txt");
+        let status = Command::new(compile_tmp("long_output", source, o2))
+            .stdout(File::create(&path).expect("creates the file"))
+            .status()
+            .expect("the program starts");
+        assert_eq!(status.code(), Some(0), "{status:?}");
+        assert_eq!(fs::read_to_string(&path).expect("reads the file"), expected);
     }
 }
 

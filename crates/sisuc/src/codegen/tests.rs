@@ -537,6 +537,28 @@ fn rc_checks_guard_retain_release_and_exit() {
 }
 
 #[test]
+fn main_flushes_stdout_before_the_exit_check_and_the_return() {
+    let context = Context::create();
+    for rc_checks in [false, true] {
+        let ir = compiled_with(&context, FIB, rc_checks)
+            .print_to_string()
+            .to_string();
+        let main = function_body(&ir, "define i32 @main()");
+        let flush = main
+            .find("call void @sisu_flush_stdout()")
+            .unwrap_or_else(|| panic!("no flush in\n{main}"));
+        let after = main.find("ret i32 0").expect("main returns 0");
+        assert!(flush < after, "{main}");
+        if rc_checks {
+            let check = main
+                .find("call void @sisu_rc_check_exit()")
+                .expect("exit check");
+            assert!(flush < check, "{main}");
+        }
+    }
+}
+
+#[test]
 fn plain_build_has_no_rc_checks() {
     let context = Context::create();
     let src = format!("class P {{}}\n{FIB}");
