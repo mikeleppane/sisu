@@ -1,0 +1,69 @@
+// `xs.len()` and `o.f` on a local read the base without a retain and release: the local keeps
+// the object alive. A counted field is still retained, so it survives the base.
+class Pair {
+    n: i64
+    items: [i64]
+}
+
+class Holder {
+    items: [i64]
+}
+
+// The read is the local's last use, so the local moves into it and the read releases it.
+fn last_use(xs: [i64], p: Pair) {
+    print(xs.len())                   // 3
+    print(p.n)                        // 7
+}
+
+// The read is not the last use: the local keeps its block for the later reads.
+fn kept(xs: [i64], p: Pair) {
+    print(xs.len())                   // 3
+    print(p.n)                        // 7
+    print(xs.len() + p.n)             // 10
+    print(p.items.len())              // 2
+}
+
+// A counted field read from a local that is then dropped or replaced: the field outlives it.
+fn field_outlives() {
+    let p = Pair(n: 1, items: [4, 5])
+    let items = p.items
+    print(items[1])                   // 5
+    let q = Pair(n: p.n + 1, items: p.items)
+    print(q.items.len())              // 2
+    print(p.n)                        // 1
+}
+
+// The local is reassigned in the statement that reads it.
+fn reassigned() {
+    let mut xs = [1, 2, 3]
+    xs = [xs.len(), xs.len() + 1]
+    print(xs[0])                      // 3
+    print(xs[1])                      // 4
+    let mut h = Holder(items: [6, 7, 8])
+    h = Holder(items: h.items)
+    print(h.items.len())              // 3
+    let mut p = Pair(n: 2, items: [9])
+    p = Pair(n: p.n * 10, items: p.items)
+    print(p.n)                        // 20
+    print(p.items[0])                 // 9
+}
+
+// A loop that reads `len` of the local it indexes and reassigns it each round.
+fn grows() {
+    let mut xs = [0]
+    let mut i = 0
+    while i < 4 {
+        xs = [xs.len() + xs[0], xs.len()]
+        i += 1
+    }
+    print(xs[0])                      // 7
+    print(xs.len())                   // 2
+}
+
+fn main() {
+    last_use([1, 2, 3], Pair(n: 7, items: [1, 2]))
+    kept([1, 2, 3], Pair(n: 7, items: [1, 2]))
+    field_outlives()
+    reassigned()
+    grows()
+}

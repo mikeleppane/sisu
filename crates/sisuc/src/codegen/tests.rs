@@ -627,6 +627,65 @@ fn fast_path_skips_base_count() {
     }
 }
 
+/// `xs.len()` and `o.n` on a local neither retain nor release the base: the local keeps it
+/// alive. A counted field read still retains the field.
+#[test]
+fn len_and_field_of_a_local_skip_base_count() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class O {\n    n: i64\n    a: [i64]\n}\n\
+         fn len(xs: [i64]) -> [i64] {\n    print(xs.len() + xs.len())\n    xs\n}\n\
+         fn field(o: O) -> O {\n    print(o.n + o.n)\n    o\n}\n\
+         fn counted(o: O) -> O {\n    let a = o.a\n    print(a[0])\n    o\n}\n\
+         fn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for (header, release) in [
+        ("define ptr @sisu.len(ptr", "@\"sisu_rc.release.[i64]\"("),
+        ("define ptr @sisu.field(ptr", "@sisu_rc.release.O("),
+    ] {
+        let body = function_body(&ir, header);
+        let (before, _) = body
+            .split_once("call void @sisu_print_int(")
+            .unwrap_or_else(|| panic!("no print in\n{body}"));
+        for unwanted in ["@sisu_rc.retain(", release] {
+            assert!(
+                !before.contains(unwanted),
+                "{unwanted:?} before the print in\n{body}"
+            );
+        }
+    }
+    // `a` takes a reference to the field's array, and nothing else is counted before the print.
+    let body = function_body(&ir, "define ptr @sisu.counted(ptr");
+    let (before, _) = body
+        .split_once("call void @sisu_print_int(")
+        .unwrap_or_else(|| panic!("no print in\n{body}"));
+    assert_eq!(before.matches("@sisu_rc.retain(").count(), 1, "{body}");
+    assert!(!before.contains("@sisu_rc.release.O("), "{body}");
+}
+
+/// A base that is not a local is still released after `len` and after a field read.
+#[test]
+fn len_and_field_of_a_value_release_the_base() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class O {\n    n: i64\n}\nfn make() -> [i64] { [1] }\nfn o() -> O { O(n: 1) }\n\
+         fn len() -> i64 { make().len() }\nfn field() -> i64 { o().n }\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for (header, release) in [
+        ("define i64 @sisu.len()", "@\"sisu_rc.release.[i64]\"("),
+        ("define i64 @sisu.field()", "@sisu_rc.release.O("),
+    ] {
+        let body = function_body(&ir, header);
+        assert!(body.contains(release), "no {release:?} in\n{body}");
+    }
+}
+
 /// Only `drop.[[Node]]` asks for `release.[Node]`: the worklist must define it too.
 #[test]
 fn nested_array_helpers_are_defined() {

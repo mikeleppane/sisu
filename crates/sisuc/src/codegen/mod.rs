@@ -288,10 +288,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("the checker should only emit a field index that the class has")
     }
 
-    /// Field `index` of the object `base`, whose type is `ty`.
+    /// Field `index` of the object `base`, whose type is `ty`. A local base is borrowed: the
+    /// local keeps the object alive, so codegen skips its retain and release.
     fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
         let object = self
-            .expr(base)
+            .borrow_or_expr(base)
             .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
             .into_pointer_value();
         let field = self.field_ptr(&base.ty, object, index);
@@ -304,8 +305,20 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED);
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
-        self.release(object.into(), &base.ty);
+        if !matches!(base.kind, ExprKind::Local(_)) {
+            self.release(object.into(), &base.ty);
+        }
         value
+    }
+
+    /// `base` for a read that ends before anything can move or replace the base: a local is
+    /// loaded without a retain, and the caller then skips the release; any other expression
+    /// is evaluated as usual.
+    pub(super) fn borrow_or_expr(&mut self, base: &Expr) -> Option<BasicValueEnum<'ctx>> {
+        match base.kind {
+            ExprKind::Local(local) => self.load_local(local),
+            _ => self.expr(base),
+        }
     }
 
     /// `a is b`: whether two class or class-optional values are the same pointer.
