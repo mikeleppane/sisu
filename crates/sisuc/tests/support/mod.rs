@@ -157,19 +157,36 @@ pub(crate) fn compile_fail(path: &Path, bless: bool) {
     expect_files(&[(path.with_extension("err"), stderr)], bless);
 }
 
-/// Passes for a `.sisu` file, and for an `.out` or `.err` beside a `.sisu` of the same name;
-/// panics on any other file, naming it.
-pub(crate) fn orphan_check(path: &Path) {
+/// Passes for a `.sisu` file, and for a file whose extension is one of `expectations` (the
+/// files the directory's mode reads) beside a `.sisu` of the same name; panics on any other
+/// file, naming it. It also panics, naming it, on any hidden entry beside `path`: the harness
+/// never lists one, so a stray `.ghost.out` would otherwise go unseen.
+pub(crate) fn orphan_check(path: &Path, expectations: &[&str]) {
     let belongs = match path.extension().and_then(OsStr::to_str) {
         Some("sisu") => true,
-        Some("out" | "err") => path.with_extension("sisu").exists(),
+        Some(ext) if expectations.contains(&ext) => path.with_extension("sisu").exists(),
         _ => false,
     };
     assert!(
         belongs,
-        "{} is neither a `.sisu` case nor the `.out` or `.err` of one",
+        "{} is neither a `.sisu` case nor the {expectations:?} file of one",
         path.display()
     );
+    let dir = path
+        .parent()
+        .expect("a case file should sit in a directory");
+    // shortcut: looks only beside `path`, so a directory of nothing but hidden files is unseen;
+    // walk the whole root if case directories gain subdirectories.
+    for entry in fs::read_dir(dir).expect("the case directory should be readable") {
+        let sibling = entry.expect("a directory entry should be readable").path();
+        assert!(
+            !sibling
+                .file_name()
+                .is_some_and(|name| name.as_encoded_bytes().starts_with(b".")),
+            "{} is hidden, so no case reads it; remove it",
+            sibling.display()
+        );
+    }
 }
 
 /// The builds `build` makes: the executable's name in the case directory, and `sisuc`'s flags.

@@ -1,7 +1,8 @@
 //! One test per file in `tests/run`, `tests/run-fail` and `tests/compile-fail`. A `run` case exits
 //! 0 and prints its `.out`; a `run_fail` case panics with its `.out` on stdout and its `.err` on
 //! stderr; a `compile_fail` case is rejected by `sisuc --check` with its `.err` on stderr. Every
-//! file in these directories must belong to a case.
+//! file in these directories must belong to a case, as a file its mode reads, and none may be
+//! hidden.
 //!
 //! `SISU_BLESS=1` rewrites the `.out` and `.err` files of passing cases. It never creates one.
 
@@ -40,7 +41,7 @@ fn run_fail(path: &Path) -> datatest_stable::Result<()> {
     reason = "datatest-stable accepts only test functions that return a `Result`"
 )]
 fn run_orphans(path: &Path) -> datatest_stable::Result<()> {
-    support::orphan_check(path);
+    support::orphan_check(path, &["out"]);
     Ok(())
 }
 
@@ -49,7 +50,7 @@ fn run_orphans(path: &Path) -> datatest_stable::Result<()> {
     reason = "datatest-stable accepts only test functions that return a `Result`"
 )]
 fn run_fail_orphans(path: &Path) -> datatest_stable::Result<()> {
-    support::orphan_check(path);
+    support::orphan_check(path, &["out", "err"]);
     Ok(())
 }
 
@@ -67,7 +68,7 @@ fn compile_fail(path: &Path) -> datatest_stable::Result<()> {
     reason = "datatest-stable accepts only test functions that return a `Result`"
 )]
 fn compile_fail_orphans(path: &Path) -> datatest_stable::Result<()> {
-    support::orphan_check(path);
+    support::orphan_check(path, &["err"]);
     Ok(())
 }
 

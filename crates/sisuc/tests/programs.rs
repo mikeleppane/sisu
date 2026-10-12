@@ -736,7 +736,43 @@ fn bless_rewrites_an_existing_out() {
 #[should_panic(expected = "ghost.out")]
 fn orphan_out_fails() {
     let dir = fixture("orphan_out_fails", &[("ghost.out", "1\n")]);
-    support::orphan_check(&dir.join("ghost.out"));
+    support::orphan_check(&dir.join("ghost.out"), &["out"]);
+}
+
+#[test]
+#[should_panic(expected = "notes.txt")]
+fn stray_file_type_fails() {
+    let dir = fixture(
+        "stray_file_type_fails",
+        &[("notes.sisu", PRINTS_1), ("notes.txt", "")],
+    );
+    support::orphan_check(&dir.join("notes.txt"), &["out", "err"]);
+}
+
+/// A `.err` beside a `run` case is never read, so it fails like an orphan.
+#[test]
+#[should_panic(expected = "a.err")]
+fn expectation_of_another_mode_fails() {
+    let dir = fixture(
+        "expectation_of_another_mode_fails",
+        &[("a.sisu", PRINTS_1), ("a.out", "1\n"), ("a.err", "")],
+    );
+    support::orphan_check(&dir.join("a.err"), &["out"]);
+}
+
+/// The harness never lists a hidden file, so the check of a listed file beside it fails.
+#[test]
+#[should_panic(expected = ".ghost.out")]
+fn hidden_file_fails() {
+    let dir = fixture(
+        "hidden_file_fails",
+        &[
+            ("a.sisu", PRINTS_1),
+            ("a.out", "1\n"),
+            (".ghost.out", "1\n"),
+        ],
+    );
+    support::orphan_check(&dir.join("a.sisu"), &["out"]);
 }
 
 /// Same-named cases in different directories, run at once, must not share an executable: one
