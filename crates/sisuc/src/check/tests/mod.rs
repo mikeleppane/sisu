@@ -1663,6 +1663,17 @@ fn printed_g(g: &str) -> String {
 }
 
 #[test]
+fn no_spill_for_an_assignment_in_a_later_operand() {
+    // An assignment is not an exit, so `make()` is not spilled around the `if`.
+    assert_eq!(
+        printed_g(
+            "fn g(c: bool, p: P) {\n    f(make(), if c {\n        p.b = make()\n        1\n    } else {\n        2\n    })\n}"
+        ),
+        "(fn g ((c#0 bool) (p#1 P)) unit (block (call f (call make) (if c#0 (block (= (. p#1 b) (call make)) 1) (block 2)))))"
+    );
+}
+
+#[test]
 fn spills_call_argument() {
     assert_eq!(
         printed_g("fn g(c: bool) -> i64 {\n    f(make(), if c { return 0 } else { 1 })\n    2\n}"),

@@ -1,0 +1,4 @@
+fn main() {
+    let n: i64 = None && true
+    print(n)
+}

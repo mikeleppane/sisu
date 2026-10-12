@@ -337,6 +337,68 @@ fn drop_loops_on_the_chain_field() {
     assert!(!tree.contains("@sisu_rc.drop.Tree("), "{tree}");
 }
 
+/// A drop frees a block with the size and alignment it was allocated with. `sisu_free` hands
+/// both to the allocator, which here ignores them, so Valgrind and the RC checks cannot notice
+/// a wrong value.
+#[test]
+fn drop_frees_with_the_allocated_layout() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class Q {}\nclass P {\n    x: i64\n    mut y: bool\n    q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    let a = [1, 2, 3]\n    let b = [true, false]\n    let c: [i64?] = [None, 1]\n    print(p.x + a[0])\n}",
+    )
+    .print_to_string()
+    .to_string();
+    // The operands of the one `sisu_free` call in `body`, as `(pointer, size, align)`.
+    let free = |body: &str| -> (String, String, String) {
+        let line = body
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("call void @sisu_free(ptr "))
+            .unwrap_or_else(|| panic!("no free in\n{body}"));
+        let operands: Vec<&str> = line.trim_end_matches(')').split(", i64 ").collect();
+        let [pointer, size, align] = operands[..] else {
+            panic!("free operands in {line:?}")
+        };
+        (pointer.into(), size.into(), align.into())
+    };
+    // The class: `P` is 32 bytes aligned to 8 (see `class_layout_comes_from_the_data_layout`),
+    // and the block is the drop function's own argument.
+    assert!(ir.contains("call ptr @sisu_alloc(i64 32, i64 8)"), "{ir}");
+    let class = function_body(&ir, "define void @sisu_rc.drop.P(ptr");
+    let (pointer, size, align) = free(class);
+    assert!(
+        class.trim_start().starts_with(&format!("{pointer})")),
+        "{class}"
+    );
+    assert_eq!((size.as_str(), align.as_str()), ("32", "8"), "{class}");
+    // An array: the 16-byte header plus `len` elements, aligned to 8; the element sizes are
+    // those of `literal_allocates_header_and_elements`, recomputed from the length.
+    for (helper, element_size) in [("[i64]", 8), ("[bool]", 1), ("[i64?]", 16)] {
+        let body = function_body(&ir, &format!("define void @\"sisu_rc.drop.{helper}\"(ptr"));
+        let (pointer, size, align) = free(body);
+        assert!(
+            body.trim_start().starts_with(&format!("{pointer})")),
+            "{body}"
+        );
+        assert_eq!(align, "8", "{body}");
+        // The value defined by the instruction `<value> = <text>`.
+        let text = |value: &str| {
+            body.lines()
+                .find_map(|l| l.trim().strip_prefix(&format!("{value} = ")))
+                .unwrap_or_else(|| panic!("no {value} in\n{body}"))
+        };
+        let elements = text(&size)
+            .strip_prefix("add nuw i64 ")
+            .and_then(|operands| operands.strip_suffix(", 16"))
+            .unwrap_or_else(|| panic!("size {size} is not elements + 16 in\n{body}"));
+        let length = text(elements)
+            .strip_prefix("mul nuw i64 ")
+            .and_then(|operands| operands.strip_suffix(&format!(", {element_size}")))
+            .unwrap_or_else(|| panic!("{elements} is not len * {element_size} in\n{body}"));
+        assert!(text(length).starts_with("load i64, ptr "), "{body}");
+    }
+}
+
 #[test]
 fn eq_loops_on_the_chain_field() {
     let context = Context::create();

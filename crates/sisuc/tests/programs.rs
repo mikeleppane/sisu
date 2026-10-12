@@ -299,6 +299,9 @@ fn panic_cases() {
         // 16 + 9_223_372_036_854_775_791 bytes is exactly `i64::MAX`, above the largest
         // size that rounds up to the alignment of 8 within it.
         fill_case("length_too_large", "false", "9_223_372_036_854_775_791", 22),
+        // The smallest length past `largest_array_reaches_the_allocator`'s: 16 +
+        // 9_223_372_036_854_775_785 is `i64::MAX - 6`, which rounds up to 2^63.
+        fill_case("one_too_large", "false", "9_223_372_036_854_775_785", 22),
         // 2^62 * 8 bytes overflows the multiply.
         fill_case("length_overflows", "0", "4_611_686_018_427_387_904", 18),
         // (2^61 - 1) * 8 bytes is 2^64 - 8, which fits; adding the 16-byte header wraps.

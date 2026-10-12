@@ -1,0 +1,8 @@
+error: expected `i64`, found `u8`
+ --> literal_plus_value_beside_u8.sisu:4:20
+  |
+4 |     print(1 + n == b)
+  |                    ^
+  |
+  = help: convert it: `i64(b)`
+
