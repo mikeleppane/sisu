@@ -1,6 +1,8 @@
 //! Helpers shared by the end-to-end test binaries.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// `sisuc [-O2] <input> <output>`, run from `dir`, after asserting the runtime archive exists.
@@ -44,4 +46,142 @@ pub(crate) fn valgrind(exe: &Path) -> Output {
         .arg(exe)
         .output()
         .expect("valgrind is required: install it with `apt install valgrind`")
+}
+
+/// Checks a `tests/run` case: both builds differ, exit 0 with empty stderr, agree on stdout, and
+/// print `<name>.out`, natively and under Valgrind. With `bless`, rewrites `<name>.out` instead.
+pub(crate) fn run(path: &Path, bless: bool) {
+    let [o0, o2] = build(path);
+    assert!(
+        fs::read(&o0).expect("reads the plain build")
+            != fs::read(&o2).expect("reads the -O2 build"),
+        "{}: -O2 build is identical to the plain build",
+        path.display()
+    );
+    let [out0, out2] = [&o0, &o2].map(|exe| {
+        let out = Command::new(exe).output().expect("the program starts");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}: {:?}\n{stderr}",
+            exe.display(),
+            out.status
+        );
+        assert_eq!(stderr, "", "{}", exe.display());
+        out
+    });
+    let stdout = agreed(path, "stdout", &out0.stdout, &out2.stdout);
+    expect_file(&path.with_extension("out"), &stdout, bless);
+    for exe in [o0, o2] {
+        let checked = valgrind(&exe);
+        let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
+        assert_eq!(
+            checked.status.code(),
+            Some(0),
+            "{}: {valgrind_stderr}",
+            exe.display()
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&checked.stdout),
+            stdout,
+            "{}: {valgrind_stderr}",
+            exe.display()
+        );
+    }
+}
+
+/// Checks a `tests/run-fail` case: both builds exit 101, agree, and print `<name>.out` on stdout
+/// and `<name>.err` on stderr. With `bless`, rewrites both files instead. No Valgrind: a panic
+/// exits without releasing.
+pub(crate) fn run_fail(path: &Path, bless: bool) {
+    let [out0, out2] = build(path).map(|exe| {
+        let out = Command::new(&exe).output().expect("the program starts");
+        assert_eq!(
+            out.status.code(),
+            Some(101),
+            "{}: {:?}\n{}",
+            exe.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    });
+    let stdout = agreed(path, "stdout", &out0.stdout, &out2.stdout);
+    let stderr = agreed(path, "stderr", &out0.stderr, &out2.stderr);
+    expect_file(&path.with_extension("out"), &stdout, bless);
+    expect_file(&path.with_extension("err"), &stderr, bless);
+}
+
+/// Passes for a `.sisu` file, and for an `.out` or `.err` beside a `.sisu` of the same name;
+/// panics on any other file, naming it.
+pub(crate) fn orphan_check(path: &Path) {
+    let belongs = match path.extension().and_then(OsStr::to_str) {
+        Some("sisu") => true,
+        Some("out" | "err") => path.with_extension("sisu").exists(),
+        _ => false,
+    };
+    assert!(
+        belongs,
+        "{} is neither a `.sisu` case nor the `.out` or `.err` of one",
+        path.display()
+    );
+}
+
+/// Compiles `path` without and with `-O2` into its `case_dir`, and returns both executables.
+fn build(path: &Path) -> [PathBuf; 2] {
+    let dir = path.parent().expect("a case should sit in a directory");
+    let name = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .expect("a case's name should be UTF-8");
+    let out = case_dir(path);
+    [false, true].map(|o2| {
+        let exe = out.join(if o2 { "O2" } else { "O0" });
+        compile(dir, name, &exe, o2);
+        exe
+    })
+}
+
+/// A fresh, empty `<CARGO_TARGET_TMPDIR>/cases/<source path, '/' replaced by '_'>/`.
+fn case_dir(source: &Path) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("cases")
+        .join(source.to_string_lossy().replace('/', "_"));
+    // It is absent on the first run, so a failure here is expected and harmless.
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("creates the case directory");
+    dir
+}
+
+/// `o0`, which must equal `o2`, as text; `what` names the stream in the failure.
+fn agreed(path: &Path, what: &str, o0: &[u8], o2: &[u8]) -> String {
+    let (o0, o2) = (String::from_utf8_lossy(o0), String::from_utf8_lossy(o2));
+    assert!(
+        o0 == o2,
+        "{}: O0 and -O2 disagree on {what}\nO0:\n{o0}\n-O2:\n{o2}",
+        path.display()
+    );
+    o0.into_owned()
+}
+
+/// Checks that `path` holds `actual`. With `bless`, writes `actual` to `path` instead, but only
+/// if `path` exists: bless never creates an expectation file.
+fn expect_file(path: &Path, actual: &str, bless: bool) {
+    let display = path.display();
+    if bless {
+        assert!(
+            path.exists(),
+            "{display} is missing; create it empty, then bless again"
+        );
+        fs::write(path, actual).expect("writes the expectation file");
+    } else {
+        let expected = fs::read_to_string(path).unwrap_or_else(|error| {
+            panic!("{display}: {error}; create it empty, then run with SISU_BLESS=1")
+        });
+        assert_eq!(
+            actual, expected,
+            "{display} does not match; run with SISU_BLESS=1 to rewrite it"
+        );
+    }
 }

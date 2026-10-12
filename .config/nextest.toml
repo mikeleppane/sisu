@@ -24,3 +24,9 @@ valgrind = { max-threads = 4 }
 [[profile.default.overrides]]
 filter = "binary(programs) & (test(allocation_counts) | test(valgrind_reports_a_cycle))"
 test-group = "valgrind"
+
+# Each case compiles twice and runs under Valgrind; a hang is killed after three minutes.
+[[profile.default.overrides]]
+filter = "binary(cases)"
+test-group = "valgrind"
+slow-timeout = { period = "60s", terminate-after = 3 }

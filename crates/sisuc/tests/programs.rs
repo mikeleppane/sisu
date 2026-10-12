@@ -1,14 +1,18 @@
-//! End to end: `sisuc` compiles each program in `tests/programs`, and the program
-//! prints the right output or panics with the right message.
+//! End to end: programs that need more than a `tests/run` or `tests/run-fail` case (see
+//! `cases.rs`), such as a small stack, an allocation count or a generated source, and the bless
+//! rules of the `cases` harness.
 
 use std::fs::{self, File};
 use std::os::unix::process::ExitStatusExt;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
 
 mod support;
 
 const PROGRAMS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
+const RUN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run");
 const MIN: &str = "    let min = -9_223_372_036_854_775_807 - 1";
 const MAX: &str = "    let big = 9_223_372_036_854_775_807";
 
@@ -24,52 +28,6 @@ fn compile_to_tmp(dir: &Path, name: &str, o2: bool) -> PathBuf {
     exe
 }
 
-/// Compiles, at `-O2` if `o2`, and runs `tests/programs/<name>.sisu`.
-fn run(name: &str, o2: bool) -> Output {
-    let exe = compile_to_tmp(Path::new(PROGRAMS), name, o2);
-    Command::new(exe).output().expect("the program starts")
-}
-
-/// Runs `<name>.sisu` and checks that it exits 0, prints `<name>.out` and nothing on stderr,
-/// then that it does the same under Valgrind, and that the `-O2` build prints the same under
-/// Valgrind.
-fn assert_prints_out_file(name: &str) {
-    let expected =
-        fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.out"))).expect("reads .out");
-    let exe = compile_to_tmp(Path::new(PROGRAMS), name, false);
-    let out = Command::new(&exe).output().expect("the program starts");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
-    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
-
-    let o2 = compile_to_tmp(Path::new(PROGRAMS), name, true);
-    assert!(
-        fs::read(&exe).expect("reads plain build") != fs::read(&o2).expect("reads -O2 build"),
-        "{name}: -O2 build is identical to the plain build"
-    );
-    for exe in [exe, o2] {
-        let checked = support::valgrind(&exe);
-        let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
-        assert_eq!(
-            checked.status.code(),
-            Some(0),
-            "{}: {valgrind_stderr}",
-            exe.display()
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&checked.stdout),
-            expected,
-            "{}: {valgrind_stderr}",
-            exe.display()
-        );
-    }
-}
-
 /// Checks that `out` is a panic: exit 101, `stdout`, and exactly the panic line on stderr.
 fn assert_panics(out: &Output, stdout: &str, stderr: &str) {
     assert_eq!(out.status.code(), Some(101));
@@ -77,105 +35,30 @@ fn assert_panics(out: &Output, stdout: &str, stderr: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stderr), stderr);
 }
 
-/// One test per program in `tests/programs` that exits 0, named after the program unless it
-/// gives `test = "file"`, plus `OUT_FILE_PROGRAMS`, the list `every_program_has_a_run` checks.
-macro_rules! out_file_tests {
-    (@file $test:ident $file:literal) => {
-        $file
-    };
-    (@file $test:ident) => {
-        stringify!($test)
-    };
-    ($($test:ident $(= $file:literal)?),* $(,)?) => {
-        const OUT_FILE_PROGRAMS: &[&str] = &[$(out_file_tests!(@file $test $($file)?)),*];
-        $(
-            #[test]
-            fn $test() {
-                assert_prints_out_file(out_file_tests!(@file $test $($file)?));
-            }
-        )*
-    };
-}
-
-out_file_tests! {
-    hello,
-    fib,
-    semantics,
-    primes,
-    loops,
-    break_continue,
-    short_circuit,
-    loop_return,
-    bool_var,
-    objects,
-    ownership,
-    field_order,
-    unwrap,
-    list,
-    for_range_releases_the_body_tail = "for_range_drop",
-    drops,
-    tree,
-    optionals,
-    bytes,
-    unsigned,
-    arrays,
-    empty_arrays = "empty",
-    values,
-    life,
-    moves,
-    methods,
-    sieve,
-    handover,
-    copies,
-    walk,
-}
-
-/// The programs the small-stack tests run. They skip `assert_prints_out_file`: a million
-/// objects under Valgrind is too slow, and `deepchain` overflows on purpose.
+/// The programs the small-stack tests run. They are not `tests/run` cases: a million objects
+/// under Valgrind is too slow, and `deepchain` overflows on purpose.
 const SMALL_STACK: [&str; 3] = ["longlist", "rightskew", "deepchain"];
 
-/// Each program in `tests/programs` has exactly one kind of run: an `.out` file and a test from
-/// `out_file_tests!`, a `PANICS` row, or a small-stack test.
+/// `tests/programs` holds exactly the `SMALL_STACK` programs; every other program is a case in
+/// `tests/run` or `tests/run-fail`.
 #[test]
 fn every_program_has_a_run() {
-    let panics = PANICS.map(|(name, _, _)| name);
-    for entry in fs::read_dir(PROGRAMS).expect("tests/programs should be readable") {
-        let path = entry.expect("a directory entry should be readable").path();
+    let mut files: Vec<String> = fs::read_dir(PROGRAMS)
+        .expect("tests/programs should be readable")
+        .map(|entry| entry.expect("a directory entry should be readable").path())
         // Tools may leave a directory here, such as `.claude/`; only files are programs.
-        if path.is_dir() {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("a program's name should be UTF-8");
-        match path.extension().and_then(|ext| ext.to_str()) {
-            Some("sisu") => {
-                let runs = [
-                    OUT_FILE_PROGRAMS.contains(&name),
-                    panics.contains(&name),
-                    SMALL_STACK.contains(&name),
-                ];
-                assert_eq!(
-                    runs.iter().filter(|run| **run).count(),
-                    1,
-                    "{name}.sisu should be in exactly one of `out_file_tests!`, `PANICS` and \
-                     `SMALL_STACK`"
-                );
-            }
-            Some("out") => assert!(
-                OUT_FILE_PROGRAMS.contains(&name),
-                "{name}.out should have a test in `out_file_tests!`"
-            ),
-            _ => panic!("{} is neither a program nor an `.out` file", path.display()),
-        }
-    }
-    for name in OUT_FILE_PROGRAMS {
-        assert!(
-            Path::new(PROGRAMS).join(format!("{name}.out")).exists(),
-            "{name} is in `out_file_tests!` but has no `{name}.out`"
-        );
-    }
+        .filter(|path| !path.is_dir())
+        .map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .expect("a file name should be UTF-8")
+                .to_string()
+        })
+        .collect();
+    files.sort();
+    let mut expected = SMALL_STACK.map(|name| format!("{name}.sisu"));
+    expected.sort();
+    assert_eq!(files, expected);
 }
 
 /// The `N` of the `total heap usage: N allocs` line in Valgrind's stderr, thousands separators
@@ -211,8 +94,8 @@ fn heap_allocs(exe: &Path) -> (String, u64) {
 /// allocations. The zero-iteration build is the baseline: the runtime's own allocations cancel.
 fn extra_allocs(name: &str, o2: bool) -> (String, String, i64) {
     const FIRST_LINE: &str = "fn iterations() -> i64 { 1000 }\n";
-    let source = fs::read_to_string(Path::new(PROGRAMS).join(format!("{name}.sisu")))
-        .expect("reads the program");
+    let source =
+        fs::read_to_string(Path::new(RUN).join(format!("{name}.sisu"))).expect("reads the program");
     let rest = source
         .strip_prefix(FIRST_LINE)
         .unwrap_or_else(|| panic!("{name}.sisu should start with `{}`", FIRST_LINE.trim_end()));
@@ -245,7 +128,7 @@ fn allocs_in_panics_without_the_summary_line() {
 fn fill_call_survives_o2() {
     for name in ["handover", "copies"] {
         let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-            .current_dir(PROGRAMS)
+            .current_dir(RUN)
             .args(["-O2", "--emit", "ir"])
             .arg(format!("{name}.sisu"))
             .output()
@@ -335,50 +218,6 @@ fn deepchain_overflows_the_same_stack() {
     assert_eq!(out.status.signal(), Some(11), "{:?}", out.status);
     // It dies in the drop, after `print`: stdout is line-buffered.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
-}
-
-/// Each panicking program with its expected stdout and panic line.
-const PANICS: [(&str, &str, &str); 3] = [
-    (
-        "overflow",
-        "1\n",
-        "sisu: panic at overflow.sisu:4:11: integer overflow\n",
-    ),
-    (
-        "div_zero",
-        "",
-        "sisu: panic at div_zero.sisu:2:5: division by zero\n",
-    ),
-    (
-        "div_overflow",
-        "",
-        "sisu: panic at div_overflow.sisu:3:13: integer overflow\n",
-    ),
-];
-
-#[test]
-fn overflow() {
-    let (name, stdout, stderr) = PANICS[0];
-    assert_panics(&run(name, false), stdout, stderr);
-}
-
-#[test]
-fn div_zero() {
-    let (name, stdout, stderr) = PANICS[1];
-    assert_panics(&run(name, false), stdout, stderr);
-}
-
-#[test]
-fn div_overflow() {
-    let (name, stdout, stderr) = PANICS[2];
-    assert_panics(&run(name, false), stdout, stderr);
-}
-
-#[test]
-fn panics_survive_o2() {
-    for (name, stdout, stderr) in PANICS {
-        assert_panics(&run(name, true), stdout, stderr);
-    }
 }
 
 /// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu` and compiles it from there, at
@@ -719,4 +558,115 @@ fn build_warning_still_makes_the_executable() {
     );
     let run = Command::new(exe).output().expect("the program starts");
     assert_eq!(String::from_utf8_lossy(&run.stdout), "0\n");
+}
+
+/// A program that prints `1`.
+const PRINTS_1: &str = "fn main() {\n    print(1)\n}\n";
+/// A program that prints `1`, then panics at 4:11 with `division by zero`. It prints first so
+/// that a write of its stdout would change an empty `.out`.
+const PRINTS_1_THEN_PANICS: &str =
+    "fn main() {\n    print(1)\n    let z = 0\n    print(1 / z)\n}\n";
+
+/// Writes each `(path, contents)` under a fresh `<CARGO_TARGET_TMPDIR>/fixtures/<test>/` and
+/// returns that directory.
+fn fixture(test: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("fixtures")
+        .join(test);
+    // It is absent on the first run, so a failure here is expected and harmless.
+    let _ = fs::remove_dir_all(&dir);
+    for (path, contents) in files {
+        let path = dir.join(path);
+        fs::create_dir_all(path.parent().expect("a fixture file should have a parent"))
+            .expect("creates the fixture directory");
+        fs::write(path, contents).expect("writes the fixture file");
+    }
+    dir
+}
+
+/// Runs `f`, which should panic, and returns its panic message.
+fn panic_message(f: impl FnOnce()) -> String {
+    let payload = panic::catch_unwind(AssertUnwindSafe(f)).expect_err("the call should panic");
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .expect("a panic message should be a string")
+}
+
+#[test]
+fn bless_refuses_to_create_a_missing_out() {
+    let dir = fixture(
+        "bless_refuses_to_create_a_missing_out",
+        &[("a.sisu", PRINTS_1)],
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), true));
+    assert!(message.contains("is missing; create it empty"), "{message}");
+    assert!(!dir.join("a.out").exists());
+}
+
+#[test]
+fn bless_never_writes_after_a_wrong_exit() {
+    let dir = fixture(
+        "bless_never_writes_after_a_wrong_exit",
+        &[("a.sisu", PRINTS_1_THEN_PANICS), ("a.out", "")],
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), true));
+    assert!(message.contains("Some(101)"), "{message}");
+    assert_eq!(
+        fs::read_to_string(dir.join("a.out")).expect("reads a.out"),
+        ""
+    );
+}
+
+/// Without bless a wrong `.out` fails and stays as it was; bless rewrites it, and the run then
+/// passes without bless.
+#[test]
+fn bless_rewrites_an_existing_out() {
+    let dir = fixture(
+        "bless_rewrites_an_existing_out",
+        &[("a.sisu", PRINTS_1), ("a.out", "wrong\n")],
+    );
+    let source = dir.join("a.sisu");
+    let message = panic_message(|| support::run(&source, false));
+    assert!(message.contains("SISU_BLESS=1"), "{message}");
+    assert_eq!(
+        fs::read_to_string(dir.join("a.out")).expect("reads a.out"),
+        "wrong\n"
+    );
+    support::run(&source, true);
+    assert_eq!(
+        fs::read_to_string(dir.join("a.out")).expect("reads a.out"),
+        "1\n"
+    );
+    support::run(&source, false);
+}
+
+#[test]
+#[should_panic(expected = "ghost.out")]
+fn orphan_out_fails() {
+    let dir = fixture("orphan_out_fails", &[("ghost.out", "1\n")]);
+    support::orphan_check(&dir.join("ghost.out"));
+}
+
+/// Same-named cases in two directories, run at once, must not share an executable.
+#[test]
+fn same_name_in_two_modes() {
+    let dir = fixture(
+        "same_name_in_two_modes",
+        &[
+            ("run/dup.sisu", PRINTS_1),
+            ("run/dup.out", "1\n"),
+            ("run-fail/dup.sisu", PRINTS_1_THEN_PANICS),
+            ("run-fail/dup.out", "1\n"),
+            (
+                "run-fail/dup.err",
+                "sisu: panic at dup.sisu:4:11: division by zero\n",
+            ),
+        ],
+    );
+    thread::scope(|scope| {
+        scope.spawn(|| support::run(&dir.join("run/dup.sisu"), false));
+        scope.spawn(|| support::run_fail(&dir.join("run-fail/dup.sisu"), false));
+    });
 }
