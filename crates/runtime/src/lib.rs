@@ -512,8 +512,9 @@ mod tests {
                 unsafe {
                     const RLIMIT_NOFILE: i32 = 7;
                     assert_eq!(setrlimit(RLIMIT_NOFILE, &[32, 32]), 0);
-                    // `dup(0)` takes the lowest free slot whatever descriptor 0 is, so it fills
-                    // the table without needing a second open file.
+                    // `dup(0)` takes the lowest free slot, so it fills the table without a second
+                    // open file. It needs descriptor 0 open: with 0 closed it fails at once, the
+                    // table stays empty and the `print` below succeeds.
                     while dup(0) >= 0 {}
                 }
                 sisu_print_int(5);

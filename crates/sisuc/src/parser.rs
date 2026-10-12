@@ -46,7 +46,8 @@ fn infix_op(kind: &TokenKind) -> Option<(u8, Infix)> {
     })
 }
 
-/// Whether `kind` begins a postfix link (`.`, `?.` or `[`); `postfix` and `at_min_literal` share it.
+/// Whether `kind` begins a postfix link (`.`, `?.` or `[`); `postfix` and `at_min_literal`
+/// share it.
 fn starts_postfix(kind: &TokenKind) -> bool {
     matches!(
         kind,

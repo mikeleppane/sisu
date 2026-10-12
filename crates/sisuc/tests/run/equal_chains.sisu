@@ -1,5 +1,7 @@
-// `==` follows the chain field (`next`) pair by pair: the lists below differ only in the last
-// node, in their length, or not at all, with the chain field last (`Last`) and first (`First`).
+// `==` follows the chain field (`next`) pair by pair. `last` and `first` prepend, so
+// `last([3, 2, 1])` is the chain 1 -> 2 -> 3 with head 1. The lists below differ at the head
+// (their last element), at the tail (their first element), in length, or not at all, with the
+// chain field last (`Last`) and first (`First`).
 class Last {
     value: i64
     next: Last?
@@ -30,8 +32,8 @@ fn main() {
     let a = last([3, 2, 1])
     print(a == a) // true: same pointer
     print(a == last([3, 2, 1])) // true: equal field by field
-    print(a == last([3, 2, 9])) // false: the last node differs
-    print(a == last([9, 2, 1])) // false: the first node differs
+    print(a == last([3, 2, 9])) // false: differs at the head (its last element)
+    print(a == last([9, 2, 1])) // false: differs at the tail (its first element)
     print(a == last([2, 1])) // false: shorter list
     print(last([2, 1]) == a) // false: shorter on the left
     print(a == None) // false: one side is None
@@ -41,8 +43,8 @@ fn main() {
     let b = first([3, 2, 1])
     print(b == b) // true: same pointer
     print(b == first([3, 2, 1])) // true: equal field by field
-    print(b == first([3, 2, 9])) // false: the last node differs
-    print(b == first([9, 2, 1])) // false: the first node differs
+    print(b == first([3, 2, 9])) // false: differs at the head (its last element)
+    print(b == first([9, 2, 1])) // false: differs at the tail (its first element)
     print(b == first([2, 1])) // false: shorter list
     print(first([2, 1]) == b) // false: shorter on the left
     print(b == None) // false: one side is None

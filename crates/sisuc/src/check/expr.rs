@@ -25,13 +25,7 @@ impl Checker {
                 let ty = literal_type(expected);
                 if let Some(message) = u8_literal_error(*n).filter(|_| ty == Type::U8) {
                     self.diagnostics.push(Diagnostic::error(e.span, message));
-                    // A negative literal is poisoned like the `negated` path; a too-large one
-                    // is still a `u8`.
-                    return Err(if *n < 0 {
-                        Poisoned::error()
-                    } else {
-                        Poisoned::typed(ty)
-                    });
+                    return Err(Poisoned::typed(ty));
                 }
                 node(tir::ExprKind::Int(*n), ty)
             }
