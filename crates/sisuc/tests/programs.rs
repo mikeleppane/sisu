@@ -771,3 +771,268 @@ fn same_name_in_two_modes() {
         scope.spawn(|| support::run_fail(&dir.join("run/a/b/dup.sisu"), false));
     });
 }
+
+/// Each program builds to the same bytes twice, at two different output paths.
+#[test]
+fn builds_are_deterministic() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    for name in ["life", "optionals", "arrays"] {
+        let [a, b] = ["a", "b"].map(|build| {
+            let exe = dir.join(format!("deterministic-{name}-{build}"));
+            support::compile(Path::new(RUN), name, &exe, &["-O2"]);
+            fs::read(&exe).expect("reads the build")
+        });
+        assert!(a == b, "{name}.sisu: two -O2 builds differ");
+    }
+}
+
+/// Generated `i64`, `u8` and `bool` expressions, which Sisu at O0 and `-O2` must print as Rust
+/// computes them.
+mod arithmetic {
+    use std::fmt;
+    use std::process::Command;
+
+    use super::compile_tmp;
+
+    /// Xorshift64: fixed seeds give the same expressions on every run.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+            let len = u64::try_from(items.len()).expect("a slice length fits u64");
+            items[usize::try_from(self.next() % len).expect("an index below a length fits usize")]
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Ty {
+        I64,
+        U8,
+        Bool,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Value {
+        I64(i64),
+        U8(u8),
+        Bool(bool),
+    }
+
+    impl Value {
+        /// An integer as `i64`, which holds every `u8` and keeps its order.
+        fn int(self) -> i64 {
+            match self {
+                Value::I64(n) => n,
+                Value::U8(n) => n.into(),
+                Value::Bool(_) => panic!("a generated integer operand is a bool"),
+            }
+        }
+
+        fn truth(self) -> bool {
+            match self {
+                Value::Bool(b) => b,
+                _ => panic!("a generated condition is not a bool"),
+            }
+        }
+    }
+
+    impl fmt::Display for Value {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Value::I64(n) => write!(f, "{n}"),
+                Value::U8(n) => write!(f, "{n}"),
+                Value::Bool(b) => write!(f, "{b}"),
+            }
+        }
+    }
+
+    const ARITH: [&str; 5] = ["+", "-", "*", "/", "%"];
+    const COMPARE: [&str; 6] = ["==", "!=", "<", "<=", ">", ">="];
+    /// Literals near the overflow edges, beside the small ones.
+    const BIG: [i64; 5] = [i64::MAX, i64::MAX - 1, 1 << 32, 1 << 62, 3_037_000_499];
+
+    enum Expr {
+        Lit(Value),
+        Neg(Box<Expr>),
+        /// `+ - * / %`, both sides `i64` or both `u8`.
+        Arith(&'static str, Box<Expr>, Box<Expr>),
+        /// `== != < <= > >=`, both sides `i64` or both `u8`.
+        Compare(&'static str, Box<Expr>, Box<Expr>),
+        /// `&&` or `||`.
+        Logic(&'static str, Box<Expr>, Box<Expr>),
+        If(Box<Expr>, Box<Expr>, Box<Expr>),
+    }
+
+    /// `a op b` with Rust's checked arithmetic: truncating `/`, `%` with the dividend's sign.
+    fn arith(op: &str, a: i64, b: i64) -> Option<i64> {
+        match op {
+            "+" => a.checked_add(b),
+            "-" => a.checked_sub(b),
+            "*" => a.checked_mul(b),
+            "/" => a.checked_div(b),
+            "%" => a.checked_rem(b),
+            _ => unreachable!("not an arithmetic operator: {op}"),
+        }
+    }
+
+    impl Expr {
+        /// The Sisu source, every operator in parentheses so no precedence or chaining applies.
+        fn render(&self) -> String {
+            match self {
+                Expr::Lit(Value::I64(n)) if *n < 0 => format!("(-{})", n.unsigned_abs()),
+                Expr::Lit(Value::U8(n)) => format!("u8({n})"),
+                Expr::Lit(v) => v.to_string(),
+                Expr::Neg(e) => format!("(-{})", e.render()),
+                Expr::Arith(op, l, r) | Expr::Compare(op, l, r) | Expr::Logic(op, l, r) => {
+                    format!("({} {op} {})", l.render(), r.render())
+                }
+                Expr::If(c, a, b) => format!(
+                    "(if {} {{ {} }} else {{ {} }})",
+                    c.render(),
+                    a.render(),
+                    b.render()
+                ),
+            }
+        }
+
+        /// The value, or `None` where Sisu panics: overflow or division by zero. `&&`, `||`
+        /// and `if` evaluate only what Sisu does.
+        fn eval(&self) -> Option<Value> {
+            Some(match self {
+                Expr::Lit(v) => *v,
+                Expr::Neg(e) => Value::I64(e.eval()?.int().checked_neg()?),
+                Expr::Arith(op, l, r) => {
+                    let (l, r) = (l.eval()?, r.eval()?);
+                    let n = arith(op, l.int(), r.int())?;
+                    match l {
+                        Value::U8(_) => Value::U8(u8::try_from(n).ok()?),
+                        _ => Value::I64(n),
+                    }
+                }
+                Expr::Compare(op, l, r) => {
+                    let (l, r) = (l.eval()?.int(), r.eval()?.int());
+                    Value::Bool(match *op {
+                        "==" => l == r,
+                        "!=" => l != r,
+                        "<" => l < r,
+                        "<=" => l <= r,
+                        ">" => l > r,
+                        ">=" => l >= r,
+                        _ => unreachable!("not a comparison: {op}"),
+                    })
+                }
+                Expr::Logic(op, l, r) => {
+                    let l = l.eval()?.truth();
+                    // `&&` stops at false, `||` at true.
+                    if l == (*op == "||") {
+                        Value::Bool(l)
+                    } else {
+                        r.eval()?
+                    }
+                }
+                Expr::If(c, a, b) => {
+                    if c.eval()?.truth() {
+                        a.eval()?
+                    } else {
+                        b.eval()?
+                    }
+                }
+            })
+        }
+
+        /// An expression of type `ty`, at most `depth` operators deep.
+        fn generate(rng: &mut XorShift, ty: Ty, depth: u32) -> Expr {
+            let boxed = |rng: &mut XorShift, ty| Box::new(Expr::generate(rng, ty, depth - 1));
+            // A leaf at depth 0, and one time in four above it.
+            let choice = if depth == 0 || rng.next().is_multiple_of(4) {
+                0
+            } else {
+                1 + rng.next() % 3
+            };
+            match (ty, choice) {
+                (Ty::I64, 0) => Expr::Lit(Value::I64(if rng.next().is_multiple_of(4) {
+                    let big = rng.pick(&BIG);
+                    if rng.next().is_multiple_of(2) {
+                        big
+                    } else {
+                        -big
+                    }
+                } else {
+                    i64::try_from(rng.next() % 41).expect("below 41 fits i64") - 20
+                })),
+                (Ty::U8, 0) => Expr::Lit(Value::U8(rng.pick(&[0, 1, 2, 3, 7, 16, 100, 200, 255]))),
+                (Ty::Bool, 0) => Expr::Lit(Value::Bool(rng.next().is_multiple_of(2))),
+                (Ty::I64, 1) => Expr::Neg(boxed(rng, Ty::I64)),
+                (Ty::I64 | Ty::U8, 1 | 2) => {
+                    Expr::Arith(rng.pick(&ARITH), boxed(rng, ty), boxed(rng, ty))
+                }
+                (Ty::Bool, 1) => {
+                    let operands = rng.pick(&[Ty::I64, Ty::U8]);
+                    Expr::Compare(
+                        rng.pick(&COMPARE),
+                        boxed(rng, operands),
+                        boxed(rng, operands),
+                    )
+                }
+                (Ty::Bool, 2) => {
+                    Expr::Logic(rng.pick(&["&&", "||"]), boxed(rng, ty), boxed(rng, ty))
+                }
+                _ => Expr::If(boxed(rng, Ty::Bool), boxed(rng, ty), boxed(rng, ty)),
+            }
+        }
+    }
+
+    /// Fifty expressions per seed, each regenerated until Rust can evaluate it, printed by one
+    /// program, which both builds must run to exactly the lines Rust computes.
+    #[test]
+    fn generated_arithmetic_matches_rust() {
+        for seed in 1..=4 {
+            let mut rng = XorShift(seed);
+            let exprs: Vec<(String, Value)> = (0..50)
+                .map(|i| {
+                    let ty = [Ty::I64, Ty::U8, Ty::Bool][i % 3];
+                    loop {
+                        let e = Expr::generate(&mut rng, ty, 4);
+                        if let Some(value) = e.eval() {
+                            break (e.render(), value);
+                        }
+                    }
+                })
+                .collect();
+            let prints: Vec<String> = exprs
+                .iter()
+                .map(|(src, _)| format!("    print({src})"))
+                .collect();
+            let source = format!("fn main() {{\n{}\n}}\n", prints.join("\n"));
+            for o2 in [false, true] {
+                let exe = compile_tmp(&format!("generated_{seed}"), &source, o2);
+                let out = Command::new(&exe).output().expect("the program starts");
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let lines: Vec<&str> = stdout.lines().collect();
+                let first_wrong = exprs
+                    .iter()
+                    .enumerate()
+                    .find(|(i, (_, value))| lines.get(*i) != Some(&value.to_string().as_str()));
+                if let Some((i, (src, value))) = first_wrong {
+                    panic!(
+                        "seed {seed}, {} build, expression {i}: `{src}` printed {:?}, Rust \
+                         says {value}; exit {:?}, stderr:\n{}",
+                        if o2 { "-O2" } else { "O0" },
+                        lines.get(i),
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                }
+                assert_eq!(lines.len(), exprs.len(), "seed {seed}: extra output");
+                assert_eq!(out.status.code(), Some(0), "seed {seed}: {:?}", out.status);
+            }
+        }
+    }
+}
