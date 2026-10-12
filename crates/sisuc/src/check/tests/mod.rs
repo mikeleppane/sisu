@@ -240,7 +240,7 @@ fn functions_in_any_order() {
 }
 
 #[test]
-fn var_may_shadow_a_param() {
+fn variable_may_shadow_a_param() {
     let src = "fn f(n: i64) {\n    let mut n = n\n    n = 1\n}\nfn main() {}";
     clean(src);
 }
@@ -1072,14 +1072,14 @@ fn assign_type() {
 }
 
 #[test]
-fn unused_var() {
+fn unused_variable() {
     let src = "fn main() {\n    let mut count = 0\n    print(count)\n}";
     warning(src, "`count` is never reassigned", (2, 13));
     assert_eq!(diags(src)[0].help.as_deref(), Some("declare it with `let`"));
 }
 
 #[test]
-fn unused_vars_in_source_order() {
+fn unused_variables_in_source_order() {
     // The inner scope pops first, so this fails unless warnings are sorted.
     let src = "fn main() {\n    let mut a = 0\n    if true {\n        let mut b = 0\n        print(b)\n    }\n    print(a)\n}";
     let found: Vec<_> = diags(src)
@@ -1104,7 +1104,7 @@ fn unused_vars_in_source_order() {
 }
 
 #[test]
-fn var_reassigned_in_inner_block() {
+fn variable_reassigned_in_inner_block() {
     clean("fn main() {\n    let mut n = 0\n    if true { n = 1 }\n    print(n)\n}");
 }
 

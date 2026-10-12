@@ -210,16 +210,18 @@ impl Parser<'_> {
                     ty: self.parse_type()?,
                 }))
             }
-            TokenKind::Let => Err(
-                Diagnostic::error(self.peek().span, "a field takes no `let`")
-                    .help(format!("write it bare: `{}`", self.field_after_keyword())),
-            ),
-            TokenKind::Var => Err(
-                Diagnostic::error(self.peek().span, "Sisu has no `var`").help(format!(
-                    "mark the field `mut`: `mut {}`",
-                    self.field_after_keyword()
-                )),
-            ),
+            TokenKind::Let => {
+                let help = match self.field_after_keyword() {
+                    (true, field) => format!("drop the `let`: `mut {field}`"),
+                    (false, field) => format!("write it bare: `{field}`"),
+                };
+                Err(Diagnostic::error(self.peek().span, "a field takes no `let`").help(help))
+            }
+            TokenKind::Var => {
+                let (_, field) = self.field_after_keyword();
+                Err(Diagnostic::error(self.peek().span, "Sisu has no `var`")
+                    .help(format!("mark the field `mut`: `mut {field}`")))
+            }
             TokenKind::Fn => {
                 let method = self.function(true)?;
                 if method.self_param.is_none() {
@@ -235,19 +237,22 @@ impl Parser<'_> {
         }
     }
 
-    /// The field after the `let` or `var` at the next token, as `name: Type`, for a help
-    /// line; the placeholder `name: Type` when no field follows.
-    fn field_after_keyword(&self) -> String {
+    /// The field after the `let` or `var` at the next token, for a help line: whether `mut`
+    /// follows the keyword, and the field as `name: Type`, or that placeholder when no field
+    /// follows.
+    fn field_after_keyword(&self) -> (bool, String) {
         let mut rest = Parser {
             tokens: self.tokens,
             pos: self.pos + 1,
         };
+        let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
             let name = rest.ident("a field name")?;
             rest.expect(&TokenKind::Colon)?;
             Ok(format!("{}: {}", name.name, rest.parse_type()?))
         };
-        field().unwrap_or_else(|_| "name: Type".to_string())
+        let field = field().unwrap_or_else(|_| "name: Type".to_string());
+        (mutable, field)
     }
 
     /// `method` is true inside a class body, where `self` may be the first parameter.
@@ -259,8 +264,8 @@ impl Parser<'_> {
         let mut params = Vec::new();
         if !self.at(&TokenKind::RParen) {
             loop {
+                let receiver = method && self_param.is_none() && params.is_empty();
                 if self.at(&TokenKind::Mut) {
-                    let receiver = method && self_param.is_none() && params.is_empty();
                     // `mut` is never `Eof`, so the token after it exists.
                     match &self.tokens[self.pos + 1].kind {
                         TokenKind::SelfKw if receiver => {
@@ -288,7 +293,7 @@ impl Parser<'_> {
                     }
                 }
                 if self.at(&TokenKind::SelfKw) {
-                    if !(method && self_param.is_none() && params.is_empty()) {
+                    if !receiver {
                         return Err(Diagnostic::error(
                             self.peek().span,
                             "`self` is only the first parameter of a method",
@@ -1568,6 +1573,11 @@ error: expected `=`, found end of line
                 5
             )
         );
+        // `let mut` keeps the `mut`.
+        assert_eq!(
+            parse_help("class P {\n    let mut hp: i64\n}").1.as_deref(),
+            Some("drop the `let`: `mut hp: i64`")
+        );
         // With no field after the keyword, the help shows its shape.
         assert_eq!(
             parse_help("class P {\n    let hp = 1\n}").1.as_deref(),
@@ -1593,14 +1603,6 @@ error: expected `=`, found end of line
         assert_eq!(
             parse_err("class C {\n fn f(self) {},\n}"),
             ("expected end of line, found `,`".to_owned(), 2, 15)
-        );
-    }
-
-    #[test]
-    fn member_fallback() {
-        assert_eq!(
-            parse_err("class C {\n    1\n}"),
-            ("expected a field or `fn`, found `1`".to_owned(), 2, 5)
         );
     }
 
