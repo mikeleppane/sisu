@@ -3,6 +3,7 @@
 //! defined by `define_helpers` in one worklist pass.
 
 use inkwell::basic_block::BasicBlock;
+use inkwell::module::Linkage;
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -49,9 +50,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             ),
             Helper::Unique => ("unique", ptr_type.fn_type(&[ptr_type.into()], false)),
         };
-        let function = self
-            .module
-            .add_function(&format!("sisu_rc.{prefix}.{name}"), fn_type, None);
+        let function = self.module.add_function(
+            &format!("sisu_rc.{prefix}.{name}"),
+            fn_type,
+            Some(Linkage::Internal),
+        );
         self.helpers.borrow_mut().insert(key.clone(), function);
         self.pending.borrow_mut().push(key);
         function
@@ -164,11 +167,15 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `@sisu_rc.eq.<C>(a, b)`: `true` when `a` and `b` are the same pointer (two `null`s
     /// included), `false` when one is `null`, otherwise whether each pair of fields is equal,
-    /// compared in order up to the first difference. It neither retains nor releases.
+    /// comparing the chain field last and stopping at the first difference. It neither
+    /// retains nor releases. Like `define_drop`, it does not recurse on the chain field: it
+    /// compares the other fields of the pair, then steps both objects to the objects their
+    /// chain fields hold and repeats the same-pointer and `null` checks, in one frame.
     fn define_eq(&self, function: FunctionValue<'ctx>, ty: &Type) {
         let Type::Class(id) = ty else {
             unreachable!("only a class type should reach the class helper bodies")
         };
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
         let block = |name| self.context.append_basic_block(function, name);
         let (a, b, equal, unequal) = self.eq_entry(function);
         let branch = |cond, then, other| {
@@ -176,7 +183,28 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_conditional_branch(cond, then, other)
                 .expect(POSITIONED);
         };
+        let chain = self.program.chain_field(*id);
+        // With a chain field, the body is a loop over the pairs of the two chains.
+        let looped = chain.map(|_| {
+            let (entered, body) = (self.current_block(), block("loop"));
+            self.branch_to(body);
+            self.builder.position_at_end(body);
+            let pair = |name| self.builder.build_phi(ptr_type, name).expect(POSITIONED);
+            let (pa, pb) = (pair("a"), pair("b"));
+            pa.add_incoming(&[(&a, entered)]);
+            pb.add_incoming(&[(&b, entered)]);
+            (body, pa, pb)
+        });
+        let (a, b) = looped.map_or((a, b), |(_, pa, pb)| {
+            (
+                pa.as_basic_value().into_pointer_value(),
+                pb.as_basic_value().into_pointer_value(),
+            )
+        });
         for (index, field) in self.program.classes[id.0].fields.iter().enumerate() {
+            if chain == Some(index) {
+                continue;
+            }
             let llvm_ty = self.llvm_type(&field.ty).expect(
                 "the checker should give every class field a value type, never `unit` or `never`",
             );
@@ -189,7 +217,34 @@ impl<'ctx> Codegen<'ctx, '_> {
             branch(self.equal(&field.ty, load(a), load(b)), next, unequal);
             self.builder.position_at_end(next);
         }
-        self.branch_to(equal);
+        let (Some(index), Some((body, pa, pb))) = (chain, looped) else {
+            self.branch_to(equal);
+            return;
+        };
+        let load = |object| {
+            self.builder
+                .build_load(ptr_type, self.field_ptr(ty, object, index), "chain")
+                .expect(POSITIONED)
+                .into_pointer_value()
+        };
+        let (next_a, next_b) = (load(a), load(b));
+        let (differ, step) = (block("differ"), block("step"));
+        branch(self.same_object(next_a, next_b), equal, differ);
+        self.builder.position_at_end(differ);
+        let null = |object| {
+            self.builder
+                .build_is_null(object, "null")
+                .expect(POSITIONED)
+        };
+        let either_null = self
+            .builder
+            .build_or(null(next_a), null(next_b), "either_null")
+            .expect(POSITIONED);
+        branch(either_null, unequal, step);
+        self.builder.position_at_end(step);
+        pa.add_incoming(&[(&next_a, step)]);
+        pb.add_incoming(&[(&next_b, step)]);
+        self.branch_to(body);
     }
 
     /// Starts `eq` helper `function`: returns its two parameters and the blocks that return

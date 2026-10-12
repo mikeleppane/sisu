@@ -1,0 +1,3 @@
+fn print(a: i64) {}
+
+fn main() {}

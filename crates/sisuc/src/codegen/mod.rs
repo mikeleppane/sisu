@@ -12,7 +12,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
-use inkwell::module::Module;
+use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetData, TargetMachine,
@@ -24,7 +24,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use self::rc::Helper;
-use crate::diagnostic::{Span, line_col};
+use crate::diagnostic::{LineIndex, Span};
 use crate::tir::{
     Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt, Type,
     UnaryOp,
@@ -36,7 +36,8 @@ const POSITIONED: &str =
 
 /// Compiles a program that passed `check` into an LLVM module for `machine`. With `rc_checks`,
 /// a retain or release of an object whose count is below 1 calls `sisu_rc_fault`, and `@main`
-/// calls `sisu_rc_check_exit` after `sisu.main` returns.
+/// calls `sisu_rc_check_exit` after `sisu.main` returns. `@main` always calls
+/// `sisu_flush_stdout` first.
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
     program: &Program,
@@ -75,21 +76,13 @@ pub(crate) fn compile<'ctx>(
     let rc_retain = module.add_function(
         "sisu_rc.retain",
         void.fn_type(&[ptr_type.into()], false),
-        None,
+        Some(Linkage::Internal),
     );
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
     // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
-    let print_int = module.add_function(
-        "sisu_print_int",
-        void.fn_type(&[i64_type.into()], false),
-        None,
-    );
-    let print_bool = module.add_function(
-        "sisu_print_bool",
-        void.fn_type(&[context.bool_type().into()], false),
-        None,
-    );
+    let print_int = declare_print(&module, "sisu_print_int", i64_type.into());
+    let print_bool = declare_print(&module, "sisu_print_bool", context.bool_type().into());
     print_bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
     // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
     // index, length)` prints a bounds panic and exits.
@@ -123,6 +116,7 @@ pub(crate) fn compile<'ctx>(
         target_data,
         path,
         source,
+        lines: LineIndex::new(source),
         classes,
         functions: Vec::new(),
         locals: Vec::new(),
@@ -175,6 +169,36 @@ fn declare_noreturn<'ctx>(
     function
 }
 
+/// Declares the runtime print function `name`, which takes one `param` and returns nothing.
+/// The runtime is built with `panic = "abort"`, so it never unwinds. A print takes no
+/// pointer, so it reaches no memory of the module: it uses only the runtime's own buffer and
+/// state (inaccessible memory) and can set `errno`. It can also exit the process, so there
+/// is no `willreturn`. Treating the runtime's allocator as inaccessible memory matches LLVM's
+/// own annotation of `malloc`. These attributes assume no LTO, no `atexit` handlers and no
+/// module globals that the runtime reaches.
+fn declare_print<'ctx>(
+    module: &Module<'ctx>,
+    name: &str,
+    param: BasicMetadataTypeEnum<'ctx>,
+) -> FunctionValue<'ctx> {
+    // LLVM 22's `MemoryEffects` encoding (`llvm/Support/ModRef.h`): two bits per location,
+    // `Ref` 1 and `Mod` 2, lowest first: `ArgMem`, `InaccessibleMem`, `ErrnoMem`, then
+    // everything else. So this is `ErrnoMem` 3, `InaccessibleMem` 3, `ArgMem` 0, and none for
+    // `Other` and the target locations, globals included.
+    const MEMORY: u64 = 0b11_11_00;
+    let context = module.get_context();
+    let function = module.add_function(name, context.void_type().fn_type(&[param], false), None);
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("nounwind"), 0),
+    );
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("memory"), MEMORY),
+    );
+    function
+}
+
 fn zeroext(context: &Context) -> Attribute {
     context.create_enum_attribute(Attribute::get_named_enum_kind_id("zeroext"), 0)
 }
@@ -222,6 +246,8 @@ struct Codegen<'ctx, 'src> {
     /// The input path as given, and its text: panic messages name a position in it.
     path: &'src str,
     source: &'src str,
+    /// The line starts of `source`, so that a panic site costs a binary search.
+    lines: LineIndex,
     /// `%sisu.<Class>`, indexed by `ClassId`.
     classes: Vec<StructType<'ctx>>,
     /// Indexed by `FuncId`.
@@ -285,10 +311,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("the checker should only emit a field index that the class has")
     }
 
-    /// Field `index` of the object `base`, whose type is `ty`.
+    /// Field `index` of the object `base`, whose type is `ty`. A local base is borrowed: the
+    /// local keeps the object alive, so codegen skips its retain and release.
     fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
-        let object = self
-            .expr(base)
+        let (object, borrowed) = self.borrow_or_expr(base);
+        let object = object
             .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
             .into_pointer_value();
         let field = self.field_ptr(&base.ty, object, index);
@@ -301,8 +328,20 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED);
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
-        self.release(object.into(), &base.ty);
+        if !borrowed {
+            self.release(object.into(), &base.ty);
+        }
         value
+    }
+
+    /// `base` for a read that ends before anything can move or replace the base, and whether
+    /// it was borrowed: a local is loaded without a retain, and the caller then skips the
+    /// release; any other expression is evaluated as usual.
+    pub(super) fn borrow_or_expr(&mut self, base: &Expr) -> (Option<BasicValueEnum<'ctx>>, bool) {
+        match base.kind {
+            ExprKind::Local(local) => (self.load_local(local), true),
+            _ => (self.expr(base), false),
+        }
     }
 
     /// `a is b`: whether two class or class-optional values are the same pointer.
@@ -407,9 +446,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             Some(ret) => ret.fn_type(&params, false),
             None => self.context.void_type().fn_type(&params, false),
         };
-        let function = self
-            .module
-            .add_function(&format!("sisu.{}", f.name), fn_type, None);
+        let function = self.module.add_function(
+            &format!("sisu.{}", f.name),
+            fn_type,
+            Some(Linkage::Internal),
+        );
         self.functions.push(function);
     }
 
@@ -451,7 +492,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
-    /// `define i32 @main()`, which the C startup code calls: runs `sisu.main`, returns 0.
+    /// `define i32 @main()`, which the C startup code calls: runs `sisu.main`, flushes standard
+    /// output, returns 0.
     fn c_main(&self) {
         let i32_type = self.context.i32_type();
         let main = self
@@ -466,8 +508,11 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_call(sisu_main, &[], "")
             .expect(POSITIONED);
+        let void = self.context.void_type().fn_type(&[], false);
+        // `print` buffers; this delivers what is left, or panics if standard output fails.
+        let flush = self.module.add_function("sisu_flush_stdout", void, None);
+        self.call(flush, &[]);
         if self.rc_fault.is_some() {
-            let void = self.context.void_type().fn_type(&[], false);
             let check_exit = self.module.add_function("sisu_rc_check_exit", void, None);
             self.call(check_exit, &[]);
         }
@@ -890,7 +935,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `<path>:<line>:<col>` for the start of `span`.
     fn location(&self, span: Span) -> String {
-        let (line, col) = line_col(self.source, span.start);
+        let (line, col) = self.lines.line_col(self.source, span.start);
         format!("{}:{line}:{col}", self.path)
     }
 
@@ -1110,6 +1155,20 @@ pub(crate) fn target_machine(o2: bool) -> Result<TargetMachine, String> {
 /// `alloca` into SSA values.
 pub(crate) fn pipeline(o2: bool) -> &'static str {
     if o2 { "default<O2>" } else { "mem2reg" }
+}
+
+/// Marks each Sisu function in `names`, comma separated, `noinline` so that the optimizer keeps
+/// it. The `o2-calls` check uses this to read a caller's own calls; a name that is not a
+/// function is skipped.
+pub(crate) fn keep_functions(module: &Module<'_>, names: &str) {
+    let noinline = module
+        .get_context()
+        .create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
+    for name in names.split(',') {
+        if let Some(function) = module.get_function(&format!("sisu.{name}")) {
+            function.add_attribute(AttributeLoc::Function, noinline);
+        }
+    }
 }
 
 /// Verifies `module`, then runs the pipeline.

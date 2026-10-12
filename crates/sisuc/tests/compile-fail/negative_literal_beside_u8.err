@@ -1,0 +1,6 @@
+error: `u8` cannot be negative
+ --> negative_literal_beside_u8.sisu:3:11
+  |
+3 |     print(-1 == b)
+  |           ^^
+

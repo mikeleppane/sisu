@@ -13,11 +13,13 @@ mod tir;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Write};
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use diagnostic::Diagnostic;
+use diagnostic::{Diagnostic, LineIndex, Span};
 use inkwell::context::Context;
 use tir::Program;
 
@@ -115,7 +117,23 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
     Ok(mode)
 }
 
+/// The stack of the thread that runs the compiler. The parser bounds the depth of the syntax tree
+/// (`MAX_DEPTH`), and the deepest tree compiles in about 5.5 MiB in a debug build. 64 MiB is
+/// four times that and more. The pages are mapped but touched only when used.
+const STACK_SIZE: usize = 64 << 20;
+
 fn main() -> ExitCode {
+    let compiler = thread::Builder::new()
+        .name("main".to_string())
+        .stack_size(STACK_SIZE)
+        .spawn(run)
+        .expect("the OS should start a thread with a 64 MiB stack");
+    // `panic = "abort"` makes a panic in the compiler abort the process (SIGABRT, exit 134) on
+    // this thread as it did on the main one, so `join` fails only in a build that unwinds.
+    compiler.join().unwrap_or_else(|p| panic::resume_unwind(p))
+}
+
+fn run() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let mode = match parse_args(&args) {
         Ok(mode) => mode,
@@ -136,10 +154,28 @@ fn main() -> ExitCode {
     }
 }
 
-/// Reads `input`, or prints why it cannot.
+/// Reads `input`, or prints why it cannot. Text that is not UTF-8 is a diagnostic at its first
+/// invalid byte, rendered over the valid text before it, so the renderer never sees bad UTF-8.
 fn read(input: &Path) -> Option<String> {
-    fs::read_to_string(input)
-        .inspect_err(|e| eprintln!("sisuc: cannot read {}: {e}", input.to_string_lossy()))
+    let path = input.to_string_lossy();
+    let bytes = fs::read(input)
+        .inspect_err(|e| eprintln!("sisuc: cannot read {path}: {e}"))
+        .ok()?;
+    String::from_utf8(bytes)
+        .inspect_err(|e| {
+            let valid_up_to = e.utf8_error().valid_up_to();
+            // The valid text, then U+FFFD where the bad byte is, so the position is the bad
+            // byte's even when it starts a line or ends the file.
+            // The prefix is valid UTF-8, so `from_utf8_lossy` itself only borrows it; the `+`
+            // then copies it into the string.
+            let shown = String::from_utf8_lossy(&e.as_bytes()[..valid_up_to]) + "\u{FFFD}";
+            let at = Span::new(valid_up_to, shown.len());
+            report(
+                &path,
+                &shown,
+                &[Diagnostic::error(at, "source is not valid UTF-8")],
+            );
+        })
         .ok()
 }
 
@@ -192,6 +228,11 @@ fn emit_ir(path: &str, source: &str, o2: bool) -> ExitCode {
     let pipeline = codegen::pipeline(o2);
     let printed = codegen::target_machine(o2).and_then(|machine| {
         let module = codegen::compile(&context, &program, path, source, &machine, false);
+        // For the `o2-calls` check in the tests (`docs/development.md`); `--emit ir` only, so
+        // no executable is affected, and not in the usage text.
+        if let Ok(names) = std::env::var("SISU_KEEP_FUNCTIONS") {
+            codegen::keep_functions(&module, &names);
+        }
         // `LLVMString`'s `Display` quotes and escapes the text; `to_string` does not.
         let before = module.print_to_string().to_string();
         codegen::optimize(&module, &machine, o2)?;
@@ -287,8 +328,9 @@ fn front_end(path: &str, source: &str) -> Option<Program> {
 
 /// Prints each diagnostic to stderr, followed by a blank line.
 fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
+    let lines = LineIndex::new(source);
     for d in diagnostics {
-        eprintln!("{}\n", d.render(path, source));
+        eprintln!("{}\n", d.render(path, source, &lines));
     }
 }
 

@@ -1,0 +1,6 @@
+fn main() {
+    let maybe: i64? = 1
+    for x in maybe {
+        print(x)
+    }
+}

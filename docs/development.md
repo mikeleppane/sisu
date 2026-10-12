@@ -72,7 +72,26 @@ A `run/` case whose output depends on a value crossing a real call says so
 with a marker line, `// o2-calls: <caller> <callee> <count>`. The test then
 checks that the `-O2` IR of `<caller>` holds exactly `<count>` calls to
 `<callee>`, because the inliner can fold a call away and keep the output
-the same. A recursive callee keeps its calls; see `handover.sisu`.
+the same. Every function except the C `main` is internal, so `-O2` would
+inline a caller with one call site and the caller would vanish from the IR.
+The check therefore runs `sisuc -O2 --emit ir` once for each distinct
+`<caller>`, with the environment variable `SISU_KEEP_FUNCTIONS` set to that
+caller alone. That marks it `noinline` in the module and changes nothing
+else; `sisuc` reads it only for `--emit ir`, and the usage text does not
+mention it. One caller per build, so that keeping one caller does not also
+keep a callee that another marker names as its caller. The check counts the
+calls to `<callee>` in the body of `<caller>` after `-O2`. It fails with "no
+function named" if `<caller>` or `<callee>` does not exist, and with
+"takes parameters" if `<caller>` has any: kept as a function of its own, such
+a caller could hold a call that its real call sites decide away, so mark a
+caller without parameters, such as `main`. The check measures the marked caller
+as a standalone function. In a real build the caller is inlined, and a call to a
+callee that LLVM infers as `memory(none)` or `readonly` can then be merged with an
+identical call at the call site. So mark calls to callees that write memory, as
+every current marker does. The old external-linkage check measured the standalone
+caller the same way. Interprocedural constant propagation also runs on internal
+functions, so a callee that keeps its calls recurses to a depth that the call sites
+do not fix; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack
 tests in `programs.rs` run.
 
@@ -132,6 +151,25 @@ $ target/debug/sisuc crates/sisuc/tests/run-fail/div_zero.sisu div_zero
 $ ./div_zero
 sisu: panic at crates/sisuc/tests/run-fail/div_zero.sisu:2:5: division by zero
 ```
+
+`print` writes into a buffer that the runtime owns, as C stdio does: a line
+at a time when standard output is a terminal, in blocks of 8 KiB otherwise.
+The runtime flushes the buffer when `main` returns, before every Sisu panic
+message, and before the `--rc-checks` exit message, so a panic's stdout lines
+come out before its stderr line. A program that an outside signal kills, such
+as a stack overflow, loses what is still in the buffer.
+
+A `print` or the final flush that cannot write to standard output is a panic
+too, for example when the disk is full:
+
+```console
+$ ./program >/dev/full
+sisu: panic: standard output could not be written: No space left on device (os error 28)
+```
+
+A pipe with no reader is the exception, as in C: writing to it kills the
+program with SIGPIPE. A panic ignores SIGPIPE on its way out, so it exits with
+code 101 even when nothing reads standard error.
 
 ## Look inside the compiler
 

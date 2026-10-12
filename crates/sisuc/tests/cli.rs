@@ -258,6 +258,97 @@ fn unreadable_input_exits_1() {
     );
 }
 
+/// Runs `sisuc --check` on a file named `name` that holds `bytes`; returns the exit code and stderr.
+fn check_bytes(name: &str, bytes: &[u8]) -> (Option<i32>, String) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join(name), bytes).expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--check", name])
+        .output()
+        .expect("sisuc starts");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into(),
+    )
+}
+
+#[test]
+fn invalid_utf8_on_line_two_is_a_diagnostic_at_its_line_and_column() {
+    // Line 1 holds two non-ASCII chars on four bytes: the column counts chars, not bytes.
+    let name = "invalid_utf8_line_two.sisu";
+    let (code, stderr) = check_bytes(name, b"// \xc3\xa4\xc3\xa4\nfn main() {\xff}\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:2:12\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn invalid_utf8_at_the_start_is_a_diagnostic() {
+    let name = "invalid_utf8_start.sisu";
+    let (code, stderr) = check_bytes(name, b"\xff\nfn main() {}\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:1:1\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_truncated_character_at_end_of_file_is_a_diagnostic() {
+    // `\xe2\x82` starts the three-byte `€` and stops.
+    let name = "invalid_utf8_truncated.sisu";
+    let (code, stderr) = check_bytes(name, b"fn main() {}\n\xe2\x82");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:2:1\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn invalid_utf8_after_crlf_line_breaks_counts_each_break_as_one_line() {
+    let (name, name_start) = ("invalid_utf8_crlf.sisu", "invalid_utf8_crlf_start.sisu");
+    let (code, stderr) = check_bytes(name, b"a\r\nb\r\nxy\xff\r\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:3:3\n"
+        )),
+        "{stderr}"
+    );
+    // The bad byte is the first of its line, right after the break.
+    let (_, stderr) = check_bytes(name_start, b"a\r\n\xff\r\n");
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name_start}:2:1\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_encoded_surrogate_is_invalid_utf8_at_its_first_byte() {
+    // `\xed\xa0\x80` would be U+D800, which UTF-8 does not allow.
+    let name = "invalid_utf8_surrogate.sisu";
+    let (code, stderr) = check_bytes(name, b"a\nxy\xed\xa0\x80\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:2:3\n"
+        )),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn mem2reg_removes_every_alloca() {
     // `loops.sisu` declares `let mut sq` inside the loop body: its `alloca` must still sit in the
@@ -289,7 +380,10 @@ fn ir_sections(stdout: &str) -> (&str, &str) {
         .split_once("\n; after mem2reg\n")
         .unwrap_or_else(|| panic!("no `; after mem2reg` line in\n{stdout}"));
     for section in [before, after] {
-        assert!(section.contains("define void @sisu.main()"), "{section}");
+        assert!(
+            section.contains("define internal void @sisu.main()"),
+            "{section}"
+        );
     }
     (before, after)
 }
@@ -460,4 +554,28 @@ fn emit_ir_o2() {
     for wanted in ["\ntarget datalayout = \"", "\ntarget triple = \""] {
         assert!(after.contains(wanted), "missing {wanted:?} in\n{after}");
     }
+}
+
+/// A `print` that may never run does not make the loop reload the array's length: the
+/// runtime's print functions write only memory the module cannot reach, so `-O2` proves
+/// every `xs[i]` in range from the loop bound and drops both bounds checks.
+#[test]
+fn print_in_a_loop_keeps_no_bounds_check_at_o2() {
+    let source = "fn main() {\n    let xs = [1; 10_000]\n    let mut total = 0\n\
+                  for round in 0..1000 {\n        for i in 0..10_000 {\n\
+                  if xs[i] == 0 { print(i) }\n            total += xs[i]\n        }\n    }\n\
+                  print(total)\n}\n";
+    let out = run_on("print_in_a_loop", source, &["-O2", "--emit", "ir"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (before, after) = stdout
+        .split_once("\n; after default<O2>\n")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert!(before.contains("call void @sisu_panic_bounds("), "{before}");
+    assert!(!after.contains("call void @sisu_panic_bounds("), "{after}");
 }

@@ -227,23 +227,34 @@ fn case_dir(source: &Path) -> PathBuf {
 
 /// The marker a `tests/run` case puts on its own line to prove a call boundary: with
 /// `// o2-calls: <caller> <callee> <count>`, the `-O2` IR of `<caller>` holds exactly `<count>`
-/// calls to `<callee>`, so the inliner kept the calls the case relies on.
+/// calls to `<callee>`, so the inliner kept the calls the case relies on. Every function but
+/// the C `main` is internal, so `-O2` would inline a caller with one call site and the caller
+/// would vanish from the IR. The check therefore builds once per distinct caller, with
+/// `SISU_KEEP_FUNCTIONS` set to that caller alone, which marks it `noinline` for
+/// `sisuc --emit ir` and nothing else, and counts in that build. One caller at a time, so that
+/// keeping one caller does not also keep a callee that another marker names as its caller. A
+/// caller that takes parameters is rejected: kept as a function of its own, it could hold a
+/// call that its real call sites decide away.
 const O2_CALLS: &str = "// o2-calls:";
 
-/// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, run once if any.
-fn o2_calls(path: &Path) {
-    let source = fs::read_to_string(path).expect("reads the case");
-    let markers: Vec<&str> = source
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix(O2_CALLS))
-        .collect();
-    if markers.is_empty() {
-        return;
-    }
+/// The text of the function `name` in `ir`, from its header line to its closing brace, if `ir`
+/// defines it.
+fn function_text<'a>(ir: &'a str, name: &str) -> Option<&'a str> {
+    let header = format!("@sisu.{name}(");
+    ir.split("\ndefine ")
+        .skip(1)
+        .find(|function| function.lines().next().is_some_and(|l| l.contains(&header)))
+        .and_then(|function| function.split("\n}").next())
+}
+
+/// `sisuc -O2 --emit ir` on the case `path` with `SISU_KEEP_FUNCTIONS=caller`, as the module
+/// before and the module after the pipeline.
+fn o2_ir(path: &Path, caller: &str) -> (String, String) {
     let dir = path.parent().expect("a case should sit in a directory");
     let name = path.file_name().expect("a case should have a file name");
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
         .current_dir(dir)
+        .env("SISU_KEEP_FUNCTIONS", caller)
         .args(["-O2", "--emit", "ir"])
         .arg(name)
         .output()
@@ -256,34 +267,67 @@ fn o2_calls(path: &Path) {
         String::from_utf8_lossy(&out.stderr)
     );
     let ir = String::from_utf8_lossy(&out.stdout);
-    let (_, optimized) = ir
+    let (before, after) = ir
         .split_once("\n; after default<O2>\n")
         .unwrap_or_else(|| panic!("{}: no `; after default<O2>` line", path.display()));
-    for marker in markers {
-        let [outer, callee, count] = marker
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "{}: `{O2_CALLS}{marker}` is not `<caller> <callee> <count>`",
-                    path.display()
-                )
-            });
+    (before.to_string(), after.to_string())
+}
+
+/// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, built once per caller.
+/// The marked caller is measured as a standalone function. In a real build it is inlined, and a
+/// call to a callee that LLVM infers as `memory(none)` or `readonly` can then be merged with an
+/// identical call at the call site. So mark calls to callees that write memory.
+fn o2_calls(path: &Path) {
+    let source = fs::read_to_string(path).expect("reads the case");
+    let markers: Vec<[&str; 3]> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(O2_CALLS))
+        .map(|marker| {
+            marker
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{}: `{O2_CALLS}{marker}` is not `<caller> <callee> <count>`",
+                        path.display()
+                    )
+                })
+        })
+        .collect();
+    let mut built: Vec<(&str, (String, String))> = Vec::new();
+    for [outer, callee, count] in markers {
         let count: usize = count.parse().unwrap_or_else(|_| {
             panic!(
-                "{}: `{O2_CALLS}{marker}` count is not a number",
+                "{}: `{O2_CALLS} {outer} {callee} {count}` count is not a number",
                 path.display()
             )
         });
-        let header = format!("@sisu.{outer}(");
-        let body = optimized
-            .split("\ndefine ")
-            .find(|function| function.lines().next().is_some_and(|l| l.contains(&header)))
-            .unwrap_or_else(|| panic!("{}: no `{outer}` in the -O2 IR", path.display()))
-            .split("\n}")
-            .next()
-            .expect("split yields one piece");
+        if !built.iter().any(|(caller, _)| *caller == outer) {
+            built.push((outer, o2_ir(path, outer)));
+        }
+        let (_, (before, optimized)) = built
+            .iter()
+            .find(|(caller, _)| *caller == outer)
+            .expect("the caller was just built");
+        for function in [outer, callee] {
+            assert!(
+                function_text(before, function).is_some(),
+                "{}: no function named `{function}`",
+                path.display()
+            );
+        }
+        let header = function_text(before, outer)
+            .and_then(|text| text.lines().next())
+            .expect("the caller is in the IR");
+        assert!(
+            header.contains(&format!("@sisu.{outer}()")),
+            "{}: o2-calls caller `{outer}` takes parameters; its call sites can decide the \
+             call, so mark a caller without parameters",
+            path.display()
+        );
+        let body = function_text(optimized, outer)
+            .unwrap_or_else(|| panic!("{}: no `{outer}` in the -O2 IR", path.display()));
         let target = format!("@sisu.{callee}(");
         let kept = body
             .lines()
@@ -293,7 +337,7 @@ fn o2_calls(path: &Path) {
             kept,
             count,
             "{}: -O2 keeps {kept} calls to `{callee}` in `{outer}`, not {count}; make `{callee}` \
-             recurse so the inliner keeps it\n{body}",
+             recurse, and not to a depth the call sites fix, so the optimizer keeps it\n{body}",
             path.display()
         );
     }

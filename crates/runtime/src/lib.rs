@@ -1,8 +1,11 @@
 //! The Sisu runtime: functions that compiled Sisu programs call over the C ABI.
 
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
-use std::io::Write;
+use std::fs::File;
+use std::io::{IsTerminal, Write};
+use std::os::fd::AsFd;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Mutex, PoisonError};
 
 /// Number of objects `sisu_alloc` returned that `sisu_free` has not yet freed.
 static LIVE: AtomicU64 = AtomicU64::new(0);
@@ -15,7 +18,7 @@ static LIVE: AtomicU64 = AtomicU64::new(0);
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_int(value: i64) {
-    println!("{value}");
+    print_line(format_args!("{value}"));
 }
 
 /// Prints `true` or `false` and a newline to standard output. Sisu's `print` calls this
@@ -26,13 +29,135 @@ pub extern "C" fn sisu_print_int(value: i64) {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_bool(value: bool) {
-    println!("{value}");
+    print_line(format_args!("{value}"));
+}
+
+/// Bytes `print` collects before it writes them out, when standard output is not a terminal.
+const BUFFER_CAPACITY: usize = 8192;
+
+/// The longest line `print` writes: `-9223372036854775808` and a newline.
+const LONGEST_LINE: usize = 21;
+
+// shortcut: Linux errno, the only target; upgrade if another target is added.
+const EBADF: i32 = 9;
+
+/// The buffer's size: a line that starts below `BUFFER_CAPACITY` still fits.
+const RESERVED: usize = BUFFER_CAPACITY + LONGEST_LINE;
+
+/// Where `print` output goes, fixed at the first `print`.
+struct Sink {
+    /// A duplicate of file descriptor 1, written without std's own line buffering. `None`
+    /// when standard output is closed: output is then dropped, as Rust's `println!` does.
+    file: Option<File>,
+    /// Whether standard output is a terminal, which gets a write per line.
+    line_buffered: bool,
+}
+
+impl Sink {
+    /// Duplicates file descriptor 1. A closed standard output (`EBADF`) is not an error: its
+    /// output is dropped. Any other failure, such as `EMFILE`, is one the caller reports.
+    fn open() -> std::io::Result<Sink> {
+        let stdout = std::io::stdout();
+        let file = match stdout.as_fd().try_clone_to_owned() {
+            Ok(fd) => Some(File::from(fd)),
+            Err(error) if error.raw_os_error() == Some(EBADF) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(Sink {
+            line_buffered: stdout.is_terminal(),
+            file,
+        })
+    }
+}
+
+/// What `print` has collected and not yet written. Like C stdio, it writes at once to a
+/// terminal and in blocks otherwise.
+struct Stdout {
+    buffer: Vec<u8>,
+    sink: Option<Sink>,
+}
+
+impl Stdout {
+    fn append(&mut self, line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        if self.sink.is_none() {
+            // One allocation, once: the buffer never outgrows this. A flush follows any
+            // line that takes it to `BUFFER_CAPACITY`.
+            self.buffer.reserve_exact(RESERVED);
+            self.sink = Some(Sink::open()?);
+        }
+        let line_buffered = self.sink.as_ref().is_some_and(|sink| sink.line_buffered);
+        // Writing to a `Vec` cannot fail.
+        let _ = writeln!(self.buffer, "{line}");
+        if line_buffered || self.buffer.len() >= BUFFER_CAPACITY {
+            self.flush()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Writes out the buffer. The buffer is emptied even when the write fails, so nothing
+    /// tries the same bytes again, and the panic that a failure causes is the only error.
+    fn flush(&mut self) -> std::io::Result<()> {
+        let result = match self.sink.as_mut().and_then(|sink| sink.file.as_mut()) {
+            Some(file) => file.write_all(&self.buffer),
+            None => Ok(()),
+        };
+        self.buffer.clear();
+        result
+    }
+}
+
+static STDOUT: Mutex<Stdout> = Mutex::new(Stdout {
+    buffer: Vec::new(),
+    sink: None,
+});
+
+/// Runs `f` on the output buffer. Nothing panics while it holds the lock (`panic = "abort"`),
+/// so a poisoned lock cannot happen; the error arm only avoids an `unwrap`.
+fn with_stdout<R>(f: impl FnOnce(&mut Stdout) -> R) -> R {
+    f(&mut STDOUT.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Adds `line` and a newline to the output. A failed write is a Sisu panic: `println!`
+/// would panic and, with `panic = "abort"`, kill the program with SIGABRT. A pipe with no
+/// reader still kills the program with SIGPIPE, as it does a C program.
+fn print_line(line: std::fmt::Arguments<'_>) {
+    // The lock is released here: the panic below flushes the buffer through it again.
+    let result = with_stdout(|out| out.append(line));
+    if let Err(error) = result {
+        stdout_panic(&error);
+    }
+}
+
+fn stdout_panic(error: &std::io::Error) -> ! {
+    exit_with_panic(format_args!(
+        "sisu: panic: standard output could not be written: {error}"
+    ))
+}
+
+/// Writes out what `print` has collected; a failed write is the panic of `print_line`.
+fn flush_or_panic() {
+    let result = with_stdout(Stdout::flush);
+    if let Err(error) = result {
+        stdout_panic(&error);
+    }
+}
+
+/// Writes out what `print` has collected. The generated C `main` calls this when `sisu.main`
+/// returns, so a program that ends normally delivers all its output.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_flush_stdout() {
+    flush_or_panic();
 }
 
 /// Prints `sisu: panic at <msg>` to standard error and exits with code 101.
 ///
-/// Standard output is a line-buffered `LineWriter` and `exit` flushes it, so lines
-/// printed before the panic are not lost.
+/// Lines printed before the panic are written to standard output first, so they come out
+/// before the panic line.
 ///
 /// # Safety
 ///
@@ -82,7 +207,37 @@ pub unsafe extern "C" fn sisu_panic_bounds(
     ))
 }
 
+// `signal(2)`, declared here to avoid a dependency. `handler` is a function address or
+// `SIG_IGN`; the previous handler is not needed.
+#[expect(
+    unsafe_code,
+    reason = "declares a libc function; the runtime is linked against libc"
+)]
+unsafe extern "C" {
+    fn signal(signum: i32, handler: usize) -> usize;
+}
+
+// shortcut: Linux x86-64 values, the only target; upgrade if another target is added.
+const SIGPIPE: i32 = 13;
+const SIG_IGN: usize = 1;
+
+/// Writes out the output `print` collected before a panic or fault report. A Sisu program
+/// keeps the default SIGPIPE action for standard output, but a report must reach its own
+/// exit code even when nothing reads a pipe. So SIGPIPE is ignored first, and a failed
+/// flush is not reported: it emptied the buffer, so the exit does not try again.
+fn flush_and_ignore_sigpipe() {
+    // SAFETY: `signal` gets a valid signal number and `SIG_IGN`; it only changes the
+    // process's signal disposition.
+    #[expect(unsafe_code, reason = "calls libc `signal`")]
+    unsafe {
+        signal(SIGPIPE, SIG_IGN);
+    }
+    let _ = with_stdout(Stdout::flush);
+}
+
 fn exit_with_panic(message: std::fmt::Arguments<'_>) -> ! {
+    // Earlier lines come out before the panic line.
+    flush_and_ignore_sigpipe();
     // `eprintln!` panics on a failed write, which would abort before exit code 101.
     let _ = writeln!(std::io::stderr(), "{message}");
     std::process::exit(101)
@@ -167,6 +322,7 @@ pub extern "C" fn sisu_rc_check_exit() {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
+    flush_and_ignore_sigpipe();
     let _ = match kind {
         0 => writeln!(
             std::io::stderr(),
@@ -183,7 +339,11 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{sisu_alloc, sisu_free, sisu_panic_bounds, sisu_rc_check_exit, sisu_rc_fault};
+    use super::{
+        SIGPIPE, signal, sisu_alloc, sisu_free, sisu_panic_bounds, sisu_print_int,
+        sisu_rc_check_exit, sisu_rc_fault,
+    };
+    use std::os::fd::AsRawFd;
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
 
@@ -336,6 +496,53 @@ mod tests {
             "fault1" => sisu_rc_fault(1),
             "fault0" => sisu_rc_fault(0),
             "fault7" => sisu_rc_fault(7),
+            "print_then_fault" => {
+                sisu_print_int(5);
+                sisu_rc_fault(1);
+            }
+            "dup_fails" => {
+                unsafe extern "C" {
+                    fn setrlimit(resource: i32, limit: *const [u64; 2]) -> i32;
+                    fn dup(fd: i32) -> i32;
+                }
+                // SAFETY: `limit` points to a valid `rlimit` (two `u64`s); `dup` takes any
+                // integer. Lowers the descriptor limit to 32 and uses every free slot, so
+                // the first `print` cannot duplicate the open standard output.
+                #[expect(unsafe_code, reason = "calls libc `setrlimit` and `dup`")]
+                unsafe {
+                    const RLIMIT_NOFILE: i32 = 7;
+                    assert_eq!(setrlimit(RLIMIT_NOFILE, &[32, 32]), 0);
+                    // `dup(0)` takes the lowest free slot, so it fills the table without a second
+                    // open file. Descriptor 0 is open here: std's startup reopens a closed one on
+                    // /dev/null. Were it closed just before the loop, `dup` would fail at once, the
+                    // table would stay unfilled, the `print` would succeed and the parent's
+                    // expected exit 101 would fail.
+                    while dup(0) >= 0 {}
+                }
+                sisu_print_int(5);
+            }
+            "fault_full_stdout" => {
+                let full = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .expect("/dev/full should exist on Linux");
+                point_stdout_at(full.as_raw_fd());
+                sisu_print_int(5);
+                sisu_rc_fault(1);
+            }
+            "fault_closed_stdout_pipe" => {
+                let (reader, writer) = std::io::pipe().expect("creates a pipe");
+                drop(reader);
+                point_stdout_at(writer.as_raw_fd());
+                // libtest starts with SIGPIPE ignored; a Sisu program does not.
+                // SAFETY: a valid signal number and `SIG_DFL` (0).
+                #[expect(unsafe_code, reason = "calls libc `signal`")]
+                unsafe {
+                    signal(SIGPIPE, 0);
+                }
+                sisu_print_int(5);
+                sisu_rc_fault(1);
+            }
             other => panic!("unknown rc case {other}"),
         }
     }
@@ -358,6 +565,51 @@ mod tests {
             out.status
         );
         assert_eq!(String::from_utf8_lossy(&out.stderr), stderr);
+    }
+
+    /// Makes file descriptor 1 refer to the same file as `fd`.
+    #[expect(unsafe_code, reason = "declares and calls libc `dup2`")]
+    fn point_stdout_at(fd: i32) {
+        unsafe extern "C" {
+            fn dup2(old: i32, new: i32) -> i32;
+        }
+        // SAFETY: `fd` is an open descriptor and 1 is a valid target.
+        let result = unsafe { dup2(fd, 1) };
+        assert_eq!(result, 1, "dup2 should succeed");
+    }
+
+    /// A standard output that is open but cannot be duplicated (EMFILE) is a failed write,
+    /// not a closed standard output.
+    #[test]
+    fn print_panics_when_standard_output_cannot_be_duplicated() {
+        assert_rc_exit(
+            "dup_fails",
+            Some(101),
+            "sisu: panic: standard output could not be written: Too many open files (os error 24)\n",
+        );
+    }
+
+    /// A fault whose stdout flush fails still reports itself and exits 102, never 101 or a
+    /// signal, whether stdout is full or a pipe with no reader.
+    #[test]
+    fn rc_fault_reports_when_the_stdout_flush_fails() {
+        for case in ["fault_full_stdout", "fault_closed_stdout_pipe"] {
+            assert_rc_exit(
+                case,
+                Some(102),
+                "sisu: rc check: release of an object whose count is 0\n",
+            );
+        }
+    }
+
+    /// An `rc_fault` ends the program, so the lines printed before it must come out first.
+    #[test]
+    fn rc_fault_flushes_buffered_output() {
+        let out = run_rc_child("print_then_fault");
+        assert_eq!(out.status.code(), Some(102), "{:?}", out.status);
+        // The libtest child also prints to stdout; the line it buffered is among it.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.lines().any(|line| line == "5"), "{stdout}");
     }
 
     #[test]

@@ -23,8 +23,7 @@ impl Checker {
         match &e.kind {
             ExprKind::Int(n) => {
                 let ty = literal_type(expected);
-                if ty == Type::U8 && *n > i64::from(u8::MAX) {
-                    let message = format!("`{n}` does not fit in `u8`");
+                if let Some(message) = u8_literal_error(*n).filter(|_| ty == Type::U8) {
                     self.diagnostics.push(Diagnostic::error(e.span, message));
                     return Err(Poisoned::typed(ty));
                 }
@@ -155,12 +154,12 @@ impl Checker {
     /// An expression whose value is used: not `unit` or `never`.
     pub(super) fn value(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let checked = self.expr(e, expected);
-        let message = match type_of(&checked) {
-            Some(Type::Unit) => "expression has no value",
-            Some(Type::Never) => "unreachable code",
+        let d = match type_of(&checked) {
+            Some(Type::Unit) => no_value(e.span),
+            Some(Type::Never) => never_value(e.span),
             _ => return checked,
         };
-        self.diagnostics.push(Diagnostic::error(e.span, message));
+        self.diagnostics.push(d);
         Err(Poisoned::error())
     }
 
@@ -659,6 +658,9 @@ impl Checker {
             // the mistake; without one, the `else` is, against the first branch.
             (Some(t), Some(o)) => {
                 let d = match expected.filter(|w| **w != UNKNOWN) {
+                    // A branch with no value is that mistake, not a type mismatch.
+                    _ if t == Type::Unit => no_value(value_span(then_block)),
+                    _ if o == Type::Unit => no_value(value_span(else_block)),
                     Some(w) if fits(w, &t) => {
                         self.mismatch(value_span(else_block), tail(else_block), w, &o)
                     }
@@ -689,9 +691,9 @@ impl Checker {
         let Some(&func) = self.function_ids.get(&callee.name) else {
             self.diagnostics.push(Diagnostic::error(
                 callee.span,
-                format!("cannot find function `{}`", callee.name),
+                format!("cannot find function or class `{}`", callee.name),
             ));
-            self.labels(args);
+            // No `labels`: the name may be a misspelled class, whose labels are correct.
             self.stray(args);
             return Err(Poisoned::error());
         };
@@ -963,7 +965,6 @@ impl Checker {
     }
 
     fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
-        // Not `value()`: a `unit` argument needs this message, not "expression has no value".
         let wrong = || Diagnostic::error(span, "`print` takes one `i64`, `u8` or `bool`");
         let labeled = self.labels(args);
         let [arg] = args else {
@@ -977,8 +978,12 @@ impl Checker {
                 Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
                     .help("print each element in a `for` loop")
             }
-            Some(Type::Unit | Type::Class(_) | Type::Optional(_)) => wrong(),
-            Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
+            Some(ty @ Type::Class(_)) => {
+                Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
+            }
+            Some(Type::Optional(_)) => wrong(),
+            Some(Type::Unit) => no_value(arg.value.span),
+            Some(Type::Never) => never_value(arg.value.span),
             _ => {
                 let kind = checked
                     .ok()
@@ -998,6 +1003,17 @@ impl Checker {
             let _ = self.expr(&arg.value, Some(&UNKNOWN));
         }
     }
+}
+
+/// An expression of no type used where a value is needed.
+fn no_value(span: Span) -> Diagnostic {
+    Diagnostic::error(span, "expression has no value")
+}
+
+/// A `never` expression used as a value: it leaves before it makes one.
+fn never_value(span: Span) -> Diagnostic {
+    Diagnostic::error(span, "this expression never produces a value")
+        .help("every path through it returns, breaks or continues")
 }
 
 /// The operator and the type it takes, for all but `==` and `!=`.
@@ -1028,6 +1044,15 @@ pub(super) fn int_literal(e: &ast::Expr) -> bool {
                 && int_literal(rhs)
         }
         _ => false,
+    }
+}
+
+/// Why the literal `n` is not a `u8`. Only `-9223372036854775808` parses to a negative literal.
+fn u8_literal_error(n: i64) -> Option<String> {
+    match n {
+        ..0 => Some("`u8` cannot be negative".to_string()),
+        0..=255 => None,
+        _ => Some(format!("`{n}` does not fit in `u8`")),
     }
 }
 

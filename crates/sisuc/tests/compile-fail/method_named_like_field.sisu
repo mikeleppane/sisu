@@ -1,0 +1,7 @@
+class A {
+    f: i64
+
+    fn f(self) {}
+}
+
+fn main() {}

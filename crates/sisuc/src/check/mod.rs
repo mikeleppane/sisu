@@ -211,7 +211,9 @@ impl Checker {
                         methods: HashMap::new(),
                     });
                     let name = &class.name;
-                    if !self.built_in(name) && self.first_callable(&mut first, "class", name) {
+                    if !self.built_in(name)
+                        && self.first_definition(&mut first, "class", None, name)
+                    {
                         self.class_ids.insert(name.name.clone(), id);
                     }
                     next_function += class
@@ -222,7 +224,7 @@ impl Checker {
                 }
                 ast::Item::Function(f) => {
                     if !self.built_in(&f.name)
-                        && self.first_callable(&mut first, "function", &f.name)
+                        && self.first_definition(&mut first, "function", None, &f.name)
                     {
                         self.function_ids
                             .insert(f.name.name.clone(), tir::FuncId(next_function));
@@ -233,47 +235,39 @@ impl Checker {
         }
     }
 
-    /// Whether `name` is a built-in type's, which no class or function may take; reports it
-    /// when it is.
+    /// Whether `name` is a built-in type's or function's, which no class or function may take;
+    /// reports it when it is.
     fn built_in(&mut self, name: &ast::Ident) -> bool {
-        let found = built_in_type(&name.name).is_some();
-        if found {
-            self.diagnostics.push(Diagnostic::error(
-                name.span,
-                format!("`{}` is a built-in type", name.name),
-            ));
-        }
-        found
-    }
-
-    /// Whether `name` is the first function or class of its name; reports it when not.
-    fn first_callable(
-        &mut self,
-        first: &mut HashMap<String, Span>,
-        kind: &str,
-        name: &ast::Ident,
-    ) -> bool {
-        if name.name == "print" {
-            self.diagnostics
-                .push(duplicate(kind, name).label("`print` is built in"));
+        let what = if built_in_type(&name.name).is_some() {
+            "type"
+        } else if name.name == "print" {
+            "function"
+        } else {
             return false;
-        }
-        self.first_definition(first, kind, name)
+        };
+        self.diagnostics.push(Diagnostic::error(
+            name.span,
+            format!("`{}` is a built-in {what}", name.name),
+        ));
+        true
     }
 
-    /// Whether `name` is the first of its name in `first`, which it joins; reports it when not.
+    /// Whether `name` is the first of its name in `first`, which it joins with its `kind`;
+    /// reports it when not. `owner` is the class whose members `first` holds.
     fn first_definition(
         &mut self,
-        first: &mut HashMap<String, Span>,
-        kind: &str,
+        first: &mut HashMap<String, (Span, &'static str)>,
+        kind: &'static str,
+        owner: Option<&str>,
         name: &ast::Ident,
     ) -> bool {
-        if let Some(&span) = first.get(&name.name) {
-            self.diagnostics
-                .push(duplicate(kind, name).secondary(span, "first defined here"));
+        if let Some(&(span, first_kind)) = first.get(&name.name) {
+            self.diagnostics.push(
+                duplicate(first_kind, kind, owner, name).secondary(span, "first defined here"),
+            );
             return false;
         }
-        first.insert(name.name.clone(), name.span);
+        first.insert(name.name.clone(), (name.span, kind));
         true
     }
 
@@ -301,7 +295,12 @@ impl Checker {
                 match member {
                     ast::Member::Field(field) => {
                         let ty = self.resolve(&field.ty);
-                        if self.first_definition(&mut first, "field", &field.name) {
+                        if self.first_definition(
+                            &mut first,
+                            "field",
+                            Some(&class.name.name),
+                            &field.name,
+                        ) {
                             self.classes[id.0].fields.push(FieldInfo {
                                 name: field.name.clone(),
                                 ty,
@@ -311,7 +310,12 @@ impl Checker {
                     }
                     ast::Member::Method(method) => {
                         let func = tir::FuncId(self.signatures.len());
-                        if self.first_definition(&mut first, "method", &method.name) {
+                        if self.first_definition(
+                            &mut first,
+                            "method",
+                            Some(&class.name.name),
+                            &method.name,
+                        ) {
                             self.classes[id.0]
                                 .methods
                                 .insert(method.name.name.clone(), func);
@@ -630,12 +634,17 @@ fn not_found(name: &str, span: Span) -> Diagnostic {
     Diagnostic::error(span, format!("cannot find `{name}` in this scope"))
 }
 
-/// `kind` is the second declaration's: "function", "class", "field" or "method".
-fn duplicate(kind: &str, name: &ast::Ident) -> Diagnostic {
-    Diagnostic::error(
-        name.span,
-        format!("{kind} `{}` is defined twice", name.name),
-    )
+/// `name` taken again. `kind` is the second declaration's and `first` the first's: "function",
+/// "class", "field" or "method". `owner` is the class of a field or method.
+fn duplicate(first: &str, kind: &str, owner: Option<&str>, name: &ast::Ident) -> Diagnostic {
+    let name_text = &name.name;
+    let message = if first == kind {
+        format!("{kind} `{name_text}` is defined twice")
+    } else {
+        let owner = owner.map_or_else(String::new, |class| format!(" of `{class}`"));
+        format!("`{name_text}` is already a {first}{owner}")
+    };
+    Diagnostic::error(name.span, message)
 }
 
 #[cfg(test)]

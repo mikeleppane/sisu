@@ -1,0 +1,5 @@
+fn main() {
+    let n = 4
+    let b: u8 = 1
+    print(1 + n == b)
+}

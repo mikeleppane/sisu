@@ -1,0 +1,11 @@
+// A minus applied directly to 9223372036854775808 is the smallest i64, whatever sits between them.
+fn main() {
+    let min = -9223372036854775808
+    print(min)                                  // -9223372036854775808
+    print(min == -9_223_372_036_854_775_807 - 1) // true
+    print(min + 1)                              // -9223372036854775807
+    print(-   9223372036854775808)              // -9223372036854775808
+    print(-9_223_372_036_854_775_808)           // -9223372036854775808
+    let xs = [-9223372036854775808, 1]
+    print(xs[0] < xs[1])                        // true
+}

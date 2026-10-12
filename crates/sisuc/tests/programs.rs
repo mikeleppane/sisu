@@ -37,7 +37,7 @@ fn assert_panics(out: &Output, stdout: &str, stderr: &str) {
 
 /// The programs the small-stack tests run. They are not `tests/run` cases: a million objects
 /// under Valgrind is too slow, and `deepchain` overflows on purpose.
-const SMALL_STACK: [&str; 3] = ["longlist", "rightskew", "deepchain"];
+const SMALL_STACK: [&str; 4] = ["longlist", "rightskew", "deepchain", "eqlist"];
 
 /// `tests/programs` holds exactly the `SMALL_STACK` programs; every other program is a case in
 /// `tests/run` or `tests/run-fail`.
@@ -124,7 +124,7 @@ fn allocs_in_panics_without_the_summary_line() {
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
 const ALLOCATIONS: [(&str, &str, &str, i64); 3] = [
-    // `big = fill(big, i, 1)` writes in place.
+    // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
     ("copies", "499500\n1000\n", "0\n0\n", 1000),
@@ -147,7 +147,12 @@ fn allocation_counts() {
 
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
-    let exe = compile_to_tmp(Path::new(PROGRAMS), name, false);
+    run_in_small_stack_at(name, false)
+}
+
+/// `run_in_small_stack` with `-O2` if `o2`.
+fn run_in_small_stack_at(name: &str, o2: bool) -> Output {
+    let exe = compile_to_tmp(Path::new(PROGRAMS), name, o2);
     Command::new("sh")
         .args(["-c", r#"ulimit -c 0 && ulimit -s 256 && exec "$0""#])
         .arg(exe)
@@ -178,14 +183,26 @@ fn right_skewed_tree_frees_in_constant_stack() {
     assert_small_stack_prints("rightskew", "1000000\n");
 }
 
+/// `==` on two lists of 1 000 000 nodes, with the chain field last and first, at both levels.
+#[test]
+fn equal_long_lists_compare_in_constant_stack() {
+    for o2 in [false, true] {
+        let out = run_in_small_stack_at("eqlist", o2);
+        assert_eq!(out.status.code(), Some(0), "-O2 {o2}: {:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "true\ntrue\n");
+    }
+}
+
 /// The control for `longlist_frees_in_constant_stack`: a drop that recurses once per object
 /// overflows the same stack, so the limit is in force.
 #[test]
 fn deepchain_overflows_the_same_stack() {
     let out = run_in_small_stack("deepchain");
     assert_eq!(out.status.signal(), Some(11), "{:?}", out.status);
-    // It dies in the drop, after `print`: stdout is line-buffered.
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+    // It dies in the drop, after `print`, but stdout is a pipe and so block-buffered: the
+    // runtime flushes only on a normal exit or a Sisu panic, so a signal loses the line, as
+    // it does in a C program.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
 }
 
 /// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu` and compiles it from there, at
@@ -282,6 +299,9 @@ fn panic_cases() {
         // 16 + 9_223_372_036_854_775_791 bytes is exactly `i64::MAX`, above the largest
         // size that rounds up to the alignment of 8 within it.
         fill_case("length_too_large", "false", "9_223_372_036_854_775_791", 22),
+        // The smallest length past `largest_array_reaches_the_allocator`'s: 16 +
+        // 9_223_372_036_854_775_785 is `i64::MAX - 6`, which rounds up to 2^63.
+        fill_case("one_too_large", "false", "9_223_372_036_854_775_785", 22),
         // 2^62 * 8 bytes overflows the multiply.
         fill_case("length_overflows", "0", "4_611_686_018_427_387_904", 18),
         // (2^61 - 1) * 8 bytes is 2^64 - 8, which fits; adding the 16-byte header wraps.
@@ -359,6 +379,202 @@ fn largest_array_reaches_the_allocator() {
             Some("memory allocation of 9223372036854775800 bytes failed"),
             "{stderr}"
         );
+    }
+}
+
+/// What the runtime prints when a `print` cannot write to standard output.
+const STDOUT_WRITE_PANIC: &str =
+    "sisu: panic: standard output could not be written: No space left on device (os error 28)\n";
+
+/// A failed write in `print` of an `i64` or a `bool` is a Sisu panic: one stderr line, exit
+/// code 101, no Rust panic text and no abort.
+#[test]
+fn print_to_a_full_stdout_panics_with_exit_101() {
+    for (name, arg) in [("print_full_int", "1"), ("print_full_bool", "true")] {
+        let source = format!("fn main() {{\n    print({arg})\n}}\n");
+        for o2 in [false, true] {
+            let full = File::options()
+                .write(true)
+                .open("/dev/full")
+                .expect("/dev/full exists on Linux");
+            let out = Command::new(compile_tmp(name, &source, o2))
+                .stdout(full)
+                .output()
+                .expect("the program starts");
+            assert_eq!(out.status.code(), Some(101), "{name}: {:?}", out.status);
+            assert_eq!(String::from_utf8_lossy(&out.stderr), STDOUT_WRITE_PANIC);
+        }
+    }
+}
+
+/// A pipe whose read end is closed: a write to the other end raises SIGPIPE.
+fn broken_pipe() -> std::io::PipeWriter {
+    let (reader, writer) = std::io::pipe().expect("creates a pipe");
+    drop(reader);
+    writer
+}
+
+/// A Sisu panic whose stderr has no reader still exits 101: the runtime ignores SIGPIPE
+/// before it writes the panic line. This runs a compiled program, because the libtest child
+/// of a runtime unit test starts with SIGPIPE ignored already.
+#[test]
+fn panic_exits_101_when_stderr_is_a_closed_pipe() {
+    let source = "fn main() {\n    let xs = [1, 2]\n    let i = 2\n    print(xs[i])\n}\n";
+    for o2 in [false, true] {
+        let status = Command::new(compile_tmp("panic_closed_stderr", source, o2))
+            .stderr(broken_pipe())
+            .status()
+            .expect("the program starts");
+        assert_eq!(status.code(), Some(101), "{status:?}");
+    }
+}
+
+/// Standard output with no reader keeps the default SIGPIPE action: the program dies by
+/// signal 13, as a C program does.
+#[test]
+fn print_into_a_closed_stdout_pipe_dies_by_sigpipe() {
+    let source = "fn main() {\n    print(1)\n}\n";
+    for o2 in [false, true] {
+        let status = Command::new(compile_tmp("print_closed_stdout", source, o2))
+            .stdout(broken_pipe())
+            .status()
+            .expect("the program starts");
+        assert_eq!(status.signal(), Some(13), "{status:?}");
+    }
+}
+
+/// Runs `exe` with standard output and standard error both writing to one pipe and returns
+/// what arrived, in order, with the exit status.
+fn run_with_merged_output(exe: &Path) -> (std::process::ExitStatus, String) {
+    use std::io::Read;
+    let (mut reader, writer) = std::io::pipe().expect("creates a pipe");
+    let mut command = Command::new(exe);
+    command
+        .stdout(writer.try_clone().expect("clones the pipe"))
+        .stderr(writer);
+    let mut child = command.spawn().expect("the program starts");
+    // The command holds the last write ends; drop them so the read ends at EOF.
+    drop(command);
+    let mut merged = String::new();
+    reader.read_to_string(&mut merged).expect("reads the pipe");
+    (child.wait().expect("the program ends"), merged)
+}
+
+/// Buffered `print` lines come out before the panic line, in order.
+#[test]
+fn prints_then_a_panic_flush_stdout_before_the_panic_line() {
+    let source = "fn main() {\n    let xs = [1, 2]\n    let i = 2\n    print(1)\n    print(true)\n    print(xs[i])\n}\n";
+    for o2 in [false, true] {
+        let (status, merged) =
+            run_with_merged_output(&compile_tmp("prints_then_panic", source, o2));
+        assert_eq!(status.code(), Some(101), "{status:?}");
+        let mut lines = merged.lines();
+        assert_eq!(lines.next(), Some("1"), "{merged}");
+        assert_eq!(lines.next(), Some("true"), "{merged}");
+        let panic_line = lines.next().expect("a panic line follows");
+        assert!(
+            panic_line.starts_with("sisu: panic at ")
+                && panic_line.ends_with(": index 2 out of bounds for length 2"),
+            "{merged}"
+        );
+        assert_eq!(lines.next(), None, "{merged}");
+    }
+}
+
+/// Output is buffered: only the final flush at the end of `main` fails, and it ends the
+/// program with the one panic line, not a second error when the process exits.
+#[test]
+fn prints_then_a_normal_exit_into_a_full_stdout_panics_once() {
+    let source = "fn main() {\n    print(1)\n    print(false)\n    print(3)\n}\n";
+    for o2 in [false, true] {
+        let full = File::options()
+            .write(true)
+            .open("/dev/full")
+            .expect("/dev/full exists on Linux");
+        let out = Command::new(compile_tmp("prints_then_full", source, o2))
+            .stdout(full)
+            .output()
+            .expect("the program starts");
+        assert_eq!(out.status.code(), Some(101), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stderr), STDOUT_WRITE_PANIC);
+    }
+}
+
+/// A closed standard output drops what `print` writes and the program exits 0, as with
+/// `println!`.
+#[test]
+fn print_to_a_closed_stdout_is_dropped() {
+    let source = "fn main() {\n    print(1)\n}\n";
+    for o2 in [false, true] {
+        let out = Command::new("sh")
+            .args(["-c", r#"exec "$0" >&-"#])
+            .arg(compile_tmp("print_closed_fd", source, o2))
+            .output()
+            .expect("sh starts");
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(out.stderr, b"");
+    }
+}
+
+/// An `--rc-checks` program that leaks exits 102 and still delivers what it printed.
+#[test]
+fn rc_checks_exit_flushes_stdout() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("rc_flush.sisu"), LEAKS_A_CYCLE).expect("writes");
+    let exe = dir.join("rc_flush");
+    support::compile(dir, "rc_flush", &exe, &["--rc-checks"]);
+    let (status, merged) = run_with_merged_output(&exe);
+    assert_eq!(status.code(), Some(102), "{status:?}");
+    assert_eq!(merged, "1\nsisu: rc check: live objects at exit: 1\n");
+}
+
+/// Output goes out in blocks while the program runs: a program that prints 3000 lines and
+/// then dies by a stack overflow leaves whole blocks on a pipe and loses only the tail.
+#[test]
+fn full_blocks_of_output_survive_a_crash() {
+    let source = "fn dive(n: i64) -> i64 {\n    dive(n + 1) + 1\n}\nfn main() {\n    let mut i = 0\n    while i < 3000 {\n        print(i)\n        i += 1\n    }\n    print(dive(0))\n}\n";
+    let exe = compile_tmp("blocks_then_crash", source, false);
+    let out = Command::new("sh")
+        .args(["-c", r#"ulimit -c 0 && exec "$0""#])
+        .arg(exe)
+        .output()
+        .expect("sh starts");
+    assert_eq!(out.status.signal(), Some(11), "{:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let all: String = (0..3000).map(|i| i.to_string() + "\n").collect();
+    assert!(stdout.len() >= 8192, "{} bytes", stdout.len());
+    assert!(stdout.len() < all.len(), "the tail is still in the buffer");
+    assert!(all.starts_with(&*stdout), "whole lines, in order");
+    assert!(stdout.ends_with('\n'), "{stdout:?}");
+}
+
+/// `print` collects its output in one buffer, however much the program prints.
+#[test]
+fn print_allocates_one_buffer() {
+    let program = |limit: u32| {
+        format!(
+            "fn main() {{\n    let mut i = 0\n    while i < {limit} {{\n        print(i)\n        i += 1\n    }}\n}}\n"
+        )
+    };
+    let (_, one) = heap_allocs(&compile_tmp("one_buffer_k1", &program(1), false));
+    let (_, many) = heap_allocs(&compile_tmp("one_buffer_k20000", &program(20_000), false));
+    assert_eq!(many, one);
+}
+
+/// Enough output to fill the buffer many times arrives whole and in order.
+#[test]
+fn a_long_output_to_a_file_is_complete() {
+    let source = "fn main() {\n    let mut i = 0\n    while i < 100_000 {\n        print(i)\n        i += 1\n    }\n}\n";
+    let numbers: Vec<String> = (0..100_000).map(|i| i.to_string()).collect();
+    let expected = numbers.join("\n") + "\n";
+    for o2 in [false, true] {
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("long_output.txt");
+        let status = Command::new(compile_tmp("long_output", source, o2))
+            .stdout(File::create(&path).expect("creates the file"))
+            .status()
+            .expect("the program starts");
+        assert_eq!(status.code(), Some(0), "{status:?}");
+        assert_eq!(fs::read_to_string(&path).expect("reads the file"), expected);
     }
 }
 
@@ -649,6 +865,106 @@ fn o2_calls_marker_fails_on_an_inlined_call() {
         message.contains("-O2 keeps 0 calls to `one` in `main`, not 1"),
         "{message}"
     );
+}
+
+const DOWN: &str = "fn down(n: i64) -> i64 {\n    if n > 0 { down(n - 1) + 1 } else { 0 }\n}\n\n";
+
+/// `main` calls `outer` twice, so `-O2` inlines it into `main` twice; in each copy `down(0)` has
+/// folded to a constant and `down(5)` keeps its call.
+const OUTER_CALLS_DOWN: &str = "fn outer() -> i64 {\n    down(0) + down(5)\n}\n\n\
+     fn main() {\n    print(outer())\n    print(outer())\n}\n";
+
+/// `fixture` with the case `// o2-calls: <markers>` and `DOWN`, `body`, whose run must print `out`.
+fn o2_case(test: &str, markers: &str, body: &str, out: &str) -> PathBuf {
+    fixture(
+        test,
+        &[
+            ("a.sisu", &format!("// o2-calls: {markers}\n{DOWN}{body}")),
+            ("a.out", out),
+        ],
+    )
+}
+
+/// A marker counts the calls in the caller's own body: `outer` keeps one call to `down`, not
+/// the two that its inlined copies in `main` add up to.
+#[test]
+fn o2_calls_marker_counts_inside_the_caller() {
+    let dir = o2_case(
+        "o2_calls_marker_counts_inside_the_caller_1",
+        "outer down 1",
+        OUTER_CALLS_DOWN,
+        "5\n5\n",
+    );
+    support::run(&dir.join("a.sisu"), false);
+    let dir = o2_case(
+        "o2_calls_marker_counts_inside_the_caller_2",
+        "outer down 2",
+        OUTER_CALLS_DOWN,
+        "5\n5\n",
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("-O2 keeps 1 calls to `down` in `outer`, not 2"),
+        "{message}"
+    );
+}
+
+/// Each caller gets a build of its own. Keeping `outer` for its marker must not keep it for
+/// `main`'s: a real build inlines `outer`, so `main` keeps no call to it.
+#[test]
+fn o2_calls_marker_keeps_one_caller_at_a_time() {
+    let dir = o2_case(
+        "o2_calls_marker_keeps_one_caller_at_a_time",
+        "main outer 2\n// o2-calls: outer down 1",
+        OUTER_CALLS_DOWN,
+        "5\n5\n",
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("-O2 keeps 0 calls to `outer` in `main`, not 2"),
+        "{message}"
+    );
+}
+
+/// With `outer` kept as a function of its own, `outer(n)` holds a call to `down` that its real
+/// call sites decide away, so a caller with parameters is rejected.
+#[test]
+fn o2_calls_marker_rejects_a_caller_with_parameters() {
+    let dir = o2_case(
+        "o2_calls_marker_rejects_a_caller_with_parameters",
+        "outer down 1",
+        "fn outer(n: i64) -> i64 {\n    if n == 5 { down(n) } else { n }\n}\n\n\
+         fn main() {\n    print(outer(1))\n    print(outer(10))\n}\n",
+        "1\n10\n",
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("o2-calls caller `outer` takes parameters"),
+        "{message}"
+    );
+}
+
+#[test]
+fn o2_calls_marker_names_a_missing_function() {
+    for (test, marker, missing) in [
+        (
+            "o2_calls_marker_names_a_missing_caller",
+            "outr down 1",
+            "outr",
+        ),
+        (
+            "o2_calls_marker_names_a_missing_callee",
+            "outer dwn 1",
+            "dwn",
+        ),
+    ] {
+        let dir = o2_case(test, marker, OUTER_CALLS_DOWN, "5\n5\n");
+        let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+        assert!(
+            message.contains(&format!("no function named `{missing}`")),
+            "{message}"
+        );
+    }
 }
 
 #[test]

@@ -145,7 +145,7 @@ fn division_guards_precede_the_division() {
     .print_to_string()
     .to_string();
     for (name, op) in [("d", "sdiv"), ("r", "srem")] {
-        let header = format!("define i64 @sisu.{name}(");
+        let header = format!("define internal i64 @sisu.{name}(");
         let body = function_body(&ir, &header);
         let lines: Vec<&str> = body.lines().map(str::trim).collect();
         let find = |wanted: &dyn Fn(&str) -> bool, what: &str| {
@@ -290,7 +290,7 @@ fn method_symbols() {
     )
     .print_to_string()
     .to_string();
-    assert!(ir.contains("define void @sisu.P.m(ptr"), "{ir}");
+    assert!(ir.contains("define internal void @sisu.P.m(ptr"), "{ir}");
 }
 
 #[test]
@@ -308,9 +308,9 @@ fn helpers_are_generated() {
         .print_to_string()
         .to_string();
     for wanted in [
-        "define void @sisu_rc.retain(ptr",
-        "define void @sisu_rc.release.P(ptr",
-        "define void @sisu_rc.drop.P(ptr",
+        "define internal void @sisu_rc.retain(ptr",
+        "define internal void @sisu_rc.release.P(ptr",
+        "define internal void @sisu_rc.drop.P(ptr",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
@@ -325,16 +325,108 @@ fn drop_loops_on_the_chain_field() {
     )
     .print_to_string()
     .to_string();
-    let node = function_body(&ir, "define void @sisu_rc.drop.Node(ptr");
+    let node = function_body(&ir, "define internal void @sisu_rc.drop.Node(ptr");
     assert!(node.contains("phi ptr"), "no loop in\n{node}");
     assert_eq!(node.matches("@sisu_free(").count(), 1, "{node}");
     for unwanted in ["@sisu_rc.drop.Node(", "@sisu_rc.release.Node("] {
         assert!(!node.contains(unwanted), "{unwanted:?} in\n{node}");
     }
     // `right` is the chain field; only `left` is released, by recursion.
-    let tree = function_body(&ir, "define void @sisu_rc.drop.Tree(ptr");
+    let tree = function_body(&ir, "define internal void @sisu_rc.drop.Tree(ptr");
     assert_eq!(tree.matches("@sisu_rc.release.Tree(").count(), 1, "{tree}");
     assert!(!tree.contains("@sisu_rc.drop.Tree("), "{tree}");
+}
+
+/// A drop frees a block with the size and alignment it was allocated with. `sisu_free` hands
+/// both to the allocator, which here ignores them, so Valgrind and the RC checks cannot notice
+/// a wrong value.
+#[test]
+fn drop_frees_with_the_allocated_layout() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class Q {}\nclass P {\n    x: i64\n    mut y: bool\n    q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    let a = [1, 2, 3]\n    let b = [true, false]\n    let c: [i64?] = [None, 1]\n    print(p.x + a[0])\n}",
+    )
+    .print_to_string()
+    .to_string();
+    // The operands of the one `sisu_free` call in `body`, as `(pointer, size, align)`.
+    let free = |body: &str| -> (String, String, String) {
+        let line = body
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("call void @sisu_free(ptr "))
+            .unwrap_or_else(|| panic!("no free in\n{body}"));
+        let operands: Vec<&str> = line.trim_end_matches(')').split(", i64 ").collect();
+        let [pointer, size, align] = operands[..] else {
+            panic!("free operands in {line:?}")
+        };
+        (pointer.into(), size.into(), align.into())
+    };
+    // The class: `P` is 32 bytes aligned to 8 (see `class_layout_comes_from_the_data_layout`),
+    // and the block is the drop function's own argument.
+    assert!(ir.contains("call ptr @sisu_alloc(i64 32, i64 8)"), "{ir}");
+    let class = function_body(&ir, "define internal void @sisu_rc.drop.P(ptr");
+    let (pointer, size, align) = free(class);
+    assert!(
+        class.trim_start().starts_with(&format!("{pointer})")),
+        "{class}"
+    );
+    assert_eq!((size.as_str(), align.as_str()), ("32", "8"), "{class}");
+    // An array: the 16-byte header plus `len` elements, aligned to 8; the element sizes are
+    // those of `literal_allocates_header_and_elements`, recomputed from the length. The literal
+    // of each type in `main` allocates `16 + len * element_size` bytes, the size the drop frees.
+    for (helper, element_size, len) in [("[i64]", 8, 3), ("[bool]", 1, 2), ("[i64?]", 16, 2)] {
+        let allocated = 16 + len * element_size;
+        assert!(
+            ir.contains(&format!("call ptr @sisu_alloc(i64 {allocated}, i64 8)")),
+            "{helper}: no alloc of {allocated} bytes in\n{ir}"
+        );
+        let body = function_body(
+            &ir,
+            &format!("define internal void @\"sisu_rc.drop.{helper}\"(ptr"),
+        );
+        let (pointer, size, align) = free(body);
+        assert!(
+            body.trim_start().starts_with(&format!("{pointer})")),
+            "{body}"
+        );
+        assert_eq!(align, "8", "{body}");
+        // The value defined by the instruction `<value> = <text>`.
+        let text = |value: &str| {
+            body.lines()
+                .find_map(|l| l.trim().strip_prefix(&format!("{value} = ")))
+                .unwrap_or_else(|| panic!("no {value} in\n{body}"))
+        };
+        let elements = text(&size)
+            .strip_prefix("add nuw i64 ")
+            .and_then(|operands| operands.strip_suffix(", 16"))
+            .unwrap_or_else(|| panic!("size {size} is not elements + 16 in\n{body}"));
+        let length = text(elements)
+            .strip_prefix("mul nuw i64 ")
+            .and_then(|operands| operands.strip_suffix(&format!(", {element_size}")))
+            .unwrap_or_else(|| panic!("{elements} is not len * {element_size} in\n{body}"));
+        assert!(text(length).starts_with("load i64, ptr "), "{body}");
+    }
+}
+
+#[test]
+fn eq_loops_on_the_chain_field() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class Node {\n    value: i64\n    next: Node?\n}\nclass First {\n    next: First?\n    value: i64\n}\nfn same(a: Node?, b: Node?, c: First?, d: First?) -> bool { a == b && c == d }\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    // The chain field is compared in a loop, in either field order: no `eq` calls itself.
+    for (class, header) in [
+        ("Node", "define internal i1 @sisu_rc.eq.Node(ptr"),
+        ("First", "define internal i1 @sisu_rc.eq.First(ptr"),
+    ] {
+        let body = function_body(&ir, header);
+        assert!(body.contains("phi ptr"), "no loop in\n{body}");
+        let own_call = format!("call i1 @sisu_rc.eq.{class}(");
+        assert!(!body.contains(&own_call), "{own_call:?} in\n{body}");
+    }
 }
 
 #[test]
@@ -349,9 +441,9 @@ fn helper_names_cannot_collide() {
     // The method `release.Tree` and the helper for class `Tree` must both keep their names:
     // LLVM renames the second of two equal names with a numeric suffix.
     for wanted in [
-        "define void @sisu.retain()",
-        "define void @sisu.release.Tree(ptr",
-        "define void @sisu_rc.release.Tree(ptr",
+        "define internal void @sisu.retain()",
+        "define internal void @sisu.release.Tree(ptr",
+        "define internal void @sisu_rc.release.Tree(ptr",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
@@ -368,7 +460,7 @@ fn scalar_optional_is_a_pair() {
         .print_to_string()
         .to_string();
     assert!(
-        ir.contains("define { i1, i64 } @sisu.f({ i1, i64 }"),
+        ir.contains("define internal { i1, i64 } @sisu.f({ i1, i64 }"),
         "{ir}"
     );
 }
@@ -384,7 +476,7 @@ fn scalar_not_equal_is_one_icmp_ne() {
     .print_to_string()
     .to_string();
     for (name, ty) in [("f", "i64"), ("g", "i1")] {
-        let body = function_body(&ir, &format!("define i1 @sisu.{name}("));
+        let body = function_body(&ir, &format!("define internal i1 @sisu.{name}("));
         assert!(body.contains(&format!("icmp ne {ty} ")), "{body}");
         assert!(!body.contains("icmp eq"), "{body}");
         assert!(!body.contains("xor"), "{body}");
@@ -397,7 +489,7 @@ fn eq_helper_per_class() {
     let ir = compiled(&context, "class T {}\nfn main() { print(T() == T()) }")
         .print_to_string()
         .to_string();
-    assert!(ir.contains("define i1 @sisu_rc.eq.T(ptr"), "{ir}");
+    assert!(ir.contains("define internal i1 @sisu_rc.eq.T(ptr"), "{ir}");
 }
 
 #[test]
@@ -409,7 +501,7 @@ fn field_read_retains_before_releasing_base() {
     )
     .print_to_string()
     .to_string();
-    let main = function_body(&ir, "define void @sisu.main()");
+    let main = function_body(&ir, "define internal void @sisu.main()");
     let lines: Vec<&str> = main.lines().map(str::trim).collect();
     let at = |wanted: &dyn Fn(&str) -> bool, what: &str| {
         lines
@@ -493,18 +585,18 @@ fn rc_checks_guard_retain_release_and_exit() {
     let ir = compiled_with(&context, &src, true)
         .print_to_string()
         .to_string();
-    let retain = function_body(&ir, "define void @sisu_rc.retain(ptr");
+    let retain = function_body(&ir, "define internal void @sisu_rc.retain(ptr");
     assert_count_checked(retain, 0, &|t| {
         t.starts_with("add i64 ") && t.ends_with(", 1")
     });
-    let release = function_body(&ir, "define void @sisu_rc.release.P(ptr");
+    let release = function_body(&ir, "define internal void @sisu_rc.release.P(ptr");
     assert_count_checked(release, 1, &|t| {
         t.starts_with("add i64 ") && t.ends_with(", -1")
     });
     let fill = function_body(&ir, "@sisu.fill(");
     // The loop's counter steps with `add nuw`; the count gains its extra references with `add`.
     assert_count_checked(fill, 0, &|t| t.starts_with("add i64 "));
-    let unique = function_body(&ir, "define ptr @\"sisu_rc.unique.[i64]\"(ptr");
+    let unique = function_body(&ir, "define internal ptr @\"sisu_rc.unique.[i64]\"(ptr");
     assert_count_checked(unique, 1, &|t| {
         t.starts_with("icmp eq i64 ") && t.ends_with(", 1")
     });
@@ -513,6 +605,28 @@ fn rc_checks_guard_retain_release_and_exit() {
         .split_once("call void @sisu_rc_check_exit()")
         .unwrap_or_else(|| panic!("no exit check in\n{main}"));
     assert!(after_check.contains("ret i32 0"), "{main}");
+}
+
+#[test]
+fn main_flushes_stdout_before_the_exit_check_and_the_return() {
+    let context = Context::create();
+    for rc_checks in [false, true] {
+        let ir = compiled_with(&context, FIB, rc_checks)
+            .print_to_string()
+            .to_string();
+        let main = function_body(&ir, "define i32 @main()");
+        let flush = main
+            .find("call void @sisu_flush_stdout()")
+            .unwrap_or_else(|| panic!("no flush in\n{main}"));
+        let after = main.find("ret i32 0").expect("main returns 0");
+        assert!(flush < after, "{main}");
+        if rc_checks {
+            let check = main
+                .find("call void @sisu_rc_check_exit()")
+                .expect("exit check");
+            assert!(flush < check, "{main}");
+        }
+    }
 }
 
 #[test]
@@ -525,13 +639,36 @@ fn plain_build_has_no_rc_checks() {
     }
 }
 
+/// Only the C entry point is visible outside the module: every other function, helpers
+/// included, is internal, so `-O2` can inline and specialise it.
+#[test]
+fn only_main_is_external() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        &format!(
+            "class P {{\n    next: P?\n}}\nfn f(xs: [[i64]], p: P) -> [[i64]] {{ xs }}\n{FIB}"
+        ),
+    )
+    .print_to_string()
+    .to_string();
+    let defined: Vec<&str> = ir.lines().filter(|l| l.starts_with("define ")).collect();
+    assert!(defined.len() > 4, "{ir}");
+    for line in defined {
+        assert!(
+            line.starts_with("define i32 @main(") || line.starts_with("define internal "),
+            "{line}"
+        );
+    }
+}
+
 #[test]
 fn user_function_names_are_prefixed() {
     let context = Context::create();
     let ir = compiled(&context, FIB).print_to_string().to_string();
     for wanted in [
-        "define i64 @sisu.fib(i64",
-        "define void @sisu.main()",
+        "define internal i64 @sisu.fib(i64",
+        "define internal void @sisu.main()",
         "define i32 @main()",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
@@ -547,7 +684,10 @@ fn u8_add_uses_unsigned_overflow() {
     )
     .print_to_string()
     .to_string();
-    for wanted in ["define i8 @sisu.f(i8", "@llvm.uadd.with.overflow.i8"] {
+    for wanted in [
+        "define internal i8 @sisu.f(i8",
+        "@llvm.uadd.with.overflow.i8",
+    ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
 }
@@ -594,7 +734,7 @@ fn fast_path_skips_base_count() {
     )
     .print_to_string()
     .to_string();
-    let body = function_body(&ir, "define ptr @sisu.f(ptr");
+    let body = function_body(&ir, "define internal ptr @sisu.f(ptr");
     let (before, _) = body
         .split_once("call void @sisu_print_int(")
         .unwrap_or_else(|| panic!("no print in\n{body}"));
@@ -603,6 +743,101 @@ fn fast_path_skips_base_count() {
             !before.contains(unwanted),
             "{unwanted:?} before the print in\n{body}"
         );
+    }
+}
+
+/// The runtime's print functions touch only memory the module cannot reach (their buffer,
+/// `errno`) and never unwind, but they can exit the process, so they are not `willreturn`.
+#[test]
+fn print_declarations_carry_attributes() {
+    let context = Context::create();
+    let ir = compiled(&context, "fn main() { print(1)\n    print(true) }")
+        .print_to_string()
+        .to_string();
+    for name in ["sisu_print_int", "sisu_print_bool"] {
+        let declaration = ir
+            .lines()
+            .find(|line| line.starts_with("declare ") && line.contains(&format!("@{name}(")))
+            .unwrap_or_else(|| panic!("no declaration of {name} in\n{ir}"));
+        let (_, group) = declaration
+            .rsplit_once(" #")
+            .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
+        let attributes = ir
+            .lines()
+            .find(|line| line.starts_with(&format!("attributes #{group} = ")))
+            .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"));
+        for wanted in [
+            "nounwind",
+            "memory(inaccessiblemem: readwrite, errnomem: readwrite)",
+        ] {
+            assert!(attributes.contains(wanted), "{name}: {attributes}");
+        }
+        assert!(!attributes.contains("willreturn"), "{name}: {attributes}");
+    }
+}
+
+/// `xs.len()` and `o.n` on a local neither retain nor release the base: the local keeps it
+/// alive. A counted field read still retains the field.
+#[test]
+fn len_and_field_of_a_local_skip_base_count() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class O {\n    n: i64\n    a: [i64]\n}\n\
+         fn len(xs: [i64]) -> [i64] {\n    print(xs.len() + xs.len())\n    xs\n}\n\
+         fn field(o: O) -> O {\n    print(o.n + o.n)\n    o\n}\n\
+         fn counted(o: O) -> O {\n    let a = o.a\n    print(a[0])\n    o\n}\n\
+         fn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for (header, release) in [
+        (
+            "define internal ptr @sisu.len(ptr",
+            "@\"sisu_rc.release.[i64]\"(",
+        ),
+        ("define internal ptr @sisu.field(ptr", "@sisu_rc.release.O("),
+    ] {
+        let body = function_body(&ir, header);
+        let (before, _) = body
+            .split_once("call void @sisu_print_int(")
+            .unwrap_or_else(|| panic!("no print in\n{body}"));
+        for unwanted in ["@sisu_rc.retain(", release] {
+            assert!(
+                !before.contains(unwanted),
+                "{unwanted:?} before the print in\n{body}"
+            );
+        }
+    }
+    // `a` takes a reference to the field's array, and nothing else is counted before the print.
+    let body = function_body(&ir, "define internal ptr @sisu.counted(ptr");
+    let (before, _) = body
+        .split_once("call void @sisu_print_int(")
+        .unwrap_or_else(|| panic!("no print in\n{body}"));
+    assert_eq!(before.matches("@sisu_rc.retain(").count(), 1, "{body}");
+    assert!(!before.contains("@sisu_rc.release.O("), "{body}");
+}
+
+/// A base that is not a local is still released after `len` and after a field read.
+#[test]
+fn len_and_field_of_a_value_release_the_base() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class O {\n    n: i64\n}\nfn make() -> [i64] { [1] }\nfn o() -> O { O(n: 1) }\n\
+         fn len() -> i64 { make().len() }\nfn field() -> i64 { o().n }\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for (header, release) in [
+        (
+            "define internal i64 @sisu.len()",
+            "@\"sisu_rc.release.[i64]\"(",
+        ),
+        ("define internal i64 @sisu.field()", "@sisu_rc.release.O("),
+    ] {
+        let body = function_body(&ir, header);
+        assert!(body.contains(release), "no {release:?} in\n{body}");
     }
 }
 
@@ -617,8 +852,8 @@ fn nested_array_helpers_are_defined() {
     .print_to_string()
     .to_string();
     for wanted in [
-        "define void @\"sisu_rc.drop.[[Node]]\"(ptr",
-        "define void @\"sisu_rc.release.[Node]\"(ptr",
+        "define internal void @\"sisu_rc.drop.[[Node]]\"(ptr",
+        "define internal void @\"sisu_rc.release.[Node]\"(ptr",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
@@ -634,7 +869,7 @@ fn general_path_releases_base() {
     )
     .print_to_string()
     .to_string();
-    let body = function_body(&ir, "define i64 @sisu.f()");
+    let body = function_body(&ir, "define internal i64 @sisu.f()");
     let lines: Vec<&str> = body.lines().map(str::trim).collect();
     // `f` returns the element it loaded.
     let element = lines
@@ -679,7 +914,7 @@ fn fast_path_follows_the_index_whitelist() {
         ("call", false),
         ("moved", false),
     ] {
-        let body = function_body(&ir, &format!("define ptr @sisu.{name}("));
+        let body = function_body(&ir, &format!("define internal ptr @sisu.{name}("));
         let (before, _) = body
             .split_once("call void @sisu_print_int(")
             .unwrap_or_else(|| panic!("no print in\n{body}"));
@@ -743,4 +978,16 @@ fn move_stores_null() {
         body.contains(&format!("store ptr null, ptr {slot},")),
         "{body}"
     );
+}
+
+/// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
+/// update the override there. Each `+=` is an overflow panic site, and finding its line and
+/// column from the start of the text made codegen quadratic in the number of sites.
+#[test]
+fn many_panic_sites_compile_in_linear_time() {
+    let src = format!(
+        "fn main() {{\n    let mut x = 0\n{}    print(x)\n}}\n",
+        "    x += 1\n".repeat(100_000)
+    );
+    compiled(&Context::create(), &src);
 }

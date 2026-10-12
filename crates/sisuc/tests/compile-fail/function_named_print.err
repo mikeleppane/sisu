@@ -1,0 +1,6 @@
+error: `print` is a built-in function
+ --> function_named_print.sisu:1:4
+  |
+1 | fn print(a: i64) {}
+  |    ^^^^^
+

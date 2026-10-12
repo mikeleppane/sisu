@@ -1,0 +1,9 @@
+class P {
+    mut x: i64
+
+    fn reset(self) {
+        self = P(x: 0)
+    }
+}
+
+fn main() {}

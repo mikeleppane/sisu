@@ -1,0 +1,6 @@
+error: unexpected character U+00A0
+ --> lex_nbsp.sisu:2:14
+  |
+2 |     let x = 1 + 2
+  |              ^
+

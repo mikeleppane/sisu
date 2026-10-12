@@ -1,0 +1,8 @@
+error: unexpected character U+FEFF
+ --> lex_bom.sisu:1:1
+  |
+1 | ﻿fn main() {
+  | ^
+  |
+  = help: remove the byte order mark at the start of the file
+

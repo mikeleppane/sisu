@@ -1,0 +1,8 @@
+error: cannot assign to `self`
+ --> assign_self.sisu:5:9
+  |
+5 |         self = P(x: 0)
+  |         ^^^^
+  |
+  = help: an object is shared: `self` can already write every `mut` field
+

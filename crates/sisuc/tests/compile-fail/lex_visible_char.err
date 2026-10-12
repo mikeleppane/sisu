@@ -1,0 +1,6 @@
+error: unexpected character `é`
+ --> lex_visible_char.sisu:2:15
+  |
+2 |     let x = 1 é 2
+  |               ^
+

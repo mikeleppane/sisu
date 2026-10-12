@@ -4,12 +4,13 @@ use std::fmt::Write;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-use crate::diagnostic::{Diagnostic, Span, line_col};
+use crate::diagnostic::{Diagnostic, LineIndex, Span};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
     Ident(String),
-    Int(i64),
+    /// The magnitude of an integer literal: at most `MIN_MAGNITUDE`, which only a unary `-` accepts.
+    Int(u64),
     Fn,
     Let,
     Mut,
@@ -415,8 +416,9 @@ fn track_bracket(open: &mut Vec<Open>, kind: &TokenKind, span: Span) -> Result<(
 /// One token per line, `line:col Kind text`; `Newline` and `Eof` print without text.
 pub(crate) fn dump(source: &str, tokens: &[Token]) -> String {
     let mut out = String::new();
+    let lines = LineIndex::new(source);
     for t in tokens {
-        let (line, col) = line_col(source, t.span.start);
+        let (line, col) = lines.line_col(source, t.span.start);
         write!(out, "{line}:{col} {}", t.kind.name())
             .expect("writing to a `String` should never fail");
         if !matches!(t.kind, TokenKind::Newline | TokenKind::Eof) {
@@ -458,8 +460,16 @@ fn keyword_or_ident(text: &str) -> TokenKind {
     }
 }
 
-/// Parses `source[start..end]`, a run of digits and `_`, as an `i64`.
-fn int_literal(source: &str, start: usize, end: usize) -> Result<i64, Diagnostic> {
+/// The magnitude of `i64::MIN`, the one literal that fits `i64` only after a unary `-`.
+pub(crate) const MIN_MAGNITUDE: u64 = 1 << 63;
+
+/// The one error for a literal that no `i64` holds, wherever it is found.
+pub(crate) fn literal_too_large(span: Span) -> Diagnostic {
+    Diagnostic::error(span, "integer literal is too large for `i64`")
+}
+
+/// Parses `source[start..end]`, a run of digits and `_`, as a magnitude of at most `MIN_MAGNITUDE`.
+fn int_literal(source: &str, start: usize, end: usize) -> Result<u64, Diagnostic> {
     let text = &source[start..end];
     for (i, _) in text.match_indices('_') {
         let is_digit = |j: usize| text.as_bytes().get(j).is_some_and(u8::is_ascii_digit);
@@ -471,12 +481,11 @@ fn int_literal(source: &str, start: usize, end: usize) -> Result<i64, Diagnostic
             ));
         }
     }
-    text.replace('_', "").parse().map_err(|_| {
-        Diagnostic::error(
-            Span::new(start, end),
-            "integer literal is too large for `i64`",
-        )
-    })
+    text.replace('_', "")
+        .parse()
+        .ok()
+        .filter(|&n| n <= MIN_MAGNITUDE)
+        .ok_or_else(|| literal_too_large(Span::new(start, end)))
 }
 
 /// The operator or punctuation starting with `c`, consuming a second char when it has one.
@@ -527,15 +536,37 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
     })
 }
 
+/// Whether `c` is in Unicode category Cf (format). Neither the standard library nor a dependency
+/// has the category, so these are the Cf ranges of Unicode 17.0 (`DerivedGeneralCategory.txt`),
+/// the `char::UNICODE_VERSION` of the pinned toolchain. Recheck the list on a toolchain upgrade;
+/// a new Cf character prints raw until it is extended. `core` has a private
+/// `char::is_format_control`; replace the list with it if it is ever stabilized.
+fn is_format(c: char) -> bool {
+    matches!(c,
+        '\u{AD}' | '\u{600}'..='\u{605}' | '\u{61C}' | '\u{6DD}' | '\u{70F}'
+        | '\u{890}'..='\u{891}' | '\u{8E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
+}
+
 fn unexpected(c: char, at: usize) -> Diagnostic {
+    // A character the user cannot see is named by its code point, not printed.
+    let shown = if c.is_whitespace() || c.is_control() || is_format(c) {
+        format!("U+{:04X}", u32::from(c))
+    } else {
+        format!("`{c}`")
+    };
     // The span covers the whole char: annotate-snippets panics off a char boundary.
     let d = Diagnostic::error(
         Span::new(at, at + c.len_utf8()),
-        format!("unexpected character `{c}`"),
+        format!("unexpected character {shown}"),
     );
     match c {
         '&' => d.help("use `&&` for logical and"),
         '|' => d.help("use `||` for logical or"),
+        '\u{FEFF}' if at == 0 => d.help("remove the byte order mark at the start of the file"),
         _ => d,
     }
 }
@@ -766,16 +797,24 @@ mod tests {
     fn max_literal() {
         assert_eq!(
             kinds("9223372036854775807"),
-            [TokenKind::Int(i64::MAX), TokenKind::Eof]
+            [TokenKind::Int(9_223_372_036_854_775_807), TokenKind::Eof]
+        );
+    }
+
+    /// The magnitude of `i64::MIN` lexes: the parser decides whether a `-` precedes it.
+    #[test]
+    fn min_magnitude_literal() {
+        assert_eq!(
+            kinds("9223372036854775808"),
+            [TokenKind::Int(MIN_MAGNITUDE), TokenKind::Eof]
         );
     }
 
     #[test]
     fn literal_too_large() {
-        assert_eq!(
-            err("9223372036854775808"),
-            ("integer literal is too large for `i64`".to_string(), 1, 1)
-        );
+        let message = "integer literal is too large for `i64`".to_string();
+        assert_eq!(err("9223372036854775809"), (message.clone(), 1, 1));
+        assert_eq!(err("99999999999999999999999"), (message, 1, 1));
     }
 
     #[test]
@@ -800,7 +839,10 @@ mod tests {
         assert_eq!(d.message, "unexpected character `é`");
         assert_eq!(line_col(src, d.span.start), (2, 5));
         // The span covers the whole two-byte char, so rendering does not panic.
-        assert!(d.render("t.sisu", src).contains("2:5"));
+        assert!(
+            d.render("t.sisu", src, &LineIndex::new(src))
+                .contains("2:5")
+        );
     }
 
     #[test]
@@ -891,8 +933,54 @@ mod tests {
     fn unicode_space_in_the_gap_is_unexpected() {
         let src = "a\n\u{00a0}.b";
         let d = lex(src).expect_err("U+00A0 is not Sisu whitespace");
-        assert_eq!(d.message, "unexpected character `\u{00a0}`");
+        assert_eq!(d.message, "unexpected character U+00A0");
         assert_eq!(line_col(src, d.span.start), (2, 1));
+    }
+
+    #[test]
+    fn invisible_characters_are_named() {
+        // Whitespace, a control character, and format characters: Cf at both ends of the
+        // list and in the middle, the 4-digit and 5-digit forms.
+        for (c, name) in [
+            ('\u{00a0}', "U+00A0"),
+            ('\u{2028}', "U+2028"),
+            ('\u{0085}', "U+0085"),
+            ('\u{0001}', "U+0001"),
+            ('\u{007f}', "U+007F"),
+            ('\u{00ad}', "U+00AD"),
+            ('\u{200b}', "U+200B"),
+            ('\u{202e}', "U+202E"),
+            ('\u{feff}', "U+FEFF"),
+            ('\u{e0020}', "U+E0020"),
+        ] {
+            let src = format!("a {c}");
+            let d = lex(&src).expect_err("the character is not Sisu");
+            assert_eq!(d.message, format!("unexpected character {name}"));
+            assert_eq!(line_col(&src, d.span.start), (1, 3));
+        }
+    }
+
+    #[test]
+    fn visible_characters_print_as_themselves() {
+        for c in ['$', 'é', '\u{3042}', '\u{1f600}'] {
+            let d = lex(&format!("a {c}")).expect_err("the character is not Sisu");
+            assert_eq!(d.message, format!("unexpected character `{c}`"));
+        }
+    }
+
+    #[test]
+    fn byte_order_mark_help_only_at_the_start_of_the_file() {
+        let d = lex("\u{feff}fn main() {}").expect_err("a BOM is not Sisu");
+        assert_eq!(d.message, "unexpected character U+FEFF");
+        assert_eq!(
+            d.help.as_deref(),
+            Some("remove the byte order mark at the start of the file")
+        );
+        assert_eq!(d.span.start, 0);
+        let d = lex("fn\u{feff}").expect_err("a BOM is not Sisu");
+        assert_eq!(d.help, None);
+        let d = lex("\n\u{feff}").expect_err("a BOM is not Sisu");
+        assert_eq!(d.help, None);
     }
 
     fn all_kinds(src: &str) -> Vec<TokenKind> {

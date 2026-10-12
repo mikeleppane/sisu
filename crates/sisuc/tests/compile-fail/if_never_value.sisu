@@ -1,0 +1,3 @@
+fn main() {
+    let z = if true { return } else { return }
+}

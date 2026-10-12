@@ -136,7 +136,15 @@ impl Checker {
         match &target.kind {
             ast::ExprKind::Name(name) => {
                 let Some(b) = self.lookup(name) else {
-                    self.diagnostics.push(not_found(name, target.span));
+                    let d = if self.function_ids.contains_key(name) {
+                        Diagnostic::error(
+                            target.span,
+                            format!("`{name}` is a function, not a variable"),
+                        )
+                    } else {
+                        not_found(name, target.span)
+                    };
+                    self.diagnostics.push(d);
                     return CheckedPlace::failed();
                 };
                 b.reassigned |= b.kind == BindingKind::Var;
