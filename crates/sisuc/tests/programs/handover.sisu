@@ -1,11 +1,11 @@
 fn iterations() -> i64 { 1000 }
 
-// `big = fill(big, i, 1)` hands the only reference to `fill`; `var ys = xs` and the recursive
+// `big = fill(big, i, 1)` hands the only reference to `fill`; `let mut ys = xs` and the recursive
 // call each move it on, so `ys[0] = v` finds the block unshared and writes in place: the loop
 // makes no copy. `fill` recurses so that the inliner cannot fold the call into `main` at `-O2`;
 // the test finds the `call` in the `-O2` IR.
 fn fill(xs: [i64], v: i64, depth: i64) -> [i64] {
-    var ys = xs
+    let mut ys = xs
     if depth > 0 {
         ys = fill(ys, v, depth - 1)
     }
@@ -14,7 +14,7 @@ fn fill(xs: [i64], v: i64, depth: i64) -> [i64] {
 }
 
 fn main() {
-    var big = [0; 10_000]
+    let mut big = [0; 10_000]
     for i in 0..iterations() {
         big = fill(big, i, 1)
     }

@@ -240,8 +240,8 @@ fn functions_in_any_order() {
 }
 
 #[test]
-fn var_may_shadow_a_param() {
-    let src = "fn f(n: i64) {\n    var n = n\n    n = 1\n}\nfn main() {}";
+fn variable_may_shadow_a_param() {
+    let src = "fn f(n: i64) {\n    let mut n = n\n    n = 1\n}\nfn main() {}";
     clean(src);
 }
 
@@ -489,19 +489,19 @@ fn failed_rule_makes_its_expression_error() {
 
 #[test]
 fn warning_only_program_lowers() {
-    let src = "fn main() {\n    var x = 1\n    print(x)\n}";
+    let src = "fn main() {\n    let mut x = 1\n    print(x)\n}";
     let (program, ds) = checked(src);
     assert!(program.is_some());
     assert_eq!(ds.len(), 1, "{ds:?}");
     assert_eq!(ds[0].severity, Severity::Warning);
     assert_eq!(ds[0].message, "`x` is never reassigned");
-    assert_eq!(at(src, ds[0].span), (2, 9));
+    assert_eq!(at(src, ds[0].span), (2, 13));
 }
 
 #[test]
 fn warning_and_error_in_position_order() {
     // The warning is found when the scope closes, after the error.
-    let src = "fn main() {\n    var x = 1\n    print(nope)\n}";
+    let src = "fn main() {\n    let mut x = 1\n    print(nope)\n}";
     let found: Vec<_> = diags(src)
         .iter()
         .map(|d| (d.severity, d.message.clone(), at(src, d.span)))
@@ -512,7 +512,7 @@ fn warning_and_error_in_position_order() {
             (
                 Severity::Warning,
                 "`x` is never reassigned".to_string(),
-                (2, 9)
+                (2, 13)
             ),
             (
                 Severity::Error,
@@ -548,7 +548,7 @@ fn trailing_expression_is_the_block_value() {
 #[test]
 fn loop_tail_is_not_the_block_value() {
     let (program, ds) =
-        checked("fn main() {\n    var i = 0\n    while i < 3 {\n        i += 1\n    }\n}");
+        checked("fn main() {\n    let mut i = 0\n    while i < 3 {\n        i += 1\n    }\n}");
     assert!(ds.is_empty(), "{ds:?}");
     let main = &program.expect("no errors").functions[0].body;
     assert!(matches!(
@@ -561,8 +561,8 @@ fn loop_tail_is_not_the_block_value() {
 #[test]
 fn lowers_while_to_loop() {
     assert_eq!(
-        lowered("fn main() {\n    var i = 0\n    while i < 3 {\n        i = i + 1\n    }\n}"),
-        "(fn main () unit (block (var i#0 0) (loop (block (if (< i#0 3) (block (= i#0 (+ i#0 1))) (block (break)))))))"
+        lowered("fn main() {\n    let mut i = 0\n    while i < 3 {\n        i = i + 1\n    }\n}"),
+        "(fn main () unit (block (let mut i#0 0) (loop (block (if (< i#0 3) (block (= i#0 (+ i#0 1))) (block (break)))))))"
     );
 }
 
@@ -570,9 +570,9 @@ fn lowers_while_to_loop() {
 fn lowers_continue() {
     assert_eq!(
         lowered(
-            "fn main() {\n    var i = 0\n    while i < 3 {\n        i = i + 1\n        if i == 2 { continue }\n        print(i)\n    }\n}"
+            "fn main() {\n    let mut i = 0\n    while i < 3 {\n        i = i + 1\n        if i == 2 { continue }\n        print(i)\n    }\n}"
         ),
-        "(fn main () unit (block (var i#0 0) (loop (block (if (< i#0 3) (block (= i#0 (+ i#0 1)) (if (== i#0 2) (block (continue))) (print i#0)) (block (break)))))))"
+        "(fn main () unit (block (let mut i#0 0) (loop (block (if (< i#0 3) (block (= i#0 (+ i#0 1)) (if (== i#0 2) (block (continue))) (print i#0)) (block (break)))))))"
     );
 }
 
@@ -630,8 +630,8 @@ fn shadowing_makes_two_locals() {
 #[test]
 fn lowers_compound_assign() {
     assert_eq!(
-        lowered("fn main() {\n    var x = 1\n    x *= 3\n    print(x)\n}"),
-        "(fn main () unit (block (var x#0 1) (= x#0 (* x#0 3)) (print x#0)))"
+        lowered("fn main() {\n    let mut x = 1\n    x *= 3\n    print(x)\n}"),
+        "(fn main () unit (block (let mut x#0 1) (= x#0 (* x#0 3)) (print x#0)))"
     );
 }
 
@@ -991,7 +991,7 @@ fn assign_to_let() {
         (3, 5, "n = 1"),
         Some("cannot assign twice"),
         &[(2, 9, "declared with `let` here")],
-        Some("declare it with `var`"),
+        Some("declare it with `let mut`"),
     );
     let span = diags(src)[0].span;
     assert_eq!(&src[span.start..span.end], "n = 1");
@@ -1000,7 +1000,7 @@ fn assign_to_let() {
 #[test]
 fn never_assigned_value() {
     error(
-        "fn f(c: bool) -> i64 {\n    var x = 0\n    x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
+        "fn f(c: bool) -> i64 {\n    let mut x = 0\n    x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
         "unreachable code",
         (3, 9),
     );
@@ -1014,7 +1014,7 @@ fn compound_assign_to_let() {
         (3, 5, "n += 1"),
         Some("cannot assign twice"),
         &[(2, 9, "declared with `let` here")],
-        Some("declare it with `var`"),
+        Some("declare it with `let mut`"),
     );
 }
 
@@ -1026,7 +1026,7 @@ fn assign_to_param() {
         (2, 5, "n = 1"),
         None,
         &[(1, 6, "declared as a parameter here")],
-        Some("copy it into a `var`: `var n = n`"),
+        Some("copy it into a variable: `let mut n = n`"),
     );
 }
 
@@ -1038,7 +1038,7 @@ fn compound_assign_to_param() {
         (2, 5, "n += 1"),
         None,
         &[(1, 6, "declared as a parameter here")],
-        Some("copy it into a `var`: `var n = n`"),
+        Some("copy it into a variable: `let mut n = n`"),
     );
 }
 
@@ -1065,23 +1065,23 @@ fn compound_assign_unknown_target_and_bad_value() {
 #[test]
 fn assign_type() {
     error(
-        "fn main() {\n    var x = 1\n    x = true\n}",
+        "fn main() {\n    let mut x = 1\n    x = true\n}",
         "expected `i64`, found `bool`",
         (3, 9),
     );
 }
 
 #[test]
-fn unused_var() {
-    let src = "fn main() {\n    var count = 0\n    print(count)\n}";
-    warning(src, "`count` is never reassigned", (2, 9));
+fn unused_variable() {
+    let src = "fn main() {\n    let mut count = 0\n    print(count)\n}";
+    warning(src, "`count` is never reassigned", (2, 13));
     assert_eq!(diags(src)[0].help.as_deref(), Some("declare it with `let`"));
 }
 
 #[test]
-fn unused_vars_in_source_order() {
+fn unused_variables_in_source_order() {
     // The inner scope pops first, so this fails unless warnings are sorted.
-    let src = "fn main() {\n    var a = 0\n    if true {\n        var b = 0\n        print(b)\n    }\n    print(a)\n}";
+    let src = "fn main() {\n    let mut a = 0\n    if true {\n        let mut b = 0\n        print(b)\n    }\n    print(a)\n}";
     let found: Vec<_> = diags(src)
         .iter()
         .map(|d| (d.severity, d.message.clone(), at(src, d.span)))
@@ -1092,20 +1092,20 @@ fn unused_vars_in_source_order() {
             (
                 Severity::Warning,
                 "`a` is never reassigned".to_string(),
-                (2, 9)
+                (2, 13)
             ),
             (
                 Severity::Warning,
                 "`b` is never reassigned".to_string(),
-                (4, 13)
+                (4, 17)
             ),
         ]
     );
 }
 
 #[test]
-fn var_reassigned_in_inner_block() {
-    clean("fn main() {\n    var n = 0\n    if true { n = 1 }\n    print(n)\n}");
+fn variable_reassigned_in_inner_block() {
+    clean("fn main() {\n    let mut n = 0\n    if true { n = 1 }\n    print(n)\n}");
 }
 
 #[test]
@@ -1148,8 +1148,7 @@ fn class_after_function_of_same_name() {
 #[test]
 fn class_defined_twice() {
     // The `bool` argument shows that `X` still names the first class.
-    let src =
-        "class X {\n    let a: i64\n}\nclass X {\n    let a: bool\n}\nfn main() { X(a: true) }";
+    let src = "class X {\n    a: i64\n}\nclass X {\n    a: bool\n}\nfn main() { X(a: true) }";
     errors(
         src,
         &[
@@ -1180,11 +1179,11 @@ fn class_named_print() {
 #[test]
 fn duplicate_member() {
     expect_error(
-        "class A {\n    let x: i64\n    fn x(self) {}\n}\nfn main() {}",
+        "class A {\n    x: i64\n    fn x(self) {}\n}\nfn main() {}",
         "method `x` is defined twice",
         (3, 8, "x"),
         None,
-        &[(2, 9, "first defined here")],
+        &[(2, 5, "first defined here")],
         None,
     );
 }
@@ -1192,7 +1191,7 @@ fn duplicate_member() {
 #[test]
 fn duplicate_field() {
     expect_error(
-        "class A {\n    fn x(self) {}\n    var x: i64\n}\nfn main() {}",
+        "class A {\n    fn x(self) {}\n    mut x: i64\n}\nfn main() {}",
         "field `x` is defined twice",
         (3, 9, "x"),
         None,
@@ -1213,9 +1212,9 @@ fn builtin_type_as_class() {
 #[test]
 fn never_constructed_self() {
     expect_error(
-        "class Node {\n    let next: Node\n}\nfn main() {}",
+        "class Node {\n    next: Node\n}\nfn main() {}",
         "`Node` can never be constructed: field `next` needs a `Node`",
-        (2, 9, "next"),
+        (2, 5, "next"),
         None,
         &[],
         Some("make it optional: `Node?`"),
@@ -1225,9 +1224,9 @@ fn never_constructed_self() {
 #[test]
 fn never_constructed_cycle_of_two() {
     expect_error(
-        "class A {\n    let b: B\n}\nclass B {\n    let a: A\n}\nfn main() {}",
+        "class A {\n    b: B\n}\nclass B {\n    a: A\n}\nfn main() {}",
         "`A` can never be constructed: field `b` needs a `B`",
-        (2, 9, "b"),
+        (2, 5, "b"),
         None,
         &[],
         Some("make it optional: `B?`"),
@@ -1238,15 +1237,15 @@ fn never_constructed_cycle_of_two() {
 fn never_constructed_once_per_strongly_connected_component() {
     // `A`, `B` and `C` form one component of two cycles, `E` another; `D` only points in.
     errors(
-        "class A {\n    let b: B\n    let c: C\n}\nclass B {\n    let a: A\n}\nclass C {\n    let a: A\n}\nclass D {\n    let a: A\n}\nclass E {\n    let e: E\n}\nfn main() {}",
+        "class A {\n    b: B\n    c: C\n}\nclass B {\n    a: A\n}\nclass C {\n    a: A\n}\nclass D {\n    a: A\n}\nclass E {\n    e: E\n}\nfn main() {}",
         &[
             (
                 "`A` can never be constructed: field `b` needs a `B`",
-                (2, 9),
+                (2, 5),
             ),
             (
                 "`E` can never be constructed: field `e` needs a `E`",
-                (15, 9),
+                (15, 5),
             ),
         ],
     );
@@ -1256,9 +1255,9 @@ fn never_constructed_once_per_strongly_connected_component() {
 #[test]
 fn never_constructed_after_a_class_that_points_in() {
     expect_error(
-        "class D {\n    let a: A\n}\nclass A {\n    let next: A\n}\nfn main() {}",
+        "class D {\n    a: A\n}\nclass A {\n    next: A\n}\nfn main() {}",
         "`A` can never be constructed: field `next` needs a `A`",
-        (5, 9, "next"),
+        (5, 5, "next"),
         None,
         &[],
         Some("make it optional: `A?`"),
@@ -1269,9 +1268,9 @@ fn never_constructed_after_a_class_that_points_in() {
 #[test]
 fn never_constructed_names_the_field_into_the_cycle() {
     expect_error(
-        "class Tag {}\nclass A {\n    let tag: Tag\n    let next: A\n}\nfn main() {}",
+        "class Tag {}\nclass A {\n    tag: Tag\n    next: A\n}\nfn main() {}",
         "`A` can never be constructed: field `next` needs a `A`",
-        (4, 9, "next"),
+        (4, 5, "next"),
         None,
         &[],
         Some("make it optional: `A?`"),
@@ -1281,7 +1280,7 @@ fn never_constructed_names_the_field_into_the_cycle() {
 #[test]
 fn constructor_missing_label() {
     expect_error(
-        "class P {\n    let x: i64\n}\nfn main() { P(1) }",
+        "class P {\n    x: i64\n}\nfn main() { P(1) }",
         "this argument needs a label",
         (4, 15, "1"),
         None,
@@ -1293,7 +1292,7 @@ fn constructor_missing_label() {
 #[test]
 fn constructor_unknown_label() {
     error(
-        "class P {\n    let x: i64\n}\nfn main() { P(z: 1) }",
+        "class P {\n    x: i64\n}\nfn main() { P(z: 1) }",
         "`P` has no field `z`",
         (4, 15),
     );
@@ -1302,7 +1301,7 @@ fn constructor_unknown_label() {
 #[test]
 fn constructor_out_of_order() {
     expect_error(
-        "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(y: 1, x: 2) }",
+        "class P {\n    x: i64\n    y: i64\n}\nfn main() { P(y: 1, x: 2) }",
         "expected field `x` here, found `y`",
         (5, 15, "y"),
         None,
@@ -1314,7 +1313,7 @@ fn constructor_out_of_order() {
 #[test]
 fn constructor_missing_field() {
     expect_error(
-        "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(x: 1) }",
+        "class P {\n    x: i64\n    y: i64\n}\nfn main() { P(x: 1) }",
         "missing field `y`",
         (5, 13, "P(x: 1)"),
         None,
@@ -1326,12 +1325,12 @@ fn constructor_missing_field() {
 #[test]
 fn constructor_extra_argument() {
     error(
-        "class P {\n    let x: i64\n}\nfn main() { P(x: 1, y: 2) }",
+        "class P {\n    x: i64\n}\nfn main() { P(x: 1, y: 2) }",
         "too many arguments: `P` has 1 field",
         (4, 21),
     );
     error(
-        "class P {\n    let x: i64\n    let y: i64\n}\nfn main() { P(x: 1, y: 2, z: 3) }",
+        "class P {\n    x: i64\n    y: i64\n}\nfn main() { P(x: 1, y: 2, z: 3) }",
         "too many arguments: `P` has 2 fields",
         (5, 27),
     );
@@ -1340,7 +1339,7 @@ fn constructor_extra_argument() {
 #[test]
 fn constructor_field_type() {
     error(
-        "class P {\n    let x: i64\n}\nfn main() { P(x: true) }",
+        "class P {\n    x: i64\n}\nfn main() { P(x: true) }",
         "expected `i64`, found `bool`",
         (4, 18),
     );
@@ -1369,7 +1368,7 @@ fn labeled_call_is_error() {
 /// class, so a later use is still checked.
 #[test]
 fn constructor_is_error_only_when_its_rule_fails() {
-    let class = "class P {\n    let x: i64\n    let y: i64\n}\n";
+    let class = "class P {\n    x: i64\n    y: i64\n}\n";
     errors(
         &format!("{class}fn main() {{\n    print(P(x: 1).x + true)\n}}"),
         &[("missing field `y`", (6, 11))],
@@ -1385,7 +1384,7 @@ fn constructor_is_error_only_when_its_rule_fails() {
 
 #[test]
 fn constructor_reports_its_first_mistake_and_later_expression_errors() {
-    let class = "class P {\n    let x: i64\n    let y: i64\n}\n";
+    let class = "class P {\n    x: i64\n    y: i64\n}\n";
     errors(
         &format!("{class}fn main() {{ P(1, nope) }}"),
         &[
@@ -1459,7 +1458,7 @@ fn print_reports_labels_and_still_checks_its_arguments() {
 #[test]
 fn unknown_field() {
     error(
-        "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.size)\n}",
+        "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.size)\n}",
         "`P` has no field `size`",
         (6, 13),
     );
@@ -1468,7 +1467,7 @@ fn unknown_field() {
 #[test]
 fn field_called_as_method() {
     error(
-        "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.x())\n}",
+        "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.x())\n}",
         "`x` is a field of `P`, not a method",
         (6, 13),
     );
@@ -1507,7 +1506,7 @@ fn method_through_class_name() {
 #[test]
 fn unknown_field_type_poisons() {
     errors(
-        "class T {\n    var x: Nope\n}\nfn main() { print(T(x: 1).x + true) }",
+        "class T {\n    mut x: Nope\n}\nfn main() { print(T(x: 1).x + true) }",
         &[("unknown type `Nope`", (2, 12))],
     );
 }
@@ -1551,21 +1550,21 @@ fn self_outside_method() {
 #[test]
 fn bare_name_is_not_a_field() {
     error(
-        "class P {\n    let x: i64\n    fn m(self) -> i64 { x }\n}\nfn main() {}",
+        "class P {\n    x: i64\n    fn m(self) -> i64 { x }\n}\nfn main() {}",
         "cannot find `x` in this scope",
         (3, 25),
     );
 }
 
 #[test]
-fn assign_let_field() {
+fn assign_bare_field() {
     expect_error(
-        "class P {\n    let x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = 2\n}",
+        "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = 2\n}",
         "cannot assign to `x`",
         (6, 5, "p.x = 2"),
         None,
-        &[(2, 9, "declared with `let` here")],
-        Some("declare it with `var`"),
+        &[(2, 5, "declared without `mut` here")],
+        Some("mark the field `mut`"),
     );
 }
 
@@ -1593,9 +1592,9 @@ fn poisoned_receiver_checks_args() {
 fn lowers_methods() {
     assert_eq!(
         lowered(
-            "class C {\n    var n: i64\n    fn bump(self, by: i64) {\n        self.n += by\n    }\n}\nfn main() {\n    let c = C(n: 1)\n    c.bump(2)\n    print(c.n)\n}"
+            "class C {\n    mut n: i64\n    fn bump(self, by: i64) {\n        self.n += by\n    }\n}\nfn main() {\n    let c = C(n: 1)\n    c.bump(2)\n    print(c.n)\n}"
         ),
-        "(class C (var n i64))\n\
+        "(class C (mut n i64))\n\
          (fn C.bump ((self#0 C) (by#1 i64)) unit (block (block (let #2 self#0) (= (. #2 n) (+ (. #2 n) by#1)))))\n\
          (fn main () unit (block (let c#0 (new C 1)) (call C.bump c#0 2) (print (. c#0 n))))"
     );
@@ -1605,10 +1604,10 @@ fn lowers_methods() {
 fn lowers_field_assignments() {
     assert_eq!(
         lowered(
-            "class B {\n    var f: i64\n}\nclass A {\n    var b: B\n}\nfn mk(a: A) -> A { a }\nfn main() {\n    let a = A(b: B(f: 1))\n    a.b.f = 2\n    mk(a).b = B(f: 3)\n}"
+            "class B {\n    mut f: i64\n}\nclass A {\n    mut b: B\n}\nfn mk(a: A) -> A { a }\nfn main() {\n    let a = A(b: B(f: 1))\n    a.b.f = 2\n    mk(a).b = B(f: 3)\n}"
         ),
-        "(class B (var f i64))\n\
-         (class A (var b B))\n\
+        "(class B (mut f i64))\n\
+         (class A (mut b B))\n\
          (fn mk ((a#0 A)) A (block a#0))\n\
          (fn main () unit (block (let a#0 (new A (new B 1))) (= (. (. a#0 b) f) 2) (= (. (call mk a#0) b) (new B 3))))"
     );
@@ -1617,7 +1616,7 @@ fn lowers_field_assignments() {
 #[test]
 fn assign_field_type() {
     error(
-        "class P {\n    var x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = true\n}",
+        "class P {\n    mut x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = true\n}",
         "expected `i64`, found `bool`",
         (6, 11),
     );
@@ -1636,7 +1635,7 @@ fn never_as_print_argument() {
 /// and functions and an empty `main`.
 fn printed_g(g: &str) -> String {
     let src = format!(
-        "class B {{}}\nclass P {{\n    var b: B\n    let n: i64\n}}\nfn make() -> B {{ B() }}\nfn f(b: B, n: i64) {{}}\n{g}\nfn main() {{}}"
+        "class B {{}}\nclass P {{\n    mut b: B\n    n: i64\n}}\nfn make() -> B {{ B() }}\nfn f(b: B, n: i64) {{}}\n{g}\nfn main() {{}}"
     );
     lowered(&src)
         .lines()
@@ -1722,7 +1721,7 @@ fn spills_method_receiver() {
 fn spills_compound_field_assignment_base() {
     assert_eq!(
         printed_g(
-            "class Q {\n    var k: i64\n}\nfn g(c: bool, q: Q) {\n    while true {\n        q.k += if c { break } else { 1 }\n    }\n}"
+            "class Q {\n    mut k: i64\n}\nfn g(c: bool, q: Q) {\n    while true {\n        q.k += if c { break } else { 1 }\n    }\n}"
         ),
         "(fn g ((c#0 bool) (q#1 Q)) unit (block (loop (block (if true (block (block (let #2 q#1) (block (let #3 #2) (let #4 (+ (. #2 k) (if c#0 (block (break)) (block 1)))) (= (. #3 k) #4)))) (block (break)))))))"
     );
@@ -1742,9 +1741,9 @@ fn spills_every_operand_through_the_last_exit() {
 fn spills_for_an_exit_in_a_nested_assignment() {
     assert_eq!(
         printed_g(
-            "fn g(c: bool) -> i64 {\n    var x = 0\n    f(make(), if true {\n        x = if c { return 0 } else { 1 }\n        x\n    } else { 0 })\n    2\n}"
+            "fn g(c: bool) -> i64 {\n    let mut x = 0\n    f(make(), if true {\n        x = if c { return 0 } else { 1 }\n        x\n    } else { 0 })\n    2\n}"
         ),
-        "(fn g ((c#0 bool)) i64 (block (var x#1 0) (block (let #2 (call make)) (let #3 (if true (block (= x#1 (if c#0 (block (return 0)) (block 1))) x#1) (block 0))) (call f #2 #3)) 2))"
+        "(fn g ((c#0 bool)) i64 (block (let mut x#1 0) (block (let #2 (call make)) (let #3 (if true (block (= x#1 (if c#0 (block (return 0)) (block 1))) x#1) (block 0))) (call f #2 #3)) 2))"
     );
 }
 
@@ -1770,7 +1769,7 @@ fn spills_class_optional_before_exit_in_if_let() {
 }
 
 /// The class the optionals tests share: its `next` field is optional.
-const T: &str = "class T {\n    let v: i64\n    let next: T?\n}\n";
+const T: &str = "class T {\n    v: i64\n    next: T?\n}\n";
 
 /// Asserts that `f`, lowered after `prefix` and before an empty `main`, prints `part`.
 fn f_contains(prefix: &str, f: &str, part: &str) {
@@ -1810,7 +1809,7 @@ fn none_for_non_optional() {
 #[test]
 fn dot_on_optional() {
     expect_error(
-        "class T {\n    let v: i64\n}\nfn f(node: T?) -> i64 { node.v }\nfn main() {}",
+        "class T {\n    v: i64\n}\nfn f(node: T?) -> i64 { node.v }\nfn main() {}",
         "`node` may be `None`",
         (4, 25, "node"),
         None,
@@ -1823,7 +1822,7 @@ fn dot_on_optional() {
 #[test]
 fn optional_receiver_is_named_by_its_path() {
     errors(
-        "class N {\n    let next: N?\n    fn m(self) -> i64 { 1 }\n}\nfn g() -> N? { None }\nfn f(n: N) {\n    print(n.next.m())\n    print(g().next)\n}\nfn main() {}",
+        "class N {\n    next: N?\n    fn m(self) -> i64 { 1 }\n}\nfn g() -> N? { None }\nfn f(n: N) {\n    print(n.next.m())\n    print(g().next)\n}\nfn main() {}",
         &[
             ("`n.next` may be `None`", (7, 11)),
             ("this value may be `None`", (8, 11)),
@@ -1834,7 +1833,7 @@ fn optional_receiver_is_named_by_its_path() {
 #[test]
 fn optional_self_field_is_named_by_its_path() {
     expect_error(
-        "class N {\n    let next: N?\n    let v: i64\n    fn m(self) -> i64 { self.next.v }\n}\nfn main() {}",
+        "class N {\n    next: N?\n    v: i64\n    fn m(self) -> i64 { self.next.v }\n}\nfn main() {}",
         "`self.next` may be `None`",
         (4, 25, "self.next"),
         None,
@@ -1888,7 +1887,7 @@ fn optional_breaks_the_cycle() {
 #[test]
 fn none_from_every_source() {
     clean(&format!(
-        "{T}fn take(t: T?) {{}}\nfn give() -> T? {{ None }}\nfn main() {{\n    let a: T? = None\n    let b = T(v: 1, next: None)\n    take(None)\n    var c: T? = if true {{ None }} else if false {{ None }} else {{ None }}\n    c = None\n    return\n}}\nfn back(c: bool) -> T? {{\n    if c {{ return None }}\n    if let x = give() {{ None }} else {{ None }}\n}}"
+        "{T}fn take(t: T?) {{}}\nfn give() -> T? {{ None }}\nfn main() {{\n    let a: T? = None\n    let b = T(v: 1, next: None)\n    take(None)\n    let mut c: T? = if true {{ None }} else if false {{ None }} else {{ None }}\n    c = None\n    return\n}}\nfn back(c: bool) -> T? {{\n    if c {{ return None }}\n    if let x = give() {{ None }} else {{ None }}\n}}"
     ));
 }
 
@@ -2104,7 +2103,7 @@ fn unwrapping_block_cannot_redeclare_the_binding() {
 /// Every position that expects a `T?` wraps a `T`.
 #[test]
 fn wraps_where_optional_expected() {
-    let src = "fn g(x: T?) {}\nfn f(t: T) -> T? {\n    let a: T? = t\n    var b: T? = None\n    b = t\n    g(t)\n    let c = T(v: 1, next: t)\n    return t\n}";
+    let src = "fn g(x: T?) {}\nfn f(t: T) -> T? {\n    let a: T? = t\n    let mut b: T? = None\n    b = t\n    g(t)\n    let c = T(v: 1, next: t)\n    return t\n}";
     for part in [
         "(let a#1 (wrap t#0))",
         "(= b#2 (wrap t#0))",
@@ -2202,7 +2201,7 @@ fn lowers_if_let() {
 fn lowers_while_let() {
     f_contains(
         T,
-        "fn f(l: T?) -> i64 {\n    var n = 0\n    var node = l\n    while let x = node {\n        n += 1\n        node = x.next\n    }\n    n\n}",
+        "fn f(l: T?) -> i64 {\n    let mut n = 0\n    let mut node = l\n    while let x = node {\n        n += 1\n        node = x.next\n    }\n    n\n}",
         "(loop (block (if-some x#3 node#2 (block (= n#1 (+ n#1 1)) (= node#2 (. x#3 next))) (block (break)))))",
     );
 }
@@ -2210,7 +2209,7 @@ fn lowers_while_let() {
 #[test]
 fn safe_call_on_non_optional() {
     expect_error(
-        "class T {\n    let v: i64\n}\nfn f(t: T) -> i64? { t?.v }\nfn main() {}",
+        "class T {\n    v: i64\n}\nfn f(t: T) -> i64? { t?.v }\nfn main() {}",
         "`t` is not optional",
         (4, 22, "t"),
         None,
@@ -2223,7 +2222,7 @@ fn safe_call_on_non_optional() {
 #[test]
 fn safe_chain_needs_each_step() {
     expect_error(
-        "class A {\n    let b: B\n}\nclass B {\n    let c: i64\n}\nfn f(a: A?) -> i64? { a?.b.c }\nfn main() {}",
+        "class A {\n    b: B\n}\nclass B {\n    c: i64\n}\nfn f(a: A?) -> i64? { a?.b.c }\nfn main() {}",
         "`a?.b` may be `None`",
         (7, 23, "a?.b"),
         None,
@@ -2403,7 +2402,7 @@ fn coalesce_left_not_optional_checks_the_right() {
 #[test]
 fn safe_call_on_non_optional_checks_the_member() {
     errors(
-        "class T {\n    let v: i64\n}\nfn f(t: T) -> i64? { t?.w }\nfn main() {}",
+        "class T {\n    v: i64\n}\nfn f(t: T) -> i64? { t?.w }\nfn main() {}",
         &[
             ("`t` is not optional", (4, 22)),
             ("`T` has no field `w`", (4, 25)),
@@ -2424,7 +2423,8 @@ fn safe_call_on_non_optional_checks_the_arguments() {
 }
 
 /// The class the `?.`, `??`, `==` and `is` lowering tests share.
-const C: &str = "class T {\n    let v: i64\n    let o: T?\n    fn m(self) {}\n    fn g(self, x: i64) -> i64 { x }\n}\n";
+const C: &str =
+    "class T {\n    v: i64\n    o: T?\n    fn m(self) {}\n    fn g(self, x: i64) -> i64 { x }\n}\n";
 
 #[test]
 fn lowers_safe_field() {

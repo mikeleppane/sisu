@@ -465,7 +465,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Place::Local(local) => {
                 let Some(Slot::Alloca(ptr, _)) = self.locals[local.0] else {
                     unreachable!(
-                        "the checker should only let a `var` be written, and every `var` has an `alloca`"
+                        "the checker should only let a variable be written, and every variable has an `alloca`"
                     )
                 };
                 (ptr, &self.types[local.0])

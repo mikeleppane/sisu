@@ -6,7 +6,7 @@ fn alive(grid: [[bool]], x: i64, y: i64) -> i64 {
 }
 
 fn neighbors(grid: [[bool]], x: i64, y: i64) -> i64 {
-    var n = 0
+    let mut n = 0
     for dy in 0..3 {
         for dx in 0..3 {
             if dx != 1 || dy != 1 {
@@ -18,7 +18,7 @@ fn neighbors(grid: [[bool]], x: i64, y: i64) -> i64 {
 }
 
 fn step(grid: [[bool]]) -> [[bool]] {
-    var next = grid
+    let mut next = grid
     for y in 0..8 {
         for x in 0..8 {
             let n = neighbors(grid, x, y)
@@ -29,7 +29,7 @@ fn step(grid: [[bool]]) -> [[bool]] {
 }
 
 fn count(grid: [[bool]]) -> i64 {
-    var n = 0
+    let mut n = 0
     for row in grid {
         for cell in row {
             if cell { n += 1 }
@@ -41,7 +41,7 @@ fn count(grid: [[bool]]) -> i64 {
 // The glider at (1, 0) (2, 1) (0, 2) (1, 2) (2, 2), shifted by `(dx, dy)`.
 fn glider(dx: i64, dy: i64) -> [[bool]] {
     // Every row starts as one shared block.
-    var grid = [[false; 8]; 8]
+    let mut grid = [[false; 8]; 8]
     let xs = [1, 2, 0, 1, 2]
     let ys = [0, 1, 2, 2, 2]
     for i in 0..5 {
@@ -52,7 +52,7 @@ fn glider(dx: i64, dy: i64) -> [[bool]] {
 
 fn main() {
     let start = glider(0, 0)
-    var grid = start
+    let mut grid = start
     for i in 0..4 {
         grid = step(grid)
     }

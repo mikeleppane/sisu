@@ -30,15 +30,16 @@ fn main() {
 
 Milestones 1 to 3 are done. `sisuc` compiles:
 
-- `i64` and `bool`, with `let` for immutable bindings, `var` for variables,
-  and inferred types
+- `i64` and `bool`, with `let` for immutable bindings, `let mut` for
+  variables, and inferred types
 - functions and recursion
 - `if` as an expression, `while`, `break`, `continue` and `return`
 - comparison chains such as `0 <= i < n`, and short-circuit `&&` and `||`
 - integer arithmetic that panics on overflow and division by zero instead of
   wrapping
 - classes with fields and methods, whose objects are freed by reference
-  counting when the last reference goes away
+  counting when the last reference goes away; a field is bare, set once by
+  the constructor, or `mut`
 - `==` that compares objects field by field, and `is` that tests identity
 - optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
   `while let`

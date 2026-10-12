@@ -3,19 +3,19 @@
 
 use super::*;
 
-/// `class C` with a `var` array field and a method that writes into it.
+/// `class C` with a `mut` array field and a method that writes into it.
 const C: &str =
-    "class C {\n    var cells: [i64]\n    fn set(self, i: i64) { self.cells[i] = 0 }\n}\n";
+    "class C {\n    mut cells: [i64]\n    fn set(self, i: i64) { self.cells[i] = 0 }\n}\n";
 
 #[test]
 fn lowers_element_writes() {
     let rows = [
         (
-            "fn f() {\n    var xs = [0]\n    xs[0] = 9\n}\nfn main() {}".to_owned(),
+            "fn f() {\n    let mut xs = [0]\n    xs[0] = 9\n}\nfn main() {}".to_owned(),
             "(= (index xs#0 0) 9)",
         ),
         (
-            "fn f(y: i64, x: i64) {\n    var grid = [[false]]\n    grid[y][x] = true\n}\nfn main() {}"
+            "fn f(y: i64, x: i64) {\n    let mut grid = [[false]]\n    grid[y][x] = true\n}\nfn main() {}"
                 .to_owned(),
             "(= (index (index grid#2 y#0) x#1) true)",
         ),
@@ -34,11 +34,11 @@ fn lowers_element_writes() {
 fn lowers_compound_element_writes() {
     let rows = [
         (
-            "fn f(i: i64) {\n    var xs = [0]\n    xs[i] += 1\n}\nfn main() {}".to_owned(),
+            "fn f(i: i64) {\n    let mut xs = [0]\n    xs[i] += 1\n}\nfn main() {}".to_owned(),
             "(block (let #2 i#0) (= (index xs#1 #2) (+ (index xs#1 #2) 1)))",
         ),
         (
-            "fn n() -> i64 { 0 }\nfn g() {\n    var grid = [[0]]\n    grid[n()][n()] += 1\n}\nfn main() {}"
+            "fn n() -> i64 { 0 }\nfn g() {\n    let mut grid = [[0]]\n    grid[n()][n()] += 1\n}\nfn main() {}"
                 .to_owned(),
             "(block (let #1 (call n)) (let #2 (call n)) (= (index (index grid#0 #1) #2) (+ (index (index grid#0 #1) #2) 1)))",
         ),
@@ -58,7 +58,7 @@ fn lowers_compound_element_writes() {
 #[test]
 fn binds_indexes_in_source_order() {
     let printed = lowered(
-        "fn outer() -> i64 { 0 }\nfn inner() -> i64 { 0 }\nfn g() {\n    var grid = [[0]]\n    grid[outer()][inner()] += 1\n}\nfn main() {}",
+        "fn outer() -> i64 { 0 }\nfn inner() -> i64 { 0 }\nfn g() {\n    let mut grid = [[0]]\n    grid[outer()][inner()] += 1\n}\nfn main() {}",
     );
     assert!(
         printed.contains(
@@ -75,7 +75,7 @@ fn binds_indexes_in_source_order() {
 #[test]
 fn spills_an_element_write() {
     contains(
-        "class A {\n    var f: [i64]\n}\nfn g(a: A, i: i64, c: bool) -> i64 {\n    a.f[i] = if c { return 0 } else { 1 }\n    0\n}\nfn main() {}",
+        "class A {\n    mut f: [i64]\n}\nfn g(a: A, i: i64, c: bool) -> i64 {\n    a.f[i] = if c { return 0 } else { 1 }\n    0\n}\nfn main() {}",
         &[
             "(block (let #3 a#0) (let #4 i#1) (let #5 (if c#2 (block (return 0)) (block 1))) (= (index (. #3 f) #4) #5))",
         ],
@@ -87,20 +87,20 @@ fn spills_an_element_write() {
 fn an_exiting_index_spills_the_enclosing_call() {
     assert_eq!(
         printed_g(
-            "fn g(c: bool) -> i64 {\n    var xs = [0]\n    f(make(), if true {\n        xs[if c { return 0 } else { 0 }] = 1\n        0\n    } else { 0 })\n    2\n}"
+            "fn g(c: bool) -> i64 {\n    let mut xs = [0]\n    f(make(), if true {\n        xs[if c { return 0 } else { 0 }] = 1\n        0\n    } else { 0 })\n    2\n}"
         ),
-        "(fn g ((c#0 bool)) i64 (block (var xs#1 (array 0)) (block (let #2 (call make)) (let #3 (if true (block (= (index xs#1 (if c#0 (block (return 0)) (block 0))) 1) 0) (block 0))) (call f #2 #3)) 2))"
+        "(fn g ((c#0 bool)) i64 (block (let mut xs#1 (array 0)) (block (let #2 (call make)) (let #3 (if true (block (= (index xs#1 (if c#0 (block (return 0)) (block 0))) 1) 0) (block 0))) (call f #2 #3)) 2))"
     );
 }
 
 #[test]
 fn element_type_is_expected_of_the_value() {
     contains(
-        "fn f() {\n    var xs: [[i64]] = [[1]]\n    xs[0] = []\n}\nfn main() {}",
+        "fn f() {\n    let mut xs: [[i64]] = [[1]]\n    xs[0] = []\n}\nfn main() {}",
         &["(= (index xs#0 0) (array))"],
     );
     contains(
-        "fn f(i: i64) {\n    var bytes: [u8] = [0]\n    bytes[i] += 1\n}\nfn main() {}",
+        "fn f(i: i64) {\n    let mut bytes: [u8] = [0]\n    bytes[i] += 1\n}\nfn main() {}",
         &["(+ (index bytes#1 #2) 1u8)"],
     );
 }
@@ -108,7 +108,7 @@ fn element_type_is_expected_of_the_value() {
 /// `let` does not reach into the class objects an array holds.
 #[test]
 fn field_of_an_element_of_a_let_array() {
-    clean("class N {\n    var v: i64\n}\nfn main() {\n    let a = [N(v: 1)]\n    a[0].v = 2\n}");
+    clean("class N {\n    mut v: i64\n}\nfn main() {\n    let a = [N(v: 1)]\n    a[0].v = 2\n}");
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn element_of_a_field_of_a_call() {
 
 #[test]
 fn element_write_counts_as_reassigning() {
-    clean("fn main() {\n    var xs = [0]\n    xs[0] = 1\n}");
+    clean("fn main() {\n    let mut xs = [0]\n    xs[0] = 1\n}");
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn element_of_a_let() {
         (3, 5, "xs[0] = 1"),
         None,
         &[(2, 9, "declared with `let` here")],
-        Some("declare it with `var`"),
+        Some("declare it with `let mut`"),
     );
 }
 
@@ -143,7 +143,7 @@ fn element_of_a_parameter() {
         (1, 19, "xs[0] = 1"),
         None,
         &[(1, 6, "declared as a parameter here")],
-        Some("copy it into a `var`: `var xs = xs`"),
+        Some("copy it into a variable: `let mut xs = xs`"),
     );
 }
 
@@ -184,21 +184,21 @@ fn element_of_a_while_let_binding() {
 }
 
 #[test]
-fn element_of_a_let_field() {
+fn element_of_a_bare_field() {
     expect_error(
-        "class C {\n    let cells: [i64]\n    fn set(self) { self.cells[0] = 1 }\n}\nfn main() {}",
+        "class C {\n    cells: [i64]\n    fn set(self) { self.cells[0] = 1 }\n}\nfn main() {}",
         "cannot assign to an element of `cells`",
         (3, 20, "self.cells[0] = 1"),
         None,
-        &[(2, 9, "declared with `let` here")],
-        Some("declare it with `var`"),
+        &[(2, 5, "declared without `mut` here")],
+        Some("mark the field `mut`"),
     );
 }
 
 #[test]
 fn element_value_of_the_wrong_type() {
     error(
-        "fn main() {\n    var xs = [0]\n    xs[0] = true\n}",
+        "fn main() {\n    let mut xs = [0]\n    xs[0] = true\n}",
         "expected `i64`, found `bool`",
         (3, 13),
     );
@@ -207,7 +207,7 @@ fn element_value_of_the_wrong_type() {
 #[test]
 fn element_of_an_optional_array() {
     expect_error(
-        "fn main() {\n    var m: [i64]? = None\n    m[0] = 1\n}",
+        "fn main() {\n    let mut m: [i64]? = None\n    m[0] = 1\n}",
         "`m` may be `None`",
         (3, 5, "m"),
         None,
@@ -219,7 +219,7 @@ fn element_of_an_optional_array() {
 #[test]
 fn element_of_a_non_array() {
     expect_error(
-        "fn main() {\n    var n = 1\n    n[0] = 2\n}",
+        "fn main() {\n    let mut n = 1\n    n[0] = 2\n}",
         "cannot index `i64`",
         (3, 5, "n"),
         None,
@@ -240,7 +240,7 @@ fn element_of_an_unknown_name() {
 #[test]
 fn element_index_of_the_wrong_type() {
     expect_error(
-        "fn f(b: u8) {\n    var xs = [0]\n    xs[b] = 1\n}\nfn main() {}",
+        "fn f(b: u8) {\n    let mut xs = [0]\n    xs[b] = 1\n}\nfn main() {}",
         "expected `i64`, found `u8`",
         (3, 8, "b"),
         None,

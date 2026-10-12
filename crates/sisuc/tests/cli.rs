@@ -103,7 +103,7 @@ fn emit_ast_keeps_compound_assign() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(
         dir.join("emit_ast_compound.sisu"),
-        "fn main() {\n    var x = 1\n    x += 2\n}\n",
+        "fn main() {\n    let mut x = 1\n    x += 2\n}\n",
     )
     .expect("writes");
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
@@ -114,7 +114,34 @@ fn emit_ast_keeps_compound_assign() {
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "(fn main () unit (block (var x 1) (+= x 2)))\n"
+        "(fn main () unit (block (let mut x 1) (+= x 2)))\n"
+    );
+}
+
+#[test]
+fn emit_ast_and_tir_print_mut() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(
+        dir.join("emit_mut.sisu"),
+        "class P {\n    name: i64\n    mut hp: i64\n}\nfn main() {\n    let mut x = 1\n    x = 2\n}\n",
+    )
+    .expect("writes");
+    let emit = |what: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(dir)
+            .args(["--emit", what, "emit_mut.sisu"])
+            .output()
+            .expect("sisuc starts");
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert_eq!(
+        emit("ast"),
+        "(class P (name i64) (mut hp i64))\n(fn main () unit (block (let mut x 1) (= x 2)))\n"
+    );
+    assert_eq!(
+        emit("tir"),
+        "(class P (name i64) (mut hp i64))\n(fn main () unit (block (let mut x#0 1) (= x#0 2)))\n"
     );
 }
 
@@ -162,7 +189,7 @@ fn check_valid_file() {
 fn check_warning_exits_0() {
     let out = check(
         "check_warning_exits_0",
-        "fn main() {\n    var count = 0\n    print(count)\n}\n",
+        "fn main() {\n    let mut count = 0\n    print(count)\n}\n",
     );
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("warning: "));
@@ -182,7 +209,7 @@ fn check_error_exits_1() {
 fn check_warning_and_error_exits_1() {
     let out = check(
         "check_warning_and_error_exits_1",
-        "fn f() { var x = 0 }\nfn main() { print(missing) }\n",
+        "fn f() { let mut x = 0 }\nfn main() { print(missing) }\n",
     );
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -207,7 +234,7 @@ fn unreadable_input_exits_1() {
 
 #[test]
 fn mem2reg_removes_every_alloca() {
-    // `loops.sisu` declares `var sq` inside the loop body: its `alloca` must still sit in the
+    // `loops.sisu` declares `let mut sq` inside the loop body: its `alloca` must still sit in the
     // entry block, or `mem2reg` leaves it in place.
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
         .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs"))
@@ -257,7 +284,7 @@ fn emit_ir_error_prints_no_ir() {
 fn emit_ir_warning_still_prints_ir() {
     let out = run_on(
         "emit_ir_warning_still_prints_ir",
-        "fn main() {\n    var count = 0\n    print(count)\n}\n",
+        "fn main() {\n    let mut count = 0\n    print(count)\n}\n",
         &["--emit", "ir"],
     );
     assert_eq!(out.status.code(), Some(0));
@@ -271,7 +298,7 @@ fn emit_ir_warning_still_prints_ir() {
 fn emit_tir() {
     let out = run_on(
         "emit_tir",
-        "fn main() {\n    var i = 0\n    while i < 2 {\n        i = i + 1\n    }\n}\n",
+        "fn main() {\n    let mut i = 0\n    while i < 2 {\n        i = i + 1\n    }\n}\n",
         &["--emit", "tir"],
     );
     assert_eq!(
@@ -282,7 +309,7 @@ fn emit_tir() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "(fn main () unit (block (var i#0 0) (loop (block (if (< i#0 2) (block (= i#0 (+ i#0 1))) (block (break)))))))\n"
+        "(fn main () unit (block (let mut i#0 0) (loop (block (if (< i#0 2) (block (= i#0 (+ i#0 1))) (block (break)))))))\n"
     );
 }
 

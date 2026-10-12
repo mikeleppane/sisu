@@ -12,6 +12,7 @@ pub(crate) enum TokenKind {
     Int(i64),
     Fn,
     Let,
+    Mut,
     Var,
     If,
     Else,
@@ -80,6 +81,7 @@ impl TokenKind {
             TokenKind::Int(_) => "Int",
             TokenKind::Fn => "Fn",
             TokenKind::Let => "Let",
+            TokenKind::Mut => "Mut",
             TokenKind::Var => "Var",
             TokenKind::If => "If",
             TokenKind::Else => "Else",
@@ -144,6 +146,7 @@ impl TokenKind {
             TokenKind::Int(n) => return format!("`{n}`"),
             TokenKind::Fn => "fn",
             TokenKind::Let => "let",
+            TokenKind::Mut => "mut",
             TokenKind::Var => "var",
             TokenKind::If => "if",
             TokenKind::Else => "else",
@@ -435,6 +438,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
     match text {
         "fn" => TokenKind::Fn,
         "let" => TokenKind::Let,
+        "mut" => TokenKind::Mut,
         "var" => TokenKind::Var,
         "if" => TokenKind::If,
         "else" => TokenKind::Else,
@@ -585,10 +589,10 @@ mod tests {
 
     #[test]
     fn all_keywords() {
-        use TokenKind::{Else, Eof, False, Fn, If, Let, Return, True, Var, While};
+        use TokenKind::{Else, Eof, False, Fn, If, Let, Mut, Return, True, Var, While};
         assert_eq!(
-            kinds("fn let var if else while return true false"),
-            [Fn, Let, Var, If, Else, While, Return, True, False, Eof]
+            kinds("fn let mut var if else while return true false"),
+            [Fn, Let, Mut, Var, If, Else, While, Return, True, False, Eof]
         );
     }
 
@@ -604,8 +608,8 @@ mod tests {
     #[test]
     fn class_and_optional_tokens() {
         use TokenKind::{
-            Class, Colon, Dot, Eof, Is, Let, NoneKw, Question, QuestionDot, QuestionQuestion,
-            SelfKw, Var,
+            Class, Colon, Dot, Eof, Is, Let, Mut, NoneKw, Question, QuestionDot, QuestionQuestion,
+            SelfKw,
         };
         assert_eq!(
             kinds("class None is self"),
@@ -620,9 +624,9 @@ mod tests {
         assert_eq!(kinds("Tree? ?"), [ident("Tree"), Question, Question, Eof]);
         assert_eq!(kinds("a.b"), [ident("a"), Dot, ident("b"), Eof]);
         assert_eq!(
-            all_kinds("var next: Tree?\nlet"),
+            all_kinds("mut next: Tree?\nlet"),
             [
-                Var,
+                Mut,
                 ident("next"),
                 Colon,
                 ident("Tree"),

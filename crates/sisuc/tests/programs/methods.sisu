@@ -1,6 +1,6 @@
 // `sum` and `contains`. Valgrind checks that each releases its base, and `contains` its value.
 class Node {
-    let v: i64
+    v: i64
 }
 
 // The value exits before `contains` runs: the spilled base is released by the `return`.

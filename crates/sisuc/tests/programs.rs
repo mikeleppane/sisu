@@ -456,7 +456,7 @@ fn panic_cases() {
         ),
         (
             "compound_overflow",
-            "fn main() {\n    var x = 9_223_372_036_854_775_807\n    x += 1\n    print(x)\n}\n"
+            "fn main() {\n    let mut x = 9_223_372_036_854_775_807\n    x += 1\n    print(x)\n}\n"
                 .to_string(),
             "3:5: integer overflow".to_string(),
         ),
@@ -499,7 +499,7 @@ fn panic_cases() {
         // The inner index is checked at its own level, after the outer one.
         (
             "write_bounds",
-            "fn main() {\n    var grid = [[false, false, false]]\n    grid[0][9] = true\n}\n"
+            "fn main() {\n    let mut grid = [[false, false, false]]\n    grid[0][9] = true\n}\n"
                 .to_string(),
             "3:13: index 9 out of bounds for length 3".to_string(),
         ),
@@ -610,7 +610,7 @@ fn bounds_case(name: &'static str, index: &str, message: &str) -> (&'static str,
 fn valgrind_reports_a_cycle() {
     let exe = compile_tmp(
         "cycle",
-        "class Node {\n    var next: Node?\n}\n\nfn leak() {\n    let a = Node(next: None)\n    a.next = a\n}\n\nfn main() {\n    leak()\n    print(1)\n}\n",
+        "class Node {\n    mut next: Node?\n}\n\nfn leak() {\n    let a = Node(next: None)\n    a.next = a\n}\n\nfn main() {\n    leak()\n    print(1)\n}\n",
         false,
     );
     let out = Command::new(&exe).output().expect("the program starts");
@@ -748,7 +748,7 @@ fn build_error_makes_no_executable() {
 fn build_warning_still_makes_the_executable() {
     let (out, exe) = build_tmp(
         "build_warning_still_makes_the_executable",
-        "fn main() {\n    var count = 0\n    print(count)\n}\n",
+        "fn main() {\n    let mut count = 0\n    print(count)\n}\n",
     );
     assert_eq!(out.status.code(), Some(0));
     assert!(

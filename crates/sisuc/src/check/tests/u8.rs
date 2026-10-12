@@ -16,11 +16,11 @@ fn literal_from_each_source() {
     );
     contains("fn g() -> u8 { 3 }\nfn main() {}", &["3u8"]);
     contains(
-        "class P {\n    let b: u8\n}\nfn main() { let p = P(b: 1) }",
+        "class P {\n    b: u8\n}\nfn main() { let p = P(b: 1) }",
         &["(new P 1u8)"],
     );
     contains(
-        "fn main() {\n    var y: u8 = 0\n    y = 5\n}",
+        "fn main() {\n    let mut y: u8 = 0\n    y = 5\n}",
         &["(= y#0 5u8)"],
     );
 }
@@ -66,11 +66,11 @@ fn branch_order() {
 #[test]
 fn compound_assign_types_literal() {
     contains(
-        "fn main() {\n    var c: u8 = 0\n    c += 250\n}",
+        "fn main() {\n    let mut c: u8 = 0\n    c += 250\n}",
         &["(= c#0 (+ c#0 250u8))"],
     );
     contains(
-        "class P {\n    var b: u8\n}\nfn main() {\n    let p = P(b: 0)\n    p.b += 250\n}",
+        "class P {\n    mut b: u8\n}\nfn main() {\n    let p = P(b: 0)\n    p.b += 250\n}",
         &["(= (. #1 b) (+ (. #1 b) 250u8))"],
     );
 }

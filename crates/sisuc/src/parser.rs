@@ -85,14 +85,20 @@ impl Parser<'_> {
     }
 
     /// "expected <what>, found <the next token>", pointing at the next token.
-    /// A stray `;` always gets the one `;` message, wherever it appears.
+    /// A stray `;` or `var` always gets its one message, wherever it appears.
     fn expected(&self, what: &str) -> Diagnostic {
         let found = self.peek();
-        if found.kind == TokenKind::Semicolon {
-            return Diagnostic::error(
-                found.span,
-                "Sisu has no `;`: statements end at the end of the line",
-            );
+        match found.kind {
+            TokenKind::Semicolon => {
+                return Diagnostic::error(
+                    found.span,
+                    "Sisu has no `;`: statements end at the end of the line",
+                );
+            }
+            TokenKind::Var => {
+                return Diagnostic::error(found.span, "Sisu has no `var`").help("use `let mut`");
+            }
+            _ => {}
         }
         Diagnostic::error(
             found.span,
@@ -174,7 +180,15 @@ impl Parser<'_> {
         let mut members = Vec::new();
         self.skip_newlines();
         while !self.at(&TokenKind::RBrace) {
-            members.push(self.member()?);
+            let member = self.member()?;
+            if matches!(member, Member::Field(_)) && self.at(&TokenKind::Comma) {
+                return Err(Diagnostic::error(
+                    self.peek().span,
+                    "a field ends at the end of the line",
+                )
+                .help("put each field on its own line"));
+            }
+            members.push(member);
             if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
                 return Err(self.end_of_line());
             }
@@ -186,8 +200,8 @@ impl Parser<'_> {
 
     fn member(&mut self) -> Result<Member, Diagnostic> {
         match self.peek().kind {
-            TokenKind::Let | TokenKind::Var => {
-                let mutable = self.bump().kind == TokenKind::Var;
+            TokenKind::Ident(_) | TokenKind::Mut => {
+                let mutable = self.eat(&TokenKind::Mut).is_some();
                 let name = self.ident("a field name")?;
                 self.expect(&TokenKind::Colon)?;
                 Ok(Member::Field(FieldDecl {
@@ -195,6 +209,18 @@ impl Parser<'_> {
                     name,
                     ty: self.parse_type()?,
                 }))
+            }
+            TokenKind::Let => {
+                let help = match self.field_after_keyword() {
+                    (true, field) => format!("drop the `let`: `mut {field}`"),
+                    (false, field) => format!("write it bare: `{field}`"),
+                };
+                Err(Diagnostic::error(self.peek().span, "a field takes no `let`").help(help))
+            }
+            TokenKind::Var => {
+                let (_, field) = self.field_after_keyword();
+                Err(Diagnostic::error(self.peek().span, "Sisu has no `var`")
+                    .help(format!("mark the field `mut`: `mut {field}`")))
             }
             TokenKind::Fn => {
                 let method = self.function(true)?;
@@ -207,8 +233,26 @@ impl Parser<'_> {
                 }
                 Ok(Member::Method(method))
             }
-            _ => Err(self.expected("`let`, `var` or `fn`")),
+            _ => Err(self.expected("a field or `fn`")),
         }
+    }
+
+    /// The field after the `let` or `var` at the next token, for a help line: whether `mut`
+    /// follows the keyword, and the field as `name: Type`, or that placeholder when no field
+    /// follows.
+    fn field_after_keyword(&self) -> (bool, String) {
+        let mut rest = Parser {
+            tokens: self.tokens,
+            pos: self.pos + 1,
+        };
+        let mutable = rest.eat(&TokenKind::Mut).is_some();
+        let mut field = || -> Result<String, Diagnostic> {
+            let name = rest.ident("a field name")?;
+            rest.expect(&TokenKind::Colon)?;
+            Ok(format!("{}: {}", name.name, rest.parse_type()?))
+        };
+        let field = field().unwrap_or_else(|_| "name: Type".to_string());
+        (mutable, field)
     }
 
     /// `method` is true inside a class body, where `self` may be the first parameter.
@@ -220,8 +264,36 @@ impl Parser<'_> {
         let mut params = Vec::new();
         if !self.at(&TokenKind::RParen) {
             loop {
+                let receiver = method && self_param.is_none() && params.is_empty();
+                if self.at(&TokenKind::Mut) {
+                    // `mut` is never `Eof`, so the token after it exists.
+                    match &self.tokens[self.pos + 1].kind {
+                        TokenKind::SelfKw if receiver => {
+                            return Err(Diagnostic::error(
+                                self.peek().span,
+                                "a class method takes `self`, not `mut self`",
+                            )
+                            .help(
+                                "an object is shared: `self` can already write every `mut` field",
+                            ));
+                        }
+                        TokenKind::SelfKw => {
+                            self.bump();
+                        }
+                        TokenKind::Ident(name) => {
+                            return Err(Diagnostic::error(
+                                self.peek().span,
+                                "a parameter cannot be `mut`",
+                            )
+                            .help(format!(
+                                "copy it into a variable: `let mut {name} = {name}`"
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
                 if self.at(&TokenKind::SelfKw) {
-                    if !(method && self_param.is_none() && params.is_empty()) {
+                    if !receiver {
                         return Err(Diagnostic::error(
                             self.peek().span,
                             "`self` is only the first parameter of a method",
@@ -281,7 +353,7 @@ impl Parser<'_> {
     fn stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.peek().span;
         let kind = match self.peek().kind {
-            TokenKind::Let | TokenKind::Var => self.let_stmt()?,
+            TokenKind::Let => self.let_stmt()?,
             TokenKind::While => {
                 self.bump();
                 if let Some((name, value)) = self.let_binding()? {
@@ -364,7 +436,8 @@ impl Parser<'_> {
     }
 
     fn let_stmt(&mut self) -> Result<StmtKind, Diagnostic> {
-        let mutable = self.bump().kind == TokenKind::Var;
+        self.bump();
+        let mutable = self.eat(&TokenKind::Mut).is_some();
         let name = self.ident("a variable name")?;
         let ty = match self.eat(&TokenKind::Colon) {
             Some(_) => Some(self.parse_type()?),
@@ -819,10 +892,10 @@ mod tests {
     }
 
     #[test]
-    fn typed_let_and_var() {
+    fn typed_let_and_let_mut() {
         assert_eq!(
-            body("fn main() {\n    let x: i64 = 1\n    var y = 2\n}"),
-            "(block (let x i64 1) (var y 2))"
+            body("fn main() {\n    let x: i64 = 1\n    let mut y = 2\n}"),
+            "(block (let x i64 1) (let mut y 2))"
         );
     }
 
@@ -1143,9 +1216,9 @@ error: expected `=`, found end of line
     fn class_with_members() {
         assert_eq!(
             program(
-                "class Tree {\n    let value: i64\n    var left: Tree\n\n    fn sum(self) -> i64 { self.value }\n}"
+                "class Tree {\n    value: i64\n    mut left: Tree\n\n    fn sum(self) -> i64 { self.value }\n}"
             ),
-            "(class Tree (let value i64) (var left Tree) (fn sum (self) i64 (block (. self value))))"
+            "(class Tree (value i64) (mut left Tree) (fn sum (self) i64 (block (. self value))))"
         );
     }
 
@@ -1238,19 +1311,15 @@ error: expected `=`, found end of line
     fn bad_class_member() {
         assert_eq!(
             parse_err("class A { 1 }"),
-            (
-                "expected `let`, `var` or `fn`, found `1`".to_string(),
-                1,
-                11
-            )
+            ("expected a field or `fn`, found `1`".to_string(), 1, 11)
         );
     }
 
     #[test]
     fn class_members_need_a_line_break() {
         assert_eq!(
-            parse_err("class A { let x: i64 let y: i64 }"),
-            ("expected end of line, found `let`".to_string(), 1, 22)
+            parse_err("class A { x: i64 y: i64 }"),
+            ("expected end of line, found `y`".to_string(), 1, 18)
         );
     }
 
@@ -1265,8 +1334,8 @@ error: expected `=`, found end of line
             "(fn f ((t Tree?)) i64? (block))"
         );
         assert_eq!(
-            program("class A {\n    var next: A?\n}"),
-            "(class A (var next A?))"
+            program("class A {\n    mut next: A?\n}"),
+            "(class A (mut next A?))"
         );
         // The span runs through the `?`.
         let f = first_fn("fn f() -> Tree? {}");
@@ -1423,11 +1492,11 @@ error: expected `=`, found end of line
     #[test]
     fn stray_semicolon_in_a_class_body() {
         assert_eq!(
-            parse_err("class A {\n    let x: i64; let y: i64\n}"),
+            parse_err("class A {\n    x: i64; y: i64\n}"),
             (
                 "Sisu has no `;`: statements end at the end of the line".to_owned(),
                 2,
-                15
+                11
             )
         );
     }
@@ -1439,5 +1508,148 @@ error: expected `=`, found end of line
         assert_eq!(d.message, "`[Node]??` is not a type");
         assert_eq!(d.help.as_deref(), Some("optionals do not nest"));
         assert_eq!(line_col(src, d.span.start), (1, 9));
+    }
+
+    /// The message, help and `line:col` of the parse error in `src`.
+    fn parse_help(src: &str) -> (String, Option<String>, usize, usize) {
+        let d = parse_diagnostic(src);
+        let (line, col) = line_col(src, d.span.start);
+        (d.message, d.help, line, col)
+    }
+
+    fn no_var(line: usize, col: usize) -> (String, Option<String>, usize, usize) {
+        (
+            "Sisu has no `var`".to_owned(),
+            Some("use `let mut`".to_owned()),
+            line,
+            col,
+        )
+    }
+
+    #[test]
+    fn var_is_reserved_everywhere() {
+        assert_eq!(parse_help("fn main() {\n    var x = 1\n}"), no_var(2, 5));
+        assert_eq!(parse_help("fn var() {}"), no_var(1, 4));
+        assert_eq!(parse_help("fn main() { let var = 1 }"), no_var(1, 17));
+    }
+
+    #[test]
+    fn mut_is_a_keyword() {
+        assert_eq!(
+            parse_err("fn main() { let mut = 1 }"),
+            ("expected a variable name, found `=`".to_owned(), 1, 21)
+        );
+    }
+
+    #[test]
+    fn one_line_class() {
+        assert_eq!(
+            program("class UserId { value: i64 }"),
+            "(class UserId (value i64))"
+        );
+    }
+
+    #[test]
+    fn var_field() {
+        assert_eq!(
+            parse_help("class P {\n    var hp: i64\n}"),
+            (
+                "Sisu has no `var`".to_owned(),
+                Some("mark the field `mut`: `mut hp: i64`".to_owned()),
+                2,
+                5
+            )
+        );
+    }
+
+    #[test]
+    fn let_field() {
+        assert_eq!(
+            parse_help("class P {\n    let hp: [Tree?]\n}"),
+            (
+                "a field takes no `let`".to_owned(),
+                Some("write it bare: `hp: [Tree?]`".to_owned()),
+                2,
+                5
+            )
+        );
+        // `let mut` keeps the `mut`.
+        assert_eq!(
+            parse_help("class P {\n    let mut hp: i64\n}").1.as_deref(),
+            Some("drop the `let`: `mut hp: i64`")
+        );
+        // With no field after the keyword, the help shows its shape.
+        assert_eq!(
+            parse_help("class P {\n    let hp = 1\n}").1.as_deref(),
+            Some("write it bare: `name: Type`")
+        );
+    }
+
+    #[test]
+    fn comma_after_a_field() {
+        assert_eq!(
+            parse_help("class P {\n    x: i64, y: i64\n}"),
+            (
+                "a field ends at the end of the line".to_owned(),
+                Some("put each field on its own line".to_owned()),
+                2,
+                11
+            )
+        );
+    }
+
+    #[test]
+    fn comma_after_a_method_is_not_a_field_comma() {
+        assert_eq!(
+            parse_err("class C {\n fn f(self) {},\n}"),
+            ("expected end of line, found `,`".to_owned(), 2, 15)
+        );
+    }
+
+    #[test]
+    fn mut_self_on_a_class_method() {
+        assert_eq!(
+            parse_help("class C {\n    fn f(mut self) {}\n}"),
+            (
+                "a class method takes `self`, not `mut self`".to_owned(),
+                Some("an object is shared: `self` can already write every `mut` field".to_owned()),
+                2,
+                10
+            )
+        );
+    }
+
+    #[test]
+    fn mut_self_outside_the_receiver_position() {
+        let message = "`self` is only the first parameter of a method";
+        assert_eq!(
+            parse_help("fn f(mut self) {}"),
+            (message.to_owned(), None, 1, 10)
+        );
+        assert_eq!(
+            parse_help("class C {\n    fn f(self, n: i64, mut self) {}\n}"),
+            (message.to_owned(), None, 2, 28)
+        );
+    }
+
+    #[test]
+    fn mut_parameter() {
+        assert_eq!(
+            parse_help("fn f(a: i64, mut n: i64) {}"),
+            (
+                "a parameter cannot be `mut`".to_owned(),
+                Some("copy it into a variable: `let mut n = n`".to_owned()),
+                1,
+                14
+            )
+        );
+    }
+
+    #[test]
+    fn mut_before_neither_self_nor_a_name() {
+        assert_eq!(
+            parse_err("fn f(mut 1) {}"),
+            ("expected a parameter name, found `mut`".to_owned(), 1, 6)
+        );
     }
 }

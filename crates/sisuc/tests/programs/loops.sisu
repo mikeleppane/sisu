@@ -1,23 +1,23 @@
 fn main() {
-    var i = 0
-    var total = 0
+    let mut i = 0
+    let mut total = 0
     while i < 5 {
-        var sq = i * i
+        let mut sq = i * i
         sq += 1
         total += sq
         i += 1
     }
     print(total)
-    var x = 17
+    let mut x = 17
     x -= 2
     x *= 3
     x /= 4
     x %= 4
     print(x)
-    var pairs = 0
-    var a = 0
+    let mut pairs = 0
+    let mut a = 0
     while a < 4 {
-        var b = 0
+        let mut b = 0
         while b < a {
             pairs += 1
             b += 1

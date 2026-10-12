@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn assign_from_own_call() {
-        let src = "fn f(x: [i64]) -> [i64] { x }\nfn main() {\n    var x = [1]\n    x = f(x)\n    print(x[0])\n}";
+        let src = "fn f(x: [i64]) -> [i64] { x }\nfn main() {\n    let mut x = [1]\n    x = f(x)\n    print(x[0])\n}";
         has(
             src,
             "main",
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn read_after_continue() {
         has(
-            "fn f(c: bool) {\n    var i = 0\n    while i < 3 {\n        i += 1\n        let ys = [i]\n        if c {\n            continue\n        }\n        print(ys.len())\n    }\n}",
+            "fn f(c: bool) {\n    let mut i = 0\n    while i < 3 {\n        i += 1\n        let ys = [i]\n        if c {\n            continue\n        }\n        print(ys.len())\n    }\n}",
             "f",
             &["(len (move ys#"],
         );
@@ -387,12 +387,12 @@ mod tests {
     #[test]
     fn element_write_roots() {
         let printed = marked(
-            "fn shared() {\n    var a = [1, 2]\n    let b = a\n    a[0] = 9\n}\n\
-             fn compound() {\n    var xs = [1]\n    xs[0] += 1\n}\n\
-             fn during_for() {\n    var xs = [1]\n    for x in xs { xs[0] = 1 }\n}\n\
-             fn reads_len() {\n    var xs = [1]\n    xs[0] = xs.len()\n}\n\
+            "fn shared() {\n    let mut a = [1, 2]\n    let b = a\n    a[0] = 9\n}\n\
+             fn compound() {\n    let mut xs = [1]\n    xs[0] += 1\n}\n\
+             fn during_for() {\n    let mut xs = [1]\n    for x in xs { xs[0] = 1 }\n}\n\
+             fn reads_len() {\n    let mut xs = [1]\n    xs[0] = xs.len()\n}\n\
              fn g(v: [i64]) -> i64 { 0 }\n\
-             fn passes() {\n    var xs = [1]\n    xs[0] = g(xs)\n}",
+             fn passes() {\n    let mut xs = [1]\n    xs[0] = g(xs)\n}",
         );
         assert!(!printed.contains("(move a"), "{printed}");
         assert!(!printed.contains("(move xs"), "{printed}");
@@ -403,9 +403,9 @@ mod tests {
     #[test]
     fn short_circuits() {
         let printed = marked(
-            "fn or() {\n    var xs = [1]\n    let ok = xs.len() > 0 || if true {\n        xs = [2]\n        true\n    } else {\n        xs = [3]\n        true\n    }\n    print(xs[0])\n}\n\
-             fn and() {\n    var xs = [1]\n    let ok = xs.len() > 0 && if true {\n        xs = [2]\n        true\n    } else {\n        xs = [3]\n        true\n    }\n    print(xs[0])\n}\n\
-             fn chain() {\n    var xs = [1]\n    let ok = 0 < xs.len() < if true {\n        xs = [2]\n        5\n    } else {\n        xs = [3]\n        5\n    }\n    print(xs[0])\n}",
+            "fn or() {\n    let mut xs = [1]\n    let ok = xs.len() > 0 || if true {\n        xs = [2]\n        true\n    } else {\n        xs = [3]\n        true\n    }\n    print(xs[0])\n}\n\
+             fn and() {\n    let mut xs = [1]\n    let ok = xs.len() > 0 && if true {\n        xs = [2]\n        true\n    } else {\n        xs = [3]\n        true\n    }\n    print(xs[0])\n}\n\
+             fn chain() {\n    let mut xs = [1]\n    let ok = 0 < xs.len() < if true {\n        xs = [2]\n        5\n    } else {\n        xs = [3]\n        5\n    }\n    print(xs[0])\n}",
         );
         for name in ["or", "and", "chain"] {
             let f = function(&printed, name);
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn objects_self_and_if_let() {
-        let src = "class N {\n    let v: i64\n    fn get(self) -> i64 { self.v }\n}\nfn f(m: N?) -> i64 {\n    if let n = m { n.v } else { 0 }\n}";
+        let src = "class N {\n    v: i64\n    fn get(self) -> i64 { self.v }\n}\nfn f(m: N?) -> i64 {\n    if let n = m { n.v } else { 0 }\n}";
         has(src, "N.get", &["(. (move self#0) v)"]);
         has(src, "f", &["(. (move n#1) v)"]);
     }
@@ -424,10 +424,10 @@ mod tests {
     /// like any other: the last of them moves.
     #[test]
     fn place_operands() {
-        let src = "class O {\n    var n: i64\n}\nclass B {\n    var xs: [i64]\n}\n\
+        let src = "class O {\n    mut n: i64\n}\nclass B {\n    mut xs: [i64]\n}\n\
              fn field(o: O) {\n    print(o.n)\n    o.n = 1\n}\n\
              fn root(b: B) {\n    print(b.xs.len())\n    b.xs[0] = 1\n}\n\
-             fn index(xs: [i64]) {\n    var ys = [1, 2]\n    print(xs.len())\n    ys[xs.len() - 1] = 5\n}";
+             fn index(xs: [i64]) {\n    let mut ys = [1, 2]\n    print(xs.len())\n    ys[xs.len() - 1] = 5\n}";
         has(
             src,
             "field",

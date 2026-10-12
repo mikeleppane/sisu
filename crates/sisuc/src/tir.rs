@@ -361,7 +361,7 @@ impl Printer<'_> {
         match stmt {
             Stmt::Let { local, init } => {
                 let keyword = if self.function.locals[local.0].mutable {
-                    "var"
+                    "let mut"
                 } else {
                     "let"
                 };
@@ -569,9 +569,9 @@ impl fmt::Display for Program {
         for class in &self.classes {
             write!(f, "{separator}(class {}", class.name)?;
             for field in &class.fields {
-                let keyword = if field.mutable { "var" } else { "let" };
+                let keyword = if field.mutable { "mut " } else { "" };
                 let ty = self.type_name(&field.ty);
-                write!(f, " ({keyword} {} {ty})", field.name)?;
+                write!(f, " ({keyword}{} {ty})", field.name)?;
             }
             f.write_str(")")?;
             separator = "\n";
@@ -745,7 +745,7 @@ mod tests {
         };
         assert_eq!(
             program.to_string(),
-            "(fn f ((n#0 i64)) i64 (block (var x#1 n#0) (= x#1 (+ x#1 1)) (let #2 (call f (- 3))) (if (!= x#1 2) (block (print (< 1 n#0 <= 9)))) (loop (block (if true (block (break)) (block)))) (return x#1)))"
+            "(fn f ((n#0 i64)) i64 (block (let mut x#1 n#0) (= x#1 (+ x#1 1)) (let #2 (call f (- 3))) (if (!= x#1 2) (block (print (< 1 n#0 <= 9)))) (loop (block (if true (block (break)) (block)))) (return x#1)))"
         );
     }
 

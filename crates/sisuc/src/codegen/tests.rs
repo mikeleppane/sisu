@@ -238,7 +238,7 @@ fn class_layout_comes_from_the_data_layout() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "class Q {}\nclass P {\n    let x: i64\n    var y: bool\n    let q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    print(p.x)\n}",
+        "class Q {}\nclass P {\n    x: i64\n    mut y: bool\n    q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    print(p.x)\n}",
     )
     .print_to_string()
     .to_string();
@@ -281,7 +281,7 @@ fn method_symbols() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "class P {\n    let x: i64\n\n    fn m(self) { print(self.x) }\n}\nfn main() { P(x: 1).m() }",
+        "class P {\n    x: i64\n\n    fn m(self) { print(self.x) }\n}\nfn main() { P(x: 1).m() }",
     )
     .print_to_string()
     .to_string();
@@ -292,7 +292,7 @@ fn method_symbols() {
 fn verifies_field_assignment_through_a_call() {
     compiled(
         &Context::create(),
-        "class C {\n    var n: i64\n}\nfn make() -> C { C(n: 0) }\nfn main() {\n    make().n = 1\n}",
+        "class C {\n    mut n: i64\n}\nfn make() -> C { C(n: 0) }\nfn main() {\n    make().n = 1\n}",
     );
 }
 
@@ -316,7 +316,7 @@ fn drop_loops_on_the_chain_field() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "class Node {\n    let value: i64\n    let next: Node?\n}\nclass Tree {\n    let left: Tree?\n    let right: Tree?\n    let v: i64\n}\nfn main() {}",
+        "class Node {\n    value: i64\n    next: Node?\n}\nclass Tree {\n    left: Tree?\n    right: Tree?\n    v: i64\n}\nfn main() {}",
     )
     .print_to_string()
     .to_string();
@@ -400,7 +400,7 @@ fn field_read_retains_before_releasing_base() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "class N {}\nclass C {\n    let next: N\n}\nfn make() -> C { C(next: N()) }\nfn main() { make().next }",
+        "class N {}\nclass C {\n    next: N\n}\nfn make() -> C { C(next: N()) }\nfn main() { make().next }",
     )
     .print_to_string()
     .to_string();
@@ -564,7 +564,7 @@ fn fast_path_follows_the_index_whitelist() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "class O {\n    let n: i64\n}\nfn g() -> i64 { 0 }\n\
+        "class O {\n    n: i64\n}\nfn g() -> i64 { 0 }\n\
          fn unary(xs: [i64], i: i64) -> [i64] {\n    print(xs[-i + 1])\n    xs\n}\n\
          fn convert(xs: [i64], b: u8) -> [i64] {\n    print(xs[i64(b)])\n    xs\n}\n\
          fn field(xs: [i64], o: O) -> [i64] {\n    print(xs[o.n])\n    print(o.n)\n    xs\n}\n\
@@ -598,7 +598,7 @@ fn write_checks_bounds_before_unique() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "fn f(xs: [i64]) -> [i64] {\n    var ys = xs\n    ys[0] = 1\n    ys\n}\nfn main() {}",
+        "fn f(xs: [i64]) -> [i64] {\n    let mut ys = xs\n    ys[0] = 1\n    ys\n}\nfn main() {}",
     )
     .print_to_string()
     .to_string();
