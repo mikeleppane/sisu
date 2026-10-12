@@ -1014,6 +1014,40 @@ mod tests {
         );
     }
 
+    /// Each "expected X" message, with the `line:col` of the token found instead. The first four
+    /// name a place in the grammar, so a call site that passes the wrong `what` to `ident` or
+    /// `expected` changes the text. The last three name the token itself, so they pin its row in
+    /// `TokenKind::describe`.
+    #[test]
+    fn expectation_messages_name_what_was_expected() {
+        for (src, message, line, col) in [
+            ("class {}", "expected a class name, found `{`", 1, 7),
+            (
+                "class A {\n    mut 1: i64\n}",
+                "expected a field name, found `1`",
+                2,
+                9,
+            ),
+            ("fn f(a: ) {}", "expected a type, found `)`", 1, 9),
+            (
+                "fn main() {\n    print([1].0)\n}",
+                "expected a field or method name, found `0`",
+                2,
+                15,
+            ),
+            ("fn f(a) {}", "expected `:`, found `)`", 1, 7),
+            (
+                "fn main() {\n    for i 0..3 {\n    }\n}",
+                "expected `in`, found `0`",
+                2,
+                11,
+            ),
+            ("fn f {}", "expected `(`, found `{`", 1, 6),
+        ] {
+            assert_eq!(parse_err(src), (message.to_owned(), line, col), "{src}");
+        }
+    }
+
     /// A `-` applied directly to 2^63 is the one literal `i64::MIN`, with the `-` in its span.
     #[test]
     fn minus_min_magnitude_is_one_literal() {
