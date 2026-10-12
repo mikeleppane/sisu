@@ -122,45 +122,6 @@ fn allocs_in_panics_without_the_summary_line() {
     allocs_in("==1== All heap blocks were freed -- no leaks are possible");
 }
 
-/// Each test that needs a value to cross a real call proves it only while the call is still in
-/// the `-O2` IR: the inliner would otherwise fold it into its caller. The `-O2` rows of
-/// `allocation_counts` need each `fill` call in `main`; `aliasing.sisu` needs each of its three
-/// `set` calls in `through_call`.
-#[test]
-fn calls_survive_o2() {
-    for (name, caller, call, count) in [
-        ("handover", "main", "call ptr @sisu.fill(", 1),
-        ("copies", "main", "call ptr @sisu.fill(", 1),
-        ("aliasing", "through_call", "call void @sisu.set(", 3),
-    ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-            .current_dir(RUN)
-            .args(["-O2", "--emit", "ir"])
-            .arg(format!("{name}.sisu"))
-            .output()
-            .expect("sisuc starts");
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let (_, after) = stdout
-            .split_once("\n; after default<O2>\n")
-            .unwrap_or_else(|| panic!("no `; after default<O2>` line in\n{stdout}"));
-        let header = format!("define void @sisu.{caller}()");
-        let (_, caller_onward) = after
-            .split_once(&header)
-            .unwrap_or_else(|| panic!("{name}: no `{header}` in\n{after}"));
-        let body = caller_onward
-            .split("\n}")
-            .next()
-            .expect("split yields one piece");
-        assert_eq!(body.matches(call).count(), count, "{name}: {body}");
-    }
-}
-
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
 const ALLOCATIONS: [(&str, &str, &str, i64); 3] = [
     // `big = fill(big, i, 1)` writes in place.
@@ -667,6 +628,45 @@ fn bless_never_writes_after_a_wrong_exit() {
     assert_eq!(
         fs::read_to_string(dir.join("a.out")).expect("reads a.out"),
         ""
+    );
+}
+
+/// An `o2-calls` marker fails the case when the inliner folds the call away.
+#[test]
+fn o2_calls_marker_fails_on_an_inlined_call() {
+    let dir = fixture(
+        "o2_calls_marker_fails_on_an_inlined_call",
+        &[
+            (
+                "a.sisu",
+                "// o2-calls: main one 1\nfn one() -> i64 { 1 }\n\nfn main() {\n    print(one())\n}\n",
+            ),
+            ("a.out", "1\n"),
+        ],
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("-O2 keeps 0 calls to `one` in `main`, not 1"),
+        "{message}"
+    );
+}
+
+#[test]
+fn o2_calls_marker_must_name_caller_callee_and_count() {
+    let dir = fixture(
+        "o2_calls_marker_must_name_caller_callee_and_count",
+        &[
+            (
+                "a.sisu",
+                "// o2-calls: main one\nfn main() {\n    print(1)\n}\n",
+            ),
+            ("a.out", "1\n"),
+        ],
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("is not `<caller> <callee> <count>`"),
+        "{message}"
     );
 }
 

@@ -10,7 +10,8 @@ class Bag {
 }
 
 // Recursive so that the inliner cannot fold it into its callers at `-O2`: the write must cross
-// a real call. The test finds the `call` in the `-O2` IR.
+// a real call.
+// o2-calls: through_call set 3
 fn set(b: Box, v: i64, depth: i64) {
     if depth > 0 {
         set(b, v, depth - 1)

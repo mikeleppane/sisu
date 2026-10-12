@@ -67,6 +67,12 @@ $ SISU_BLESS=1 cargo nextest run -E 'binary(cases)'
 check, and only those. It never creates a file. Any other file in these
 directories fails the run: a `.out` or `.err` without its `.sisu`, an
 expected file that the directory's mode does not read, or a hidden file.
+
+A `run/` case whose output depends on a value crossing a real call says so
+with a marker line, `// o2-calls: <caller> <callee> <count>`. The test then
+checks that the `-O2` IR of `<caller>` holds exactly `<count>` calls to
+`<callee>`, because the inliner can fold a call away and keep the output
+the same. A recursive callee keeps its calls; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack
 tests in `programs.rs` run.
 

@@ -47,6 +47,7 @@ pub(crate) fn valgrind(exe: &Path) -> Output {
 /// Checks a `tests/run` case: both builds differ, exit 0 with empty stderr, agree on stdout, and
 /// print the same under Valgrind, which finds no leak or memory error, and in a `--rc-checks`
 /// build, which finds no count fault or live object at exit; then that stdout is `<name>.out`.
+/// Each `// o2-calls:` marker in the case must hold in the `-O2` IR (see `O2_CALLS`).
 /// With `bless`, rewrites `<name>.out` instead, after every other check passed.
 pub(crate) fn run(path: &Path, bless: bool) {
     let [o0, o2, rc] = build(path, [O0, O2, RC_CHECKS]);
@@ -56,6 +57,7 @@ pub(crate) fn run(path: &Path, bless: bool) {
         "{}: -O2 build is identical to the plain build",
         path.display()
     );
+    o2_calls(path);
     let [out0, out2] = [&o0, &o2].map(|exe| {
         let out = Command::new(exe).output().expect("the program starts");
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -221,6 +223,80 @@ fn case_dir(source: &Path) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("creates the case directory");
     dir
+}
+
+/// The marker a `tests/run` case puts on its own line to prove a call boundary: with
+/// `// o2-calls: <caller> <callee> <count>`, the `-O2` IR of `<caller>` holds exactly `<count>`
+/// calls to `<callee>`, so the inliner kept the calls the case relies on.
+const O2_CALLS: &str = "// o2-calls:";
+
+/// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, run once if any.
+fn o2_calls(path: &Path) {
+    let source = fs::read_to_string(path).expect("reads the case");
+    let markers: Vec<&str> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(O2_CALLS))
+        .collect();
+    if markers.is_empty() {
+        return;
+    }
+    let dir = path.parent().expect("a case should sit in a directory");
+    let name = path.file_name().expect("a case should have a file name");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["-O2", "--emit", "ir"])
+        .arg(name)
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    let (_, optimized) = ir
+        .split_once("\n; after default<O2>\n")
+        .unwrap_or_else(|| panic!("{}: no `; after default<O2>` line", path.display()));
+    for marker in markers {
+        let [outer, callee, count] = marker
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{}: `{O2_CALLS}{marker}` is not `<caller> <callee> <count>`",
+                    path.display()
+                )
+            });
+        let count: usize = count.parse().unwrap_or_else(|_| {
+            panic!(
+                "{}: `{O2_CALLS}{marker}` count is not a number",
+                path.display()
+            )
+        });
+        let header = format!("@sisu.{outer}(");
+        let body = optimized
+            .split("\ndefine ")
+            .find(|function| function.lines().next().is_some_and(|l| l.contains(&header)))
+            .unwrap_or_else(|| panic!("{}: no `{outer}` in the -O2 IR", path.display()))
+            .split("\n}")
+            .next()
+            .expect("split yields one piece");
+        let target = format!("@sisu.{callee}(");
+        let kept = body
+            .lines()
+            .filter(|line| line.contains("call ") && line.contains(&target))
+            .count();
+        assert_eq!(
+            kept,
+            count,
+            "{}: -O2 keeps {kept} calls to `{callee}` in `{outer}`, not {count}; make `{callee}` \
+             recurse so the inliner keeps it\n{body}",
+            path.display()
+        );
+    }
 }
 
 /// `o0`, which must equal `o2`, as text; `what` names the stream in the failure.
