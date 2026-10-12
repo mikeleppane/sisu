@@ -1,0 +1,89 @@
+// Aliasing: an array is a value, so a write copies a shared array first (ADR 0007); an object
+// is shared, so a field write through one reference shows through every other. `values.sisu`
+// covers writes to the original and to a row of one grid; these write to the copy.
+class Box {
+    mut v: i64
+}
+
+class Bag {
+    mut items: [i64]
+}
+
+// Recursive so that the inliner cannot fold it into its callers at `-O2`: the write must cross
+// a real call.
+// o2-calls: through_call set 3
+fn set(b: Box, v: i64, depth: i64) {
+    if depth > 0 {
+        set(b, v, depth - 1)
+    }
+    b.v = v
+}
+
+// The second `let mut` is the one written: the original keeps its elements.
+fn copy_then_write() {
+    let a = [1, 2, 3]
+    let mut b = a
+    b[1] = 20
+    print(a[1])                       // 2
+    print(b[1])                       // 20
+}
+
+// The copy shares its rows with the original until one is written, through the copy or
+// through a row copied out of it.
+fn nested_copy() {
+    let grid = [[1, 2], [3, 4]]
+    let mut other = grid
+    other[1][0] = 30
+    print(grid[1][0])                 // 3
+    print(other[1][0])                // 30
+    print(grid[0] == other[0])        // true
+    let mut row = grid[0]
+    row[0] = 10
+    print(grid[0][0])                 // 1
+    print(row[0])                     // 10
+}
+
+// An array copied out of a field, then written; then the field written.
+fn field_copy() {
+    let bag = Bag(items: [5, 6])
+    let mut mine = bag.items
+    mine[0] = 50
+    print(bag.items[0])               // 5
+    print(mine[0])                    // 50
+    bag.items[1] = 60
+    print(mine[1])                    // 6
+    print(bag.items[1])               // 60
+}
+
+fn shared_object() {
+    let a = Box(v: 1)
+    let b = a
+    b.v = 2
+    print(a.v)                        // 2
+    a.v += 10
+    print(b.v)                        // 12
+    print(a is b)                     // true
+}
+
+// A function writes a field of its argument; an array copy shares its objects.
+fn through_call() {
+    let a = Box(v: 1)
+    set(a, 7, 1)
+    print(a.v)                        // 7
+    let xs = [a, Box(v: 2)]
+    set(xs[1], 8, 1)
+    print(xs[1].v)                    // 8
+    let mut ys = xs
+    ys[1] = Box(v: 3)
+    set(ys[0], 9, 1)
+    print(a.v)                        // 9
+    print(xs[1].v)                    // 8
+}
+
+fn main() {
+    copy_then_write()
+    nested_copy()
+    field_copy()
+    shared_object()
+    through_call()
+}

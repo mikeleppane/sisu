@@ -1,0 +1,53 @@
+// Evaluation order: each operand prints its marker when it runs. docs/ states the order only for
+// call arguments: docs/roadmap.md, "Argument labels", says "arguments are evaluated left to
+// right as written, which the last-use pass already assumes". `values.sisu` and
+// `field_order.sisu` pin index writes and field assignments. Everything here is left to right.
+class Obj {
+    v: i64
+}
+
+class Pair {
+    a: Obj
+    b: i64
+}
+
+fn n(m: i64) -> i64 {
+    print(m)
+    m
+}
+
+fn o(m: i64) -> Obj {
+    print(m)
+    Obj(v: m)
+}
+
+fn arr(m: i64) -> [i64] {
+    print(m)
+    [m, m + 1, m + 2]
+}
+
+fn add3(a: i64, b: i64, c: i64) -> i64 {
+    a * 100 + b * 10 + c
+}
+
+fn mix(a: Obj, b: i64, c: Obj) -> i64 {
+    a.v + b + c.v
+}
+
+fn main() {
+    print(add3(n(1), n(2), n(3)))     // 1, 2, 3, 123
+    print(mix(o(4), n(5), o(6)))      // 4, 5, 6, 15
+    print(n(7) - n(8))                // 7, 8, -1
+    print(n(1) + n(2) * n(3))         // 1, 2, 3, 7: precedence does not reorder
+    print(n(4) < n(5))                // 4, 5, true
+    print(o(7).v + o(8).v)            // 7, 8, 15
+    let xs = [o(1), o(2), o(3)]       // 1, 2, 3
+    print(xs[2].v)                    // 3
+    let ys = [arr(4), arr(5)]         // 4, 5
+    print(ys[1][0])                   // 5
+    print(arr(10)[n(1)])              // 10, 1, 11
+    print(ys[n(1)][n(2)])             // 1, 2, 7
+    let p = Pair(a: o(20), b: n(21))  // 20, 21
+    print(p.a.v + p.b)                // 41
+    print(Pair(a: o(30), b: n(31)).b) // 30, 31, 31
+}

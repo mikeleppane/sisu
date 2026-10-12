@@ -6,12 +6,17 @@ use crate::parser::parse;
 /// Lexes, parses, checks (no errors allowed), marks last uses in and compiles `src`, then
 /// verifies the module.
 fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
+    compiled_with(context, src, false)
+}
+
+/// `compiled`, with the RC checks if `rc_checks`.
+fn compiled_with<'ctx>(context: &'ctx Context, src: &str, rc_checks: bool) -> Module<'ctx> {
     let program = parse(&lex(src).expect("source lexes")).expect("source parses");
     let (program, diagnostics) = check(&program);
     let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
     crate::last_use::mark(&mut program);
     let machine = target_machine(false).expect("the host is a target");
-    let module = compile(context, &program, "test.sisu", src, &machine);
+    let module = compile(context, &program, "test.sisu", src, &machine, rc_checks);
     if let Err(e) = module.verify() {
         panic!("{e}\n{}", module.print_to_string());
     }
@@ -426,6 +431,98 @@ fn field_read_retains_before_releasing_base() {
         ),
     ];
     assert!(order.is_sorted(), "{order:?} in\n{main}");
+}
+
+/// The object whose count `text`, an instruction `<op> i64 <count>, ...`, uses: the pointer
+/// `<count>` is loaded from in `lines`.
+fn count_owner<'a>(lines: &[&'a str], text: &str) -> Option<&'a str> {
+    let count = text.split_once(" i64 ")?.1.split(", ").next()?;
+    let load = format!("{count} = load i64, ptr ");
+    lines
+        .iter()
+        .find_map(|l| l.strip_prefix(load.as_str()))?
+        .split(", ")
+        .next()
+}
+
+/// Asserts that in `body` the RC check of `kind` guards `step`, the first instruction
+/// `<op> i64 <count>, ...` that uses an object's count: before `step`, the count of that object
+/// is loaded and compared signed against 1, and the branch on the result goes to a block that
+/// calls `sisu_rc_fault(i32 <kind>)`.
+fn assert_count_checked(body: &str, kind: u32, step: &dyn Fn(&str) -> bool) {
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    let (step_at, _, step_text) =
+        instruction(&lines, step).unwrap_or_else(|| panic!("no count step in\n{body}"));
+    let object = count_owner(&lines, step_text)
+        .unwrap_or_else(|| panic!("{step_text:?} should use a loaded count in\n{body}"));
+    let (test_at, dead, _) = instruction(&lines, &|t| {
+        t.starts_with("icmp slt i64 ")
+            && t.ends_with(", 1")
+            && count_owner(&lines, t) == Some(object)
+    })
+    .unwrap_or_else(|| panic!("no signed test of {object}'s count against 1 in\n{body}"));
+    let branch = format!("br i1 {dead}, label %");
+    let branch_at = lines
+        .iter()
+        .position(|l| l.starts_with(&branch))
+        .unwrap_or_else(|| panic!("no branch on {dead} in\n{body}"));
+    let fault = lines[branch_at][branch.len()..]
+        .split(',')
+        .next()
+        .expect("a branch should name its true label");
+    let fault_at = lines
+        .iter()
+        .position(|l| l.starts_with(&format!("{fault}:")))
+        .unwrap_or_else(|| panic!("no block {fault} in\n{body}"));
+    assert_eq!(
+        lines.get(fault_at + 1).copied(),
+        Some(format!("call void @sisu_rc_fault(i32 {kind})").as_str()),
+        "{body}"
+    );
+    assert!([test_at, branch_at, step_at].is_sorted(), "{body}");
+}
+
+#[test]
+fn rc_checks_guard_retain_release_and_exit() {
+    let context = Context::create();
+    // A chain field: its drop loop's phi must name the block the checked decrement ends in.
+    // `fill` shares one array among its slots; `write` makes a shared array unique.
+    let src = format!(
+        "class P {{\n    next: P?\n}}\nfn fill(n: i64) -> [[i64]] {{ [[1]; n] }}\nfn write(xs: [i64]) -> [i64] {{\n    let mut ys = xs\n    ys[0] = 1\n    ys\n}}\n{FIB}"
+    );
+    let ir = compiled_with(&context, &src, true)
+        .print_to_string()
+        .to_string();
+    let retain = function_body(&ir, "define void @sisu_rc.retain(ptr");
+    assert_count_checked(retain, 0, &|t| {
+        t.starts_with("add i64 ") && t.ends_with(", 1")
+    });
+    let release = function_body(&ir, "define void @sisu_rc.release.P(ptr");
+    assert_count_checked(release, 1, &|t| {
+        t.starts_with("add i64 ") && t.ends_with(", -1")
+    });
+    let fill = function_body(&ir, "@sisu.fill(");
+    // The loop's counter steps with `add nuw`; the count gains its extra references with `add`.
+    assert_count_checked(fill, 0, &|t| t.starts_with("add i64 "));
+    let unique = function_body(&ir, "define ptr @\"sisu_rc.unique.[i64]\"(ptr");
+    assert_count_checked(unique, 1, &|t| {
+        t.starts_with("icmp eq i64 ") && t.ends_with(", 1")
+    });
+    let main = function_body(&ir, "define i32 @main()");
+    let (_, after_check) = main
+        .split_once("call void @sisu_rc_check_exit()")
+        .unwrap_or_else(|| panic!("no exit check in\n{main}"));
+    assert!(after_check.contains("ret i32 0"), "{main}");
+}
+
+#[test]
+fn plain_build_has_no_rc_checks() {
+    let context = Context::create();
+    let src = format!("class P {{}}\n{FIB}");
+    let ir = compiled(&context, &src).print_to_string().to_string();
+    for unwanted in ["sisu_rc_fault", "sisu_rc_check_exit"] {
+        assert!(!ir.contains(unwanted), "{unwanted:?} in\n{ir}");
+    }
 }
 
 #[test]

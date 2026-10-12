@@ -67,6 +67,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// runs until none is left to define.
     pub(super) fn define_helpers(&self) {
         let (object, done) = self.helper_entry(self.rc_retain);
+        self.check_count(object, 0);
         self.add_to_count(object, self.context.i64_type().const_int(1, false));
         self.branch_to(done);
         loop {
@@ -154,7 +155,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect(POSITIONED);
             self.builder.position_at_end(counted);
             self.decrement(next, body, done);
-            phi.add_incoming(&[(&next, counted)]);
+            // The RC checks put the branch in a block after `counted`.
+            phi.add_incoming(&[(&next, self.current_block())]);
             self.builder.position_at_end(done);
         }
         self.builder.build_return(None).expect(POSITIONED);
@@ -298,6 +300,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .context
             .i64_type()
             .const_int((-1_i64).cast_unsigned(), false);
+        self.check_count(object, 1);
         let count = self.add_to_count(object, minus_one);
         let zero = self.int_compare(
             IntPredicate::EQ,
@@ -307,6 +310,29 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_conditional_branch(zero, at_zero, otherwise)
             .expect(POSITIONED);
+    }
+
+    /// With the RC checks, calls `sisu_rc_fault(kind)`, which never returns, when the count of
+    /// `object` is below 1: kind 0 for a retain or a fill's sharing, 1 for a release or `unique`.
+    /// Continues in a fresh block.
+    pub(super) fn check_count(&self, object: PointerValue<'ctx>, kind: u64) {
+        let Some(fault) = self.rc_fault else {
+            return;
+        };
+        let i64_type = self.context.i64_type();
+        let count = self.load(i64_type.into(), object).into_int_value();
+        let dead = self.int_compare(IntPredicate::SLT, count, i64_type.const_int(1, false));
+        let function = self.current_function();
+        let fault_block = self.context.append_basic_block(function, "rc.fault");
+        let ok = self.context.append_basic_block(function, "rc.ok");
+        self.builder
+            .build_conditional_branch(dead, fault_block, ok)
+            .expect(POSITIONED);
+        self.builder.position_at_end(fault_block);
+        let kind = self.context.i32_type().const_int(kind, false);
+        self.call(fault, &[kind.into()]);
+        self.builder.build_unreachable().expect(POSITIONED);
+        self.builder.position_at_end(ok);
     }
 
     /// Starts helper `function`, which returns at once when its object is `null`. Leaves the

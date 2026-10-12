@@ -6,7 +6,8 @@
 repo = "builtin"
 hooks = [
   { id = "trailing-whitespace" },
-  { id = "end-of-file-fixer" },
+  # `no_trailing_newline.sisu` must not end in a newline, and the stderr snapshots end in one blank line.
+  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/compile-fail/(.*\.err|no_trailing_newline\.sisu)$' },
   { id = "mixed-line-ending" },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files" },
@@ -49,6 +50,13 @@ entry = "typos --force-exclude"
 types = ["text"]
 # Exported diagrams embed font data that reads as misspellings.
 exclude = '\.svg$'
+
+[[repos.hooks]]
+id = "doc-links"
+name = "doc links and paths resolve"
+language = "system"
+entry = "python3 .agents/skills/update-docs/scripts/check_links.py"
+files = '\.md$'
 
 # Preinstalled on GitHub's Ubuntu runners.
 [[repos.hooks]]

@@ -1,0 +1,6 @@
+error: `add` takes 2 arguments, found 1
+ --> wrong_arg_count.sisu:6:11
+  |
+6 |     print(add(1))
+  |           ^^^^^^
+

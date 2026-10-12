@@ -62,7 +62,9 @@ An array is one counted heap block too: a header of two `i64`s, the count and
 the length, then the elements. Each array type gets the same helpers, such as
 `sisu_rc.release.[i64]`, plus `sisu_rc.unique.[i64]`, which copies the block
 before a write when another holder shares it. An index out of bounds calls
-`sisu_panic_bounds`.
+`sisu_panic_bounds`. With `--rc-checks`, these helpers check each count
+before they change it, and `main` calls `sisu_rc_check_exit` before it
+returns.
 
 **LLVM 22**. Runs the `mem2reg` pass, which turns stack slots into registers,
 or with `-O2` the `default<O2>` pipeline. Then it emits x86-64 object code for
@@ -76,7 +78,11 @@ removed whether or not the link succeeds.
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
 into every program. Generated code calls it to print values, to panic and to
 allocate and free objects and arrays: `sisu_print_int`, `sisu_print_bool`,
-`sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and `sisu_free`.
+`sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and `sisu_free`. The
+runtime counts the blocks that are allocated and not yet freed. A program
+built with `--rc-checks` calls `sisu_rc_fault` when a count check fails, and
+`sisu_rc_check_exit` at a normal exit, which fails when that number is not
+zero. Both exit with code 102.
 
 **Diagnostics** (`diagnostic.rs`). The lexer, parser and checker report
 problems as diagnostics, rendered in the style of `rustc`: the message, the

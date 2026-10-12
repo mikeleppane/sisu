@@ -34,13 +34,16 @@ use crate::tir::{
 const POSITIONED: &str =
     "the builder should be positioned in a block while a function body is emitted";
 
-/// Compiles a program that passed `check` into an LLVM module for `machine`.
+/// Compiles a program that passed `check` into an LLVM module for `machine`. With `rc_checks`,
+/// a retain or release of an object whose count is below 1 calls `sisu_rc_fault`, and `@main`
+/// calls `sisu_rc_check_exit` after `sisu.main` returns.
 pub(crate) fn compile<'ctx>(
     context: &'ctx Context,
     program: &Program,
     path: &str,
     source: &str,
     machine: &TargetMachine,
+    rc_checks: bool,
 ) -> Module<'ctx> {
     let module = context.create_module("main");
     // The passes and the object file both read the target from the module.
@@ -98,6 +101,9 @@ pub(crate) fn compile<'ctx>(
         i64_type.into(),
     ];
     let panic_bounds = declare_noreturn(&module, "sisu_panic_bounds", &bounds);
+    // Declared only with the checks, so that a plain build's module stays as it was.
+    let rc_fault =
+        rc_checks.then(|| declare_noreturn(&module, "sisu_rc_fault", &[context.i32_type().into()]));
 
     let mut codegen = Codegen {
         context,
@@ -110,6 +116,7 @@ pub(crate) fn compile<'ctx>(
         alloc,
         free,
         rc_retain,
+        rc_fault,
         program,
         helpers: RefCell::new(HashMap::new()),
         pending: RefCell::new(Vec::new()),
@@ -203,6 +210,8 @@ struct Codegen<'ctx, 'src> {
     free: FunctionValue<'ctx>,
     /// `@sisu_rc.retain`, which every counted type shares.
     rc_retain: FunctionValue<'ctx>,
+    /// `sisu_rc_fault(kind)`, declared only with the RC checks: `Some` turns them on.
+    rc_fault: Option<FunctionValue<'ctx>>,
     program: &'src Program,
     /// The helpers declared so far, by kind and counted type; see `rc::helper`.
     helpers: RefCell<HashMap<(Helper, Type), FunctionValue<'ctx>>>,
@@ -457,6 +466,11 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_call(sisu_main, &[], "")
             .expect(POSITIONED);
+        if self.rc_fault.is_some() {
+            let void = self.context.void_type().fn_type(&[], false);
+            let check_exit = self.module.add_function("sisu_rc_check_exit", void, None);
+            self.call(check_exit, &[]);
+        }
         self.builder
             .build_return(Some(&i32_type.const_zero()))
             .expect(POSITIONED);

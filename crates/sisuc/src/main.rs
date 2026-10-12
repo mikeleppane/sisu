@@ -21,7 +21,7 @@ use diagnostic::Diagnostic;
 use inkwell::context::Context;
 use tir::Program;
 
-const USAGE: &str = "usage: sisuc [-O2] <input.sisu> <output> | [-O2] --emit ir <input.sisu> | --emit tokens|ast|tir|ir-raw <input.sisu> | --check <input.sisu>";
+const USAGE: &str = "usage: sisuc [-O2] [--rc-checks] <input.sisu> <output> | [-O2] --emit ir <input.sisu> | --emit tokens|ast|tir|ir-raw <input.sisu> | --check <input.sisu>";
 
 /// What the command line asks for.
 enum Mode {
@@ -37,6 +37,7 @@ enum Mode {
         input: PathBuf,
         output: PathBuf,
         o2: bool,
+        rc_checks: bool,
     },
 }
 
@@ -54,7 +55,12 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
         [flag, rest @ ..] if flag == "-O2" => (true, rest),
         _ => (false, args),
     };
-    if args.iter().any(|a| a == "-O2") {
+    // `--rc-checks` is accepted only right after an optional `-O2`, and only for a build.
+    let (rc_checks, args) = match args {
+        [flag, rest @ ..] if flag == "--rc-checks" => (true, rest),
+        _ => (false, args),
+    };
+    if args.iter().any(|a| a == "-O2" || a == "--rc-checks") {
         return Err(USAGE.to_string());
     }
     let mode = match args {
@@ -85,10 +91,14 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
                 input: PathBuf::from(input),
                 output: PathBuf::from(output),
                 o2,
+                rc_checks,
             })
         }
         _ => Err(USAGE.to_string()),
     }?;
+    if rc_checks && !matches!(mode, Mode::Build { .. }) {
+        return Err(USAGE.to_string());
+    }
     // The other modes run no optimizer.
     if o2
         && !matches!(
@@ -117,7 +127,12 @@ fn main() -> ExitCode {
     match mode {
         Mode::Emit { stage, input, o2 } => emit(&stage, &input, o2),
         Mode::Check { input } => run_check(&input),
-        Mode::Build { input, output, o2 } => build(&input, &output, o2),
+        Mode::Build {
+            input,
+            output,
+            o2,
+            rc_checks,
+        } => build(&input, &output, o2, rc_checks),
     }
 }
 
@@ -176,7 +191,7 @@ fn emit_ir(path: &str, source: &str, o2: bool) -> ExitCode {
     let context = Context::create();
     let pipeline = codegen::pipeline(o2);
     let printed = codegen::target_machine(o2).and_then(|machine| {
-        let module = codegen::compile(&context, &program, path, source, &machine);
+        let module = codegen::compile(&context, &program, path, source, &machine, false);
         // `LLVMString`'s `Display` quotes and escapes the text; `to_string` does not.
         let before = module.print_to_string().to_string();
         codegen::optimize(&module, &machine, o2)?;
@@ -209,7 +224,7 @@ fn emit_ir_raw(path: &str, source: &str) -> ExitCode {
     };
     let context = Context::create();
     print_or_report(codegen::target_machine(false).and_then(|machine| {
-        let module = codegen::compile(&context, &program, path, source, &machine);
+        let module = codegen::compile(&context, &program, path, source, &machine, false);
         module.verify().map_err(|e| e.to_string())?;
         Ok(module.print_to_string().to_string())
     }))
@@ -224,7 +239,7 @@ fn run_check(input: &Path) -> ExitCode {
 }
 
 /// Compiles `input` into the executable `output`.
-fn build(input: &Path, output: &Path, o2: bool) -> ExitCode {
+fn build(input: &Path, output: &Path, o2: bool, rc_checks: bool) -> ExitCode {
     // `cc -o` would replace the source with the executable.
     let overwrites_input = match (fs::canonicalize(input), fs::canonicalize(output)) {
         (Ok(input), Ok(output)) => input == output,
@@ -244,7 +259,7 @@ fn build(input: &Path, output: &Path, o2: bool) -> ExitCode {
     let Some(program) = front_end(&path, &source) else {
         return ExitCode::FAILURE;
     };
-    match compile(&program, &path, &source, output, o2) {
+    match compile(&program, &path, &source, output, o2, rc_checks) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("sisuc: {message}");
@@ -277,17 +292,19 @@ fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
     }
 }
 
-/// Compiles `program` into the executable `output`, going through a temporary object file.
+/// Compiles `program` into the executable `output`, going through a temporary object file;
+/// with `rc_checks`, the executable checks its reference counts.
 fn compile(
     program: &Program,
     path: &str,
     source: &str,
     output: &Path,
     o2: bool,
+    rc_checks: bool,
 ) -> Result<(), String> {
     let context = Context::create();
     let machine = codegen::target_machine(o2)?;
-    let module = codegen::compile(&context, program, path, source, &machine);
+    let module = codegen::compile(&context, program, path, source, &machine, rc_checks);
     codegen::optimize(&module, &machine, o2)?;
     let code = codegen::object_code(&module, &machine)?;
     // A name of its own, so a user's `<output>.o` is left alone; the nanoseconds pick a

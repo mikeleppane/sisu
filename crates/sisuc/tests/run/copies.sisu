@@ -1,6 +1,7 @@
 fn iterations() -> i64 { 1000 }
 
 // Same `fill` as `handover.sisu`, recursive so that the `-O2` build keeps the call.
+// o2-calls: main fill 1
 fn fill(xs: [i64], v: i64, depth: i64) -> [i64] {
     let mut ys = xs
     if depth > 0 {

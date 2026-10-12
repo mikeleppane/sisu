@@ -78,6 +78,32 @@ fn bare_flag_is_a_usage_error() {
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"));
 }
 
+/// `--rc-checks` is accepted only right after an optional `-O2`, and only for a build.
+#[test]
+fn rc_checks_is_build_only() {
+    let cases: [&[&str]; 7] = [
+        &["--rc-checks", "--emit", "ir", "f.sisu"],
+        &["-O2", "--rc-checks", "--emit", "ir", "f.sisu"],
+        &["--rc-checks", "--check", "f.sisu"],
+        &["--rc-checks", "-O2", "f.sisu", "out"],
+        &["--emit", "ir", "--rc-checks"],
+        &["--check", "--rc-checks"],
+        &["--rc-checks", "--rc-checks", "f.sisu"],
+    ];
+    for args in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(env!("CARGO_TARGET_TMPDIR"))
+            .args(args)
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"),
+            "{args:?}"
+        );
+    }
+}
+
 #[test]
 fn emit_ast() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
@@ -237,7 +263,7 @@ fn mem2reg_removes_every_alloca() {
     // `loops.sisu` declares `let mut sq` inside the loop body: its `alloca` must still sit in the
     // entry block, or `mem2reg` leaves it in place.
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs"))
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run"))
         .args(["--emit", "ir", "loops.sisu"])
         .output()
         .expect("sisuc starts");
@@ -394,7 +420,7 @@ fn emit_ir_raw_parses_back() {
 
 #[test]
 fn emit_ir_raw_is_the_ir_before_mem2reg() {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/programs");
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run");
     let emit = |stage| {
         let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
             .current_dir(dir)

@@ -1,0 +1,5 @@
+fn main() {
+    print(first)
+    let n: i64 = true
+    print(second)
+}

@@ -40,6 +40,12 @@ The program stopping at runtime with `sisu: panic at <file>:<line>:<col>:
 <message>` on stderr and exit code 101.
 _Avoid_: trap, crash, abort
 
+**RC check**:
+A check that a program built with `sisuc --rc-checks` makes on its reference
+counts: no retain or release of a count below 1, and no object still
+allocated at a normal exit. A failed check prints `sisu: rc check: <what>`
+on stderr and exits with code 102.
+
 ## Arrays
 
 **Array**:

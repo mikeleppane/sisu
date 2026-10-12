@@ -6,12 +6,12 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 
 - **A test proves its name.** It must fail when the contract it names breaks. For example, a test that byte offsets are not character offsets needs non-ASCII input. A test that a line break inside `( )` inserts no `Newline` needs the break after a token that could end a statement.
 - **The spec's messages have tests.** Every diagnostic message the spec names has a test that asserts its text and its `line:col`. Every layout rule in "Statements end at newlines" has a case outside `( )` and a case inside.
-- **IR tests check the contract, not LLVM's naming.** Match opcodes, predicates, intrinsic names and block-name prefixes. Value names such as `%0` or `%cmp` change when unrelated code changes. Prove runtime behaviour end to end in `crates/sisuc/tests/programs`.
+- **IR tests check the contract, not LLVM's naming.** Match opcodes, predicates, intrinsic names and block-name prefixes. Value names such as `%0` or `%cmp` change when unrelated code changes. Prove runtime behaviour end to end with a case in `crates/sisuc/tests/run`.
 - **Plan-pinned tests keep their expected values.** When behaviour grows, add a new case.
 - **Every surviving mutant is a finding.** Run `cargo mutants` on the diff (see `AGENTS.md`). Each survivor needs a test that kills it, or a note in the report on why it is equivalent.
-- **A call boundary is proven in `-O2` IR.** A test that relies on a value crossing a real call shows the `call` in the `-O2` output. Matching program output is not enough, because the inliner can fold the call away.
+- **A call boundary carries an `o2-calls` marker.** A `tests/run` case that relies on a value crossing a real call declares it with `// o2-calls: <caller> <callee> <count>`; the harness checks the `-O2` IR (see `docs/development.md`). The judgement left to review: does the case rely on a call it does not mark?
 - **An evaluation-order test fails on any swap.** Give each operand its own visible effect, such as a distinct `print` or a distinct panic, so that running any two in the other order changes the output. `cargo mutants` does not reorder operands, so no survivor flags a test that misses this.
-- **Programs that exit 0 run three ways.** Every such program in `crates/sisuc/tests/programs` goes through `assert_prints_out_file`: plain, under Valgrind, and at `-O2` under Valgrind. `every_program_has_a_run` checks that it is listed. Check each `.out` file by hand against the program, and comment each printed line with its value.
+- **Programs that exit 0 are `tests/run` cases.** Each one runs plain and at `-O2`, both under Valgrind, and with `--rc-checks`. Bless its `.out` with `SISU_BLESS=1`, then check the file by hand against the program, and comment each printed line with its value.
 - **Complexity is tested by timeout, not by timing.** Use an input large enough to hang on a quadratic path, and give the test a nextest `terminate-after` override in `.config/nextest.toml`. Never assert on wall-clock time.
 
 ## Staging work across tasks
