@@ -2,6 +2,10 @@
 
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+/// Number of objects `sisu_alloc` returned that `sisu_free` has not yet freed.
+static LIVE: AtomicU64 = AtomicU64::new(0);
 
 /// Prints `value` and a newline to standard output. Sisu's `print` calls this for an `i64`
 /// argument.
@@ -107,6 +111,7 @@ pub extern "C" fn sisu_alloc(size: usize, align: usize) -> *mut u8 {
     if ptr.is_null() {
         handle_alloc_error(layout)
     }
+    LIVE.fetch_add(1, Relaxed);
     ptr
 }
 
@@ -129,16 +134,62 @@ pub unsafe extern "C" fn sisu_free(ptr: *mut u8, size: usize, align: usize) {
     // SAFETY: the caller upholds the `# Safety` contract above: `ptr` was allocated with
     // `layout` and is not used again.
     unsafe { dealloc(ptr, layout) };
+    LIVE.fetch_sub(1, Relaxed);
+}
+
+/// Exit code for a reference-count check failure under `--rc-checks`.
+const RC_CHECK_EXIT: i32 = 102;
+
+/// Exits with code 102 when any object is still live. Programs compiled with
+/// `--rc-checks` call this on a normal exit to detect leaks.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_rc_check_exit() {
+    let live = LIVE.load(Relaxed);
+    if live != 0 {
+        // Write errors are ignored as in `exit_with_panic`: `eprintln!` would panic.
+        let _ = writeln!(
+            std::io::stderr(),
+            "sisu: rc check: live objects at exit: {live}"
+        );
+        std::process::exit(RC_CHECK_EXIT);
+    }
+}
+
+/// Reports a reference-count fault and exits with code 102. Kind 0 is a retain of an
+/// object whose count is 0, kind 1 a release of one.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
+    let _ = match kind {
+        0 => writeln!(
+            std::io::stderr(),
+            "sisu: rc check: retain of an object whose count is 0"
+        ),
+        1 => writeln!(
+            std::io::stderr(),
+            "sisu: rc check: release of an object whose count is 0"
+        ),
+        other => writeln!(std::io::stderr(), "sisu: rc check: fault {other}"),
+    };
+    std::process::exit(RC_CHECK_EXIT)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{sisu_alloc, sisu_free, sisu_panic_bounds};
+    use super::{sisu_alloc, sisu_free, sisu_panic_bounds, sisu_rc_check_exit, sisu_rc_fault};
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
 
     const ABORT_CASE_VAR: &str = "SISU_RUNTIME_ABORT_CASE";
     const PANIC_BOUNDS_VAR: &str = "SISU_RUNTIME_PANIC_BOUNDS";
+    const RC_CASE_VAR: &str = "SISU_RUNTIME_RC_CASE";
     const SIGABRT: i32 = 6;
 
     #[expect(
@@ -258,5 +309,83 @@ mod tests {
     #[test]
     fn alloc_aborts_when_layout_overflows() {
         assert_child_aborts("overflow");
+    }
+
+    /// Child entry point for the `check_exit_*` and `rc_fault_*` tests. `LIVE` is
+    /// process-global, so each case runs in its own process; a no-op unless the parent set
+    /// the env var.
+    #[expect(unsafe_code, reason = "the test frees raw pointers")]
+    #[test]
+    fn rc_child() {
+        let Ok(case) = std::env::var(RC_CASE_VAR) else {
+            return;
+        };
+        let a = sisu_alloc(8, 8);
+        match case.as_str() {
+            "balanced" => {
+                // SAFETY: `a` came from `sisu_alloc(8, 8)` and is not used afterwards.
+                unsafe { sisu_free(a, 8, 8) };
+                sisu_rc_check_exit();
+            }
+            "leak" => {
+                let _leaked = sisu_alloc(8, 8);
+                // SAFETY: `a` came from `sisu_alloc(8, 8)` and is not used afterwards.
+                unsafe { sisu_free(a, 8, 8) };
+                sisu_rc_check_exit();
+            }
+            "fault1" => sisu_rc_fault(1),
+            "fault0" => sisu_rc_fault(0),
+            "fault7" => sisu_rc_fault(7),
+            other => panic!("unknown rc case {other}"),
+        }
+    }
+
+    fn run_rc_child(case: &str) -> std::process::Output {
+        let exe = std::env::current_exe().expect("test binary path");
+        Command::new(exe)
+            .args(["--exact", "tests::rc_child", "--nocapture"])
+            .env(RC_CASE_VAR, case)
+            .output()
+            .expect("spawn child test")
+    }
+
+    fn assert_rc_exit(case: &str, code: Option<i32>, stderr: &str) {
+        let out = run_rc_child(case);
+        assert_eq!(
+            out.status.code(),
+            code,
+            "child exited with {:?}",
+            out.status
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stderr), stderr);
+    }
+
+    #[test]
+    fn check_exit_passes_when_balanced() {
+        assert_rc_exit("balanced", Some(0), "");
+    }
+
+    #[test]
+    fn check_exit_reports_live_objects() {
+        assert_rc_exit(
+            "leak",
+            Some(102),
+            "sisu: rc check: live objects at exit: 1\n",
+        );
+    }
+
+    #[test]
+    fn rc_fault_exits_102() {
+        assert_rc_exit(
+            "fault1",
+            Some(102),
+            "sisu: rc check: release of an object whose count is 0\n",
+        );
+        assert_rc_exit(
+            "fault0",
+            Some(102),
+            "sisu: rc check: retain of an object whose count is 0\n",
+        );
+        assert_rc_exit("fault7", Some(102), "sisu: rc check: fault 7\n");
     }
 }
