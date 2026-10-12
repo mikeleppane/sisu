@@ -51,6 +51,13 @@ types = ["text"]
 # Exported diagrams embed font data that reads as misspellings.
 exclude = '\.svg$'
 
+[[repos.hooks]]
+id = "doc-links"
+name = "doc links and paths resolve"
+language = "system"
+entry = "python3 .agents/skills/update-docs/scripts/check_links.py"
+files = '\.md$'
+
 # Preinstalled on GitHub's Ubuntu runners.
 [[repos.hooks]]
 id = "shellcheck"

@@ -1,6 +1,7 @@
-"""Checks that relative links and image sources in Markdown files resolve, anchors included.
+"""Checks that relative links and image sources in Markdown files resolve, anchors included, and
+that each repository path written as code in prose, such as `crates/sisuc/src/main.rs`, exists.
 
-Usage: python3 check_links.py FILE.md... Prints each broken link and exits 1 if any.
+Usage: python3 check_links.py FILE.md... Prints each broken link or path and exits 1 if any.
 """
 import re
 import sys
@@ -10,6 +11,10 @@ INLINE = re.compile(r'\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)')
 REF_DEF = re.compile(r'^\s*\[[^\]]+\]:\s+<?(\S+?)>?(?:\s+"[^"]*")?\s*$', re.M)
 ATTR = re.compile(r'\b(src|href|srcset)="([^"]+)"')
 FENCE = re.compile(r'^(```|~~~).*?^\1[^\n]*$', re.M | re.S)
+# A code span naming a path under one of the repository's top-level directories. Placeholders
+# such as `<name>` and globs such as `*.md` do not match, so they are not checked.
+REPO_PATH = re.compile(r'`((?:crates|docs|scripts|\.agents|\.cargo|\.config|\.github)/[\w./-]*)`')
+ROOT = Path(__file__).resolve().parents[4]
 
 
 def prose(path):
@@ -52,6 +57,10 @@ for md in map(Path, sys.argv[1:]):
             bad += 1
         elif anchor and dest.suffix == '.md' and anchor.lower() not in set(anchors(dest)):
             print(f'{md}: missing anchor {target}')
+            bad += 1
+    for path in REPO_PATH.findall(prose(md)):
+        if not (ROOT / path).exists():
+            print(f'{md}: missing path `{path}`')
             bad += 1
 print('broken:', bad)
 sys.exit(1 if bad else 0)
