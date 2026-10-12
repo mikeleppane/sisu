@@ -1,0 +1,12 @@
+# Area: test blind spots
+
+Find compiler behavior that no test would notice breaking. A blind spot is
+a `gap` finding whose suggested test passes today and fails with the
+mutant or change it names.
+
+## Probes
+
+- Mutants: run the toolbox's "Mutants" commands on the files where a silent mistake costs most, in this order: `last_use.rs`, `codegen/rc.rs`, `codegen/array.rs`, `check/place.rs`. Each surviving mutant is a finding unless it is equivalent; say why it is. Each file takes long, so record in `probes.md` which files you finished and which remain.
+- Feature matrix: list every feature in `README.md` "What works today" and every helper in `docs/architecture.md`. For each, find a `tests/run` case that exercises it on an object, on an array, and inside an optional. Each missing cell is a lead; write the probe, and it becomes a finding only when a mutant or a wrong output shows the gap matters.
+- `o2-calls` markers: a `tests/run` case whose output depends on a value crossing a call, with no marker, may pass with the call inlined away. Check each case's `-O2` IR for the calls it relies on.
+- `run-fail` cases run without Valgrind or `--rc-checks`: find the behavior before the panic that nothing checks.
