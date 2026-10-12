@@ -2651,7 +2651,7 @@ fn value_branches_of_different_types_still_mismatch() {
 }
 
 #[test]
-fn if_with_two_never_branches_has_no_value() {
+fn if_with_two_never_branches_never_produces_a_value() {
     never_value(
         "fn f(c: bool) -> i64 {\n    let z = if c { return 1 } else { return 2 }\n    z\n}\nfn main() {}",
         (2, 13),

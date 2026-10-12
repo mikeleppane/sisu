@@ -166,6 +166,7 @@ fn read(input: &Path) -> Option<String> {
             let valid_up_to = e.utf8_error().valid_up_to();
             // The valid text, then U+FFFD where the bad byte is, so the position is the bad
             // byte's even when it starts a line or ends the file.
+            // The prefix is valid UTF-8, so `from_utf8_lossy` borrows it without a copy.
             let shown = String::from_utf8_lossy(&e.as_bytes()[..valid_up_to]) + "\u{FFFD}";
             let at = Span::new(valid_up_to, shown.len());
             report(

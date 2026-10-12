@@ -84,9 +84,14 @@ calls to `<callee>` in the body of `<caller>` after `-O2`. It fails with "no
 function named" if `<caller>` or `<callee>` does not exist, and with
 "takes parameters" if `<caller>` has any: kept as a function of its own, such
 a caller could hold a call that its real call sites decide away, so mark a
-caller without parameters, such as `main`. Interprocedural constant propagation also runs on internal functions,
-so a callee that keeps its calls recurses to a depth that the call sites do
-not fix; see `handover.sisu`.
+caller without parameters, such as `main`. The check measures the marked caller
+as a standalone function. In a real build the caller is inlined, and a call to a
+callee that LLVM infers as `memory(none)` or `readonly` can then be merged with an
+identical call at the call site. So mark calls to callees that write memory, as
+every current marker does. The old external-linkage check measured the standalone
+caller the same way. Interprocedural constant propagation also runs on internal
+functions, so a callee that keeps its calls recurses to a depth that the call sites
+do not fix; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack
 tests in `programs.rs` run.
 

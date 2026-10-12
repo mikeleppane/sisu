@@ -167,7 +167,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `@sisu_rc.eq.<C>(a, b)`: `true` when `a` and `b` are the same pointer (two `null`s
     /// included), `false` when one is `null`, otherwise whether each pair of fields is equal,
-    /// compared in order up to the first difference. It neither retains nor releases. Like
+    /// comparing the chain field last and stopping at the first difference. It neither retains nor releases. Like
     /// `define_drop`, it does not recurse on the chain field: it compares the other fields
     /// of the pair, then steps both objects to the objects their chain fields hold and
     /// repeats the same-pointer and `null` checks, in one frame.

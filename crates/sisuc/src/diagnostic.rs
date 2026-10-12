@@ -98,7 +98,8 @@ impl Diagnostic {
         // Start one line early. The renderer sizes the line-number gutter from the newlines
         // before the last span's end, counted with `lines().count() - 1`, which reads an empty
         // prefix as one newline too many; the whole source never has an empty prefix there. A
-        // window with a line before it matches, and folding hides that line.
+        // window with a line before it matches, and folding hides that line. This is
+        // `newline_count` in annotate-snippets 0.12.16 `render.rs`; recheck it on a version bump.
         let first = first.saturating_sub(1).max(1);
         let from = lines.0[first - 1];
         let to = lines.0.get(last).copied().unwrap_or(source.len());
@@ -147,6 +148,8 @@ impl LineIndex {
 
     /// The 1-based line that `annotate-snippets` puts byte `offset` on. A text that ends in a
     /// line break has no empty last line there, so an offset at its end sits on the line before.
+    /// `source.len()` is the only offset that can lie past the last rendered line, so it is the
+    /// only one clamped.
     fn render_line(&self, source: &str, offset: usize) -> usize {
         let ends_in_break = !source.is_empty() && self.0.last() == Some(&source.len());
         let lines = self.0.len() - usize::from(ends_in_break);

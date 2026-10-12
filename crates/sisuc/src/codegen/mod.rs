@@ -173,7 +173,9 @@ fn declare_noreturn<'ctx>(
 /// The runtime is built with `panic = "abort"`, so it never unwinds. A print takes no
 /// pointer, so it reaches no memory of the module: it uses only the runtime's own buffer and
 /// state (inaccessible memory) and can set `errno`. It can also exit the process, so there
-/// is no `willreturn`.
+/// is no `willreturn`. Treating the runtime's allocator as inaccessible memory matches LLVM's
+/// own annotation of `malloc`. These attributes assume no LTO, no `atexit` handlers and no
+/// module globals that the runtime reaches.
 fn declare_print<'ctx>(
     module: &Module<'ctx>,
     name: &str,
@@ -182,7 +184,7 @@ fn declare_print<'ctx>(
     // LLVM 22's `MemoryEffects` encoding (`llvm/Support/ModRef.h`): two bits per location,
     // `Ref` 1 and `Mod` 2, lowest first: `ArgMem`, `InaccessibleMem`, `ErrnoMem`, then
     // everything else. So this is `ErrnoMem` 3, `InaccessibleMem` 3, `ArgMem` 0, and none for
-    // the rest, globals included.
+    // `Other` and the target locations, globals included.
     const MEMORY: u64 = 0b11_11_00;
     let context = module.get_context();
     let function = module.add_function(name, context.void_type().fn_type(&[param], false), None);
@@ -312,8 +314,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Field `index` of the object `base`, whose type is `ty`. A local base is borrowed: the
     /// local keeps the object alive, so codegen skips its retain and release.
     fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
-        let object = self
-            .borrow_or_expr(base)
+        let (object, borrowed) = self.borrow_or_expr(base);
+        let object = object
             .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
             .into_pointer_value();
         let field = self.field_ptr(&base.ty, object, index);
@@ -326,19 +328,19 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED);
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
-        if !matches!(base.kind, ExprKind::Local(_)) {
+        if !borrowed {
             self.release(object.into(), &base.ty);
         }
         value
     }
 
-    /// `base` for a read that ends before anything can move or replace the base: a local is
-    /// loaded without a retain, and the caller then skips the release; any other expression
-    /// is evaluated as usual.
-    pub(super) fn borrow_or_expr(&mut self, base: &Expr) -> Option<BasicValueEnum<'ctx>> {
+    /// `base` for a read that ends before anything can move or replace the base, and whether
+    /// it was borrowed: a local is loaded without a retain, and the caller then skips the
+    /// release; any other expression is evaluated as usual.
+    pub(super) fn borrow_or_expr(&mut self, base: &Expr) -> (Option<BasicValueEnum<'ctx>>, bool) {
         match base.kind {
-            ExprKind::Local(local) => self.load_local(local),
-            _ => self.expr(base),
+            ExprKind::Local(local) => (self.load_local(local), true),
+            _ => (self.expr(base), false),
         }
     }
 

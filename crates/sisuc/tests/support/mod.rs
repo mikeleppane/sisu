@@ -274,6 +274,9 @@ fn o2_ir(path: &Path, caller: &str) -> (String, String) {
 }
 
 /// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, built once per caller.
+/// The marked caller is measured as a standalone function. In a real build it is inlined, and a
+/// call to a callee that LLVM infers as `memory(none)` or `readonly` can then be merged with an
+/// identical call at the call site. So mark calls to callees that write memory.
 fn o2_calls(path: &Path) {
     let source = fs::read_to_string(path).expect("reads the case");
     let markers: Vec<[&str; 3]> = source

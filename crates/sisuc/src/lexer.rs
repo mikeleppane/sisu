@@ -537,9 +537,10 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
 }
 
 /// Whether `c` is in Unicode category Cf (format). Neither the standard library nor a dependency
-/// has the category, so these are the Cf ranges of Unicode 15.0 (checked against Python's
-/// `unicodedata`); Unicode 16 and later add none to them. A new Cf character prints raw until the
-/// list is extended.
+/// has the category, so these are the Cf ranges of Unicode 17.0 (`DerivedGeneralCategory.txt`),
+/// the `char::UNICODE_VERSION` of the pinned toolchain. Recheck the list on a toolchain upgrade;
+/// a new Cf character prints raw until it is extended. `core` has a private
+/// `char::is_format_control`; replace the list with it if it is ever stabilized.
 fn is_format(c: char) -> bool {
     matches!(c,
         '\u{AD}' | '\u{600}'..='\u{605}' | '\u{61C}' | '\u{6DD}' | '\u{70F}'
@@ -975,7 +976,7 @@ mod tests {
             d.help.as_deref(),
             Some("remove the byte order mark at the start of the file")
         );
-        assert_eq!(line_col("\u{feff}x", d.span.start), (1, 1));
+        assert_eq!(d.span.start, 0);
         let d = lex("fn\u{feff}").expect_err("a BOM is not Sisu");
         assert_eq!(d.help, None);
         let d = lex("\n\u{feff}").expect_err("a BOM is not Sisu");

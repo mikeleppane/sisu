@@ -315,6 +315,41 @@ fn a_truncated_character_at_end_of_file_is_a_diagnostic() {
 }
 
 #[test]
+fn invalid_utf8_after_crlf_line_breaks_counts_each_break_as_one_line() {
+    let (name, name_start) = ("invalid_utf8_crlf.sisu", "invalid_utf8_crlf_start.sisu");
+    let (code, stderr) = check_bytes(name, b"a\r\nb\r\nxy\xff\r\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:3:3\n"
+        )),
+        "{stderr}"
+    );
+    // The bad byte is the first of its line, right after the break.
+    let (_, stderr) = check_bytes(name_start, b"a\r\n\xff\r\n");
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name_start}:2:1\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_encoded_surrogate_is_invalid_utf8_at_its_first_byte() {
+    // `\xed\xa0\x80` would be U+D800, which UTF-8 does not allow.
+    let name = "invalid_utf8_surrogate.sisu";
+    let (code, stderr) = check_bytes(name, b"a\nxy\xed\xa0\x80\n");
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.starts_with(&format!(
+            "error: source is not valid UTF-8\n --> {name}:2:3\n"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn mem2reg_removes_every_alloca() {
     // `loops.sisu` declares `let mut sq` inside the loop body: its `alloca` must still sit in the
     // entry block, or `mem2reg` leaves it in place.

@@ -874,7 +874,7 @@ const DOWN: &str = "fn down(n: i64) -> i64 {\n    if n > 0 { down(n - 1) + 1 } e
 const OUTER_CALLS_DOWN: &str = "fn outer() -> i64 {\n    down(0) + down(5)\n}\n\n\
      fn main() {\n    print(outer())\n    print(outer())\n}\n";
 
-/// `fixture` with the case `// o2-calls: <markers>` and `DOWN`, `body`, expecting `5` twice.
+/// `fixture` with the case `// o2-calls: <markers>` and `DOWN`, `body`, whose run must print `out`.
 fn o2_case(test: &str, markers: &str, body: &str, out: &str) -> PathBuf {
     fixture(
         test,

@@ -372,8 +372,14 @@ fn drop_frees_with_the_allocated_layout() {
     );
     assert_eq!((size.as_str(), align.as_str()), ("32", "8"), "{class}");
     // An array: the 16-byte header plus `len` elements, aligned to 8; the element sizes are
-    // those of `literal_allocates_header_and_elements`, recomputed from the length.
-    for (helper, element_size) in [("[i64]", 8), ("[bool]", 1), ("[i64?]", 16)] {
+    // those of `literal_allocates_header_and_elements`, recomputed from the length. The literal
+    // of each type in `main` allocates `16 + len * element_size` bytes, the size the drop frees.
+    for (helper, element_size, len) in [("[i64]", 8, 3), ("[bool]", 1, 2), ("[i64?]", 16, 2)] {
+        let allocated = 16 + len * element_size;
+        assert!(
+            ir.contains(&format!("call ptr @sisu_alloc(i64 {allocated}, i64 8)")),
+            "{helper}: no alloc of {allocated} bytes in\n{ir}"
+        );
         let body = function_body(
             &ir,
             &format!("define internal void @\"sisu_rc.drop.{helper}\"(ptr"),

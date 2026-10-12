@@ -46,6 +46,14 @@ fn infix_op(kind: &TokenKind) -> Option<(u8, Infix)> {
     })
 }
 
+/// Whether `kind` begins a postfix link (`.`, `?.` or `[`); `postfix` and `at_min_literal` share it.
+fn starts_postfix(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Dot | TokenKind::QuestionDot | TokenKind::LBracket
+    )
+}
+
 fn compare_op(kind: &TokenKind) -> Option<CompareOp> {
     Some(match kind {
         TokenKind::Lt => CompareOp::Lt,
@@ -106,7 +114,8 @@ impl Parser<'_> {
     }
 
     /// Parses one child of a node whose children start at depth `base`, and raises `reach`, the
-    /// height of the node so far, to the child's.
+    /// height of the node so far, to the child's. Every parse function follows the same pattern:
+    /// reset `self.depth` to the base before each child, and keep the maximum in `reach`.
     fn child<T>(
         &mut self,
         base: usize,
@@ -428,12 +437,17 @@ impl Parser<'_> {
                 self.bump();
                 let name = self.ident("a variable name")?;
                 self.expect(&TokenKind::In)?;
-                // A range is only valid here, so the header reads its two sides itself.
-                let first = self.child(base, &mut reach, |p| p.binary(1))?;
+                // A range is only valid here, so the header reads its two sides itself, counted
+                // like `expr` does.
+                let side = |p: &mut Self| {
+                    p.descend()?;
+                    p.binary(1)
+                };
+                let first = self.child(base, &mut reach, side)?;
                 let source = if self.eat(&TokenKind::DotDot).is_some() {
                     ForSource::Range {
                         start: first,
-                        end: self.child(base, &mut reach, |p| p.binary(1))?,
+                        end: self.child(base, &mut reach, side)?,
                     }
                 } else {
                     ForSource::Array(first)
@@ -686,11 +700,7 @@ impl Parser<'_> {
     /// `?.` or `[` would apply to the literal before the `-` does, so that literal is too large.
     fn at_min_literal(&self) -> bool {
         // `Int` is never `Eof`, so the token after it exists.
-        self.at(&TokenKind::Int(MIN_MAGNITUDE))
-            && !matches!(
-                self.tokens[self.pos + 1].kind,
-                TokenKind::Dot | TokenKind::QuestionDot | TokenKind::LBracket
-            )
+        self.at(&TokenKind::Int(MIN_MAGNITUDE)) && !starts_postfix(&self.tokens[self.pos + 1].kind)
     }
 
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
@@ -717,7 +727,8 @@ impl Parser<'_> {
                 };
                 continue;
             }
-            if !self.at(&TokenKind::Dot) && !self.at(&TokenKind::QuestionDot) {
+            // `[` was handled above, so only `.` and `?.` reach here.
+            if !starts_postfix(&self.peek().kind) {
                 return Ok(expr);
             }
             self.reach(wrapped)?;
