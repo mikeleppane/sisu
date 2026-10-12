@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// `sisuc [-O2] <input> <output>`, run from `dir`, after asserting the runtime archive exists.
-pub(crate) fn sisuc(dir: &Path, input: &str, output: &Path, o2: bool) -> Command {
+/// `sisuc <flags> <input> <output>`, run from `dir`, after asserting the runtime archive exists.
+pub(crate) fn sisuc(dir: &Path, input: &str, output: &Path, flags: &[&str]) -> Command {
     let sisuc = Path::new(env!("CARGO_BIN_EXE_sisuc"));
     assert!(
         sisuc.with_file_name("libsisu_runtime.a").exists(),
@@ -14,17 +14,13 @@ pub(crate) fn sisuc(dir: &Path, input: &str, output: &Path, o2: bool) -> Command
          script builds it, or run `cargo build -p sisu-runtime`"
     );
     let mut command = Command::new(sisuc);
-    command.current_dir(dir);
-    if o2 {
-        command.arg("-O2");
-    }
-    command.arg(input).arg(output);
+    command.current_dir(dir).args(flags).arg(input).arg(output);
     command
 }
 
-/// Compiles `<dir>/<name>.sisu`, run from `dir`, into `exe`, at `-O2` if `o2`.
-pub(crate) fn compile(dir: &Path, name: &str, exe: &Path, o2: bool) {
-    let out = sisuc(dir, &format!("{name}.sisu"), exe, o2)
+/// Compiles `<dir>/<name>.sisu`, run from `dir`, into `exe`, passing `flags` to `sisuc`.
+pub(crate) fn compile(dir: &Path, name: &str, exe: &Path, flags: &[&str]) {
+    let out = sisuc(dir, &format!("{name}.sisu"), exe, flags)
         .output()
         .expect("sisuc starts");
     assert_eq!(
@@ -49,10 +45,11 @@ pub(crate) fn valgrind(exe: &Path) -> Output {
 }
 
 /// Checks a `tests/run` case: both builds differ, exit 0 with empty stderr, agree on stdout, and
-/// print the same under Valgrind, which finds no leak or memory error; then that stdout is
-/// `<name>.out`. With `bless`, rewrites `<name>.out` instead, after every other check passed.
+/// print the same under Valgrind, which finds no leak or memory error, and in a `--rc-checks`
+/// build, which finds no count fault or live object at exit; then that stdout is `<name>.out`.
+/// With `bless`, rewrites `<name>.out` instead, after every other check passed.
 pub(crate) fn run(path: &Path, bless: bool) {
-    let [o0, o2] = build(path);
+    let [o0, o2, rc] = build(path, [O0, O2, RC_CHECKS]);
     assert!(
         fs::read(&o0).expect("reads the plain build")
             != fs::read(&o2).expect("reads the -O2 build"),
@@ -89,6 +86,22 @@ pub(crate) fn run(path: &Path, bless: bool) {
             exe.display()
         );
     }
+    let checked = Command::new(&rc).output().expect("the program starts");
+    let rc_stderr = String::from_utf8_lossy(&checked.stderr);
+    assert_eq!(
+        checked.status.code(),
+        Some(0),
+        "{}: {:?}\n{rc_stderr}",
+        rc.display(),
+        checked.status
+    );
+    assert_eq!(rc_stderr, "", "{}", rc.display());
+    assert_eq!(
+        String::from_utf8_lossy(&checked.stdout),
+        stdout,
+        "{}",
+        rc.display()
+    );
     // Last, so that a run failing any check above writes nothing.
     expect_files(&[(path.with_extension("out"), stdout)], bless);
 }
@@ -97,7 +110,7 @@ pub(crate) fn run(path: &Path, bless: bool) {
 /// and `<name>.err` on stderr. With `bless`, rewrites both files instead. No Valgrind: a panic
 /// exits without releasing.
 pub(crate) fn run_fail(path: &Path, bless: bool) {
-    let [out0, out2] = build(path).map(|exe| {
+    let [out0, out2] = build(path, [O0, O2]).map(|exe| {
         let out = Command::new(&exe).output().expect("the program starts");
         assert_eq!(
             out.status.code(),
@@ -159,17 +172,23 @@ pub(crate) fn orphan_check(path: &Path) {
     );
 }
 
-/// Compiles `path` without and with `-O2` into its `case_dir`, and returns both executables.
-fn build(path: &Path) -> [PathBuf; 2] {
+/// The builds `build` makes: the executable's name in the case directory, and `sisuc`'s flags.
+type Build = (&'static str, &'static [&'static str]);
+const O0: Build = ("O0", &[]);
+const O2: Build = ("O2", &["-O2"]);
+const RC_CHECKS: Build = ("rc", &["--rc-checks"]);
+
+/// Compiles `path` once for each of `builds` into its `case_dir`, and returns the executables.
+fn build<const N: usize>(path: &Path, builds: [Build; N]) -> [PathBuf; N] {
     let dir = path.parent().expect("a case should sit in a directory");
     let name = path
         .file_stem()
         .and_then(OsStr::to_str)
         .expect("a case's name should be UTF-8");
     let out = case_dir(path);
-    [false, true].map(|o2| {
-        let exe = out.join(if o2 { "O2" } else { "O0" });
-        compile(dir, name, &exe, o2);
+    builds.map(|(file, flags)| {
+        let exe = out.join(file);
+        compile(dir, name, &exe, flags);
         exe
     })
 }

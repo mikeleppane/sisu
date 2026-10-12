@@ -78,6 +78,32 @@ fn bare_flag_is_a_usage_error() {
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"));
 }
 
+/// `--rc-checks` is accepted only right after an optional `-O2`, and only for a build.
+#[test]
+fn rc_checks_is_build_only() {
+    let cases: [&[&str]; 7] = [
+        &["--rc-checks", "--emit", "ir", "f.sisu"],
+        &["-O2", "--rc-checks", "--emit", "ir", "f.sisu"],
+        &["--rc-checks", "--check", "f.sisu"],
+        &["--rc-checks", "-O2", "f.sisu", "out"],
+        &["--emit", "ir", "--rc-checks"],
+        &["--check", "--rc-checks"],
+        &["--rc-checks", "--rc-checks", "f.sisu"],
+    ];
+    for args in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(env!("CARGO_TARGET_TMPDIR"))
+            .args(args)
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"),
+            "{args:?}"
+        );
+    }
+}
+
 #[test]
 fn emit_ast() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));

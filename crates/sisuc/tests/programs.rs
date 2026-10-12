@@ -24,7 +24,7 @@ fn compile_to_tmp(dir: &Path, name: &str, o2: bool) -> PathBuf {
     } else {
         name.to_string()
     });
-    support::compile(dir, name, &exe, o2);
+    support::compile(dir, name, &exe, if o2 { &["-O2"] } else { &[] });
     exe
 }
 
@@ -427,6 +427,51 @@ fn valgrind_reports_a_cycle() {
     );
 }
 
+/// Writes `source` to `<CARGO_TARGET_TMPDIR>/<name>.sisu`, builds it with `--rc-checks`, at
+/// `-O2` if `o2`, into `<name>-rc` or `<name>-rc-O2`, and runs it.
+fn run_rc_checked(name: &str, source: &str, o2: bool) -> Output {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join(format!("{name}.sisu")), source).expect("writes");
+    let (exe, flags): (_, &[&str]) = if o2 {
+        (format!("{name}-rc-O2"), &["-O2", "--rc-checks"])
+    } else {
+        (format!("{name}-rc"), &["--rc-checks"])
+    };
+    let exe = dir.join(exe);
+    support::compile(dir, name, &exe, flags);
+    Command::new(exe).output().expect("the program starts")
+}
+
+/// The cycle Valgrind reports, `--rc-checks` reports too, with or without `-O2`: one object is
+/// live at exit.
+#[test]
+fn rc_checks_report_a_cycle() {
+    for o2 in [false, true] {
+        let out = run_rc_checked("rc_cycle", LEAKS_A_CYCLE, o2);
+        assert_eq!(out.status.code(), Some(102), "o2: {o2}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "sisu: rc check: live objects at exit: 1\n"
+        );
+    }
+}
+
+/// A panic exits 101 without releasing, so the object `b` still holds is no leak to report.
+#[test]
+fn rc_checks_ignore_a_panic() {
+    let out = run_rc_checked(
+        "rc_panic",
+        "class Box {\n    v: i64\n}\n\nfn main() {\n    let b = Box(v: 1)\n    let z = 0\n    print(1 / z)\n    print(b.v)\n}\n",
+        false,
+    );
+    assert_panics(
+        &out,
+        "",
+        "sisu: panic at rc_panic.sisu:8:11: division by zero\n",
+    );
+}
+
 #[test]
 fn panic_exits_101_when_stderr_write_fails() {
     // Writes to /dev/full fail with ENOSPC, so the runtime's panic line cannot be written.
@@ -453,7 +498,7 @@ fn output_naming_the_input_is_refused() {
     let input = dir.join("overwrite_input.sisu");
     fs::write(&input, source).expect("writes");
     for output in ["overwrite_input.sisu", "./overwrite_input.sisu"] {
-        let out = support::sisuc(dir, "overwrite_input.sisu", Path::new(output), false)
+        let out = support::sisuc(dir, "overwrite_input.sisu", Path::new(output), &[])
             .output()
             .expect("sisuc starts");
         assert_eq!(out.status.code(), Some(1), "output {output}");
@@ -485,7 +530,7 @@ fn existing_object_file_survives_a_build() {
     fs::write(dir.join("keep_object.sisu"), "fn main() {}\n").expect("writes");
     fs::write(dir.join("keep_object.o"), "not sisuc's").expect("writes");
     let tmp = empty_dir("keep_object_tmp");
-    let out = support::sisuc(dir, "keep_object.sisu", &dir.join("keep_object"), false)
+    let out = support::sisuc(dir, "keep_object.sisu", &dir.join("keep_object"), &[])
         .env("TMPDIR", &tmp)
         .output()
         .expect("sisuc starts");
@@ -509,7 +554,7 @@ fn failed_link_leaves_no_object_file() {
     // `cc` cannot write an executable over a directory.
     let output = empty_dir("link_fails");
     let tmp = empty_dir("link_fails_tmp");
-    let out = support::sisuc(dir, "link_fails.sisu", &output, false)
+    let out = support::sisuc(dir, "link_fails.sisu", &output, &[])
         .env("TMPDIR", &tmp)
         .output()
         .expect("sisuc starts");
@@ -528,7 +573,7 @@ fn build_tmp(name: &str, source: &str) -> (Output, PathBuf) {
     let exe = dir.join(name);
     // It is absent on the first run, so a failure here is expected and harmless.
     let _ = fs::remove_file(&exe);
-    let out = support::sisuc(dir, &format!("{name}.sisu"), &exe, false)
+    let out = support::sisuc(dir, &format!("{name}.sisu"), &exe, &[])
         .output()
         .expect("sisuc starts");
     (out, exe)

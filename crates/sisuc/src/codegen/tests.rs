@@ -6,12 +6,17 @@ use crate::parser::parse;
 /// Lexes, parses, checks (no errors allowed), marks last uses in and compiles `src`, then
 /// verifies the module.
 fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
+    compiled_with(context, src, false)
+}
+
+/// `compiled`, with the RC checks if `rc_checks`.
+fn compiled_with<'ctx>(context: &'ctx Context, src: &str, rc_checks: bool) -> Module<'ctx> {
     let program = parse(&lex(src).expect("source lexes")).expect("source parses");
     let (program, diagnostics) = check(&program);
     let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
     crate::last_use::mark(&mut program);
     let machine = target_machine(false).expect("the host is a target");
-    let module = compile(context, &program, "test.sisu", src, &machine);
+    let module = compile(context, &program, "test.sisu", src, &machine, rc_checks);
     if let Err(e) = module.verify() {
         panic!("{e}\n{}", module.print_to_string());
     }
@@ -426,6 +431,37 @@ fn field_read_retains_before_releasing_base() {
         ),
     ];
     assert!(order.is_sorted(), "{order:?} in\n{main}");
+}
+
+#[test]
+fn rc_checks_guard_retain_release_and_exit() {
+    let context = Context::create();
+    // A chain field: its drop loop's phi must name the block the checked decrement ends in.
+    let src = format!("class P {{\n    next: P?\n}}\n{FIB}");
+    let ir = compiled_with(&context, &src, true)
+        .print_to_string()
+        .to_string();
+    for wanted in [
+        "call void @sisu_rc_fault(i32 0)",
+        "call void @sisu_rc_fault(i32 1)",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+    let main = function_body(&ir, "define i32 @main()");
+    let (_, after_check) = main
+        .split_once("call void @sisu_rc_check_exit()")
+        .unwrap_or_else(|| panic!("no exit check in\n{main}"));
+    assert!(after_check.contains("ret i32 0"), "{main}");
+}
+
+#[test]
+fn plain_build_has_no_rc_checks() {
+    let context = Context::create();
+    let src = format!("class P {{}}\n{FIB}");
+    let ir = compiled(&context, &src).print_to_string().to_string();
+    for unwanted in ["sisu_rc_fault", "sisu_rc_check_exit"] {
+        assert!(!ir.contains(unwanted), "{unwanted:?} in\n{ir}");
+    }
 }
 
 #[test]
