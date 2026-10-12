@@ -338,6 +338,27 @@ fn drop_loops_on_the_chain_field() {
 }
 
 #[test]
+fn eq_loops_on_the_chain_field() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class Node {\n    value: i64\n    next: Node?\n}\nclass First {\n    next: First?\n    value: i64\n}\nfn same(a: Node?, b: Node?, c: First?, d: First?) -> bool { a == b && c == d }\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    // The chain field is compared in a loop, in either field order: no `eq` calls itself.
+    for (class, header) in [
+        ("Node", "define i1 @sisu_rc.eq.Node(ptr"),
+        ("First", "define i1 @sisu_rc.eq.First(ptr"),
+    ] {
+        let body = function_body(&ir, header);
+        assert!(body.contains("phi ptr"), "no loop in\n{body}");
+        let own_call = format!("call i1 @sisu_rc.eq.{class}(");
+        assert!(!body.contains(&own_call), "{own_call:?} in\n{body}");
+    }
+}
+
+#[test]
 fn helper_names_cannot_collide() {
     let context = Context::create();
     let ir = compiled(

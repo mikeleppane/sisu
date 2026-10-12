@@ -1,0 +1,50 @@
+// `==` follows the chain field (`next`) pair by pair: the lists below differ only in the last
+// node, in their length, or not at all, with the chain field last (`Last`) and first (`First`).
+class Last {
+    value: i64
+    next: Last?
+}
+
+class First {
+    next: First?
+    value: i64
+}
+
+fn last(values: [i64]) -> Last? {
+    let mut head: Last? = None
+    for value in values {
+        head = Last(value: value, next: head)
+    }
+    head
+}
+
+fn first(values: [i64]) -> First? {
+    let mut head: First? = None
+    for value in values {
+        head = First(next: head, value: value)
+    }
+    head
+}
+
+fn main() {
+    let a = last([3, 2, 1])
+    print(a == a)
+    print(a == last([3, 2, 1]))
+    print(a == last([3, 2, 9]))
+    print(a == last([9, 2, 1]))
+    print(a == last([2, 1]))
+    print(last([2, 1]) == a)
+    print(a == None)
+    print(last([]) == last([]))
+    print(a != last([3, 2, 9]))
+
+    let b = first([3, 2, 1])
+    print(b == b)
+    print(b == first([3, 2, 1]))
+    print(b == first([3, 2, 9]))
+    print(b == first([9, 2, 1]))
+    print(b == first([2, 1]))
+    print(first([2, 1]) == b)
+    print(b == None)
+    print(first([]) == first([]))
+}

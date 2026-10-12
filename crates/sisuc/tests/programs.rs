@@ -37,7 +37,7 @@ fn assert_panics(out: &Output, stdout: &str, stderr: &str) {
 
 /// The programs the small-stack tests run. They are not `tests/run` cases: a million objects
 /// under Valgrind is too slow, and `deepchain` overflows on purpose.
-const SMALL_STACK: [&str; 3] = ["longlist", "rightskew", "deepchain"];
+const SMALL_STACK: [&str; 4] = ["longlist", "rightskew", "deepchain", "eqlist"];
 
 /// `tests/programs` holds exactly the `SMALL_STACK` programs; every other program is a case in
 /// `tests/run` or `tests/run-fail`.
@@ -147,7 +147,12 @@ fn allocation_counts() {
 
 /// Compiles `tests/programs/<name>.sisu` without `-O2` and runs it under a 256 KiB stack.
 fn run_in_small_stack(name: &str) -> Output {
-    let exe = compile_to_tmp(Path::new(PROGRAMS), name, false);
+    run_in_small_stack_at(name, false)
+}
+
+/// `run_in_small_stack` with `-O2` if `o2`.
+fn run_in_small_stack_at(name: &str, o2: bool) -> Output {
+    let exe = compile_to_tmp(Path::new(PROGRAMS), name, o2);
     Command::new("sh")
         .args(["-c", r#"ulimit -c 0 && ulimit -s 256 && exec "$0""#])
         .arg(exe)
@@ -176,6 +181,16 @@ fn longlist_frees_in_constant_stack() {
 #[test]
 fn right_skewed_tree_frees_in_constant_stack() {
     assert_small_stack_prints("rightskew", "1000000\n");
+}
+
+/// `==` on two lists of 1 000 000 nodes, with the chain field last and first, at both levels.
+#[test]
+fn equal_long_lists_compare_in_constant_stack() {
+    for o2 in [false, true] {
+        let out = run_in_small_stack_at("eqlist", o2);
+        assert_eq!(out.status.code(), Some(0), "-O2 {o2}: {:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "true\ntrue\n");
+    }
 }
 
 /// The control for `longlist_frees_in_constant_stack`: a drop that recurses once per object
