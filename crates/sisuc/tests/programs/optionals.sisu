@@ -3,9 +3,9 @@
 class E {}
 
 class P {
-    var n: i64?
-    var b: bool?
-    let e: E?
+    mut n: i64?
+    mut b: bool?
+    e: E?
 
     fn get(self) -> i64? {
         self.n
@@ -22,13 +22,13 @@ class P {
 
 // `Pt.tag` names a class declared later, so `@sisu_rc.eq.Pt` calls a helper defined after it.
 class Pt {
-    let x: i64
-    let y: i64?
-    let tag: Tag?
+    x: i64
+    y: i64?
+    tag: Tag?
 }
 
 class Tag {
-    let k: i64
+    k: i64
 }
 
 fn some(x: i64) -> i64? {
@@ -86,7 +86,7 @@ fn loud_object(x: i64) -> E {
 fn scalar_calls() {
     let a = some(1)
     let b = none()
-    var c: i64? = None
+    let mut c: i64? = None
     c = 3
     print(a ?? 0)
     print(b ?? -1)
@@ -103,7 +103,7 @@ fn scalar_calls() {
     print(climb(None, 2) ?? -1)
     print(toggle(true, 3) ?? true)
     print(toggle(None, 2) == None)
-    var k: i64? = 3
+    let mut k: i64? = 3
     while let v = k {
         print(v)
         k = countdown(v)

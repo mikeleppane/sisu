@@ -1,8 +1,8 @@
 // Each function is one case. Valgrind checks that every object it makes is freed exactly once.
 class P {
-    var x: i64
-    var y: bool
-    var n: i64
+    mut x: i64
+    mut y: bool
+    mut n: i64
 
     fn bump(self, by: i64) -> i64 {
         self.n += by
@@ -14,8 +14,8 @@ class P {
 class E {}
 
 class T {
-    var count: i64
-    var e: E
+    mut count: i64
+    mut e: E
 
     fn me(self) -> T {
         self
@@ -61,7 +61,7 @@ fn discarded(c: bool) {
     T(count: 2, e: E()).me()
     ends_in_object()
     if c { E() }
-    var i = 0
+    let mut i = 0
     while i < 3 {
         i += 1
         E()
@@ -71,8 +71,8 @@ fn discarded(c: bool) {
 
 // One object per iteration, dropped at the end of each.
 fn in_a_loop() {
-    var i = 0
-    var sum = 0
+    let mut i = 0
+    let mut sum = 0
     while i < 5 {
         let t = T(count: i, e: E())
         sum += t.count

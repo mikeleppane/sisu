@@ -177,7 +177,7 @@ fn zeroext(context: &Context) -> Attribute {
 enum Slot<'ctx> {
     /// A `let` binding or a parameter that is not counted: an SSA value.
     Value(BasicValueEnum<'ctx>),
-    /// A `var` or a counted local: an `alloca` of this type, loaded and stored until
+    /// A variable or a counted local: an `alloca` of this type, loaded and stored until
     /// `mem2reg` promotes it. A `Move` stores `null` into a counted local's slot.
     Alloca(PointerValue<'ctx>, BasicTypeEnum<'ctx>),
 }
@@ -407,7 +407,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn define(&mut self, f: &Function, function: FunctionValue<'ctx>) {
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
-        // Every `var` and counted local gets its `alloca` up front, in the entry block: see
+        // Every variable and counted local gets its `alloca` up front, in the entry block: see
         // `entry_alloca`.
         self.locals = f
             .locals
@@ -530,7 +530,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 };
                 let Some(Slot::Alloca(ptr, ty)) = self.locals[local.0] else {
                     unreachable!(
-                        "the checker should only let a `var` be assigned, and every `var` has an `alloca`"
+                        "the checker should only let a variable be assigned, and every variable has an `alloca`"
                     )
                 };
                 // The value first, then the store, then the release of the old value.
@@ -798,7 +798,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
-    /// An `alloca` at the start of the function's entry block, wherever the `var` sits:
+    /// An `alloca` at the start of the function's entry block, wherever the variable sits:
     /// `mem2reg` promotes only entry-block allocas, and one in a loop body would grow the
     /// stack on every iteration.
     fn entry_alloca(&self, ty: BasicTypeEnum<'ctx>, name: &str) -> PointerValue<'ctx> {
@@ -1092,7 +1092,7 @@ pub(crate) fn target_machine(o2: bool) -> Result<TargetMachine, String> {
         .ok_or_else(|| "LLVM cannot create a target machine for this host".to_string())
 }
 
-/// The pass pipeline: `default<O2>` with `-O2`, else `mem2reg`, which turns each `var`'s
+/// The pass pipeline: `default<O2>` with `-O2`, else `mem2reg`, which turns each variable's
 /// `alloca` into SSA values.
 pub(crate) fn pipeline(o2: bool) -> &'static str {
     if o2 { "default<O2>" } else { "mem2reg" }

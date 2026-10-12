@@ -7,7 +7,7 @@ fn lowers_for_over_array() {
     contains(
         "fn f(xs: [i64]) { for x in xs { print(x) } }\nfn main() {}",
         &[
-            "(block (let #1 xs#0) (let #2 (len #1)) (var #3 0) (loop (block (if (< #3 #2) (block (let x#4 (index #1 #3)) (= #3 (+ #3 1)) (block (print x#4))) (block (break))))))",
+            "(block (let #1 xs#0) (let #2 (len #1)) (let mut #3 0) (loop (block (if (< #3 #2) (block (let x#4 (index #1 #3)) (= #3 (+ #3 1)) (block (print x#4))) (block (break))))))",
         ],
     );
 }
@@ -17,7 +17,7 @@ fn lowers_for_over_range() {
     contains(
         "fn f(n: i64) { for i in 0..n { print(i) } }\nfn main() {}",
         &[
-            "(block (var #1 0) (let #2 n#0) (loop (block (if (< #1 #2) (block (let i#3 #1) (= #1 (+ #1 1)) (block (print i#3))) (block (break))))))",
+            "(block (let mut #1 0) (let #2 n#0) (loop (block (if (< #1 #2) (block (let i#3 #1) (= #1 (+ #1 1)) (block (print i#3))) (block (break))))))",
         ],
     );
 }

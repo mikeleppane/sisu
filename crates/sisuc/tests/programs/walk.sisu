@@ -4,7 +4,7 @@ fn iterations() -> i64 { 1000 }
 // elements allocate nothing.
 fn main() {
     let xs = [1; 10_000]
-    var total = 0
+    let mut total = 0
     for round in 0..iterations() {
         for x in xs { total += x }
     }

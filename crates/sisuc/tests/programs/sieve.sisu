@@ -1,12 +1,12 @@
 // Counts the primes up to 100 000 with a sieve. `is_prime` is written in place and handed to
 // the caller: no copy, because the array is never shared.
 fn sieve(n: i64) -> [bool] {
-    var is_prime = [true; n + 1]
+    let mut is_prime = [true; n + 1]
     is_prime[0] = false
     is_prime[1] = false
     for i in 2..n + 1 {
         if is_prime[i] {
-            var j = i * i
+            let mut j = i * i
             while j <= n {
                 is_prime[j] = false
                 j += i
@@ -17,7 +17,7 @@ fn sieve(n: i64) -> [bool] {
 }
 
 fn main() {
-    var count = 0
+    let mut count = 0
     for p in sieve(100_000) {
         if p { count += 1 }
     }

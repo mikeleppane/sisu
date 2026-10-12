@@ -23,7 +23,7 @@ These are adopted. Together they give Sisu a working imperative core.
 These came out of the review of the milestone 1 spec and are now part of it:
 
 - `let` immutable by default, `var` mutable (ADR 0002), with local type
-  inference. Milestone 4 renames `var` to `let mut` (ADR 0011).
+  inference. Milestone 4 renamed `var` to `let mut` (ADR 0011).
 - `if` is an expression.
 - No semicolons; statements end at newlines (ADR 0001).
 - One built-in `print(e)` for `i64` and `bool` instead of `print_int`.
@@ -595,7 +595,7 @@ These do not make code nicer to write, so they wait:
 - More lint checks as compiler warnings, as in Go's `vet` and `rustc`'s
   built-in lints, with no separate tool and no configuration file. The
   checker already warns about code after `return`, `break` or `continue`, and
-  about a `var` (`let mut` from milestone 4) that is never reassigned, and
+  about a `let mut` (`var` before milestone 4) that is never reassigned, and
   comparing a value that is not optional with `None` is an error. Still to
   come:
   - a class with no `mut` field that nothing compares with `is`, suggesting

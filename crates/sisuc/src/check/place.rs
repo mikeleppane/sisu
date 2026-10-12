@@ -151,11 +151,13 @@ impl Checker {
                             d.label("cannot assign twice")
                         }
                         .secondary(declared, "declared with `let` here")
-                        .help("declare it with `var`"),
+                        .help("declare it with `let mut`"),
                     ),
                     BindingKind::Param => Some(
                         d.secondary(declared, "declared as a parameter here")
-                            .help(format!("copy it into a `var`: `var {name} = {name}`")),
+                            .help(format!(
+                                "copy it into a variable: `let mut {name} = {name}`"
+                            )),
                     ),
                     BindingKind::Unwrapped(keyword) => {
                         Some(d.secondary(declared, format!("bound by `{keyword}` here")))
@@ -180,8 +182,8 @@ impl Checker {
                 let (ty, writable) = (field.ty.clone(), field.mutable);
                 if !writable {
                     let d = cannot_assign(span, &field.name.name, element)
-                        .secondary(field.name.span, "declared with `let` here")
-                        .help("declare it with `var`");
+                        .secondary(field.name.span, "declared without `mut` here")
+                        .help("mark the field `mut`");
                     self.diagnostics.push(d);
                 }
                 CheckedPlace {

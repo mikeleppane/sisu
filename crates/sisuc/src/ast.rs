@@ -338,8 +338,8 @@ impl fmt::Display for Class {
         for member in &self.members {
             match member {
                 Member::Field(field) => {
-                    let keyword = if field.mutable { "var" } else { "let" };
-                    write!(f, " ({keyword} {} {})", field.name.name, field.ty)?;
+                    let keyword = if field.mutable { "mut " } else { "" };
+                    write!(f, " ({keyword}{} {})", field.name.name, field.ty)?;
                 }
                 Member::Method(method) => write!(f, " {method}")?,
             }
@@ -396,7 +396,7 @@ impl fmt::Display for Stmt {
                 ty,
                 init,
             } => {
-                let keyword = if *mutable { "var" } else { "let" };
+                let keyword = if *mutable { "let mut" } else { "let" };
                 write!(f, "({keyword} {}", name.name)?;
                 if let Some(ty) = ty {
                     write!(f, " {ty}")?;
@@ -636,7 +636,7 @@ mod tests {
         };
         assert_eq!(
             program.to_string(),
-            "(fn is_prime ((n i64)) bool (block (var d i64 (- 2)) (= d (+ d 1)) \
+            "(fn is_prime ((n i64)) bool (block (let mut d i64 (- 2)) (= d (+ d 1)) \
              (while (< a b <= c) (block)) \
              (if (! true) (block (return)) (block (return (< a b <= c))))))\n\
              (fn g () unit (block))"

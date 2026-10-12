@@ -137,11 +137,11 @@ mod tests {
 
     #[test]
     fn renders_warning() {
-        let source = "fn main() {\n    var count = 0\n}\n";
-        let rendered = Diagnostic::warning(Span::new(20, 25), "`count` is never reassigned")
+        let source = "fn main() {\n    let mut count = 0\n}\n";
+        let rendered = Diagnostic::warning(Span::new(24, 29), "`count` is never reassigned")
             .help("declare it with `let`")
             .render("w.sisu", source);
-        assert!(rendered.starts_with("warning: `count` is never reassigned\n --> w.sisu:2:9"));
+        assert!(rendered.starts_with("warning: `count` is never reassigned\n --> w.sisu:2:13"));
         assert!(rendered.ends_with("= help: declare it with `let`"));
     }
 
@@ -151,7 +151,7 @@ mod tests {
         let d = Diagnostic::error(Span::new(30, 35), "cannot assign to `n`")
             .label("cannot assign twice")
             .secondary(Span::new(20, 21), "declared with `let` here")
-            .help("declare it with `var`");
+            .help("declare it with `let mut`");
         let expected = "\
 error: cannot assign to `n`
  --> test.sisu:3:5
@@ -161,7 +161,7 @@ error: cannot assign to `n`
 3 |     n = 1
   |     ^^^^^ cannot assign twice
   |
-  = help: declare it with `var`";
+  = help: declare it with `let mut`";
         assert_eq!(d.render("test.sisu", source), expected);
     }
 }

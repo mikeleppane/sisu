@@ -3,7 +3,7 @@
 
 use super::*;
 
-const NODE: &str = "class Node {\n    let v: i64\n}\n";
+const NODE: &str = "class Node {\n    v: i64\n}\n";
 
 /// `src` after the `Node` class, with an empty `main`.
 fn with_node(src: &str) -> String {

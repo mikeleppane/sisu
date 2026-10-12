@@ -1,7 +1,7 @@
 // Arrays: literals, `[v; n]`, reads, `len`, `==`, shared objects, `for`, drops and evaluation
 // order. Valgrind checks that every block is freed exactly once on every path.
 class Node {
-    var v: i64
+    mut v: i64
 }
 
 fn side(x: i64) -> i64 {

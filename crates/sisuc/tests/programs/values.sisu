@@ -1,7 +1,7 @@
 // Element writes give arrays value semantics: a write copies a shared array first, so no
 // other holder of it sees the change. Valgrind checks that every copy is freed exactly once.
 class Board {
-    var cells: [i64]
+    mut cells: [i64]
 
     fn set(self, i: i64, v: i64) {
         self.cells[i] = v
@@ -9,11 +9,11 @@ class Board {
 }
 
 class Holder {
-    var saved: [i64]
+    mut saved: [i64]
 }
 
 class Node {
-    var v: i64
+    mut v: i64
 }
 
 fn make() -> Board {
@@ -21,7 +21,7 @@ fn make() -> Board {
 }
 
 fn copied() {
-    var a = [1, 2, 3]
+    let mut a = [1, 2, 3]
     let b = a
     a[0] = 9
     print(b[0])                       // 1
@@ -30,7 +30,7 @@ fn copied() {
 
 // Writes to its own copy of the caller's array.
 fn changed(xs: [i64]) -> i64 {
-    var ys = xs
+    let mut ys = xs
     ys[0] = 5
     ys[0]
 }
@@ -43,7 +43,7 @@ fn parameter() {
 
 fn nested() {
     // Both rows start as one shared block.
-    var grid = [[0; 2]; 2]
+    let mut grid = [[0; 2]; 2]
     grid[0][0] = 1
     print(grid[0][0])                 // 1
     print(grid[1][0])                 // 0
@@ -51,8 +51,8 @@ fn nested() {
 
 // The loop holds its own reference: it goes on over the array it started with.
 fn during_for() {
-    var xs = [1, 2, 3]
-    var total = 0
+    let mut xs = [1, 2, 3]
+    let mut total = 0
     for x in xs {
         xs[2] = 10
         total += x
@@ -62,12 +62,12 @@ fn during_for() {
 }
 
 fn compound() {
-    var xs = [0, 0]
+    let mut xs = [0, 0]
     let i = 1
     xs[i] += 1
     xs[i] += 1
     print(xs[1])                      // 2
-    var grid = [[3; 2]; 2]
+    let mut grid = [[3; 2]; 2]
     let y = 1
     let x = 0
     grid[y][x] *= 2
@@ -94,12 +94,12 @@ fn shared_object() {
 
 // Review Focus 2: after `rows[1] = rows[0]`, both slots hold one block.
 fn aliasing() {
-    var rows = [[1, 2], [3, 4]]
+    let mut rows = [[1, 2], [3, 4]]
     rows[1] = rows[0]
     rows[1][0] = 9
     print(rows[0][0])                 // 1
     print(rows[1][0])                 // 9
-    var nodes = [Node(v: 1), Node(v: 2)]
+    let mut nodes = [Node(v: 1), Node(v: 2)]
     nodes[0] = nodes[0]
     nodes = nodes
     print(nodes[0].v)                 // 1
@@ -113,7 +113,7 @@ fn keep(h: Holder, xs: [i64]) -> i64 {
 
 // The value comes before the uniqueness walk, so the write copies the array `h` now holds.
 fn value_first() {
-    var xs = [1]
+    let mut xs = [1]
     let h = Holder(saved: [])
     xs[0] = keep(h, xs)
     print(h.saved[0])                 // 1
@@ -135,7 +135,7 @@ fn traced_board(marker: i64) -> Board {
 // A write runs each index once from the root outwards, then the value. A field root runs
 // its object first.
 fn operand_order() {
-    var grid = [[0, 0], [0, 0]]
+    let mut grid = [[0, 0], [0, 0]]
     grid[traced(100, 1)][traced(200, 0)] = traced(300, 4)
     print(grid[1][0])                 // 4
     traced_board(400).cells[traced(500, 1)] = traced(600, 7)
@@ -143,7 +143,7 @@ fn operand_order() {
 
 // The value returns before the index is checked against the length.
 fn exits(c: bool) -> i64 {
-    var xs = [1]
+    let mut xs = [1]
     xs[5] = if c { return 0 } else { 1 }
     xs[0]
 }

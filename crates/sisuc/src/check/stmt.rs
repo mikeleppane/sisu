@@ -471,7 +471,7 @@ impl Checker {
         local
     }
 
-    /// Closes the innermost scope, warning about each `var` that was never reassigned.
+    /// Closes the innermost scope, warning about each `let mut` that was never reassigned.
     pub(super) fn pop_scope(&mut self) {
         let scope = self
             .scopes

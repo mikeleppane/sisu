@@ -1,6 +1,6 @@
 // `pick(t).count = next()` evaluates the base, then the value: `pick` prints 1, `next` 2.
 class C {
-    var count: i64
+    mut count: i64
 }
 
 fn pick(c: C) -> C {

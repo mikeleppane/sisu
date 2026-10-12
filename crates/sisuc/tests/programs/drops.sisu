@@ -1,37 +1,37 @@
 // Each function is one drop case. Valgrind checks that every object is freed exactly once.
 class Node {
-    let value: i64
-    let next: Node?
+    value: i64
+    next: Node?
 }
 
 class Tag {
-    let n: i64
+    n: i64
 }
 
 // A chain node with another class field: the drop releases `tag`, then follows `next`.
 class Tagged {
-    let tag: Tag
-    let value: i64
-    let next: Tagged?
+    tag: Tag
+    value: i64
+    next: Tagged?
 }
 
 // The chain field comes before the other fields.
 class Rev {
-    let next: Rev?
-    let value: i64
-    let tag: Tag
+    next: Rev?
+    value: i64
+    tag: Tag
 }
 
 // The drop recurses on `left` and loops on `right`, the chain field.
 class Tree {
-    let left: Tree?
-    let value: i64
-    let right: Tree?
+    left: Tree?
+    value: i64
+    right: Tree?
 }
 
 fn sum(nodes: Node?) -> i64 {
-    var total = 0
-    var node = nodes
+    let mut total = 0
+    let mut node = nodes
     while let n = node {
         total += n.value
         node = n.next
@@ -50,14 +50,14 @@ fn shared() {
 }
 
 fn tagged() {
-    var head: Tagged? = None
-    var i = 0
+    let mut head: Tagged? = None
+    let mut i = 0
     while i < 3 {
         i += 1
         head = Tagged(tag: Tag(n: i * 10), value: i, next: head)
     }
-    var total = 0
-    var node = head
+    let mut total = 0
+    let mut node = head
     while let n = node {
         total += n.tag.n + n.value
         node = n.next
@@ -66,14 +66,14 @@ fn tagged() {
 }
 
 fn rev() {
-    var head: Rev? = None
-    var i = 0
+    let mut head: Rev? = None
+    let mut i = 0
     while i < 3 {
         i += 1
         head = Rev(next: head, value: i, tag: Tag(n: i * 100))
     }
-    var total = 0
-    var node = head
+    let mut total = 0
+    let mut node = head
     while let n = node {
         total += n.tag.n + n.value
         node = n.next

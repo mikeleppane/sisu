@@ -2,16 +2,16 @@
 // Neither class has a chain field, so the drop recurses once per object and overflows the
 // same 256 KiB stack.
 class A {
-    let b: B?
+    b: B?
 }
 
 class B {
-    let a: A?
+    a: A?
 }
 
 fn main() {
-    var a: A? = None
-    var i = 0
+    let mut a: A? = None
+    let mut i = 0
     while i < 500_000 {
         i += 1
         let b = B(a: a)

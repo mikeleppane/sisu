@@ -1,6 +1,6 @@
 fn main() {
-    var going = true
-    var n = 0
+    let mut going = true
+    let mut n = 0
     while going {
         n += 1
         going = n < 3

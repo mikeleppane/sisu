@@ -1,7 +1,7 @@
 // Moves at run time: a read that is a counted local's last use takes its reference, and
 // every other read retains. Valgrind checks that no move frees what a later read needs.
 class Counter {
-    let n: i64
+    n: i64
 
     // `self` is read once, so the read moves it.
     fn get(self) -> i64 {
@@ -14,7 +14,7 @@ fn total(a: [i64], b: [i64]) -> i64 {
 }
 
 fn grow(xs: [i64]) -> [i64] {
-    var ys = xs
+    let mut ys = xs
     ys[0] += 1
     ys
 }
@@ -22,7 +22,7 @@ fn grow(xs: [i64]) -> [i64] {
 // Read in the loop body, which stays live into the next iteration, then after the loop.
 fn in_loop() {
     let xs = [1, 2]
-    var i = 0
+    let mut i = 0
     while i < 2 {
         print(xs[1])                  // 2, twice
         i += 1
@@ -41,7 +41,7 @@ fn in_branch(c: bool) {
 
 // The `continue` path releases `ys`; the other path moves it.
 fn after_continue() {
-    var i = 0
+    let mut i = 0
     while i < 3 {
         i += 1
         let ys = [i]
@@ -59,7 +59,7 @@ fn twice() {
 }
 
 fn handover() {
-    var xs = [5]
+    let mut xs = [5]
     xs = grow(xs)
     print(xs[0])                      // 6
 }

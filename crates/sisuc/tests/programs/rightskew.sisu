@@ -2,20 +2,20 @@
 // `left`, which is always None here, and follows `right`, the chain field, in a loop. A drop
 // that loops on `left` instead recurses on `right` once per node and overflows that stack.
 class Tree {
-    let left: Tree?
-    let right: Tree?
-    let v: i64
+    left: Tree?
+    right: Tree?
+    v: i64
 }
 
 fn main() {
-    var root: Tree? = None
-    var i = 0
+    let mut root: Tree? = None
+    let mut i = 0
     while i < 1_000_000 {
         i += 1
         root = Tree(left: None, right: root, v: i)
     }
-    var depth = 0
-    var node = root
+    let mut depth = 0
+    let mut node = root
     while let t = node {
         depth += 1
         node = t.right
