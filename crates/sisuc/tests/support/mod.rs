@@ -229,11 +229,16 @@ fn case_dir(source: &Path) -> PathBuf {
 /// `// o2-calls: <caller> <callee> <count>`, the `-O2` IR of `<caller>` holds exactly `<count>`
 /// calls to `<callee>`, so the inliner kept the calls the case relies on. Every function but
 /// the C `main` is internal, so `-O2` would inline a caller with one call site and the caller
-/// would vanish from the IR. The check therefore builds with `SISU_KEEP_FUNCTIONS` set to its
-/// callers, which marks them `noinline` for `sisuc --emit ir` and nothing else.
+/// would vanish from the IR. The check therefore builds once per distinct caller, with
+/// `SISU_KEEP_FUNCTIONS` set to that caller alone, which marks it `noinline` for
+/// `sisuc --emit ir` and nothing else, and counts in that build. One caller at a time, so that
+/// keeping one caller does not also keep a callee that another marker names as its caller. A
+/// caller that takes parameters is rejected: kept as a function of its own, it could hold a
+/// call that its real call sites decide away.
 const O2_CALLS: &str = "// o2-calls:";
 
-/// The body of the function `name` in `ir`, if `ir` defines it.
+/// The text of the function `name` in `ir`, from its header line to its closing brace, if `ir`
+/// defines it.
 fn function_text<'a>(ir: &'a str, name: &str) -> Option<&'a str> {
     let header = format!("@sisu.{name}(");
     ir.split("\ndefine ")
@@ -242,7 +247,33 @@ fn function_text<'a>(ir: &'a str, name: &str) -> Option<&'a str> {
         .and_then(|function| function.split("\n}").next())
 }
 
-/// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, run once if any.
+/// `sisuc -O2 --emit ir` on the case `path` with `SISU_KEEP_FUNCTIONS=caller`, as the module
+/// before and the module after the pipeline.
+fn o2_ir(path: &Path, caller: &str) -> (String, String) {
+    let dir = path.parent().expect("a case should sit in a directory");
+    let name = path.file_name().expect("a case should have a file name");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .env("SISU_KEEP_FUNCTIONS", caller)
+        .args(["-O2", "--emit", "ir"])
+        .arg(name)
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    let (before, after) = ir
+        .split_once("\n; after default<O2>\n")
+        .unwrap_or_else(|| panic!("{}: no `; after default<O2>` line", path.display()));
+    (before.to_string(), after.to_string())
+}
+
+/// Checks each `O2_CALLS` marker in `path` against `sisuc -O2 --emit ir`, built once per caller.
 fn o2_calls(path: &Path) {
     let source = fs::read_to_string(path).expect("reads the case");
     let markers: Vec<[&str; 3]> = source
@@ -261,30 +292,7 @@ fn o2_calls(path: &Path) {
                 })
         })
         .collect();
-    if markers.is_empty() {
-        return;
-    }
-    let callers: Vec<&str> = markers.iter().map(|[caller, _, _]| *caller).collect();
-    let dir = path.parent().expect("a case should sit in a directory");
-    let name = path.file_name().expect("a case should have a file name");
-    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-        .current_dir(dir)
-        .env("SISU_KEEP_FUNCTIONS", callers.join(","))
-        .args(["-O2", "--emit", "ir"])
-        .arg(name)
-        .output()
-        .expect("sisuc starts");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}: {}",
-        path.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let ir = String::from_utf8_lossy(&out.stdout);
-    let (before, optimized) = ir
-        .split_once("\n; after default<O2>\n")
-        .unwrap_or_else(|| panic!("{}: no `; after default<O2>` line", path.display()));
+    let mut built: Vec<(&str, (String, String))> = Vec::new();
     for [outer, callee, count] in markers {
         let count: usize = count.parse().unwrap_or_else(|_| {
             panic!(
@@ -292,6 +300,13 @@ fn o2_calls(path: &Path) {
                 path.display()
             )
         });
+        if !built.iter().any(|(caller, _)| *caller == outer) {
+            built.push((outer, o2_ir(path, outer)));
+        }
+        let (_, (before, optimized)) = built
+            .iter()
+            .find(|(caller, _)| *caller == outer)
+            .expect("the caller was just built");
         for function in [outer, callee] {
             assert!(
                 function_text(before, function).is_some(),
@@ -299,6 +314,15 @@ fn o2_calls(path: &Path) {
                 path.display()
             );
         }
+        let header = function_text(before, outer)
+            .and_then(|text| text.lines().next())
+            .expect("the caller is in the IR");
+        assert!(
+            header.contains(&format!("@sisu.{outer}()")),
+            "{}: o2-calls caller `{outer}` takes parameters; its call sites can decide the \
+             call, so mark a caller without parameters",
+            path.display()
+        );
         let body = function_text(optimized, outer)
             .unwrap_or_else(|| panic!("{}: no `{outer}` in the -O2 IR", path.display()));
         let target = format!("@sisu.{callee}(");

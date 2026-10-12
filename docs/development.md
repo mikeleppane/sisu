@@ -74,13 +74,17 @@ checks that the `-O2` IR of `<caller>` holds exactly `<count>` calls to
 `<callee>`, because the inliner can fold a call away and keep the output
 the same. Every function except the C `main` is internal, so `-O2` would
 inline a caller with one call site and the caller would vanish from the IR.
-The check therefore runs `sisuc -O2 --emit ir` with the environment variable
-`SISU_KEEP_FUNCTIONS` set to the callers of its markers, comma separated.
-That marks them `noinline` in the module and changes nothing else; `sisuc`
-reads it only for `--emit ir`, and the usage text does not mention it. The
-check counts the calls to `<callee>` in the body of `<caller>` after `-O2`,
-and fails with "no function named" if `<caller>` or `<callee>` does not
-exist. Interprocedural constant propagation also runs on internal functions,
+The check therefore runs `sisuc -O2 --emit ir` once for each distinct
+`<caller>`, with the environment variable `SISU_KEEP_FUNCTIONS` set to that
+caller alone. That marks it `noinline` in the module and changes nothing
+else; `sisuc` reads it only for `--emit ir`, and the usage text does not
+mention it. One caller per build, so that keeping one caller does not also
+keep a callee that another marker names as its caller. The check counts the
+calls to `<callee>` in the body of `<caller>` after `-O2`. It fails with "no
+function named" if `<caller>` or `<callee>` does not exist, and with
+"takes parameters" if `<caller>` has any: kept as a function of its own, such
+a caller could hold a call that its real call sites decide away, so mark a
+caller without parameters, such as `main`. Interprocedural constant propagation also runs on internal functions,
 so a callee that keeps its calls recurses to a depth that the call sites do
 not fix; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack

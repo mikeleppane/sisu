@@ -867,34 +867,41 @@ fn o2_calls_marker_fails_on_an_inlined_call() {
     );
 }
 
-/// `outer` is called twice, so `-O2` inlines it into `main` twice, and its `down(0)` folds to a
-/// constant each time while `down(n)` keeps its call. `down` recurses, and `outer` is called
-/// with different arguments, so the call survives.
-const OUTER_CALLS_DOWN: &str = "fn down(n: i64) -> i64 {\n    if n > 0 { down(n - 1) + 1 } else { 0 }\n}\n\n\
-     fn outer(n: i64) -> i64 {\n    down(0) + down(n)\n}\n\n\
-     fn main() {\n    print(outer(5))\n    print(outer(2))\n}\n";
+const DOWN: &str = "fn down(n: i64) -> i64 {\n    if n > 0 { down(n - 1) + 1 } else { 0 }\n}\n\n";
+
+/// `main` calls `outer` twice, so `-O2` inlines it into `main` twice; in each copy `down(0)` has
+/// folded to a constant and `down(5)` keeps its call.
+const OUTER_CALLS_DOWN: &str = "fn outer() -> i64 {\n    down(0) + down(5)\n}\n\n\
+     fn main() {\n    print(outer())\n    print(outer())\n}\n";
+
+/// `fixture` with the case `// o2-calls: <markers>` and `DOWN`, `body`, expecting `5` twice.
+fn o2_case(test: &str, markers: &str, body: &str, out: &str) -> PathBuf {
+    fixture(
+        test,
+        &[
+            ("a.sisu", &format!("// o2-calls: {markers}\n{DOWN}{body}")),
+            ("a.out", out),
+        ],
+    )
+}
 
 /// A marker counts the calls in the caller's own body: `outer` keeps one call to `down`, not
 /// the two that its inlined copies in `main` add up to.
 #[test]
 fn o2_calls_marker_counts_inside_the_caller() {
-    let case = |name: &str, count: u32| {
-        fixture(
-            name,
-            &[
-                (
-                    "a.sisu",
-                    &format!("// o2-calls: outer down {count}\n{OUTER_CALLS_DOWN}"),
-                ),
-                ("a.out", "5\n2\n"),
-            ],
-        )
-    };
-    support::run(
-        &case("o2_calls_marker_counts_inside_the_caller_1", 1).join("a.sisu"),
-        false,
+    let dir = o2_case(
+        "o2_calls_marker_counts_inside_the_caller_1",
+        "outer down 1",
+        OUTER_CALLS_DOWN,
+        "5\n5\n",
     );
-    let dir = case("o2_calls_marker_counts_inside_the_caller_2", 2);
+    support::run(&dir.join("a.sisu"), false);
+    let dir = o2_case(
+        "o2_calls_marker_counts_inside_the_caller_2",
+        "outer down 2",
+        OUTER_CALLS_DOWN,
+        "5\n5\n",
+    );
     let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
     assert!(
         message.contains("-O2 keeps 1 calls to `down` in `outer`, not 2"),
@@ -902,19 +909,56 @@ fn o2_calls_marker_counts_inside_the_caller() {
     );
 }
 
+/// Each caller gets a build of its own. Keeping `outer` for its marker must not keep it for
+/// `main`'s: a real build inlines `outer`, so `main` keeps no call to it.
+#[test]
+fn o2_calls_marker_keeps_one_caller_at_a_time() {
+    let dir = o2_case(
+        "o2_calls_marker_keeps_one_caller_at_a_time",
+        "main outer 2\n// o2-calls: outer down 1",
+        OUTER_CALLS_DOWN,
+        "5\n5\n",
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("-O2 keeps 0 calls to `outer` in `main`, not 2"),
+        "{message}"
+    );
+}
+
+/// With `outer` kept as a function of its own, `outer(n)` holds a call to `down` that its real
+/// call sites decide away, so a caller with parameters is rejected.
+#[test]
+fn o2_calls_marker_rejects_a_caller_with_parameters() {
+    let dir = o2_case(
+        "o2_calls_marker_rejects_a_caller_with_parameters",
+        "outer down 1",
+        "fn outer(n: i64) -> i64 {\n    if n == 5 { down(n) } else { n }\n}\n\n\
+         fn main() {\n    print(outer(1))\n    print(outer(10))\n}\n",
+        "1\n10\n",
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(
+        message.contains("o2-calls caller `outer` takes parameters"),
+        "{message}"
+    );
+}
+
 #[test]
 fn o2_calls_marker_names_a_missing_function() {
-    for (marker, missing) in [("outr down 1", "outr"), ("outer dwn 1", "dwn")] {
-        let dir = fixture(
-            "o2_calls_marker_names_a_missing_function",
-            &[
-                (
-                    "a.sisu",
-                    &format!("// o2-calls: {marker}\n{OUTER_CALLS_DOWN}"),
-                ),
-                ("a.out", "5\n2\n"),
-            ],
-        );
+    for (test, marker, missing) in [
+        (
+            "o2_calls_marker_names_a_missing_caller",
+            "outr down 1",
+            "outr",
+        ),
+        (
+            "o2_calls_marker_names_a_missing_callee",
+            "outer dwn 1",
+            "dwn",
+        ),
+    ] {
+        let dir = o2_case(test, marker, OUTER_CALLS_DOWN, "5\n5\n");
         let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
         assert!(
             message.contains(&format!("no function named `{missing}`")),
