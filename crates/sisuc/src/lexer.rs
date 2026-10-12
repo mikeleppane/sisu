@@ -4,7 +4,7 @@ use std::fmt::Write;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-use crate::diagnostic::{Diagnostic, Span, line_col};
+use crate::diagnostic::{Diagnostic, LineIndex, Span};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
@@ -416,8 +416,9 @@ fn track_bracket(open: &mut Vec<Open>, kind: &TokenKind, span: Span) -> Result<(
 /// One token per line, `line:col Kind text`; `Newline` and `Eof` print without text.
 pub(crate) fn dump(source: &str, tokens: &[Token]) -> String {
     let mut out = String::new();
+    let lines = LineIndex::new(source);
     for t in tokens {
-        let (line, col) = line_col(source, t.span.start);
+        let (line, col) = lines.line_col(source, t.span.start);
         write!(out, "{line}:{col} {}", t.kind.name())
             .expect("writing to a `String` should never fail");
         if !matches!(t.kind, TokenKind::Newline | TokenKind::Eof) {
@@ -816,7 +817,10 @@ mod tests {
         assert_eq!(d.message, "unexpected character `é`");
         assert_eq!(line_col(src, d.span.start), (2, 5));
         // The span covers the whole two-byte char, so rendering does not panic.
-        assert!(d.render("t.sisu", src).contains("2:5"));
+        assert!(
+            d.render("t.sisu", src, &LineIndex::new(src))
+                .contains("2:5")
+        );
     }
 
     #[test]

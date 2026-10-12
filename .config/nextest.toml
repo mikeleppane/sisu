@@ -19,6 +19,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(many_panic_sites_compile_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Each render once cost the whole file, so many diagnostics in a large file were quadratic and
+# this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(rendering_many_diagnostics_in_a_large_file_is_linear)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 [[profile.default.scripts]]
 filter = "package(sisuc) & kind(test)"
 setup = "build-runtime"

@@ -73,9 +73,12 @@ impl Diagnostic {
         self
     }
 
-    /// Renders the diagnostic as `annotate-snippets` text; `path` is shown as given.
-    pub(crate) fn render(&self, path: &str, source: &str) -> String {
-        for span in std::iter::once(&self.span).chain(self.secondary.iter().map(|(s, _)| s)) {
+    /// Renders the diagnostic as `annotate-snippets` text; `path` is shown as given. `lines` is
+    /// the index of `source`. The renderer rebuilds a map of every line it is handed, so it gets
+    /// only the lines the spans cover, numbered from where they start.
+    pub(crate) fn render(&self, path: &str, source: &str, lines: &LineIndex) -> String {
+        let spans = || std::iter::once(&self.span).chain(self.secondary.iter().map(|(s, _)| s));
+        for span in spans() {
             debug_assert!(
                 source.is_char_boundary(span.start) && source.is_char_boundary(span.end),
                 "span {span:?} does not sit on char boundaries"
@@ -86,21 +89,29 @@ impl Diagnostic {
                 "span {span:?} ends with a line break"
             );
         }
+        let first = spans().map(|s| lines.render_line(source, s.start)).min();
+        let last = spans().map(|s| lines.render_line(source, s.end)).max();
+        let (first, last) = (
+            first.expect("a diagnostic should have a primary span"),
+            last.expect("a diagnostic should have a primary span"),
+        );
+        let from = lines.0[first - 1];
+        let to = lines.0.get(last).copied().unwrap_or(source.len());
         let level = match self.severity {
             Severity::Error => Level::ERROR,
             Severity::Warning => Level::WARNING,
         };
-        let mut primary = AnnotationKind::Primary.span(self.span.start..self.span.end);
+        let rebased = |span: &Span| span.start - from..span.end - from;
+        let mut primary = AnnotationKind::Primary.span(rebased(&self.span));
         if let Some(label) = &self.label {
             primary = primary.label(label);
         }
-        let mut snippet = Snippet::source(source).path(path).annotation(primary);
+        let mut snippet = Snippet::source(&source[from..to])
+            .line_start(first)
+            .path(path)
+            .annotation(primary);
         for (span, text) in &self.secondary {
-            snippet = snippet.annotation(
-                AnnotationKind::Context
-                    .span(span.start..span.end)
-                    .label(text),
-            );
+            snippet = snippet.annotation(AnnotationKind::Context.span(rebased(span)).label(text));
         }
         let mut group = level.primary_title(&self.message).element(snippet);
         if let Some(help) = &self.help {
@@ -128,9 +139,18 @@ impl LineIndex {
         let line_start = self.0[line - 1];
         (line, source[line_start..offset].chars().count() + 1)
     }
+
+    /// The 1-based line that `annotate-snippets` puts byte `offset` on. A text that ends in a
+    /// line break has no empty last line there, so an offset at its end sits on the line before.
+    fn render_line(&self, source: &str, offset: usize) -> usize {
+        let ends_in_break = !source.is_empty() && self.0.last() == Some(&source.len());
+        let lines = self.0.len() - usize::from(ends_in_break);
+        self.0.partition_point(|&start| start <= offset).min(lines)
+    }
 }
 
 /// The 1-based line and column of byte `offset`; the column counts chars, not bytes.
+#[cfg(test)]
 pub(crate) fn line_col(source: &str, offset: usize) -> (usize, usize) {
     LineIndex::new(source).line_col(source, offset)
 }
@@ -193,7 +213,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "ends with a line break")]
     fn span_over_a_line_break_is_rejected() {
-        Diagnostic::error(Span::new(5, 6), "x").render("a.sisu", "let y\n}");
+        Diagnostic::error(Span::new(5, 6), "x").render(
+            "a.sisu",
+            "let y\n}",
+            &LineIndex::new("let y\n}"),
+        );
     }
 
     #[test]
@@ -201,7 +225,7 @@ mod tests {
         let source = "fn main() {\n    let mut count = 0\n}\n";
         let rendered = Diagnostic::warning(Span::new(24, 29), "`count` is never reassigned")
             .help("declare it with `let`")
-            .render("w.sisu", source);
+            .render("w.sisu", source, &LineIndex::new(source));
         assert!(rendered.starts_with("warning: `count` is never reassigned\n --> w.sisu:2:13"));
         assert!(rendered.ends_with("= help: declare it with `let`"));
     }
@@ -223,6 +247,150 @@ error: cannot assign to `n`
   |     ^^^^^ cannot assign twice
   |
   = help: declare it with `let mut`";
-        assert_eq!(d.render("test.sisu", source), expected);
+        assert_eq!(
+            d.render("test.sisu", source, &LineIndex::new(source)),
+            expected
+        );
+    }
+
+    /// The rendering before the windowing: the renderer gets the whole source.
+    fn render_whole(d: &Diagnostic, path: &str, source: &str) -> String {
+        let level = match d.severity {
+            Severity::Error => Level::ERROR,
+            Severity::Warning => Level::WARNING,
+        };
+        let mut primary = AnnotationKind::Primary.span(d.span.start..d.span.end);
+        if let Some(label) = &d.label {
+            primary = primary.label(label);
+        }
+        let mut snippet = Snippet::source(source).path(path).annotation(primary);
+        for (span, text) in &d.secondary {
+            snippet = snippet.annotation(
+                AnnotationKind::Context
+                    .span(span.start..span.end)
+                    .label(text),
+            );
+        }
+        let mut group = level.primary_title(&d.message).element(snippet);
+        if let Some(help) = &d.help {
+            group = group.element(Level::HELP.message(help));
+        }
+        Renderer::plain().render(&[group])
+    }
+
+    /// The span of `from`'s first occurrence in `source` through the end of `to`'s.
+    fn between(source: &str, from: &str, to: &str) -> Span {
+        let start = source
+            .find(from)
+            .expect("`from` should occur in the source");
+        let end = source.find(to).expect("`to` should occur in the source") + to.len();
+        Span::new(start, end)
+    }
+
+    #[test]
+    fn windowed_rendering_matches_rendering_the_whole_source() {
+        let twelve = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n";
+        let mut cases: Vec<(&str, Diagnostic)> = vec![
+            // The first line.
+            (
+                "ab\ncd\nef\n",
+                Diagnostic::error(between("ab\ncd\nef\n", "ab", "ab"), "m").label("here"),
+            ),
+            // The last line, with and without a final newline.
+            (
+                "ab\ncd\nef\n",
+                Diagnostic::error(between("ab\ncd\nef\n", "ef", "ef"), "m"),
+            ),
+            (
+                "ab\ncd\nef",
+                Diagnostic::error(between("ab\ncd\nef", "ef", "ef"), "m"),
+            ),
+            // Empty spans at the end of the text, after a final newline and after none.
+            (
+                "ab\ncd\n",
+                Diagnostic::error(Span::new(6, 6), "m").label("end of file"),
+            ),
+            (
+                "ab\ncd",
+                Diagnostic::error(Span::new(5, 5), "m").label("end of file"),
+            ),
+            (
+                "ab\ncd\n",
+                Diagnostic::error(Span::new(2, 2), "m").label("end of line"),
+            ),
+            ("ab\n\ncd", Diagnostic::error(Span::new(3, 3), "m")),
+            ("", Diagnostic::error(Span::new(0, 0), "m").label("empty")),
+            ("\n", Diagnostic::error(Span::new(1, 1), "m")),
+            // A span over several lines, with a secondary span before it and help after.
+            (
+                "fn f() {\n    a\n    b\n    c\n    d\n    e\n    f\n}\n",
+                Diagnostic::error(
+                    between(
+                        "fn f() {\n    a\n    b\n    c\n    d\n    e\n    f\n}\n",
+                        "a\n    b\n    c\n    d\n    e",
+                        "e",
+                    ),
+                    "m",
+                )
+                .label("many lines")
+                .secondary(Span::new(3, 4), "open")
+                .help("close it"),
+            ),
+            // Non-ASCII text and CRLF line breaks.
+            (
+                "ää\r\nöö x\r\n€€",
+                Diagnostic::error(between("ää\r\nöö x\r\n€€", "x", "€€"), "m"),
+            ),
+            ("ää\r\nöö\r\n", Diagnostic::warning(Span::new(11, 11), "m")),
+            // The line numbers grow from one digit to two.
+            (
+                twelve,
+                Diagnostic::error(between(twelve, "l9", "l9"), "m")
+                    .secondary(between(twelve, "l11", "l11"), "later"),
+            ),
+            (
+                twelve,
+                Diagnostic::error(between(twelve, "l1\n", "l1"), "m")
+                    .secondary(between(twelve, "l12", "l12"), "far"),
+            ),
+            (
+                twelve,
+                Diagnostic::error(between(twelve, "l10", "l10"), "m")
+                    .secondary(between(twelve, "l2", "l2"), "before"),
+            ),
+        ];
+        // Every single-char and every empty span of one text, as primary.
+        let text = "ä\nbö€\n\nc";
+        for start in 0..=text.len() {
+            for end in start..=text.len().min(start + 1) {
+                let on_boundary = text.is_char_boundary(start) && text.is_char_boundary(end);
+                if on_boundary && (start == end || !text[..end].ends_with('\n')) {
+                    cases.push((text, Diagnostic::error(Span::new(start, end), "m")));
+                }
+            }
+        }
+        for (source, d) in &cases {
+            assert_eq!(
+                d.render("t.sisu", source, &LineIndex::new(source)),
+                render_whole(d, "t.sisu", source),
+                "{source:?} {d:?}"
+            );
+        }
+    }
+
+    /// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
+    /// update the override there. Every render used to cost the whole file.
+    #[test]
+    fn rendering_many_diagnostics_in_a_large_file_is_linear() {
+        const LINES: usize = 200_000;
+        let source = "let x = 1\n".repeat(LINES);
+        let lines = LineIndex::new(&source);
+        let mut len = 0;
+        for i in (0..LINES).step_by(10) {
+            let start = i * 10;
+            let d = Diagnostic::error(Span::new(start, start + 3), "m");
+            len += d.render("big.sisu", &source, &lines).len();
+        }
+        assert!(len > 0);
     }
 }

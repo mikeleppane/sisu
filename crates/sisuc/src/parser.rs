@@ -965,7 +965,7 @@ enum Head {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::line_col;
+    use crate::diagnostic::{LineIndex, line_col};
     use crate::lexer::lex;
 
     fn parsed(src: &str) -> Program {
@@ -1173,7 +1173,7 @@ mod tests {
                 3
             )
         );
-        let rendered = parse_diagnostic(src).render("a.sisu", src);
+        let rendered = parse_diagnostic(src).render("a.sisu", src, &LineIndex::new(src));
         assert!(rendered.contains("--> a.sisu:1:3"), "{rendered}");
     }
 
@@ -1410,7 +1410,10 @@ error: expected `=`, found end of line
   |
 2 |     let y
   |          ^";
-        assert_eq!(parse_diagnostic(src).render("a.sisu", src), expected);
+        assert_eq!(
+            parse_diagnostic(src).render("a.sisu", src, &LineIndex::new(src)),
+            expected
+        );
     }
 
     #[test]

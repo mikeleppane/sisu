@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use diagnostic::Diagnostic;
+use diagnostic::{Diagnostic, LineIndex};
 use inkwell::context::Context;
 use tir::Program;
 
@@ -305,8 +305,9 @@ fn front_end(path: &str, source: &str) -> Option<Program> {
 
 /// Prints each diagnostic to stderr, followed by a blank line.
 fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
+    let lines = LineIndex::new(source);
     for d in diagnostics {
-        eprintln!("{}\n", d.render(path, source));
+        eprintln!("{}\n", d.render(path, source, &lines));
     }
 }
 

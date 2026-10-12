@@ -1126,7 +1126,7 @@ fn empty_file_has_no_main() {
     assert_eq!(at("", ds[0].span), (1, 1));
     assert!(
         ds[0]
-            .render("empty.sisu", "")
+            .render("empty.sisu", "", &crate::diagnostic::LineIndex::new(""))
             .starts_with("error: no `main` function")
     );
 }
