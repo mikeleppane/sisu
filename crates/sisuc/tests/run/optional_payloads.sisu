@@ -42,7 +42,7 @@ fn coalesce() {
     print((zs ?? [4, 5])[0])          // 3
 }
 
-// The binding hides an outer name of another type until the block ends.
+// The binding hides the outer `x`, also an `Obj`, until the block ends.
 fn shadow() {
     let x = Obj(v: 9)
     let m: Obj? = Obj(v: 4)

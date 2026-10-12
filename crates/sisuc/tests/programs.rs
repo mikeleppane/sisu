@@ -42,7 +42,7 @@ const SMALL_STACK: [&str; 3] = ["longlist", "rightskew", "deepchain"];
 /// `tests/programs` holds exactly the `SMALL_STACK` programs; every other program is a case in
 /// `tests/run` or `tests/run-fail`.
 #[test]
-fn every_program_has_a_run() {
+fn programs_dir_holds_only_small_stack_programs() {
     let mut files: Vec<String> = fs::read_dir(PROGRAMS)
         .expect("tests/programs should be readable")
         .map(|entry| entry.expect("a directory entry should be readable").path())
