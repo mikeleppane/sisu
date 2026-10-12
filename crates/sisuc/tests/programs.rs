@@ -497,6 +497,22 @@ fn prints_then_a_normal_exit_into_a_full_stdout_panics_once() {
     }
 }
 
+/// A closed standard output drops what `print` writes and the program exits 0, as with
+/// `println!`.
+#[test]
+fn print_to_a_closed_stdout_is_dropped() {
+    let source = "fn main() {\n    print(1)\n}\n";
+    for o2 in [false, true] {
+        let out = Command::new("sh")
+            .args(["-c", r#"exec "$0" >&-"#])
+            .arg(compile_tmp("print_closed_fd", source, o2))
+            .output()
+            .expect("sh starts");
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(out.stderr, b"");
+    }
+}
+
 /// An `--rc-checks` program that leaks exits 102 and still delivers what it printed.
 #[test]
 fn rc_checks_exit_flushes_stdout() {
