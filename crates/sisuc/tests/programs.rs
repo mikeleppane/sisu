@@ -406,15 +406,14 @@ fn bounds_case(name: &'static str, index: &str, message: &str) -> (&'static str,
     )
 }
 
-/// Proves the harness catches a leak: an object that refers to itself is never freed.
-/// Building the cycle in a callee keeps the pointer out of `main`'s registers.
+/// Prints `1` and exits 0, but leaks: an object that refers to itself is never freed. Building
+/// the cycle in a callee keeps the pointer out of `main`'s registers.
+const LEAKS_A_CYCLE: &str = "class Node {\n    mut next: Node?\n}\n\nfn leak() {\n    let a = Node(next: None)\n    a.next = a\n}\n\nfn main() {\n    leak()\n    print(1)\n}\n";
+
+/// Proves the harness catches a leak.
 #[test]
 fn valgrind_reports_a_cycle() {
-    let exe = compile_tmp(
-        "cycle",
-        "class Node {\n    mut next: Node?\n}\n\nfn leak() {\n    let a = Node(next: None)\n    a.next = a\n}\n\nfn main() {\n    leak()\n    print(1)\n}\n",
-        false,
-    );
+    let exe = compile_tmp("cycle", LEAKS_A_CYCLE, false);
     let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
@@ -619,6 +618,37 @@ fn bless_never_writes_after_a_wrong_exit() {
     );
 }
 
+/// A run that passes natively but fails under Valgrind writes nothing.
+#[test]
+fn bless_never_writes_after_a_valgrind_failure() {
+    let dir = fixture(
+        "bless_never_writes_after_a_valgrind_failure",
+        &[("a.sisu", LEAKS_A_CYCLE), ("a.out", "wrong\n")],
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), true));
+    assert!(message.contains("LEAK SUMMARY"), "{message}");
+    assert_eq!(
+        fs::read_to_string(dir.join("a.out")).expect("reads a.out"),
+        "wrong\n"
+    );
+}
+
+/// Bless writes a `run_fail` case's files all or nothing: a missing `.err` leaves `.out` as it was.
+#[test]
+fn bless_writes_neither_file_when_one_is_missing() {
+    let dir = fixture(
+        "bless_writes_neither_file_when_one_is_missing",
+        &[("a.sisu", PRINTS_1_THEN_PANICS), ("a.out", "")],
+    );
+    let message = panic_message(|| support::run_fail(&dir.join("a.sisu"), true));
+    assert!(message.contains("a.err is missing"), "{message}");
+    assert_eq!(
+        fs::read_to_string(dir.join("a.out")).expect("reads a.out"),
+        ""
+    );
+    assert!(!dir.join("a.err").exists());
+}
+
 /// Without bless a wrong `.out` fails and stays as it was; bless rewrites it, and the run then
 /// passes without bless.
 #[test]
@@ -649,7 +679,8 @@ fn orphan_out_fails() {
     support::orphan_check(&dir.join("ghost.out"));
 }
 
-/// Same-named cases in two directories, run at once, must not share an executable.
+/// Same-named cases in different directories, run at once, must not share an executable: one
+/// in each mode, and two whose paths differ only in `a_b` against `a/b`.
 #[test]
 fn same_name_in_two_modes() {
     let dir = fixture(
@@ -657,6 +688,14 @@ fn same_name_in_two_modes() {
         &[
             ("run/dup.sisu", PRINTS_1),
             ("run/dup.out", "1\n"),
+            ("run/a_b/dup.sisu", PRINTS_1),
+            ("run/a_b/dup.out", "1\n"),
+            ("run/a/b/dup.sisu", PRINTS_1_THEN_PANICS),
+            ("run/a/b/dup.out", "1\n"),
+            (
+                "run/a/b/dup.err",
+                "sisu: panic at dup.sisu:4:11: division by zero\n",
+            ),
             ("run-fail/dup.sisu", PRINTS_1_THEN_PANICS),
             ("run-fail/dup.out", "1\n"),
             (
@@ -668,5 +707,7 @@ fn same_name_in_two_modes() {
     thread::scope(|scope| {
         scope.spawn(|| support::run(&dir.join("run/dup.sisu"), false));
         scope.spawn(|| support::run_fail(&dir.join("run-fail/dup.sisu"), false));
+        scope.spawn(|| support::run(&dir.join("run/a_b/dup.sisu"), false));
+        scope.spawn(|| support::run_fail(&dir.join("run/a/b/dup.sisu"), false));
     });
 }

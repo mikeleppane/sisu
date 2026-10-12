@@ -49,7 +49,8 @@ pub(crate) fn valgrind(exe: &Path) -> Output {
 }
 
 /// Checks a `tests/run` case: both builds differ, exit 0 with empty stderr, agree on stdout, and
-/// print `<name>.out`, natively and under Valgrind. With `bless`, rewrites `<name>.out` instead.
+/// print the same under Valgrind, which finds no leak or memory error; then that stdout is
+/// `<name>.out`. With `bless`, rewrites `<name>.out` instead, after every other check passed.
 pub(crate) fn run(path: &Path, bless: bool) {
     let [o0, o2] = build(path);
     assert!(
@@ -72,7 +73,6 @@ pub(crate) fn run(path: &Path, bless: bool) {
         out
     });
     let stdout = agreed(path, "stdout", &out0.stdout, &out2.stdout);
-    expect_file(&path.with_extension("out"), &stdout, bless);
     for exe in [o0, o2] {
         let checked = valgrind(&exe);
         let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
@@ -89,6 +89,8 @@ pub(crate) fn run(path: &Path, bless: bool) {
             exe.display()
         );
     }
+    // Last, so that a run failing any check above writes nothing.
+    expect_files(&[(path.with_extension("out"), stdout)], bless);
 }
 
 /// Checks a `tests/run-fail` case: both builds exit 101, agree, and print `<name>.out` on stdout
@@ -109,8 +111,13 @@ pub(crate) fn run_fail(path: &Path, bless: bool) {
     });
     let stdout = agreed(path, "stdout", &out0.stdout, &out2.stdout);
     let stderr = agreed(path, "stderr", &out0.stderr, &out2.stderr);
-    expect_file(&path.with_extension("out"), &stdout, bless);
-    expect_file(&path.with_extension("err"), &stderr, bless);
+    expect_files(
+        &[
+            (path.with_extension("out"), stdout),
+            (path.with_extension("err"), stderr),
+        ],
+        bless,
+    );
 }
 
 /// Passes for a `.sisu` file, and for an `.out` or `.err` beside a `.sisu` of the same name;
@@ -143,11 +150,13 @@ fn build(path: &Path) -> [PathBuf; 2] {
     })
 }
 
-/// A fresh, empty `<CARGO_TARGET_TMPDIR>/cases/<source path, '/' replaced by '_'>/`.
+/// A fresh, empty `<CARGO_TARGET_TMPDIR>/cases/<source path>/`. The whole path, nested, keeps
+/// same-named cases in different directories apart.
 fn case_dir(source: &Path) -> PathBuf {
+    // An absolute path would replace the base in `join`, so it goes in without its leading `/`.
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("cases")
-        .join(source.to_string_lossy().replace('/', "_"));
+        .join(source.strip_prefix("/").unwrap_or(source));
     // It is absent on the first run, so a failure here is expected and harmless.
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("creates the case directory");
@@ -165,23 +174,31 @@ fn agreed(path: &Path, what: &str, o0: &[u8], o2: &[u8]) -> String {
     o0.into_owned()
 }
 
-/// Checks that `path` holds `actual`. With `bless`, writes `actual` to `path` instead, but only
-/// if `path` exists: bless never creates an expectation file.
-fn expect_file(path: &Path, actual: &str, bless: bool) {
-    let display = path.display();
+/// Checks that each `(path, actual)` file holds `actual`. With `bless`, writes each `actual` to
+/// its file instead, but only if every file exists: bless never creates an expectation file, and
+/// writes all of them or none.
+fn expect_files(files: &[(PathBuf, String)], bless: bool) {
     if bless {
-        assert!(
-            path.exists(),
-            "{display} is missing; create it empty, then bless again"
-        );
-        fs::write(path, actual).expect("writes the expectation file");
+        for (path, _) in files {
+            assert!(
+                path.exists(),
+                "{} is missing; create it empty, then bless again",
+                path.display()
+            );
+        }
+        for (path, actual) in files {
+            fs::write(path, actual).expect("writes the expectation file");
+        }
     } else {
-        let expected = fs::read_to_string(path).unwrap_or_else(|error| {
-            panic!("{display}: {error}; create it empty, then run with SISU_BLESS=1")
-        });
-        assert_eq!(
-            actual, expected,
-            "{display} does not match; run with SISU_BLESS=1 to rewrite it"
-        );
+        for (path, actual) in files {
+            let display = path.display();
+            let expected = fs::read_to_string(path).unwrap_or_else(|error| {
+                panic!("{display}: {error}; create it empty, then run with SISU_BLESS=1")
+            });
+            assert_eq!(
+                *actual, expected,
+                "{display} does not match; run with SISU_BLESS=1 to rewrite it"
+            );
+        }
     }
 }
