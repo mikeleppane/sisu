@@ -536,15 +536,36 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
     })
 }
 
+/// Whether `c` is in Unicode category Cf (format). Neither the standard library nor a dependency
+/// has the category, so these are the Cf ranges of Unicode 15.0 (checked against Python's
+/// `unicodedata`); Unicode 16 and later add none to them. A new Cf character prints raw until the
+/// list is extended.
+fn is_format(c: char) -> bool {
+    matches!(c,
+        '\u{AD}' | '\u{600}'..='\u{605}' | '\u{61C}' | '\u{6DD}' | '\u{70F}'
+        | '\u{890}'..='\u{891}' | '\u{8E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
+}
+
 fn unexpected(c: char, at: usize) -> Diagnostic {
+    // A character the user cannot see is named by its code point, not printed.
+    let shown = if c.is_whitespace() || c.is_control() || is_format(c) {
+        format!("U+{:04X}", u32::from(c))
+    } else {
+        format!("`{c}`")
+    };
     // The span covers the whole char: annotate-snippets panics off a char boundary.
     let d = Diagnostic::error(
         Span::new(at, at + c.len_utf8()),
-        format!("unexpected character `{c}`"),
+        format!("unexpected character {shown}"),
     );
     match c {
         '&' => d.help("use `&&` for logical and"),
         '|' => d.help("use `||` for logical or"),
+        '\u{FEFF}' if at == 0 => d.help("remove the byte order mark at the start of the file"),
         _ => d,
     }
 }
@@ -911,8 +932,54 @@ mod tests {
     fn unicode_space_in_the_gap_is_unexpected() {
         let src = "a\n\u{00a0}.b";
         let d = lex(src).expect_err("U+00A0 is not Sisu whitespace");
-        assert_eq!(d.message, "unexpected character `\u{00a0}`");
+        assert_eq!(d.message, "unexpected character U+00A0");
         assert_eq!(line_col(src, d.span.start), (2, 1));
+    }
+
+    #[test]
+    fn invisible_characters_are_named() {
+        // Whitespace, a control character, and format characters: Cf at both ends of the
+        // list and in the middle, the 4-digit and 5-digit forms.
+        for (c, name) in [
+            ('\u{00a0}', "U+00A0"),
+            ('\u{2028}', "U+2028"),
+            ('\u{0085}', "U+0085"),
+            ('\u{0001}', "U+0001"),
+            ('\u{007f}', "U+007F"),
+            ('\u{00ad}', "U+00AD"),
+            ('\u{200b}', "U+200B"),
+            ('\u{202e}', "U+202E"),
+            ('\u{feff}', "U+FEFF"),
+            ('\u{e0020}', "U+E0020"),
+        ] {
+            let src = format!("a {c}");
+            let d = lex(&src).expect_err("the character is not Sisu");
+            assert_eq!(d.message, format!("unexpected character {name}"));
+            assert_eq!(line_col(&src, d.span.start), (1, 3));
+        }
+    }
+
+    #[test]
+    fn visible_characters_print_as_themselves() {
+        for c in ['$', 'é', '\u{3042}', '\u{1f600}'] {
+            let d = lex(&format!("a {c}")).expect_err("the character is not Sisu");
+            assert_eq!(d.message, format!("unexpected character `{c}`"));
+        }
+    }
+
+    #[test]
+    fn byte_order_mark_help_only_at_the_start_of_the_file() {
+        let d = lex("\u{feff}fn main() {}").expect_err("a BOM is not Sisu");
+        assert_eq!(d.message, "unexpected character U+FEFF");
+        assert_eq!(
+            d.help.as_deref(),
+            Some("remove the byte order mark at the start of the file")
+        );
+        assert_eq!(line_col("\u{feff}x", d.span.start), (1, 1));
+        let d = lex("fn\u{feff}").expect_err("a BOM is not Sisu");
+        assert_eq!(d.help, None);
+        let d = lex("\n\u{feff}").expect_err("a BOM is not Sisu");
+        assert_eq!(d.help, None);
     }
 
     fn all_kinds(src: &str) -> Vec<TokenKind> {
