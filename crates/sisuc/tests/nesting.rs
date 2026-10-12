@@ -98,11 +98,11 @@ fn coalesce(n: usize) -> Generated {
     )
 }
 
-/// The `0` inside the `n`th `[`.
+/// The `n`th `[`.
 fn index(n: usize) -> Generated {
     let first = wrapped("let a = ", "[", "1", "]", "", n);
     let line = format!("{first}    let b = a{}\n", "[0]".repeat(n));
-    in_main(&line, first.len() + 13 + 3 * (n - 1) + 1)
+    in_main(&line, first.len() + 13 + 3 * (n - 1))
 }
 
 /// The `n`th `.`.
@@ -252,20 +252,26 @@ construct!(whiles, nested_while, 253);
 construct!(fors, nested_for, 253);
 construct!(array_types, array_type, 254);
 
-/// `--check` and `--emit ast` on `source` both exit 1 with the one message, however large it is:
-/// the parser stops at the first level past the limit and builds nothing deeper.
-fn assert_too_deep_both_ways(name: &str, source: &str) {
+/// `--check`, `--emit ast` and a build of `source` all exit 1 with the one message, however large
+/// it is: the parser stops at the first level past the limit and builds nothing deeper.
+fn assert_too_deep(name: &str, source: &str) {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    fs::write(dir.join(format!("{name}.sisu")), source).expect("writes");
-    for flags in [&["--check"][..], &["--emit", "ast"]] {
-        let out = sisuc(dir, &[flags, &[&format!("{name}.sisu")]].concat());
-        assert_eq!(out.status.code(), Some(1), "{name} {flags:?}");
+    let (file, exe) = (format!("{name}.sisu"), format!("{name}.out"));
+    fs::write(dir.join(&file), source).expect("writes");
+    let invocations = [
+        vec!["--check", &file],
+        vec!["--emit", "ast", &file],
+        vec![&file, &exe],
+    ];
+    for args in invocations {
+        let out = sisuc(dir, &args);
+        assert_eq!(out.status.code(), Some(1), "{name} {args:?}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             stderr.starts_with("error: nesting is too deep\n"),
-            "{name} {flags:?}: {stderr}"
+            "{name} {args:?}: {stderr}"
         );
-        assert_eq!(stderr.matches("error:").count(), 1, "{name} {flags:?}");
+        assert_eq!(stderr.matches("error:").count(), 1, "{name} {args:?}");
     }
 }
 
@@ -273,25 +279,162 @@ fn assert_too_deep_both_ways(name: &str, source: &str) {
 fn a_hundred_thousand_levels_is_an_error_not_an_abort() {
     let n = 100_000;
     let body = |expr: String| format!("fn main() {{\n    print({expr})\n}}\n");
-    assert_too_deep_both_ways(
+    assert_too_deep(
         "nesting_huge_parentheses",
         &body(format!("{}1{}", "(".repeat(n), ")".repeat(n))),
     );
-    assert_too_deep_both_ways("nesting_huge_sum", &body(format!("1{}", "+1".repeat(n))));
-    assert_too_deep_both_ways(
+    assert_too_deep("nesting_huge_sum", &body(format!("1{}", "+1".repeat(n))));
+    assert_too_deep(
         "nesting_huge_else_if",
         &format!(
             "fn main() {{\n    let x = 1\n    if x == 0 {{\n    }}{} else {{\n    }}\n}}\n",
             " else if x == 0 {\n    }".repeat(n)
         ),
     );
-    assert_too_deep_both_ways(
+    assert_too_deep(
         "nesting_huge_type",
         &format!(
             "fn main() {{\n    let a: {}i64{} = []\n}}\n",
             "[".repeat(n),
             "]".repeat(n)
         ),
+    );
+}
+
+/// A `main` that prints the expression made by starting with `1` and, `rounds` times, wrapping
+/// what there is in parentheses and chaining `suffix` onto it `links` times.
+fn wrapped_chains(suffix: &str, links: usize, rounds: usize) -> String {
+    let mut expr = "1".to_string();
+    for _ in 0..rounds {
+        expr = format!("({expr}){}", suffix.repeat(links));
+    }
+    format!("{PRELUDE}fn main() {{\n    print({expr})\n}}\n")
+}
+
+/// Each round builds a subtree about `links` high and wraps it in parentheses, which are no node
+/// of their own. The parser must still see the height when the next round's chain stacks onto it:
+/// a hundred rounds of a hundred links is a tree ten thousand high, not a hundred.
+#[test]
+fn a_chain_on_top_of_a_wrapped_chain_adds_to_its_height() {
+    // `links` is 1 for the operators that do not chain: `a == b == c` is an error.
+    let shapes = [
+        ("+1", 100),
+        ("-1", 100),
+        ("*1", 100),
+        ("/1", 100),
+        ("%1", 100),
+        ("&&true", 100),
+        ("||true", 100),
+        ("==1", 1),
+        ("!=1", 1),
+        (" is x", 1),
+        ("<1", 1),
+        ("??1", 1),
+        (".me()", 100),
+        ("?.next", 100),
+        (".me(1)", 100),
+        ("[0]", 100),
+    ];
+    for (i, (suffix, links)) in shapes.into_iter().enumerate() {
+        let rounds = if links == 1 { 300 } else { 100 };
+        let name = format!("nesting_wrapped_{i}");
+        assert_too_deep(&name, &wrapped_chains(suffix, links, rounds));
+    }
+}
+
+/// The repro of the review: it parsed with `--emit ast` and overflowed the stack in the checker.
+#[test]
+fn a_hundred_rounds_of_a_hundred_plus_terms_is_too_deep() {
+    assert_too_deep("nesting_wrapped_sum", &wrapped_chains("+1", 100, 100));
+}
+
+/// A flat chain is as tall as it is long when each operator or `.` wraps the one before, so a
+/// long one is the same error and never an overflow.
+#[test]
+fn a_ten_thousand_step_left_chain_is_too_deep() {
+    let n = 10_000;
+    let body = |expr: String| format!("{PRELUDE}fn main() {{\n    print({expr})\n}}\n");
+    assert_too_deep("nesting_long_sum", &body(format!("1{}", "+1".repeat(n))));
+    assert_too_deep(
+        "nesting_long_methods",
+        &format!(
+            "{PRELUDE}fn main() {{\n    let n = N(next: None, v: 1)\n    let m = n{}\n}}\n",
+            ".me()".repeat(n)
+        ),
+    );
+}
+
+/// A comparison chain `a < b < c` is one node with all its operands, so ten thousand of them are
+/// a shallow tree and compile.
+#[test]
+fn a_ten_thousand_operand_comparison_chain_is_shallow() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let source = format!("fn main() {{\n    print(1{})\n}}\n", "<1".repeat(10_000));
+    fs::write(dir.join("nesting_compare.sisu"), source).expect("writes");
+    let build = sisuc(dir, &["nesting_compare.sisu", "nesting_compare.out"]);
+    assert_eq!(
+        (build.status.code(), String::from_utf8_lossy(&build.stderr)),
+        (Some(0), "".into())
+    );
+    let run = Command::new(dir.join("nesting_compare.out"))
+        .output()
+        .expect("program starts");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "false\n");
+}
+
+/// A node that wraps what was parsed puts the new operand one level below itself and everything
+/// it wrapped one level deeper. Each shape is `print(<expr>)` with a sum of `k` links inside the
+/// operand, and parsing alone decides: the deepest `k` that parses, and the first that does not.
+#[test]
+fn an_operand_of_a_wrapping_node_counts_the_wrapping_node() {
+    type Shape = (&'static str, fn(usize) -> String, usize);
+    let shapes: [Shape; 6] = [
+        ("sum", |k| format!("1{}", "+1".repeat(k)), 253),
+        // The comparison is the parent of the sum on its left.
+        ("compare lhs", |k| format!("1{}<1", "+1".repeat(k)), 252),
+        ("compare rhs", |k| format!("1<1{}", "+1".repeat(k)), 252),
+        (
+            "method argument",
+            |k| format!("n.me(1{})", "+1".repeat(k)),
+            251,
+        ),
+        ("index", |k| format!("a[1{}]", "+1".repeat(k)), 251),
+        ("call argument", |k| format!("f(1{})", "+1".repeat(k)), 252),
+    ];
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    for (name, expr, limit) in shapes {
+        for (k, parses) in [(limit, true), (limit + 1, false)] {
+            let source = format!("fn main() {{\n    print({})\n}}\n", expr(k));
+            fs::write(dir.join("nesting_operand.sisu"), source).expect("writes");
+            let out = sisuc(dir, &["--emit", "ast", "nesting_operand.sisu"]);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(
+                out.status.success(),
+                parses,
+                "{name} with {k} links: {stderr}"
+            );
+            assert_eq!(
+                stderr.starts_with("error: nesting is too deep"),
+                !parses,
+                "{name}"
+            );
+        }
+    }
+}
+
+/// Many subtrees side by side are not nested: a hundred groups of a hundred terms, joined by `+`,
+/// stand about two hundred high, far less than their ten thousand terms.
+#[test]
+fn wide_trees_are_not_counted_by_size() {
+    let group = format!("(1{})", "+1".repeat(100));
+    let sum = vec![group; 100].join("+");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let source = format!("fn main() {{\n    print({sum})\n}}\n");
+    fs::write(dir.join("nesting_wide.sisu"), source).expect("writes");
+    let out = sisuc(dir, &["--check", "nesting_wide.sisu"]);
+    assert_eq!(
+        (out.status.code(), String::from_utf8_lossy(&out.stderr)),
+        (Some(0), "".into())
     );
 }
 

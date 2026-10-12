@@ -59,8 +59,11 @@ fn compare_op(kind: &TokenKind) -> Option<CompareOp> {
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
-    /// The nesting of the tree built so far: at least the depth of the node being parsed.
-    /// A construct that returns restores the value it entered with; an error ends the parse.
+    /// While a node's children are parsed: the levels above them. When a parse function returns:
+    /// the height of the deepest path through the tree it built, counted from the level it was
+    /// entered at, in the same units. A node that wraps what it already parsed, as an operator
+    /// or a `.` does in a chain, adds a level to that height, so no way of building a tree gets
+    /// past `MAX_DEPTH`. An error ends the parse.
     depth: usize,
 }
 
@@ -87,15 +90,33 @@ impl Parser<'_> {
         self.at(kind).then(|| self.bump())
     }
 
-    /// Enters one more level of nesting, or reports that the tree is too deep at the next token.
-    /// The caller restores `self.depth` when it returns.
-    fn descend(&mut self) -> Result<(), Diagnostic> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
+    /// Sets `self.depth`, or reports that the tree is too deep at the next token.
+    fn reach(&mut self, depth: usize) -> Result<(), Diagnostic> {
+        self.depth = depth;
+        if depth > MAX_DEPTH {
             return Err(Diagnostic::error(self.peek().span, "nesting is too deep")
                 .help(format!("the limit is {MAX_DEPTH} levels")));
         }
         Ok(())
+    }
+
+    /// Enters one more level of nesting for the children that follow.
+    fn descend(&mut self) -> Result<(), Diagnostic> {
+        self.reach(self.depth + 1)
+    }
+
+    /// Parses one child of a node whose children start at depth `base`, and raises `reach`, the
+    /// height of the node so far, to the child's.
+    fn child<T>(
+        &mut self,
+        base: usize,
+        reach: &mut usize,
+        parse: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        self.depth = base;
+        let node = parse(self)?;
+        *reach = (*reach).max(self.depth);
+        Ok(node)
     }
 
     fn skip_newlines(&mut self) {
@@ -146,7 +167,6 @@ impl Parser<'_> {
 
     /// The only place that reads a type; later milestones extend it.
     fn parse_type(&mut self) -> Result<TypeExpr, Diagnostic> {
-        let saved = self.depth;
         self.descend()?;
         let start = self.peek().span;
         let (kind, mut span) = if self.eat(&TokenKind::LBracket).is_some() {
@@ -177,7 +197,6 @@ impl Parser<'_> {
             )
             .help("optionals do not nest"));
         }
-        self.depth = saved;
         Ok(TypeExpr {
             kind,
             optional,
@@ -194,6 +213,7 @@ impl Parser<'_> {
                 TokenKind::Class => Item::Class(self.class()?),
                 _ => return Err(self.expected("`fn` or `class`")),
             });
+            self.depth = 0;
             self.skip_newlines();
         }
         Ok(Program { items })
@@ -207,6 +227,7 @@ impl Parser<'_> {
         self.skip_newlines();
         while !self.at(&TokenKind::RBrace) {
             let member = self.member()?;
+            self.depth = 0;
             if matches!(member, Member::Field(_)) && self.at(&TokenKind::Comma) {
                 return Err(Diagnostic::error(
                     self.peek().span,
@@ -334,10 +355,9 @@ impl Parser<'_> {
                 }
                 let name = self.ident("a parameter name")?;
                 self.expect(&TokenKind::Colon)?;
-                params.push(Param {
-                    name,
-                    ty: self.parse_type()?,
-                });
+                let ty = self.parse_type()?;
+                self.depth = 0;
+                params.push(Param { name, ty });
                 if self.eat(&TokenKind::Comma).is_none() {
                     break;
                 }
@@ -348,6 +368,7 @@ impl Parser<'_> {
             Some(_) => Some(self.parse_type()?),
             None => None,
         };
+        self.depth = 0;
         let body = self.block()?;
         Ok(Function {
             name,
@@ -360,20 +381,21 @@ impl Parser<'_> {
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
-        let saved = self.depth;
         self.descend()?;
+        let base = self.depth;
+        let mut reach = base;
         let open = self.expect(&TokenKind::LBrace)?;
         let mut stmts = Vec::new();
         self.skip_newlines();
         while !self.at(&TokenKind::RBrace) {
-            stmts.push(self.stmt()?);
+            stmts.push(self.child(base, &mut reach, Self::stmt)?);
             if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
                 return Err(self.end_of_line());
             }
             self.skip_newlines();
         }
         let close = self.bump();
-        self.depth = saved;
+        self.depth = reach;
         Ok(Block {
             stmts,
             span: open.span.to(close.span),
@@ -382,21 +404,23 @@ impl Parser<'_> {
 
     fn stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.peek().span;
+        let base = self.depth;
+        let mut reach = base;
         let kind = match self.peek().kind {
             TokenKind::Let => self.let_stmt()?,
             TokenKind::While => {
                 self.bump();
-                if let Some((name, value)) = self.let_binding()? {
+                if let Some((name, value)) = self.child(base, &mut reach, Self::let_binding)? {
                     StmtKind::WhileLet {
                         name,
                         value,
-                        body: self.block()?,
+                        body: self.child(base, &mut reach, Self::block)?,
                     }
                 } else {
-                    let cond = self.expr()?;
+                    let cond = self.child(base, &mut reach, Self::expr)?;
                     StmtKind::While {
                         cond,
-                        body: self.block()?,
+                        body: self.child(base, &mut reach, Self::block)?,
                     }
                 }
             }
@@ -405,11 +429,11 @@ impl Parser<'_> {
                 let name = self.ident("a variable name")?;
                 self.expect(&TokenKind::In)?;
                 // A range is only valid here, so the header reads its two sides itself.
-                let first = self.binary(1)?;
+                let first = self.child(base, &mut reach, |p| p.binary(1))?;
                 let source = if self.eat(&TokenKind::DotDot).is_some() {
                     ForSource::Range {
                         start: first,
-                        end: self.binary(1)?,
+                        end: self.child(base, &mut reach, |p| p.binary(1))?,
                     }
                 } else {
                     ForSource::Array(first)
@@ -417,7 +441,7 @@ impl Parser<'_> {
                 StmtKind::For {
                     name,
                     source,
-                    body: self.block()?,
+                    body: self.child(base, &mut reach, Self::block)?,
                 }
             }
             TokenKind::Return => {
@@ -425,7 +449,7 @@ impl Parser<'_> {
                 if self.at(&TokenKind::Newline) || self.at(&TokenKind::RBrace) {
                     StmtKind::Return(None)
                 } else {
-                    StmtKind::Return(Some(self.expr()?))
+                    StmtKind::Return(Some(self.child(base, &mut reach, Self::expr)?))
                 }
             }
             TokenKind::Break => {
@@ -444,6 +468,8 @@ impl Parser<'_> {
             }
             _ => self.expr_or_assign()?,
         };
+        // `let_stmt` and `expr_or_assign` leave their own height in `self.depth`.
+        self.depth = reach.max(self.depth);
         Ok(Stmt {
             kind,
             span: start.to(self.last_span()),
@@ -466,25 +492,31 @@ impl Parser<'_> {
     }
 
     fn let_stmt(&mut self) -> Result<StmtKind, Diagnostic> {
+        let base = self.depth;
+        let mut reach = base;
         self.bump();
         let mutable = self.eat(&TokenKind::Mut).is_some();
         let name = self.ident("a variable name")?;
         let ty = match self.eat(&TokenKind::Colon) {
-            Some(_) => Some(self.parse_type()?),
+            Some(_) => Some(self.child(base, &mut reach, Self::parse_type)?),
             None => None,
         };
         self.expect(&TokenKind::Eq)?;
+        let init = self.child(base, &mut reach, Self::expr)?;
+        self.depth = reach;
         Ok(StmtKind::Let {
             mutable,
             name,
             ty,
-            init: self.expr()?,
+            init,
         })
     }
 
     /// An expression statement, or an assignment when an assignment operator follows.
     fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
-        let target = self.expr()?;
+        let base = self.depth;
+        let mut reach = base;
+        let target = self.child(base, &mut reach, Self::expr)?;
         let op = match self.peek().kind {
             TokenKind::Eq => None,
             TokenKind::PlusEq => Some(BinaryOp::Add),
@@ -509,7 +541,8 @@ impl Parser<'_> {
                 .help("unwrap it with `if let`"));
         }
         self.bump();
-        let value = self.expr()?;
+        let value = self.child(base, &mut reach, Self::expr)?;
+        self.depth = reach;
         Ok(match op {
             None => StmtKind::Assign { target, value },
             Some(op) => StmtKind::CompoundAssign { op, target, value },
@@ -517,7 +550,6 @@ impl Parser<'_> {
     }
 
     fn expr(&mut self) -> Result<Expr, Diagnostic> {
-        let saved = self.depth;
         self.descend()?;
         let e = self.binary(1)?;
         if self.at(&TokenKind::DotDot) {
@@ -526,36 +558,37 @@ impl Parser<'_> {
                 "ranges are only allowed in `for`",
             ));
         }
-        self.depth = saved;
         Ok(e)
     }
 
     /// Precedence climbing over levels 1 to 7; `min` is the lowest level to accept.
     /// Each operator adds a level: `1 + 1 + 1` builds a tree that is as deep as it is long.
     fn binary(&mut self, min: u8) -> Result<Expr, Diagnostic> {
-        let saved = self.depth;
+        let base = self.depth;
         let mut lhs = self.unary()?;
         loop {
             let kind = &self.peek().kind;
             if compare_op(kind).is_some() {
                 if min > 4 {
-                    self.depth = saved;
                     return Ok(lhs);
                 }
-                lhs = self.comparison_chain(lhs)?;
+                lhs = self.comparison_chain(lhs, base)?;
             } else if let Some((level, op)) = infix_op(kind) {
                 if level < min {
-                    self.depth = saved;
                     return Ok(lhs);
                 }
-                self.descend()?;
+                // The operator is the parent of everything parsed so far: one level more.
+                let wrapped = self.depth + 1;
+                self.reach(wrapped)?;
                 self.bump();
+                self.depth = base + 1;
                 // `??` is right-associative: its right side starts at its own level.
                 let rhs = self.binary(if matches!(op, Infix::Coalesce) {
                     level
                 } else {
                     level + 1
                 })?;
+                self.depth = self.depth.max(wrapped);
                 let span = lhs.span.to(rhs.span);
                 let (lhs_box, rhs_box) = (Box::new(lhs), Box::new(rhs));
                 lhs = Expr {
@@ -587,15 +620,17 @@ impl Parser<'_> {
                         .help("join the comparisons with `&&`"));
                 }
             } else {
-                self.depth = saved;
                 return Ok(lhs);
             }
         }
     }
 
     /// Level 4: `first` and every `<`/`<=`/`>`/`>=` operand after it, as one node.
-    fn comparison_chain(&mut self, first: Expr) -> Result<Expr, Diagnostic> {
+    fn comparison_chain(&mut self, first: Expr, base: usize) -> Result<Expr, Diagnostic> {
         let start = first.span;
+        // The chain is the parent of `first`: one level more.
+        let mut reach = self.depth + 1;
+        self.reach(reach)?;
         let mut operands = vec![first];
         let mut ops: Vec<CompareOp> = Vec::new();
         while let Some(op) = compare_op(&self.peek().kind) {
@@ -610,8 +645,11 @@ impl Parser<'_> {
             }
             self.bump();
             ops.push(op);
+            self.depth = base + 1;
             operands.push(self.binary(5)?);
+            reach = reach.max(self.depth);
         }
+        self.depth = reach;
         Ok(Expr {
             span: start.to(self.last_span()),
             kind: ExprKind::Compare { operands, ops },
@@ -624,20 +662,17 @@ impl Parser<'_> {
             TokenKind::Bang => UnaryOp::Not,
             _ => return self.postfix(),
         };
-        let saved = self.depth;
         self.descend()?;
         let start = self.bump().span;
         if matches!(op, UnaryOp::Neg) && self.at_min_literal() {
             // `i64::MIN` has no positive twin, so `-9223372036854775808` is one literal.
             let literal = self.bump().span;
-            self.depth = saved;
             return Ok(Expr {
                 span: start.to(literal),
                 kind: ExprKind::Int(i64::MIN),
             });
         }
         let operand = self.unary()?;
-        self.depth = saved;
         Ok(Expr {
             span: start.to(operand.span),
             kind: ExprKind::Unary {
@@ -661,14 +696,18 @@ impl Parser<'_> {
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
     /// `?.method(args)` and `[index]`.
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {
-        let saved = self.depth;
+        let base = self.depth;
         let mut expr = self.primary()?;
         loop {
+            // Each link is the parent of everything parsed so far: one level more.
+            let wrapped = self.depth + 1;
             if self.at(&TokenKind::LBracket) {
-                self.descend()?;
+                self.reach(wrapped)?;
                 self.bump();
+                self.depth = base + 1;
                 let index = self.expr()?;
                 let close = self.expect(&TokenKind::RBracket)?;
+                self.depth = self.depth.max(wrapped);
                 expr = Expr {
                     span: expr.span.to(close.span),
                     kind: ExprKind::Index {
@@ -679,15 +718,16 @@ impl Parser<'_> {
                 continue;
             }
             if !self.at(&TokenKind::Dot) && !self.at(&TokenKind::QuestionDot) {
-                self.depth = saved;
                 return Ok(expr);
             }
-            self.descend()?;
+            self.reach(wrapped)?;
             let access = self.bump();
             let safe = access.kind == TokenKind::QuestionDot;
             let name = self.ident("a field or method name")?;
             expr = if self.at(&TokenKind::LParen) {
+                self.depth = base + 1;
                 let (args, close) = self.args()?;
+                self.depth = self.depth.max(wrapped);
                 Expr {
                     span: expr.span.to(close),
                     kind: ExprKind::MethodCall {
@@ -712,12 +752,14 @@ impl Parser<'_> {
 
     /// `[` after the opening bracket: `]`, `value; len]` or `a, b, …]`.
     fn array(&mut self, open: Span) -> Result<Expr, Diagnostic> {
+        let base = self.depth;
+        let mut reach = base;
         let mut elements = Vec::new();
         let mut fill = None;
         while !self.at(&TokenKind::RBracket) {
-            elements.push(self.expr()?);
+            elements.push(self.child(base, &mut reach, Self::expr)?);
             if elements.len() == 1 && self.eat(&TokenKind::Semicolon).is_some() {
-                fill = Some(self.expr()?);
+                fill = Some(self.child(base, &mut reach, Self::expr)?);
                 break;
             }
             if self.eat(&TokenKind::Comma).is_none() {
@@ -725,6 +767,7 @@ impl Parser<'_> {
             }
         }
         let close = self.expect(&TokenKind::RBracket)?;
+        self.depth = reach;
         let kind = match (fill, elements.pop()) {
             (Some(len), Some(value)) => ExprKind::ArrayFill {
                 value: Box::new(value),
@@ -805,16 +848,19 @@ impl Parser<'_> {
     /// `(` arguments `)`, and the span of the `)`.
     fn args(&mut self) -> Result<(Vec<Arg>, Span), Diagnostic> {
         self.expect(&TokenKind::LParen)?;
+        let base = self.depth;
+        let mut reach = base;
         let mut args = Vec::new();
         if !self.at(&TokenKind::RParen) {
             loop {
-                args.push(self.arg()?);
+                args.push(self.child(base, &mut reach, Self::arg)?);
                 if self.eat(&TokenKind::Comma).is_none() {
                     break;
                 }
             }
         }
         let close = self.expect(&TokenKind::RParen)?;
+        self.depth = reach;
         Ok((args, close.span))
     }
 
@@ -840,19 +886,21 @@ impl Parser<'_> {
 
     fn if_expr(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.expect(&TokenKind::If)?.span;
-        let head = match self.let_binding()? {
+        let base = self.depth;
+        let mut reach = base;
+        let head = match self.child(base, &mut reach, Self::let_binding)? {
             Some((name, value)) => Head::Let(name, value),
-            None => Head::Cond(self.expr()?),
+            None => Head::Cond(self.child(base, &mut reach, Self::expr)?),
         };
-        let then_block = self.block()?;
+        let then_block = self.child(base, &mut reach, Self::block)?;
         let mut end = then_block.span;
         let else_block = if self.eat(&TokenKind::Else).is_some() {
             let block = if self.at(&TokenKind::If) {
                 // `else if` and `else if let` become a block holding the inner `if`.
-                let saved = self.depth;
-                self.descend()?;
-                let inner = self.if_expr()?;
-                self.depth = saved;
+                let inner = self.child(base, &mut reach, |p| {
+                    p.descend()?;
+                    p.if_expr()
+                })?;
                 Block {
                     span: inner.span,
                     stmts: vec![Stmt {
@@ -861,7 +909,7 @@ impl Parser<'_> {
                     }],
                 }
             } else {
-                self.block()?
+                self.child(base, &mut reach, Self::block)?
             };
             end = block.span;
             Some(block)
@@ -881,6 +929,7 @@ impl Parser<'_> {
                 else_block,
             },
         };
+        self.depth = reach;
         Ok(Expr {
             span: start.to(end),
             kind,

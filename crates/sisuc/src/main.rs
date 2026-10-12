@@ -128,7 +128,8 @@ fn main() -> ExitCode {
         .stack_size(STACK_SIZE)
         .spawn(run)
         .expect("the OS should start a thread with a 64 MiB stack");
-    // A panic in the compiler keeps its message and exit code 101.
+    // `panic = "abort"` makes a panic in the compiler abort the process (SIGABRT, exit 134) on
+    // this thread as it did on the main one, so `join` fails only in a build that unwinds.
     compiler.join().unwrap_or_else(|p| panic::resume_unwind(p))
 }
 
