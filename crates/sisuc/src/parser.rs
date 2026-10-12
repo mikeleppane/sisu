@@ -464,6 +464,10 @@ impl Parser<'_> {
             TokenKind::PercentEq => Some(BinaryOp::Rem),
             _ => return Ok(StmtKind::Expr(target)),
         };
+        if matches!(target.kind, ExprKind::SelfValue) {
+            return Err(Diagnostic::error(target.span, "cannot assign to `self`")
+                .help("an object is shared: `self` can already write every `mut` field"));
+        }
         if !is_place(&target) {
             return Err(Diagnostic::error(
                 target.span,
@@ -1170,6 +1174,22 @@ mod tests {
             assert_eq!(d.message, "cannot assign through `?.`", "{src}");
             assert_eq!(d.help.as_deref(), Some("unwrap it with `if let`"), "{src}");
             assert_eq!(line_col(&full, d.span.start), (1, 13), "{src}");
+        }
+    }
+
+    #[test]
+    fn cannot_assign_to_self() {
+        for src in ["self = 1", "self += 1"] {
+            let full = format!("fn main() {{ {src} }}");
+            let d = parse_diagnostic(&full);
+            assert_eq!(d.message, "cannot assign to `self`", "{src}");
+            assert_eq!(
+                d.help.as_deref(),
+                Some("an object is shared: `self` can already write every `mut` field"),
+                "{src}"
+            );
+            assert_eq!(line_col(&full, d.span.start), (1, 13), "{src}");
+            assert_eq!(d.span.end - d.span.start, 4, "{src}");
         }
     }
 

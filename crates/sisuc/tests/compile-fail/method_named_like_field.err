@@ -1,0 +1,9 @@
+error: `f` is already a field of `A`
+ --> method_named_like_field.sisu:4:8
+  |
+2 |     f: i64
+  |     - first defined here
+3 |
+4 |     fn f(self) {}
+  |        ^
+

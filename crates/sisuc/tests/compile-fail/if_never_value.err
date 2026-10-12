@@ -1,0 +1,8 @@
+error: this expression never produces a value
+ --> if_never_value.sisu:2:13
+  |
+2 |     let z = if true { return } else { return }
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: every path through it returns, breaks or continues
+

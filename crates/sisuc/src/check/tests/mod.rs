@@ -99,6 +99,18 @@ fn error(src: &str, message: &str, pos: (usize, usize)) {
     assert_eq!(d.help, None);
 }
 
+/// Asserts exactly one error: a `never` expression used as a value, at `pos`.
+fn never_value(src: &str, pos: (usize, usize)) {
+    let d = single_error(src, "this expression never produces a value");
+    assert_eq!(at(src, d.span), pos);
+    assert_eq!(
+        d.help.as_deref(),
+        Some("every path through it returns, breaks or continues")
+    );
+    assert_eq!(d.label, None);
+    assert!(d.secondary.is_empty(), "{:?}", d.secondary);
+}
+
 /// Asserts exactly one diagnostic: a warning with this message and position.
 fn warning(src: &str, message: &str, pos: (usize, usize)) {
     let ds = diags(src);
@@ -129,9 +141,9 @@ fn duplicate_function() {
 fn print_is_built_in() {
     expect_error(
         "fn print() {}\nfn main() {}",
-        "function `print` is defined twice",
+        "`print` is a built-in function",
         (1, 4, "print"),
-        Some("`print` is built in"),
+        None,
         &[],
         None,
     );
@@ -836,9 +848,8 @@ fn all_paths_return_is_fine() {
 
 #[test]
 fn never_as_return_value() {
-    error(
+    never_value(
         "fn f(c: bool) -> i64 {\n    return if c { return 1 } else { return 2 }\n}\nfn main() {}",
-        "unreachable code",
         (2, 12),
     );
 }
@@ -859,27 +870,24 @@ fn annotated_let_matches() {
 
 #[test]
 fn never_as_initializer() {
-    error(
+    never_value(
         "fn f(c: bool) -> i64 {\n    let x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
-        "unreachable code",
         (2, 13),
     );
 }
 
 #[test]
 fn never_as_condition() {
-    error(
+    never_value(
         "fn f(c: bool) -> i64 {\n    while if c { return 1 } else { return 2 } {}\n    1\n}\nfn main() {}",
-        "unreachable code",
         (2, 11),
     );
 }
 
 #[test]
 fn never_as_operand() {
-    error(
+    never_value(
         "fn f(c: bool) -> i64 {\n    1 + if c { return 1 } else { return 2 }\n}\nfn main() {}",
-        "unreachable code",
         (2, 9),
     );
 }
@@ -1002,9 +1010,8 @@ fn assign_to_let() {
 
 #[test]
 fn never_assigned_value() {
-    error(
+    never_value(
         "fn f(c: bool) -> i64 {\n    let mut x = 0\n    x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
-        "unreachable code",
         (3, 9),
     );
 }
@@ -1128,7 +1135,7 @@ fn empty_file_has_no_main() {
 fn class_and_function_share_names() {
     expect_error(
         "class A {}\nfn A() {}\nfn main() {}",
-        "function `A` is defined twice",
+        "`A` is already a class",
         (2, 4, "A"),
         None,
         &[(1, 7, "first defined here")],
@@ -1140,7 +1147,7 @@ fn class_and_function_share_names() {
 fn class_after_function_of_same_name() {
     expect_error(
         "fn A() {}\nclass A {}\nfn main() {}",
-        "class `A` is defined twice",
+        "`A` is already a function",
         (2, 7, "A"),
         None,
         &[(1, 4, "first defined here")],
@@ -1171,9 +1178,9 @@ fn class_defined_twice() {
 fn class_named_print() {
     expect_error(
         "class print {}\nfn main() {}",
-        "class `print` is defined twice",
+        "`print` is a built-in function",
         (1, 7, "print"),
-        Some("`print` is built in"),
+        None,
         &[],
         None,
     );
@@ -1183,7 +1190,7 @@ fn class_named_print() {
 fn duplicate_member() {
     expect_error(
         "class A {\n    x: i64\n    fn x(self) {}\n}\nfn main() {}",
-        "method `x` is defined twice",
+        "`x` is already a field of `A`",
         (3, 8, "x"),
         None,
         &[(2, 5, "first defined here")],
@@ -1195,7 +1202,7 @@ fn duplicate_member() {
 fn duplicate_field() {
     expect_error(
         "class A {\n    fn x(self) {}\n    mut x: i64\n}\nfn main() {}",
-        "field `x` is defined twice",
+        "`x` is already a method of `A`",
         (3, 9, "x"),
         None,
         &[(2, 8, "first defined here")],
@@ -1636,9 +1643,8 @@ fn assign_field_type() {
 
 #[test]
 fn never_as_print_argument() {
-    error(
+    never_value(
         "fn f(c: bool) -> i64 {\n    print(if c { return 1 } else { return 2 })\n    1\n}\nfn main() {}",
-        "unreachable code",
         (2, 11),
     );
 }
@@ -2254,9 +2260,8 @@ fn coalesce_left_not_optional() {
 
 #[test]
 fn coalesce_never() {
-    error(
+    never_value(
         "fn f(x: i64?, c: bool) -> i64 {\n    x ?? if c { return 0 } else { return 1 }\n}\nfn main() {}",
-        "unreachable code",
         (2, 10),
     );
 }
@@ -2571,4 +2576,97 @@ fn print_argument_errors_sit_on_the_argument() {
             ("cannot print `[i64]`", (8, 11)),
         ],
     );
+}
+
+/// Two members of the same kind are "defined twice"; a method and a field of one name name the
+/// first one's kind.
+#[test]
+fn duplicate_member_of_the_same_kind() {
+    expect_error(
+        "class A {\n    fn x(self) {}\n    fn x(self) {}\n}\nfn main() {}",
+        "method `x` is defined twice",
+        (3, 8, "x"),
+        None,
+        &[(2, 8, "first defined here")],
+        None,
+    );
+    expect_error(
+        "class A {\n    x: i64\n    x: i64\n}\nfn main() {}",
+        "field `x` is defined twice",
+        (3, 5, "x"),
+        None,
+        &[(2, 5, "first defined here")],
+        None,
+    );
+}
+
+#[test]
+fn unit_branch_says_no_value() {
+    expect_error(
+        "fn nothing() {}\nfn main() { let y: i64 = if true { 1 } else { nothing() } }",
+        "expression has no value",
+        (2, 47, "nothing()"),
+        None,
+        &[],
+        None,
+    );
+    expect_error(
+        "fn nothing() {}\nfn main() { let y: i64 = if true { nothing() } else { 1 } }",
+        "expression has no value",
+        (2, 36, "nothing()"),
+        None,
+        &[],
+        None,
+    );
+    // Without a type expected, the branch with no value is still the one named.
+    expect_error(
+        "fn nothing() {}\nfn main() { let x = if true { nothing() } else { 1 } }",
+        "expression has no value",
+        (2, 31, "nothing()"),
+        None,
+        &[],
+        None,
+    );
+}
+
+/// Branches of two other types still report a mismatch, and never say `unit`.
+#[test]
+fn value_branches_of_different_types_still_mismatch() {
+    error(
+        "fn main() { let x = if true { 1 } else { false } }",
+        "expected `i64`, found `bool`",
+        (1, 42),
+    );
+}
+
+#[test]
+fn if_with_two_never_branches_has_no_value() {
+    never_value(
+        "fn f(c: bool) -> i64 {\n    let z = if c { return 1 } else { return 2 }\n    z\n}\nfn main() {}",
+        (2, 13),
+    );
+}
+
+#[test]
+fn assigning_to_a_function_names_it() {
+    for (src, col) in [
+        ("fn one() {}\nfn main() { one = 2 }", 13),
+        ("fn one() {}\nfn main() { one += 2 }", 13),
+        ("fn one() {}\nfn main() { one[0] = 2 }", 13),
+    ] {
+        expect_error(
+            src,
+            "`one` is a function, not a variable",
+            (2, col, "one"),
+            None,
+            &[],
+            None,
+        );
+    }
+}
+
+/// A local that shadows a function is assigned, not reported.
+#[test]
+fn local_shadowing_a_function_is_assignable() {
+    clean("fn one() {}\nfn main() {\n    let mut one = 1\n    one = 2\n    one += 1\n}");
 }

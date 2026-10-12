@@ -155,12 +155,12 @@ impl Checker {
     /// An expression whose value is used: not `unit` or `never`.
     pub(super) fn value(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let checked = self.expr(e, expected);
-        let message = match type_of(&checked) {
-            Some(Type::Unit) => "expression has no value",
-            Some(Type::Never) => "unreachable code",
+        let d = match type_of(&checked) {
+            Some(Type::Unit) => no_value(e.span),
+            Some(Type::Never) => never_value(e.span),
             _ => return checked,
         };
-        self.diagnostics.push(Diagnostic::error(e.span, message));
+        self.diagnostics.push(d);
         Err(Poisoned::error())
     }
 
@@ -659,6 +659,9 @@ impl Checker {
             // the mistake; without one, the `else` is, against the first branch.
             (Some(t), Some(o)) => {
                 let d = match expected.filter(|w| **w != UNKNOWN) {
+                    // A branch with no value is that mistake, not a type mismatch.
+                    _ if t == Type::Unit => no_value(value_span(then_block)),
+                    _ if o == Type::Unit => no_value(value_span(else_block)),
                     Some(w) if fits(w, &t) => {
                         self.mismatch(value_span(else_block), tail(else_block), w, &o)
                     }
@@ -980,8 +983,8 @@ impl Checker {
                 Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
             }
             Some(Type::Optional(_)) => wrong(),
-            Some(Type::Unit) => Diagnostic::error(arg.value.span, "expression has no value"),
-            Some(Type::Never) => Diagnostic::error(arg.value.span, "unreachable code"),
+            Some(Type::Unit) => no_value(arg.value.span),
+            Some(Type::Never) => never_value(arg.value.span),
             _ => {
                 let kind = checked
                     .ok()
@@ -1001,6 +1004,17 @@ impl Checker {
             let _ = self.expr(&arg.value, Some(&UNKNOWN));
         }
     }
+}
+
+/// An expression of no type used where a value is needed.
+fn no_value(span: Span) -> Diagnostic {
+    Diagnostic::error(span, "expression has no value")
+}
+
+/// A `never` expression used as a value: it leaves before it makes one.
+fn never_value(span: Span) -> Diagnostic {
+    Diagnostic::error(span, "this expression never produces a value")
+        .help("every path through it returns, breaks or continues")
 }
 
 /// The operator and the type it takes, for all but `==` and `!=`.

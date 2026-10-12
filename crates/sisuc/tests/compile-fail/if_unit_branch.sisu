@@ -1,0 +1,5 @@
+fn nothing() {}
+
+fn main() {
+    let y: i64 = if true { 1 } else { nothing() }
+}

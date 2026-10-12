@@ -1,0 +1,20 @@
+fn one() -> i64 {
+    1
+}
+
+// A statement `if` whose branches differ in type: one of them leaves the function.
+fn pick(c: bool) -> i64 {
+    if c { return 7 } else { print(0) }
+    if c { print(1) } else { return 5 }
+    one()
+}
+
+fn main() {
+    // A local that shadows the function `one` is a variable, so it can be assigned.
+    let mut one = 5
+    one = 2
+    one += 1
+    print(one)
+    print(pick(false))
+    print(pick(true))
+}
