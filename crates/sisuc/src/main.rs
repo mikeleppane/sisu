@@ -13,8 +13,10 @@ mod tir;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Write};
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use diagnostic::Diagnostic;
@@ -115,7 +117,22 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
     Ok(mode)
 }
 
+/// The stack of the thread that runs the compiler. The parser bounds the depth of the syntax tree
+/// (`MAX_DEPTH`), and the deepest tree compiles in about 5.5 MiB in a debug build. 64 MiB is
+/// four times that and more. The pages are mapped but touched only when used.
+const STACK_SIZE: usize = 64 << 20;
+
 fn main() -> ExitCode {
+    let compiler = thread::Builder::new()
+        .name("main".to_string())
+        .stack_size(STACK_SIZE)
+        .spawn(run)
+        .expect("the OS should start a thread with a 64 MiB stack");
+    // A panic in the compiler keeps its message and exit code 101.
+    compiler.join().unwrap_or_else(|p| panic::resume_unwind(p))
+}
+
+fn run() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let mode = match parse_args(&args) {
         Ok(mode) => mode,

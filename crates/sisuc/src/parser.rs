@@ -9,8 +9,17 @@ use crate::lexer::{Token, TokenKind};
 
 /// Parses `tokens`, which must end with `Eof`. Stops at the first error.
 pub(crate) fn parse(tokens: &[Token]) -> Result<Program, Diagnostic> {
-    Parser { tokens, pos: 0 }.program()
+    Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    }
+    .program()
 }
+
+/// How deep the syntax tree may nest. Every later stage walks the tree recursively, and so does
+/// dropping it, so the parser is the one place that bounds the stack they need.
+const MAX_DEPTH: usize = 256;
 
 /// An infix operator other than the comparisons of level 4.
 enum Infix {
@@ -50,6 +59,9 @@ fn compare_op(kind: &TokenKind) -> Option<CompareOp> {
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    /// The nesting of the tree built so far: at least the depth of the node being parsed.
+    /// A construct that returns restores the value it entered with; an error ends the parse.
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -73,6 +85,17 @@ impl Parser<'_> {
     /// Consumes the next token if it is `kind`.
     fn eat(&mut self, kind: &TokenKind) -> Option<Token> {
         self.at(kind).then(|| self.bump())
+    }
+
+    /// Enters one more level of nesting, or reports that the tree is too deep at the next token.
+    /// The caller restores `self.depth` when it returns.
+    fn descend(&mut self) -> Result<(), Diagnostic> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(Diagnostic::error(self.peek().span, "nesting is too deep")
+                .help(format!("the limit is {MAX_DEPTH} levels")));
+        }
+        Ok(())
     }
 
     fn skip_newlines(&mut self) {
@@ -123,6 +146,8 @@ impl Parser<'_> {
 
     /// The only place that reads a type; later milestones extend it.
     fn parse_type(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let saved = self.depth;
+        self.descend()?;
         let start = self.peek().span;
         let (kind, mut span) = if self.eat(&TokenKind::LBracket).is_some() {
             let element = self.parse_type()?;
@@ -152,6 +177,7 @@ impl Parser<'_> {
             )
             .help("optionals do not nest"));
         }
+        self.depth = saved;
         Ok(TypeExpr {
             kind,
             optional,
@@ -244,6 +270,7 @@ impl Parser<'_> {
         let mut rest = Parser {
             tokens: self.tokens,
             pos: self.pos + 1,
+            depth: self.depth,
         };
         let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
@@ -333,6 +360,8 @@ impl Parser<'_> {
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
+        let saved = self.depth;
+        self.descend()?;
         let open = self.expect(&TokenKind::LBrace)?;
         let mut stmts = Vec::new();
         self.skip_newlines();
@@ -344,6 +373,7 @@ impl Parser<'_> {
             self.skip_newlines();
         }
         let close = self.bump();
+        self.depth = saved;
         Ok(Block {
             stmts,
             span: open.span.to(close.span),
@@ -487,6 +517,8 @@ impl Parser<'_> {
     }
 
     fn expr(&mut self) -> Result<Expr, Diagnostic> {
+        let saved = self.depth;
+        self.descend()?;
         let e = self.binary(1)?;
         if self.at(&TokenKind::DotDot) {
             return Err(Diagnostic::error(
@@ -494,23 +526,29 @@ impl Parser<'_> {
                 "ranges are only allowed in `for`",
             ));
         }
+        self.depth = saved;
         Ok(e)
     }
 
     /// Precedence climbing over levels 1 to 7; `min` is the lowest level to accept.
+    /// Each operator adds a level: `1 + 1 + 1` builds a tree that is as deep as it is long.
     fn binary(&mut self, min: u8) -> Result<Expr, Diagnostic> {
+        let saved = self.depth;
         let mut lhs = self.unary()?;
         loop {
             let kind = &self.peek().kind;
             if compare_op(kind).is_some() {
                 if min > 4 {
+                    self.depth = saved;
                     return Ok(lhs);
                 }
                 lhs = self.comparison_chain(lhs)?;
             } else if let Some((level, op)) = infix_op(kind) {
                 if level < min {
+                    self.depth = saved;
                     return Ok(lhs);
                 }
+                self.descend()?;
                 self.bump();
                 // `??` is right-associative: its right side starts at its own level.
                 let rhs = self.binary(if matches!(op, Infix::Coalesce) {
@@ -549,6 +587,7 @@ impl Parser<'_> {
                         .help("join the comparisons with `&&`"));
                 }
             } else {
+                self.depth = saved;
                 return Ok(lhs);
             }
         }
@@ -585,8 +624,11 @@ impl Parser<'_> {
             TokenKind::Bang => UnaryOp::Not,
             _ => return self.postfix(),
         };
+        let saved = self.depth;
+        self.descend()?;
         let start = self.bump().span;
         let operand = self.unary()?;
+        self.depth = saved;
         Ok(Expr {
             span: start.to(operand.span),
             kind: ExprKind::Unary {
@@ -599,9 +641,12 @@ impl Parser<'_> {
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
     /// `?.method(args)` and `[index]`.
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {
+        let saved = self.depth;
         let mut expr = self.primary()?;
         loop {
-            if self.eat(&TokenKind::LBracket).is_some() {
+            if self.at(&TokenKind::LBracket) {
+                self.descend()?;
+                self.bump();
                 let index = self.expr()?;
                 let close = self.expect(&TokenKind::RBracket)?;
                 expr = Expr {
@@ -613,12 +658,12 @@ impl Parser<'_> {
                 };
                 continue;
             }
-            let Some(access) = self
-                .eat(&TokenKind::Dot)
-                .or_else(|| self.eat(&TokenKind::QuestionDot))
-            else {
+            if !self.at(&TokenKind::Dot) && !self.at(&TokenKind::QuestionDot) {
+                self.depth = saved;
                 return Ok(expr);
-            };
+            }
+            self.descend()?;
+            let access = self.bump();
             let safe = access.kind == TokenKind::QuestionDot;
             let name = self.ident("a field or method name")?;
             expr = if self.at(&TokenKind::LParen) {
@@ -782,7 +827,10 @@ impl Parser<'_> {
         let else_block = if self.eat(&TokenKind::Else).is_some() {
             let block = if self.at(&TokenKind::If) {
                 // `else if` and `else if let` become a block holding the inner `if`.
+                let saved = self.depth;
+                self.descend()?;
                 let inner = self.if_expr()?;
+                self.depth = saved;
                 Block {
                     span: inner.span,
                     stmts: vec![Stmt {
