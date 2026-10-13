@@ -1,3 +1,4 @@
+# Format read by scripts/codspeed-prep.sh: fixed indent, three lines per entry, plain-word exec (no quotes, backslashes or #), no other comments.
 benchmarks:
   - name: fib
     id: fib

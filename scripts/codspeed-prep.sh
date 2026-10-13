@@ -27,7 +27,7 @@ reduce() {
     if cmp -s "bench/$b/main.sisu" "$out/$b/main.sisu"; then
         fail "the reduction of $b no longer applies"
     fi
-    target/release/sisuc -O2 "$out/$b/main.sisu" "$out/$b/main"
+    target/release/sisuc -O2 "$out/$b/main.sisu" "$out/$b/main" || fail "$b failed to compile"
 }
 reduce fib 's/fib(40)/fib(27)/'
 reduce sieve 's/sieve(50_000_000)/sieve(1_000_000)/'
@@ -58,33 +58,61 @@ SISU
     printf '\nfn main() {\n    print(f%d(0))\n}\n' $((sections - 1))
 } >"$out/large/main.sisu"
 
-# Runs the exec line of every codspeed.yml entry once. check_* and build_* must
-# print nothing; a program must print what its expected file holds.
+# Reads codspeed.yml strictly: a "benchmarks:" line, then per entry the lines
+# "  - name: X", "    id: X" (same X) and "    exec: plain words", in that
+# order. Anything else fails, so no entry can escape the check below.
+names=()
+execs=()
+state=start
+while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    case $state:$line in
+        start:"benchmarks:") state=name ;;
+        name:"  - name: "?* | id:"  - name: "?*)
+            [[ $state == name ]] || fail "codspeed.yml: entry lacks id/exec before: $line"
+            names+=("${line#  - name: }")
+            state=id
+            ;;
+        id:"    id: "?*)
+            [[ ${line#    id: } == "${names[-1]}" ]] || fail "codspeed.yml: id differs from name: $line"
+            state=run
+            ;;
+        run:"    exec: "?*)
+            e=${line#    exec: }
+            [[ $e != *[\"\'\\#]* ]] || fail "codspeed.yml: exec must be plain words: $line"
+            execs+=("$e")
+            state=name
+            ;;
+        *) fail "codspeed.yml: unexpected line: $line" ;;
+    esac
+done <codspeed.yml
+[[ $state == name && ${#names[@]} -gt 0 ]] || fail "codspeed.yml: no complete benchmarks found"
+
+# Runs the exec line of every entry once. check_* and build_* must print
+# nothing; a program must print its expected output and nothing on stderr.
 expected() {
     case $1 in
         fib) echo 196418 ;;
         sieve) echo 78498 ;;
         binary_trees) printf '%s\n' 4095 1024 31744 256 32512 64 32704 16 32752 2047 ;;
+        *) return 1 ;;
     esac
 }
-names=()
-while IFS= read -r line; do
-    [[ $line =~ ^[[:space:]]*-\ name:\ (.+)$ ]] && names+=("${BASH_REMATCH[1]}")
-done <codspeed.yml
-[[ ${#names[@]} -gt 0 ]] || fail "no benchmarks found in codspeed.yml"
-for name in "${names[@]}"; do
-    exec_line=$(sed -n "/^  - name: $name\$/,/^  - name:/{s/^    exec: //p}" codspeed.yml)
-    [[ -n $exec_line ]] || fail "$name has no exec line in codspeed.yml"
-    read -ra cmd <<<"$exec_line"
+for i in "${!names[@]}"; do
+    name=${names[i]}
+    read -ra cmd <<<"${execs[i]}"
     "${cmd[@]}" >"$out/stdout" 2>"$out/stderr" || fail "$name exited non-zero"
+    [[ ! -s $out/stderr ]] || fail "$name printed to stderr"
     case $name in
         check_* | build_*)
-            [[ ! -s $out/stdout && ! -s $out/stderr ]] || fail "$name printed output"
+            [[ ! -s $out/stdout ]] || fail "$name printed output"
             ;;
         *)
-            expected "$name" | cmp -s - "$out/stdout" || fail "$name printed something other than its expected output"
+            expected "$name" >"$out/expected" || fail "no expected output for $name"
+            cmp -s "$out/expected" "$out/stdout" || fail "$name printed something other than its expected output"
             ;;
     esac
 done
-[[ $("$out/build_large/main") == $((sections - 1)) ]] || fail "build_large printed something other than $((sections - 1))"
+got=$("$out/build_large/main") || fail "build_large's program exited non-zero"
+[[ $got == $((sections - 1)) ]] || fail "build_large's program printed something other than $((sections - 1))"
 echo "codspeed-prep: ok"
