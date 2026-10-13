@@ -1055,6 +1055,8 @@ mod tests {
     fn upper_case_prefix_yields_to_other_errors() {
         assert_eq!(err("0XG"), (Code::DigitOutsideBase, 1, 3));
         assert_eq!(err("0X"), (Code::BasePrefixWithoutDigits, 1, 1));
+        assert_eq!(err("0B"), (Code::BasePrefixWithoutDigits, 1, 1));
+        assert_eq!(err("0O"), (Code::BasePrefixWithoutDigits, 1, 1));
         assert_eq!(err("0X_1"), (Code::DigitSeparator, 1, 3));
         assert_eq!(
             err("0XFFFF_FFFF_FFFF_FFFF_F"),
