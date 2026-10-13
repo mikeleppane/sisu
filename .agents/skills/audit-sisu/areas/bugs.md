@@ -5,7 +5,7 @@ catches it. Every probe here needs one.
 
 ## What the language is
 
-`README.md` "What works today" lists what is implemented. An ADR or a
+`docs/roadmap.md` "What works today" lists what is implemented. An ADR or a
 roadmap entry is an oracle only for behavior this checkout implements:
 `docs/roadmap.md` marks later milestones as planned, and ADR 0008's `weak`,
 for example, does not exist yet. A checker that rejects planned syntax is

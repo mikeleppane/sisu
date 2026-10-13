@@ -6,51 +6,160 @@
 
 [![CI](https://github.com/mikeleppane/sisu/actions/workflows/ci.yml/badge.svg)](https://github.com/mikeleppane/sisu/actions/workflows/ci.yml)
 
-A small, statically typed language that compiles to native x86-64 Linux code
-through LLVM.
+Sisu is a small, statically typed programming language that compiles to native
+x86-64 Linux code through LLVM. Sisu is Finnish for grit.
 
-Sisu (Finnish for grit) is a learning project: the goal is to build a language
-end to end, from source text to a running binary, not to ship a production
-language. The compiler, `sisuc`, is written in Rust and drives LLVM 22 through
-[inkwell](https://github.com/TheDan64/inkwell).
+Sisu is a passion project: an attempt to build a language that reads like
+Python, checks like Rust and manages memory like Swift, and to build all of
+it, from source text to a running binary. The compiler, `sisuc`, is written in
+Rust and drives LLVM 22 through [inkwell](https://github.com/TheDan64/inkwell).
 
-This program prints the 30th Fibonacci number, `832040`:
+## Status
 
-```
-fn fib(n: i64) -> i64 {
-    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+Sisu is very much under development. It has no releases, and any milestone may
+break programs that compiled before it. It runs on x86-64 Linux only.
+
+Milestones 1 to 3 are done: integers and booleans, classes and optionals, and
+arrays. Strings are next. The [roadmap](docs/roadmap.md) has the rest.
+
+## What Sisu values
+
+The goal is that people are productive in Sisu because things just work. Four
+values serve that goal, and when they conflict, this order settles it
+([ADR 0006](docs/adr/0006-values-correctness-simplicity-readability-performance.md)):
+
+1. **Correctness.** A program never gives a silent wrong answer. Failures are
+   loud and name the source line. Nothing changes behind the reader's back: no
+   hidden aliasing, no implicit conversions.
+2. **Simplicity.** Few concepts, rules without special cases, one obvious way
+   to do a thing, and every effect visible where it happens.
+3. **Readability.** Little punctuation, code that reads top to bottom, and
+   errors in plain words.
+4. **Performance.** Predictable and good enough, in the range of Swift and
+   Kotlin, and only from optimizations that do not change what a program
+   means.
+
+Simplicity ranks above readability because agents now write and read much of
+the code. Special cases and effects that happen elsewhere cause their mistakes,
+and a strict checker with plain-word errors lets them fix their own code.
+
+## A taste of Sisu
+
+Classes hold fields and methods. A `Tree?` is either a tree or `None`; `?.`
+calls through it and `??` gives a fallback. Reference counting frees an object
+when its last reference goes away.
+
+<!-- GitHub has no Sisu grammar; Rust's is the closest, so the examples use it. -->
+
+```rust
+class Tree {
+    value: i64
+    left: Tree?
+    right: Tree?
+
+    fn sum(self) -> i64 {
+        self.value + (self.left?.sum() ?? 0) + (self.right?.sum() ?? 0)
+    }
+}
+
+fn leaf(value: i64) -> Tree {
+    Tree(value: value, left: None, right: None)
 }
 
 fn main() {
-    print(fib(30))
+    let tree = Tree(value: 1, left: leaf(2), right: leaf(3))
+    print(tree.sum())               // 6
+    print(tree.left?.value ?? 0)    // 2
 }
 ```
 
-## What works today
+Arrays are values. Assigning one shares it until one side is written, so
+writing a copy never changes the original. `let mut` marks everything that can change,
+and comparisons chain as in mathematics.
 
-Milestones 1 to 3 are done. `sisuc` compiles:
+```rust
+fn main() {
+    let primes = [2, 3, 5, 7]
+    let mut copy = primes    // shared until one of them is written
+    copy[0] = 11
+    print(primes.sum())      // 17
+    print(copy.sum())        // 26
+    for p in primes {
+        if 2 < p <= 5 { print(p) }    // 3, then 5
+    }
+}
+```
 
-- `i64` and `bool`, with `let` for immutable bindings, `let mut` for
-  variables, and inferred types
-- functions and recursion
-- `if` as an expression, `while`, `break`, `continue` and `return`
-- comparison chains such as `0 <= i < n`, and short-circuit `&&` and `||`
-- integer arithmetic that panics on overflow and division by zero instead of
-  wrapping
-- classes with fields and methods, whose objects are freed by reference
-  counting when the last reference goes away; a field is bare, set once by
-  the constructor, or `mut`
-- `==` that compares objects field by field, and `is` that tests identity
-- optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
-  `while let`
-- `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
-  conversions `u8(...)` and `i64(...)`
-- arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
-  read and written by index, compared with `==`, and walked with `for x in xs`
-  or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
-- copy-on-write arrays: `let b = a` shares until one of them is written, and a
-  counted local's last read moves it instead of copying
-- error messages in the style of `rustc`, pointing at the code
+Integer arithmetic panics on overflow and on division by zero instead of
+wrapping, and the panic names the line:
+
+```rust
+fn main() {
+    let big = 9_223_372_036_854_775_807
+    print(1)
+    print(big + 1)
+}
+```
+
+```console
+$ sisuc overflow.sisu overflow && ./overflow
+1
+sisu: panic at overflow.sisu:4:11: integer overflow
+```
+
+## Errors that help
+
+The checker reports every error in one run. Each diagnostic has a stable code,
+points at the code, and offers a fix when it can:
+
+```rust
+class Counter {
+    count: i64
+}
+
+fn main() {
+    let total = 0
+    total = 5
+    let c = Countre(count: total)
+    print(c.count)
+}
+```
+
+```console
+$ sisuc --check counter.sisu
+error[E0001]: cannot assign to `total`
+ --> counter.sisu:7:5
+  |
+6 |     let total = 0
+  |         ----- declared with `let` here
+7 |     total = 5
+  |     ^^^^^^^^^ cannot assign twice
+  |
+help: declare it with `let mut`
+  |
+6 |     let mut total = 0
+  |         +++
+
+error[E0052]: cannot find function `Countre`
+ --> counter.sisu:8:13
+  |
+8 |     let c = Countre(count: total)
+  |             ^^^^^^^
+  |
+help: a class with a similar name exists: `Counter`
+  |
+8 -     let c = Countre(count: total)
+8 +     let c = Counter(count: total)
+  |
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0052
+```
+
+`sisuc --explain E0001` prints why the rule exists, with a broken and a fixed
+program. `sisuc --format json` writes the same diagnostics as JSON Lines for
+editors and agents, and marks each fix as certain or a guess.
+[Diagnostic codes](docs/diagnostics/README.md) lists every code.
 
 ## Start here
 
