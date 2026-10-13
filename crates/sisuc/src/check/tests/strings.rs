@@ -252,15 +252,11 @@ fn string_comparison_mismatch() {
     }
 }
 
+/// `+=` on a string field appends: see `places::recognises_appends`.
 #[test]
-fn compound_on_string_field() {
-    let class = "class P {\n    mut name: string\n}\nfn f(p: P) {\n";
-    contains(
-        &with_main(&format!("{class}    p.name += \"x\"\n}}")),
-        &["(= (. #", " name) (concat (. #", " name) \"x\"))"],
-    );
+fn minus_assign_on_string_field() {
     codes(
-        &with_main(&format!("{class}    p.name -= \"x\"\n}}")),
+        &with_main("class P {\n    mut name: string\n}\nfn f(p: P) {\n    p.name -= \"x\"\n}"),
         &[(Code::Mismatch, (5, 5))],
     );
 }

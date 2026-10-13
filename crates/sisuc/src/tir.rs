@@ -88,10 +88,12 @@ pub(crate) struct Block {
     pub(crate) ty: Type,
 }
 
+/// `Append` is `place += value` on a `string` field or element: its place is never a `Local`.
 #[derive(Debug)]
 pub(crate) enum Stmt {
     Let { local: LocalId, init: Expr },
     Assign { place: Place, value: Expr },
+    Append { place: Place, value: Expr },
     Expr(Expr),
 }
 
@@ -302,7 +304,9 @@ impl Stmt {
     fn exits(&self) -> bool {
         match self {
             Stmt::Let { init: e, .. } | Stmt::Expr(e) => e.exits(),
-            Stmt::Assign { place, value } => place.exits() || value.exits(),
+            Stmt::Assign { place, value } | Stmt::Append { place, value } => {
+                place.exits() || value.exits()
+            }
         }
     }
 }
@@ -390,13 +394,8 @@ impl Printer<'_> {
                 self.expr(f, init)?;
                 f.write_str(")")
             }
-            Stmt::Assign { place, value } => {
-                f.write_str("(= ")?;
-                self.place(f, place)?;
-                f.write_str(" ")?;
-                self.expr(f, value)?;
-                f.write_str(")")
-            }
+            Stmt::Assign { place, value } => self.write(f, "=", place, value),
+            Stmt::Append { place, value } => self.write(f, "append", place, value),
             Stmt::Expr(expr) => self.expr(f, expr),
         }
     }
@@ -508,6 +507,21 @@ impl Printer<'_> {
             f.write_str(" ")?;
             self.block(f, block)?;
         }
+        f.write_str(")")
+    }
+
+    /// `(head place value)`.
+    fn write(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        head: &str,
+        place: &Place,
+        value: &Expr,
+    ) -> fmt::Result {
+        write!(f, "({head} ")?;
+        self.place(f, place)?;
+        f.write_str(" ")?;
+        self.expr(f, value)?;
         f.write_str(")")
     }
 
@@ -946,6 +960,47 @@ mod tests {
         assert_eq!(
             program.to_string(),
             r#"(fn f ((s#0 string) (n#1 i64)) unit (block (print (interp "a" s#0 n#1))))"#
+        );
+    }
+
+    #[test]
+    fn prints_appends() {
+        // fn f() { let mut names = ["a"]; names[0] += "x" }
+        let strings = Type::Array(Box::new(Type::String));
+        let names = expr(
+            ExprKind::ArrayLit(vec![expr(ExprKind::Str("a".into()), Type::String)]),
+            strings.clone(),
+        );
+        let append = Stmt::Append {
+            place: Place::Index {
+                base: Box::new(Place::Local(LocalId(0))),
+                index: int(0),
+            },
+            value: expr(ExprKind::Str("x".into()), Type::String),
+        };
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![Local {
+                    name: Some("names".into()),
+                    ty: strings,
+                    mutable: true,
+                }],
+                body: block(vec![
+                    Stmt::Let {
+                        local: LocalId(0),
+                        init: names,
+                    },
+                    append,
+                ]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            r#"(fn f () unit (block (let mut names#0 (array "a")) (append (index names#0 0) "x")))"#
         );
     }
 

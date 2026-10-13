@@ -12,7 +12,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, param};
 use super::{Codegen, POSITIONED, zeroext};
-use crate::tir::{CompareOp, Expr, Type};
+use crate::tir::{CompareOp, Expr, Place, Type};
 
 /// A string block's header, from the target's data layout. A block with capacity `cap` is
 /// `size + cap` bytes, aligned to `align`.
@@ -126,6 +126,28 @@ impl<'ctx> Codegen<'ctx, '_> {
     pub(super) fn concat_expr(&mut self, lhs: &Expr, rhs: &Expr) -> PointerValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         self.concat(l.into_pointer_value(), r.into_pointer_value())
+    }
+
+    /// `Append { place, value }`, in the order that gives `P + value` its left-to-right meaning:
+    /// the place's operands; a bounds-checked read of `P`, retained; `value`; the walk that
+    /// makes the path unique; the release of the place's own reference, so that `concat` checks
+    /// the count last; the store of the result; and the release of a field root's base.
+    pub(super) fn append(&mut self, place: &Place, value: &Expr) {
+        let operands = self.place_operands(place).expect(
+            "the checker should only make an append whose indexes are locals or literals, which cannot exit",
+        );
+        let ptr_type = self.context.ptr_type(AddressSpace::default()).into();
+        let slot = self.read_slot(operands.slot, &operands.ty, &operands.indexes);
+        let read = self.load(ptr_type, slot);
+        self.retain(read, &Type::String);
+        let text = self
+            .expr(value)
+            .expect("the checker should only make an append whose value cannot exit");
+        let (slot, _) = self.element_slot(operands.slot, &operands.ty, &operands.indexes);
+        self.release(self.load(ptr_type, slot), &Type::String);
+        let result = self.concat(read.into_pointer_value(), text.into_pointer_value());
+        self.store(slot, result.into());
+        operands.release_object(self);
     }
 
     /// `sisu_realloc(ptr, old_size, align, new_size) -> ptr` from the runtime, declared on

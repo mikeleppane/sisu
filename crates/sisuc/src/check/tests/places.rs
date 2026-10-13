@@ -93,6 +93,53 @@ fn an_exiting_index_spills_the_enclosing_call() {
     );
 }
 
+/// `class P` with a `mut` string field.
+const P: &str = "class P {\n    mut name: string\n}\n";
+
+/// `+=` and `= +` on a field or an element whose `+` reads the same place append to it.
+#[test]
+fn recognises_appends() {
+    let printed = lowered(&format!(
+        "{P}fn f(p: P, i: i64) {{\n    let mut names = [\"a\"]\n    p.name += \"x\"\n    p.name = p.name + \"x\"\n    names[i] += \"x\"\n    names[0] = names[0] + \"x\"\n}}\nfn main() {{}}"
+    ));
+    assert!(
+        printed.contains(
+            "(block (let mut names#2 (array \"a\")) (block (let #3 p#0) (append (. #3 name) \"x\")) (append (. p#0 name) \"x\") (block (let #4 i#1) (append (index names#2 #4) \"x\")) (append (index names#2 0) \"x\"))"
+        ),
+        "{printed}"
+    );
+}
+
+/// A `+` that reads another place, reads it through an index that is not a local or a literal,
+/// prepends, or has a right operand that can exit stays an assignment of a `concat`.
+#[test]
+fn does_not_recognise() {
+    let printed = lowered(&format!(
+        "{P}fn f() -> i64 {{ 0 }}\nfn g(p: P, q: P, c: bool) {{\n    let mut names = [\"a\"]\n    p.name = q.name + \"x\"\n    names[f()] = names[f()] + \"x\"\n    p.name = \"x\" + p.name\n    p.name += (if c {{ return }} else {{ \"x\" }})\n}}\nfn main() {{}}"
+    ));
+    assert!(!printed.contains("(append"), "{printed}");
+    assert!(
+        printed.contains(
+            "(= (. p#0 name) (concat (. q#1 name) \"x\")) (= (index names#3 (call f)) (concat (index names#3 (call f)) \"x\")) (= (. p#0 name) (concat \"x\" (. p#0 name))) (block (let #4 p#0) (block (let #7 #4) (let #8 (block (let #5 (. #4 name)) (let #6 (if c#2 (block (return)) (block \"x\"))) (concat #5 #6))) (= (. #7 name) #8)))"
+        ),
+        "{printed}"
+    );
+}
+
+/// "The same place" follows a chain of fields and an index inside a field root's base.
+#[test]
+fn same_place_through_fields_and_elements() {
+    let printed = lowered(
+        "class Q {\n    mut name: string\n}\nclass P {\n    q: Q\n    r: Q\n}\nfn f(p: P, ps: [P], i: i64, j: i64, q: Q) {\n    p.q.name = p.q.name + \"x\"\n    ps[i].q.name = ps[i].q.name + \"x\"\n    p.q.name = p.r.name + \"x\"\n    ps[i].q.name = ps[j].q.name + \"x\"\n    p.q.name = q.name + \"x\"\n}\nfn main() {}",
+    );
+    assert!(
+        printed.contains(
+            "(append (. (. p#0 q) name) \"x\") (append (. (. (index ps#1 i#2) q) name) \"x\") (= (. (. p#0 q) name) (concat (. (. p#0 r) name) \"x\")) (= (. (. (index ps#1 i#2) q) name) (concat (. (. (index ps#1 j#3) q) name) \"x\")) (= (. (. p#0 q) name) (concat (. q#4 name) \"x\"))"
+        ),
+        "{printed}"
+    );
+}
+
 #[test]
 fn element_type_is_expected_of_the_value() {
     contains(

@@ -11,7 +11,8 @@
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
 //! - Assigning an element evaluates a field root's base, then the indexes from the root
-//!   outwards, then the value, then uses the root local without moving it.
+//!   outwards, then the value, then uses the root local without moving it. An `Append` to a
+//!   field or an element evaluates as the assignment to it does.
 //! - `Return` leaves nothing live, `Break` takes the loop's exit set, `Continue` its head set.
 //! - `&&`, `||` and each step of a comparison chain have an edge that skips the rest.
 
@@ -68,7 +69,7 @@ impl Walk {
                 self.live[local.0] = false;
                 self.expr(value);
             }
-            Stmt::Assign { place, value } => {
+            Stmt::Assign { place, value } | Stmt::Append { place, value } => {
                 // An element write loads its root local's slot after the value, and keeps it.
                 if let Some(root) = root_local(place) {
                     self.live[root.0] = true;
@@ -474,6 +475,15 @@ mod tests {
                 "(= (index ys#1 (- (len (move xs#0)) 1)) 5)",
             ],
         );
+    }
+
+    /// An `Append` evaluates as the assignment to its place: a field root's base before the
+    /// value, and an element's root local after the value, never moved.
+    #[test]
+    fn append_order() {
+        let src = "class P {\n    mut name: string\n}\nfn field(p: P) {\n    p.name = p.name + p.name\n}\nfn element() {\n    let mut xs = [\"a\"]\n    xs[0] = xs[0] + xs[0]\n}";
+        has(src, "field", &["(append (. p#0 name) (. (move p#0) name))"]);
+        has(src, "element", &["(append (index xs#0 0) (index xs#0 0))"]);
     }
 
     /// `break` leaves the loop with the set live after it, so a read before the loop stays live.

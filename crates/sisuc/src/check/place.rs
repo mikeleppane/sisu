@@ -305,7 +305,9 @@ impl Checker {
     }
 
     /// `Assign { place, value }`, the place built from `root` and `operands`, after `spill`
-    /// binds what it must of the operands and the value.
+    /// binds what it must of the operands and the value. A field or element place whose value
+    /// is `P + t`, `P` reading the place and `t` unable to exit, is `Append { place, t }`
+    /// instead; nothing in it can exit, so nothing spills.
     fn write(
         &mut self,
         span: Span,
@@ -318,9 +320,13 @@ impl Checker {
         let value = operands
             .pop()
             .expect("`spill` should return one operand per input");
-        let assign = tir::Stmt::Assign {
-            place: build(root, operands),
-            value,
+        let place = build(root, operands);
+        let append = !matches!(place, tir::Place::Local(_))
+            && matches!(&value.kind, ExprKind::Concat { lhs, rhs }
+                if !rhs.exits() && same_place(&place, lhs));
+        let assign = match value.kind {
+            ExprKind::Concat { rhs, .. } if append => tir::Stmt::Append { place, value: *rhs },
+            _ => tir::Stmt::Assign { place, value },
         };
         if stmts.is_empty() {
             return assign;
@@ -356,6 +362,52 @@ impl Checker {
             }
         };
         tir::Expr { kind, ty, span }
+    }
+}
+
+/// Whether `read` reads `place`: the same root local, the same fields, and index
+/// expressions that are the same local or the same integer literal.
+fn same_place(place: &tir::Place, read: &tir::Expr) -> bool {
+    match (place, &read.kind) {
+        (tir::Place::Local(local), ExprKind::Local(read)) => local == read,
+        (
+            tir::Place::Field { base, index },
+            ExprKind::Field {
+                base: read,
+                index: field,
+            },
+        ) => index == field && same_read(base, read),
+        (
+            tir::Place::Index { base, index },
+            ExprKind::Index {
+                base: read,
+                index: at,
+            },
+        ) => same_index(index, at) && same_place(base, read),
+        _ => false,
+    }
+}
+
+/// Whether `a` and `b` read the same place, as `same_place` decides.
+fn same_read(a: &tir::Expr, b: &tir::Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Local(a), ExprKind::Local(b)) => a == b,
+        (ExprKind::Field { base: a, index: i }, ExprKind::Field { base: b, index: j }) => {
+            i == j && same_read(a, b)
+        }
+        (ExprKind::Index { base: a, index: i }, ExprKind::Index { base: b, index: j }) => {
+            same_index(i, j) && same_read(a, b)
+        }
+        _ => false,
+    }
+}
+
+/// Whether two indexes are the same local or the same integer literal.
+fn same_index(a: &tir::Expr, b: &tir::Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Local(a), ExprKind::Local(b)) => a == b,
+        (ExprKind::Int(a), ExprKind::Int(b)) => a == b,
+        _ => false,
     }
 }
 

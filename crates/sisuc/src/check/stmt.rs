@@ -574,7 +574,7 @@ struct ForHeader {
 /// The type a statement gives its block when it comes last.
 fn stmt_type(stmt: &tir::Stmt) -> Type {
     match stmt {
-        tir::Stmt::Let { .. } | tir::Stmt::Assign { .. } => Type::Unit,
+        tir::Stmt::Let { .. } | tir::Stmt::Assign { .. } | tir::Stmt::Append { .. } => Type::Unit,
         tir::Stmt::Expr(e) => e.ty.clone(),
     }
 }
