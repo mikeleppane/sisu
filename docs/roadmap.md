@@ -14,7 +14,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
-| 4 | Strings | A program reverses and compares strings | Planned |
+| 4 | Strings | A program reverses and compares strings | In progress: stage 1 of 5 |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
@@ -165,11 +165,11 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 
 | Milestone | Add | Why |
 | --- | --- | --- |
-| 4 | Reserve the keywords that later milestones bring: `import` and `pub` (planned for milestone 2, it did not land), `enum`, `match`, `record`, `type`, `weak`, `const`, `test` and `todo` | A program that names a variable `match` would break when that keyword lands |
+| 4 | Reserve the keywords that later milestones bring: `import` and `pub` (planned for milestone 2, it did not land), `enum`, `match`, `record`, `type`, `weak`, `const`, `test` and `todo`. Landed in milestone 4, stage 1 (`E0083`); it also reserves `echo`, `interface`, `extern` and `as`, and `const` became a keyword with top-level constants | A program that names a variable `match` would break when that keyword lands |
 | 4 | `let mut` replaces `var`; a class field is bare, set once by the constructor, or `mut` (ADR 0011). `var` stays reserved, so using it is error `E0013`, "there is no `var` in Sisu", with the help "Sisu declares a variable with `let mut`" (on a field, "a field that can change is marked `mut`"). | Every program and test changes, so it is cheapest before strings and enums add more code |
 | 4 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value. Planned for milestone 3, it did not land. | Named limits, such as a sieve size, without global variables |
 | 4 | String interpolation `"x = {x}"`. `print(x)` and `"{x}"` go through one internal operation per type that turns a value into text. Milestone 8's `Display` interface replaces that operation, so neither is rewritten. | The biggest single win for real programs |
-| 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. Today `_` is an ordinary name, so a second `let _` in one scope is an error and `_` can be read. | A loop or a call whose value is not needed takes no made-up name |
+| 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. Landed in milestone 4, stage 1: `_` binds nothing, so a second `let _` in one scope is fine and `_` cannot be read. | A loop or a call whose value is not needed takes no made-up name |
 | 4 | Integer literals in hexadecimal, binary and octal: `0xFF`, `0b1010`, `0o17`, with digit separators | Bytes and bit masks, which `u8` brings in milestone 3, read as what they are |
 | 4 | A block as an expression: `let x = {`, then statements on their own lines, then `}`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
 | 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
@@ -308,7 +308,7 @@ settle before work starts.
 
 | Work | Needs | Unblocks |
 | --- | --- | --- |
-| Milestone 4: strings | Decisions: what a string is, same-scope shadowing | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
+| Milestone 4: strings | None: its decisions are settled (ADR 0014, same-scope shadowing) | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
 | Milestone 5: standard streams, arguments, environment | 4 | The word-count tool |
 | Milestone 6: floats | Decision: floats | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
 | Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
@@ -347,8 +347,8 @@ the decisions it needs are settled:
 - **Small additions** from the table above, each a branch of its own:
   `let mut` replacing `var` (land it first: it touches every test program),
   reserved keywords, `const`, `_`, hexadecimal literals, block expressions
-  and `todo`. `panic("msg")` waits for milestone 4's strings, and `test`
-  blocks for `panic`.
+  and `todo`. All but `todo` landed in milestone 4, stage 1. `panic("msg")`
+  waits for milestone 4's strings, and `test` blocks for `panic`.
 - **Tooling**: everything under "Early tooling", and from "Later and stretch
   goals" parser error recovery, the lints whose features exist, linking with
   `lld`, and debug info.

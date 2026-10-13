@@ -17,7 +17,7 @@
   },
   "components": [
     { "id": "source", "type": "external", "label": "Source file", "sublabel": "program.sisu", "pos": [40, 200], "size": [130, 60] },
-    { "id": "lexer", "type": "backend", "label": "Lexer", "sublabel": "lexer.rs", "pos": [280, 200], "size": [130, 60] },
+    { "id": "lexer", "type": "backend", "label": "Lexer", "sublabel": "lexer/", "pos": [280, 200], "size": [130, 60] },
     { "id": "parser", "type": "backend", "label": "Parser", "sublabel": "parser.rs", "pos": [490, 200], "size": [130, 60] },
     { "id": "checker", "type": "backend", "label": "Checker", "sublabel": "check/", "pos": [690, 200], "size": [130, 60] },
     { "id": "codegen", "type": "backend", "label": "Codegen", "sublabel": "codegen/, inkwell", "pos": [890, 200], "size": [130, 60] },

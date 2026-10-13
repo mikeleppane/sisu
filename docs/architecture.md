@@ -45,9 +45,10 @@ every item has a name.
 
 **Checker** (`check/`, `tir.rs`). Resolves every name, types every expression
 and lowers sugar: `while`, `while let` and `for` become loops, `?.` and `??`
-become `if let`, and `x += 1` becomes `x = x + 1`. It reports every error in one
-run: an expression that already failed gets the poison type, so one mistake
-produces one diagnostic. A program with no errors comes out as the typed tree,
+become `if let`, and `x += 1` becomes `x = x + 1`. It folds each top-level
+`const` to a literal and replaces every use of its name with that literal. It
+reports every error in one run: an expression that already failed gets the
+poison type, so one mistake produces one diagnostic. A program with no errors comes out as the typed tree,
 `tir`, which is all that codegen reads.
 
 **Last use** (`last_use.rs`). Walks each function in `tir` backward and turns

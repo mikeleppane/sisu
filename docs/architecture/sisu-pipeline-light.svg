@@ -490,15 +490,15 @@ svg[data-preset="editorial"][data-animation="trace"] [data-animate="node"] { ani
         <text x="105" y="244" class="t-muted" font-size="9" text-anchor="middle">program.sisu</text>
         </g>
 
-        <g id="node-lexer" data-node-id="lexer" data-node-label="Lexer" tabindex="0" role="button" aria-label="Focus Lexer, lexer.rs, sisuc (Rust)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="lexer.rs" data-node-context="sisuc (Rust)">
-          <title>Lexer · lexer.rs · sisuc (Rust)</title>
+        <g id="node-lexer" data-node-id="lexer" data-node-label="Lexer" tabindex="0" role="button" aria-label="Focus Lexer, lexer/, sisuc (Rust)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="lexer/" data-node-context="sisuc (Rust)">
+          <title>Lexer · lexer/ · sisuc (Rust)</title>
           <rect x="280" y="200" width="130" height="60" rx="6" class="c-mask"/>
           <rect x="280" y="200" width="130" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(286 206) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" x="345" y="228" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Lexer</text>
-        <text x="345" y="244" class="t-muted" font-size="9" text-anchor="middle">lexer.rs</text>
+        <text x="345" y="244" class="t-muted" font-size="9" text-anchor="middle">lexer/</text>
         </g>
 
         <g id="node-parser" data-node-id="parser" data-node-label="Parser" tabindex="0" role="button" aria-label="Focus Parser, parser.rs, sisuc (Rust)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="parser.rs" data-node-context="sisuc (Rust)">
@@ -534,8 +534,8 @@ svg[data-preset="editorial"][data-animation="trace"] [data-animate="node"] { ani
         <text x="955" y="244" class="t-muted" font-size="9" text-anchor="middle">codegen/, inkwell</text>
         </g>
 
-        <g id="node-diagnostics" data-node-id="diagnostics" data-node-label="Diagnostics" tabindex="0" role="button" aria-label="Focus Diagnostics, rendered to stderr, sisuc (Rust)" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="rendered to stderr" data-node-context="sisuc (Rust)">
-          <title>Diagnostics · rendered to stderr · sisuc (Rust)</title>
+        <g id="node-diagnostics" data-node-id="diagnostics" data-node-label="Diagnostics" tabindex="0" role="button" aria-label="Focus Diagnostics, text or JSON on stderr, sisuc (Rust)" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="text or JSON on stderr" data-node-context="sisuc (Rust)">
+          <title>Diagnostics · text or JSON on stderr · sisuc (Rust)</title>
           <rect x="490" y="40" width="130" height="60" rx="6" class="c-mask"/>
           <rect x="490" y="40" width="130" height="60" rx="6" class="c-frontend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(496 46) scale(0.6875)">
@@ -545,7 +545,7 @@ svg[data-preset="editorial"][data-animation="trace"] [data-animate="node"] { ani
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-node-label="" x="555" y="68" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Diagnostics</text>
-        <text x="555" y="84" class="t-muted" font-size="9" text-anchor="middle">rendered to stderr</text>
+        <text x="555" y="84" class="t-muted" font-size="9" text-anchor="middle">text or JSON on stderr</text>
         </g>
 
         <g id="node-llvm" data-node-id="llvm" data-node-label="LLVM 22" tabindex="0" role="button" aria-label="Focus LLVM 22, passes, x86-64 code, Architecture component" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="passes, x86-64 code" data-node-context="Architecture component">
