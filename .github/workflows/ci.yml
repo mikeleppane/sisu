@@ -59,3 +59,98 @@ jobs:
         with:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+
+  # Informational: every step tolerates failure and each one runs only after its
+  # predecessor succeeded, so a failure skips the rest, leaves every check green
+  # and is named in the summary.
+  coverage:
+    name: Coverage (informational)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      NEXTEST_PROFILE: ci
+    steps:
+      # Depth 2 on a pull request gives the merge commit and its first parent,
+      # the base GitHub merged against (the event's base.sha can be stale).
+      - id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: toolchain
+        continue-on-error: true
+        if: steps.checkout.outcome == 'success'
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+      - id: tools
+        continue-on-error: true
+        if: steps.toolchain.outcome == 'success'
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+      - id: llvm
+        continue-on-error: true
+        if: steps.tools.outcome == 'success'
+        uses: ./.github/actions/install-llvm
+      - id: valgrind
+        continue-on-error: true
+        if: steps.llvm.outcome == 'success'
+        run: sudo apt-get update && sudo apt-get install --yes valgrind
+      - id: coverage
+        continue-on-error: true
+        if: steps.valgrind.outcome == 'success'
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || 'HEAD' }}
+        run: |
+          set -o pipefail
+          scripts/coverage.sh "$BASE" | tee "$RUNNER_TEMP/coverage.txt"
+      - id: summary
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          if [ "$(jq -r '.coverage.outcome' <<<"$STEPS")" = success ]; then
+            # stdout may carry lines before the report; it starts at "Coverage:".
+            report=$(sed -n '/^Coverage:/,$p' "$RUNNER_TEMP/coverage.txt")
+            line=${report%%$'\n'*}
+            {
+              echo "$line"
+              echo
+              echo '```text'
+              echo "${report#"$line"}"
+              echo '```'
+            } >>"$GITHUB_STEP_SUMMARY"
+          else
+            failed=coverage
+            for id in checkout toolchain tools llvm valgrind coverage; do
+              if [ "$(jq -r --arg id "$id" '.[$id].outcome' <<<"$STEPS")" != success ]; then
+                failed=$id
+                break
+              fi
+            done
+            line="Coverage unavailable: the $failed step failed."
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+          fi
+          echo "line=$line" >>"$GITHUB_OUTPUT"
+      - id: comment
+        continue-on-error: true
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINE: ${{ steps.summary.outputs.line }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          body=$(printf '<!-- sisu-coverage -->\n%s' "$LINE")
+          # --jq runs per page, so keep only the first id across pages.
+          ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- sisu-coverage -->"))) | .id')
+          id=${ids%%$'\n'*}
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body"
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -f body="$body"
+          fi
