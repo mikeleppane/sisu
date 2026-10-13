@@ -249,12 +249,14 @@ type Chars<'a> = Peekable<CharIndices<'a>>;
 type Open = (char, Span);
 
 /// What the lexer makes of a source: its tokens, which always end with `Eof`, a diagnostic
-/// for each error it recovered from, and where each `//` comment starts.
+/// for each error it recovered from, where each `//` comment starts, and where each line
+/// break is.
 #[derive(Debug)]
 pub(crate) struct Lexed {
     pub(crate) tokens: Vec<Token>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) comments: Vec<usize>,
+    pub(crate) breaks: Vec<usize>,
 }
 
 /// The tokens of `source`, or its first diagnostic: for tests that need source that lexes clean.
@@ -272,7 +274,7 @@ pub(crate) fn lex_clean(source: &str) -> Result<Vec<Token>, Diagnostic> {
 pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
     let mut tokens: Vec<Token> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut comments = Vec::new();
+    let (mut comments, mut breaks) = (Vec::new(), Vec::new());
     let mut brackets = Brackets::default();
     let mut chars = source.char_indices().peekable();
     let mut line_start = true;
@@ -282,6 +284,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
         let kind = match c {
             ' ' | '\t' | '\r' => continue,
             '\n' => {
+                breaks.push(start);
                 let cut = brackets.end_line(start, &mut tokens, &mut diagnostics);
                 skipped = cut.or(skipped);
                 line_start = true;
@@ -378,6 +381,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
         tokens,
         diagnostics,
         comments,
+        breaks,
     })
 }
 
@@ -2717,6 +2721,7 @@ mod tests {
                     tokens,
                     diagnostics: Vec::new(),
                     comments: Vec::new(),
+                    breaks: Vec::new(),
                 });
                 assert!(
                     parsed.diagnostics.is_empty() && parsed.checkable,

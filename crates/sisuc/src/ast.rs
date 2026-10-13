@@ -14,6 +14,8 @@ pub(crate) struct Program {
     /// Where each string literal starts, at its opening quote, so that a fix can tell one from
     /// a literal in parentheses, whose span starts at the `(`.
     pub(crate) quotes: Vec<usize>,
+    /// Where each line break is, so that a fix does not wrap one in a string literal.
+    pub(crate) breaks: Vec<usize>,
 }
 
 /// A function, class or constant that holds a syntax error, so only its name survives.
@@ -700,6 +702,7 @@ mod tests {
             broken: Vec::new(),
             comments: Vec::new(),
             quotes: Vec::new(),
+            breaks: Vec::new(),
         };
         assert_eq!(
             program.to_string(),

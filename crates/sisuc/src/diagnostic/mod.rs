@@ -14,7 +14,7 @@ pub(crate) use registry::{
 pub(crate) use suggest::{Suggestion, suggestion};
 
 /// A byte range of the source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Span {
     pub(crate) start: usize,
     pub(crate) end: usize,

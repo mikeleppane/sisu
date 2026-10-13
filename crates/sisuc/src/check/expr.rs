@@ -293,7 +293,7 @@ impl Checker {
         } else {
             Operator::Arithmetic
         };
-        let (checked, ty, mismatched) = self.integers(&[lhs, rhs], expected, operator);
+        let (checked, ty, mismatched) = self.binary_operands(span, &[lhs, rhs], expected, operator);
         let chars: Vec<Span> = [lhs, rhs]
             .iter()
             .zip(&checked)
@@ -323,6 +323,37 @@ impl Checker {
         }
     }
 
+    /// `integers` for the binary operator at `span`. A `+` that a `string` makes a join under an
+    /// expected `u8` is checked again with none, so that no operand is held to a `u8` it was
+    /// never going to meet: its `string` meets that `u8` once, where the caller checks it. The
+    /// join is remembered, so an operand checked again checks a join inside it once, with no
+    /// expected type: each level of nesting adds a check, where it would double them.
+    fn binary_operands(
+        &mut self,
+        span: Span,
+        operands: &[&ast::Expr],
+        expected: Option<&Type>,
+        operator: Operator,
+    ) -> (Vec<Checked>, Option<Type>, bool) {
+        let joins = operator == (Operator::Plus { compound: false });
+        if !joins || literal_type(expected) != Type::U8 {
+            return self.integers(operands, expected, operator);
+        }
+        if self.joins.contains(&span) {
+            return self.integers(operands, None, operator);
+        }
+        let (diagnostics, locals) = (self.diagnostics.len(), self.locals.len());
+        let result = self.integers(operands, expected, operator);
+        if result.1 != Some(Type::String) {
+            return result;
+        }
+        // The first check is dropped, and its locals with it, so none is left that nothing binds.
+        self.diagnostics.truncate(diagnostics);
+        self.locals.truncate(locals);
+        self.joins.insert(span);
+        self.integers(operands, None, operator)
+    }
+
     /// The operands of one integer operator, checked in source order; the type they share,
     /// `None` when it is `Error`; and whether one was reported against it. The type is `u8`
     /// when `expected` is `u8` or `u8?`. Otherwise the first concrete operand (of `rank` 0) is
@@ -335,9 +366,10 @@ impl Checker {
     /// that number, as a `char` before one reports the number.
     ///
     /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
-    /// drives from either side, an expected `u8` notwithstanding: an operand of another type is
-    /// reported against `string`, with the guess to interpolate, the one before a `string`
-    /// included, in place of what its own type was found to lack.
+    /// drives from either side: an operand of another type is reported against `string`, with
+    /// the guess to interpolate, the one before a `string` included, in place of what its own
+    /// type was found to lack. A join after an `Error` is `Error`. An expected `u8` is
+    /// `binary_operands`' to drop.
     fn integers(
         &mut self,
         operands: &[&ast::Expr],
@@ -389,7 +421,9 @@ impl Checker {
                 (Err(Poisoned::error()), true)
             } else if joins && !compound && got == Some(Type::String) && ty != Some(Type::String) {
                 // A `string` in `+` makes it a join, whatever the operand before it, if any, was
-                // held to: that operand is reported against `string` instead.
+                // held to: that operand is reported against `string` instead. Under an expected
+                // `u8`, that the `+` is a join is all this check finds: `binary_operands` checks
+                // it again with none.
                 ty = Some(Type::String);
                 if let Some(other) = before.take() {
                     // All that is deferred is that operand's, the first of two.
@@ -400,8 +434,8 @@ impl Checker {
                     want = None;
                     (Err(Poisoned::error()), true)
                 } else {
-                    want = Some(Type::String);
-                    (value, false)
+                    // An `Error` before it may be the mistake, so the join is `Error` too.
+                    (value, true)
                 }
             } else if arithmetic && char_value {
                 (Err(Poisoned::typed(Type::Char)), false)

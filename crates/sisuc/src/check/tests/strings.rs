@@ -31,27 +31,46 @@ fn chain_binds_each_operand() {
     );
 }
 
+/// Asserts that `src`, whose `f` takes `c: bool, a: string`, binds `a` to one temporary and
+/// then the `if` over `c` to another, and applies `op` to the two in that order.
+fn spills(src: &str, op: &str) {
+    let printed = lowered(src);
+    let temporaries = printed
+        .split_once("(block (let #")
+        .and_then(|(_, rest)| rest.split_once(" a#1) (let #"))
+        .and_then(|(a, rest)| Some((a, rest.split_once(" (if c#0")?.0)));
+    let Some((a, b)) = temporaries else {
+        panic!("no spill in {printed}");
+    };
+    for id in [a, b] {
+        assert!(id.parse::<usize>().is_ok(), "{id} in {printed}");
+    }
+    assert_ne!(a, b, "{printed}");
+    let applied = format!("({op} #{a} #{b})");
+    assert!(printed.contains(&applied), "{applied} in {printed}");
+}
+
 /// An operand of `+` that exits after a `string` one binds the `string` first.
 #[test]
 fn concat_spills() {
-    contains(
+    spills(
         "fn f(c: bool, a: string, b: string) -> string {\n    a + (if c { return \"\" } else { b })\n}\nfn main() {}",
-        &["(block (let #3 a#1) (let #4 (if c#0", "(concat #3 #4)"],
+        "concat",
     );
 }
 
 /// A comparison of two `string`s whose right operand exits binds the left one first.
 #[test]
 fn compare_spills() {
-    contains(
+    spills(
         "fn f(c: bool, a: string, b: string) -> bool {\n    a < (if c { return false } else { b })\n}\nfn main() {}",
-        &["(block (let #3 a#1) (let #4 (if c#0", "(< #3 #4)"],
+        "<",
     );
 }
 
-/// `src` with a class `P` after it, on lines that come after `body`'s.
-fn with_class(src: &str) -> String {
-    format!("{src}\nclass P {{}}")
+/// `src` with a class `P` and a function `g` after it, on lines that come after `body`'s.
+fn with_items(src: &str) -> String {
+    format!("{src}\nclass P {{}}\nfn g(x: i64) -> i64 {{\n    x\n}}")
 }
 
 #[test]
@@ -93,6 +112,19 @@ fn concat_mismatch() {
             (2, 21, "n"),
             Some("let b: u8 = \"{s}{n}\""),
         ),
+        // A `string` decides the join before an expected `u8` reaches the other operand.
+        (
+            "let b: u8 = (1 + n) + s",
+            (2, 17, "(1 + n)"),
+            Some("let b: u8 = \"{(1 + n)}{s}\""),
+        ),
+        ("let b: u8 = [] + s", (2, 17, "[]"), None),
+        ("let b: u8 = None + s", (2, 17, "None"), None),
+        (
+            "let b: u8 = 300 + s",
+            (2, 17, "300"),
+            Some("let b: u8 = \"{300}{s}\""),
+        ),
         // A literal in parentheses is wrapped whole, as any other operand is.
         (
             "print((\"a\") + n)",
@@ -106,30 +138,56 @@ fn concat_mismatch() {
         ),
         // The guess would delete the comment between the operands.
         ("print(s + // why\n        n)", (3, 9, "n"), None),
+        // Wrapped, an operand that spans lines would break the literal.
+        ("print(g(1\n    ) + s)", (2, 11, "g(1\n    )"), None),
+        ("print(s + (n // c\n    ))", (2, 15, "(n // c\n    )"), None),
         // A compound assignment is a statement, which a rewrite would break.
         ("let mut t = s\n    t += n", (3, 10, "n"), None),
         ("print(s - s)", (2, 11, "s"), None),
     ];
     for (statement, pos, fixed) in rows {
-        let src = with_class(&body(params, statement));
+        let src = with_items(&body(params, statement));
         let d = diagnostic(&src, Code::Mismatch, pos, &[]);
         let found = fixes(&src, &d);
         match fixed {
             Some(fixed) => {
                 assert_eq!(found.len(), 1, "{src}");
                 assert!(!found[0].0, "{src}: the fix is a guess");
-                assert_eq!(applied(&src, &d), with_class(&body(params, fixed)));
+                assert_eq!(applied(&src, &d), with_items(&body(params, fixed)));
             }
             None => assert_eq!(found, [], "{src}"),
         }
     }
 }
 
-/// A join with an unknown operand is still a `string`; one with a mismatched operand is
-/// `Error`, so its uses report nothing more.
+/// A join under a `u8` is checked again with no expected type, and a join inside it only once
+/// more, so each `u8` parameter around a join adds to the work instead of doubling it.
+#[test]
+fn nested_joins_check_in_quadratic_time() {
+    const LEVELS: usize = 40;
+    let mut value = "b".to_owned();
+    for _ in 0..LEVELS {
+        value = format!("h({value}) + s");
+    }
+    let src = with_main(&format!(
+        "fn h(b: u8) -> u8 {{\n    b\n}}\nfn f(b: u8, s: string) {{\n    let c: u8 = {value}\n}}"
+    ));
+    let ds = diags(&src);
+    assert_eq!(ds.len(), LEVELS, "{ds:?}");
+    assert!(ds.iter().all(|d| d.code() == Code::Mismatch), "{ds:?}");
+}
+
+/// A join with an unknown operand after its `string` is still a `string`; one after an unknown
+/// operand, or with a mismatched operand, is `Error`, so its uses report nothing more.
 #[test]
 fn failed_concat_type() {
-    let params = "s: string, xs: [i64]";
+    let params = "s: string, xs: [i64], n: i64";
+    for (statement, expected) in [
+        ("let b: u8 = nope + s", (Code::BindingNotFound, (2, 17))),
+        ("let b: u8 = ((1 + n) + s) + s", (Code::Mismatch, (2, 18))),
+    ] {
+        codes(&body(params, statement), &[expected]);
+    }
     codes(
         &with_main(&format!(
             "fn f({params}) {{\n    let t = s + nope\n    print(t - 1)\n}}"

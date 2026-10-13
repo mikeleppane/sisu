@@ -8,7 +8,7 @@ mod place;
 mod stmt;
 mod string;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast;
 use crate::diagnostic::{
@@ -159,8 +159,13 @@ struct Checker {
     comments: Vec<usize>,
     /// Where each string literal starts, in order.
     quotes: Vec<usize>,
+    /// Where each line break is, in order.
+    breaks: Vec<usize>,
     /// Whether a constant's value is being checked, where interpolation is not known.
     in_constant: bool,
+    /// Each `+` found to join a `string` under an expected `u8`, which a later check of it
+    /// checks with no expected type.
+    joins: HashSet<Span>,
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
@@ -181,7 +186,9 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         in_target: false,
         comments: program.comments.clone(),
         quotes: program.quotes.clone(),
+        breaks: program.breaks.clone(),
         in_constant: false,
+        joins: HashSet::new(),
     };
     checker.collect_names(program);
     let declared = checker.collect_signatures(program);

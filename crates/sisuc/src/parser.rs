@@ -29,6 +29,7 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         tokens,
         diagnostics,
         comments,
+        breaks,
     } = lexed;
     Parser {
         tokens: &tokens,
@@ -37,7 +38,7 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         lexer: &diagnostics,
         comments: &comments,
     }
-    .program()
+    .program(breaks)
 }
 
 /// The program of `source`, which must lex and parse without a diagnostic.
@@ -302,7 +303,8 @@ impl Parser<'_> {
         })
     }
 
-    fn program(&mut self) -> Parsed {
+    /// The program, which keeps the lexer's `breaks`.
+    fn program(&mut self, breaks: Vec<usize>) -> Parsed {
         let mut items = Vec::new();
         let mut broken = Vec::new();
         let mut diagnostics = Vec::new();
@@ -395,6 +397,7 @@ impl Parser<'_> {
                     .filter(|t| matches!(t.kind, TokenKind::Str(_) | TokenKind::StrHead(_)))
                     .map(|t| t.span.start)
                     .collect(),
+                breaks,
             },
             diagnostics,
             checkable,

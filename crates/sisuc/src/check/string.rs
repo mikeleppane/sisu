@@ -29,8 +29,9 @@ impl Checker {
 
     /// The operand `e` of the `+` over `operands`, of type `got`, which is not the `string` the
     /// other operand makes it. A value that interpolation prints gets the guess to interpolate
-    /// it, unless the `+` is a `compound` assignment's or a constant's, or a comment between
-    /// the operands would go with the text the guess removes.
+    /// it, unless the `+` is a `compound` assignment's or a constant's, a comment between the
+    /// operands would go with the text the guess removes, or an operand spans a line break,
+    /// which a string literal cannot hold.
     pub(super) fn concat_mismatch(
         &self,
         e: &ast::Expr,
@@ -47,7 +48,12 @@ impl Checker {
         };
         let between = lhs.span.end..rhs.span.start;
         let commented = self.comments.iter().any(|c| between.contains(c));
-        if compound || self.in_constant || !printed || commented {
+        // A comment inside an operand ends at a line break, so this also keeps one out of `{}`.
+        let lines = operands.iter().any(|e| {
+            let next = self.breaks.partition_point(|&b| b < e.span.start);
+            self.breaks.get(next).is_some_and(|&b| b < e.span.end)
+        });
+        if compound || self.in_constant || !printed || commented || lines {
             return self.mismatch(e.span, Some(e), &Type::String, got);
         }
         // A literal in parentheses starts at its `(`, and is wrapped whole like any other value.
