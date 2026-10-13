@@ -18,6 +18,34 @@ These are adopted. Together they give Sisu a working imperative core.
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
+### What works today
+
+`sisuc` compiles:
+
+- `i64` and `bool`, with `let` for immutable bindings, `let mut` for
+  variables, and inferred types
+- functions and recursion
+- `if` as an expression, `while`, `break`, `continue` and `return`
+- comparison chains such as `0 <= i < n`, and short-circuit `&&` and `||`
+- integer arithmetic that panics on overflow and division by zero instead of
+  wrapping
+- classes with fields and methods, whose objects are freed by reference
+  counting when the last reference goes away; a field is bare, set once by
+  the constructor, or `mut`
+- `==` that compares objects field by field, and `is` that tests identity
+- optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
+  `while let`
+- `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
+  conversions `u8(...)` and `i64(...)`
+- arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
+  read and written by index, compared with `==`, and walked with `for x in xs`
+  or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
+- copy-on-write arrays: `let b = a` shares until one of them is written, and a
+  counted local's last read moves it instead of copying
+- error messages in the style of `rustc`, pointing at the code, each with a
+  stable code that `sisuc --explain` describes, a JSON form, and fixes where
+  the checker can offer one
+
 ### Diagnostics foundation
 
 Before the rest of milestone 4, every diagnostic gets a stable code, one

@@ -44,7 +44,7 @@ $ <every command that builds and runs it, with its timeout, naming files through
 ```
 
 Observed: <exact output and exit code, trimmed to the decisive lines>
-Expected: <what should happen, and the source that says so: README.md "What works today", an implemented ADR, docs/development.md, or Rust or LLVM semantics>
+Expected: <what should happen, and the source that says so: docs/roadmap.md "What works today", an implemented ADR, docs/development.md, or Rust or LLVM semantics>
 
 Root cause: <file:line and function>, <confirmed by reading the code | guess>
 Suggested fix: <what to change, where; small enough to judge>

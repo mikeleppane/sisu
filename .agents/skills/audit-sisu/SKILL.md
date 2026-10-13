@@ -57,7 +57,7 @@ Run directory: <RUN>/<area>/ (create it). Read these first:
 - .agents/skills/audit-sisu/toolbox.md: commands, exit codes, timeouts, recipes
 - .agents/skills/audit-sisu/finding.md: what counts as a finding and how to write it
 - .agents/skills/audit-sisu/known-findings.md and <RUN>/known-tickets.md: what is already known
-- README.md "What works today": the language you may use. Copy syntax from
+- docs/roadmap.md "What works today": the language you may use. Copy syntax from
   crates/sisuc/tests/run/*.sisu; a probe that does not compile tests nothing.
 Never edit the repository; write only under your run directory. If the
 Write tool refuses a file there, write it with a shell heredoc. In every

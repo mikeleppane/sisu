@@ -1,0 +1,19 @@
+class Tree {
+    value: i64
+    left: Tree?
+    right: Tree?
+
+    fn sum(self) -> i64 {
+        self.value + (self.left?.sum() ?? 0) + (self.right?.sum() ?? 0)
+    }
+}
+
+fn leaf(value: i64) -> Tree {
+    Tree(value: value, left: None, right: None)
+}
+
+fn main() {
+    let tree = Tree(value: 1, left: leaf(2), right: leaf(3))
+    print(tree.sum())               // 6
+    print(tree.left?.value ?? 0)    // 2
+}

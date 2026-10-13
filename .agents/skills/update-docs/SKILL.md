@@ -38,14 +38,14 @@ Read each target below before you decide it needs no edit.
 | Flags or usage text in `crates/sisuc/src/main.rs` | The "Look inside the compiler" table in `docs/development.md`; the Driver card in `docs/architecture/sisu-pipeline.json` |
 | A stage, or what passes between stages: the lexer, parser and AST (`lexer.rs`, `parser.rs`, `ast.rs`), the checker (`check/`) and `tir.rs`, codegen (`codegen/`, including symbol names and LLVM passes), linking (`link.rs`), diagnostics (`diagnostic/`, `report.rs`, `front_end.rs`); also which stage lowers which sugar | The stage paragraphs in `docs/architecture.md`; the diagram (step 4); the "Compiler" terms in `GLOSSARY.md` |
 | Functions exported by `crates/runtime` | The Runtime paragraph in `docs/architecture.md`; the Runtime card in the diagram JSON |
-| A language feature added, removed or renamed (a case in `crates/sisuc/tests/run` added or changed) | "What works today" in `README.md`; `GLOSSARY.md` for the terms |
+| A language feature added, removed or renamed (a case in `crates/sisuc/tests/run` added or changed) | "What works today" in `docs/roadmap.md`; "A taste of Sisu" in `README.md`, only if a headline feature is missing from its examples; `GLOSSARY.md` for the terms |
 | A milestone starting or finishing | The milestone line in `README.md`; the milestone table in `docs/roadmap.md` |
 | A choice the pull request body names as hard to reverse, with the alternatives it rejected | A new ADR in `docs/adr/`, numbered after the last one, following `docs/agents/domain.md`; "Decided in milestone N" in `docs/roadmap.md`. Any other choice gets no ADR. |
 | Behavior that a "Decided in milestone N" bullet in `docs/roadmap.md` describes | Rewrite the bullet to the current fact and name the milestone that changed it, for example "desugared by the checker (moved from the parser in milestone 2)" |
 | Diagnostic or panic text, or an exit code | The sample outputs and exit codes in `docs/development.md` |
 | The toolchain or a prerequisite (`rust-toolchain.toml`, `scripts/`, `.cargo/`), a command, how tests run (`crates/sisuc/tests/*.rs`), CI (`.github/workflows/`, `prek.toml`), dependency policy (`deny.toml`) or lint policy (`[workspace.lints]` in `Cargo.toml`) | "Prerequisites" and "Build and test" in `docs/development.md`; "Commands" and "Code rules" in `AGENTS.md`; step 5 of `CONTRIBUTING.md` |
 | A top-level directory or crate | "Repository layout" in `docs/development.md`; the crate list in `AGENTS.md` |
-| `crates/sisuc/tests/run/fib.sisu` | The example in `README.md`, which must stay identical to it |
+| `run/tree_sum.sisu`, `run/shared_arrays.sisu`, `run-fail/overflow.sisu` or `diagnostics/counter.sisu` under `crates/sisuc/tests`, or their expected output | The examples in `README.md`, which must stay identical to them |
 
 If no row matches, report "no doc changes needed" and why. Do not edit to
 show activity.
@@ -93,12 +93,16 @@ gitignored, and the docs do not link to it.
 ```console
 $ python3 .agents/skills/update-docs/scripts/check_links.py README.md CONTRIBUTING.md AGENTS.md GLOSSARY.md CODING_STANDARDS.md docs/*.md docs/adr/*.md docs/agents/*.md
 broken: 0
-$ awk '/^```/{n++;next} n==1' README.md | diff - crates/sisuc/tests/run/fib.sisu
+$ for case in 1:run/tree_sum.sisu 3:run/shared_arrays.sisu 5:run-fail/overflow.sisu 9:diagnostics/counter.sisu; do awk -v k="${case%%:*}" '/^```/{n++;next} n==k' README.md | diff - "crates/sisuc/tests/${case#*:}"; done
+$ awk '/^```/{n++;next} n==11' README.md | tail -n +2 | diff - crates/sisuc/tests/diagnostics/counter.err
 $ prek run --files <each changed file>
 ```
 
-The `awk` line prints nothing when the README's first code block matches
-`fib.sisu`.
+The two `awk` lines print nothing when the README's examples match their
+cases. The number before each case is its code block's position: block `k`
+is `n==2k-1`. Fix the numbers if a code block is added or moved. The panic
+output under the overflow example comes from `run-fail/overflow.out` and
+`overflow.err`; compare it by eye.
 
 ## 6. Report and commit
 

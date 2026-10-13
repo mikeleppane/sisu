@@ -1,0 +1,27 @@
+error[E0001]: cannot assign to `total`
+ --> counter.sisu:7:5
+  |
+6 |     let total = 0
+  |         ----- declared with `let` here
+7 |     total = 5
+  |     ^^^^^^^^^ cannot assign twice
+  |
+help: declare it with `let mut`
+  |
+6 |     let mut total = 0
+  |         +++
+
+error[E0052]: cannot find function `Countre`
+ --> counter.sisu:8:13
+  |
+8 |     let c = Countre(count: total)
+  |             ^^^^^^^
+  |
+help: a class with a similar name exists: `Counter`
+  |
+8 -     let c = Countre(count: total)
+8 +     let c = Counter(count: total)
+  |
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0052
