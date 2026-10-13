@@ -83,6 +83,31 @@ One Unicode scalar value: a code point that is not a surrogate.
 _Avoid_: character (readers take it to mean what they see, which can be
 several scalar values)
 
+**Interpolation**:
+A `{expr}` inside a string literal. The expression is evaluated and turned
+into text, and the whole literal becomes one new `string`.
+_Avoid_: formatting, templating
+
+**Shadowing**:
+Declaring a `let` or `let mut` with the name of a binding that is already
+visible, in the same scope or an outer one. The new binding replaces the old
+one from its declaration onwards, and its right-hand side still sees the old
+one.
+_Avoid_: redeclaration, rebinding
+
+**Constant**:
+A named value declared at the top level with `const` and folded at compile
+time. It is typed, and a local binding with its name shadows it. It is
+neither a `let` binding nor a literal: each use becomes the literal its value
+folds to.
+_Avoid_: global, static
+
+**Reserved keyword**:
+A word that the lexer already treats as a keyword for a feature that comes in
+a later milestone, such as `match` or `import`. Using one as a name is an
+error, so a program written today does not break when the feature lands.
+_Avoid_: future keyword
+
 ## Classes and objects
 
 **Class**:

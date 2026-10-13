@@ -266,7 +266,7 @@ so it does not wait for the later goals:
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
-| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`, string builder) | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
+| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`) | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
 
 Order matters in these places:
@@ -772,10 +772,9 @@ These do not make code nicer to write, so they wait:
 
 ## Open decisions
 
-- **Same-scope shadowing.** Milestone 1 allows redeclaring a name only in an
-  inner scope. Rust also allows `let n = n.trim()` in the same scope, which
-  pays off once strings change a value's type. Decide in milestone 4; lifting
-  the error breaks no program.
+- **Same-scope shadowing.** Resolved in milestone 4: allowed. `let n = n.trim()`
+  in the same scope declares a new binding, and the old one stays visible to
+  its own right-hand side.
 - **Generic arguments and `<`.** `f(a < b, c > d)` reads as two comparisons
   or as one generic call. Decide the syntax in milestone 8.
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
@@ -791,21 +790,17 @@ These do not make code nicer to write, so they wait:
   Swift and Kotlin. Decide the form before the first attribute lands, so `@`
   is not taken for something else. Later uses could include `@noinline` and
   `@deprecated("...")`. Tests use `test` blocks, not an attribute.
-- **What a string is.** LLVM sees only bytes, so Sisu decides this itself.
-  Milestone 1 already reads UTF-8 source with ASCII identifiers. Decide before
-  milestone 4:
-  - whether strings are stored as UTF-8;
-  - whether `len()` counts bytes or characters (Unicode scalars);
-  - whether `s[i]` exists at all. Swift has no integer indexing on strings,
-    because it is slow and misleading for text that is not ASCII;
-  - where invalid UTF-8 from input is caught, in the runtime or in generated
-    code (ADR 0009);
-  - whether a string is a value shared until written, as arrays are
-    (ADR 0007);
-  - how a string literal, stored once in the program's read-only data, takes
-    part in reference counting without ever being freed;
-  - its header: one count, as arrays keep, not the split count of a class
-    object with `weak` fields (ADR 0008).
+- **What a string is.** Resolved by
+  [ADR 0014](adr/0014-strings-are-utf-8-values.md): UTF-8, always valid, a
+  value shared until written, `len()` in bytes and no `s[i]`.
+- **Substring views.** A `split` or `trim` that returns views into the parent's
+  bytes would copy nothing, but a view keeps the parent alive. Decide after
+  generics; Swift's separate `Substring` type is the leading candidate.
+  Compatibility cost: if milestone 5's `split` returns `[string]`, a later
+  `Substring` either changes its return type or adds a second method.
+- **Small-string optimisation.** Store short strings inside the variable's
+  slot, as Swift and C++ do. Programs cannot observe it. Decide when a
+  benchmark asks for it.
 - **Floats.** Decide before milestone 6:
   - Literals. The number scanner reads only digits and separators today.
     With floats, `0..n` must still be a range and `1.0` a float. Tuples
