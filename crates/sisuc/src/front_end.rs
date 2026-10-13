@@ -218,6 +218,34 @@ fn main() {
         assert_eq!(codes(src), [(Code::Expected, (2, 9))]);
         let src = "class i64 {\n    x y\n}\nfn main() {\n    let n: i64 = true\n}\n";
         assert_eq!(codes(src), [(Code::Expected, (2, 7))]);
+        // A broken constant poisons a call of its name too, whose arguments are still checked.
+        let src = "const print = 1 2\nfn main() {\n    print(1, 2)\n    print(nope)\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (1, 17)), (Code::BindingNotFound, (4, 11))]
+        );
+        let src = "const i64 = 1 2\nfn main() {\n    let n = i64(true, 1)\n}\n";
+        assert_eq!(codes(src), [(Code::Expected, (1, 15))]);
+    }
+
+    /// A constant runs to the end of its line, so text skipped after its value is its own: the
+    /// constant is broken, and the items after it are still checked.
+    #[test]
+    fn skipped_text_after_a_constant_lies_in_it() {
+        for skipped in ["$", "\"const"] {
+            let src = format!(
+                "const A = {{ 1 }} {skipped}\nconst B: u8 = 300\nfn main() {{\n    print(A)\n    let b: bool = 1\n}}\n"
+            );
+            assert_eq!(
+                codes(&src),
+                [
+                    (Code::UnexpectedCharacter, (1, 17)),
+                    (Code::IntegerDoesNotFit, (2, 15)),
+                    (Code::Mismatch, (5, 19))
+                ],
+                "{src}"
+            );
+        }
     }
 
     /// A broken constant is declared, so its uses are poisoned; it poisons a function of the same

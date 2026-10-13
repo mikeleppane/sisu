@@ -480,13 +480,14 @@ impl Parser<'_> {
     }
 
     /// The bytes of the item from `start` to `end`, exclusive. An item that ends past its own `}`,
-    /// or past the line break before the next item, ends there. Any other runs up to the token
-    /// that ends it (a line break, a closer or `Eof`), so that text skipped before it lies in the
-    /// item.
+    /// or past the line break before the next item, ends there. Any other, and a constant, which
+    /// is one line, runs up to the token that ends it (a line break, a closer or `Eof`), so that
+    /// text skipped before it lies in the item.
     fn bytes(&self, start: usize, end: usize) -> Range<usize> {
+        let line = self.tokens[start].kind == TokenKind::Const;
         let last = &self.tokens[end - 1];
         let stop = match (&last.kind, &self.tokens[end].kind) {
-            (TokenKind::RBrace, _) => last.span.end,
+            (TokenKind::RBrace, _) if !line => last.span.end,
             // `Eof` sits just after the last code, before any skipped text.
             (_, TokenKind::Eof) => usize::MAX,
             _ => self.tokens[end].span.start,

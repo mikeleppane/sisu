@@ -34,7 +34,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0023](E0023.md) | error | range outside `for` |
 | [E0024](E0024.md) | error | chained `==`, `!=` or `is` |
 | [E0025](E0025.md) | error | comparison chain that turns around |
-| [E0026](E0026.md) | error | class or function named like a built-in type |
+| [E0026](E0026.md) | error | item named like a built-in type |
 | [E0027](E0027.md) | error | class that can never be constructed |
 | [E0028](E0028.md) | error | program without `main` |
 | [E0029](E0029.md) | error | `main` with parameters or a return type |

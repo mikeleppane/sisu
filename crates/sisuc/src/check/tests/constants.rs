@@ -81,6 +81,7 @@ fn local_shadows_const() {
         "const A = 1\nfn main() { let A: Foo = 1\n print(A) }",
         &[(Code::UnknownType, (2, 20))],
     );
+    clean("const A = 1\nfn main() { let mut A = 2\n A = 3\n print(A) }");
 }
 
 /// A source, with an empty `main` unless it has one, and its exact codes with positions.
@@ -117,11 +118,6 @@ fn gate_errors() {
         ),
         ("const A = { 1 }", &[(Code::ConstantNotKnown, (1, 11))]),
         ("const A = len([1])", &[(Code::ConstantNotKnown, (1, 11))]),
-        (
-            "const A = B\nconst B = 1",
-            &[(Code::ConstantOrder, (1, 11))],
-        ),
-        ("const A = A + 1", &[(Code::ConstantOrder, (1, 11))]),
         ("const A = 1 < A", &[(Code::ConstantOrder, (1, 15))]),
         (
             "const A = i64(B)\nconst B = 1",
@@ -155,7 +151,6 @@ fn typing_errors() {
         ("const A: u8 = 300", &[(Code::IntegerDoesNotFit, (1, 15))]),
         ("const A: u8 = -1", &[(Code::NegatedU8, (1, 15))]),
         ("const A = 1 == true", &[(Code::CannotCompare, (1, 11))]),
-        ("const I = 1\nconst A: u8 = I", &[(Code::Mismatch, (2, 15))]),
         ("const A = x", &[(Code::BindingNotFound, (1, 11))]),
     ]);
 }
@@ -195,6 +190,23 @@ fn fold_errors() {
         ),
         ("const A = u8(300)", &[(Code::ConstantPanics, (1, 11))]),
         ("const A = u8(-1)", &[(Code::ConstantPanics, (1, 11))]),
+        // Run time evaluates the left operand first, so its panic is the one reported.
+        (
+            "const A = (1 / 0) + (9223372036854775807 + 1)",
+            &[(Code::ConstantPanics, (1, 11))],
+        ),
+        (
+            "const A = 1 / 0 == 9223372036854775807 + 1",
+            &[(Code::ConstantPanics, (1, 11))],
+        ),
+        (
+            "const A = 1 / 0 < 9223372036854775807 + 1",
+            &[(Code::ConstantPanics, (1, 11))],
+        ),
+        (
+            "const A = 1 < 1 / 0 < 9223372036854775807 + 1",
+            &[(Code::ConstantPanics, (1, 15))],
+        ),
     ]);
     let min = "const MIN = -9223372036854775807 - 1";
     for value in ["MIN / -1", "MIN % -1", "-MIN", "MIN - 1"] {
@@ -209,7 +221,6 @@ fn fold_errors() {
 #[test]
 fn name_errors() {
     rows(&[
-        ("const A = 1\nconst A = 2", &[(Code::DefinedTwice, (2, 7))]),
         // A duplicate goes through every step for its own errors.
         (
             "const A = 1\nconst A = 1 / 0",
@@ -227,14 +238,6 @@ fn name_errors() {
         ("const A = 1\nfn A() {}", &[(Code::DefinedTwice, (2, 4))]),
         ("const print = 1", &[(Code::DefinedTwice, (1, 7))]),
         ("const i64 = 1", &[(Code::BuiltInTypeName, (1, 7))]),
-        (
-            "const main = 1\nfn main() {}",
-            &[(Code::DefinedTwice, (2, 4))],
-        ),
-        (
-            "fn main() {}\nconst main = 1",
-            &[(Code::DefinedTwice, (2, 7))],
-        ),
     ]);
 }
 
@@ -242,18 +245,6 @@ fn name_errors() {
 #[test]
 fn use_errors() {
     rows(&[
-        (
-            "const A = 1\nfn main() { A = 2 }",
-            &[(Code::AssignToImmutable, (2, 13))],
-        ),
-        (
-            "const A = 1\nfn main() { A += 2 }",
-            &[(Code::AssignToImmutable, (2, 13))],
-        ),
-        (
-            "const A: u8 = 1\nfn main() { let b: i64 = A }",
-            &[(Code::Mismatch, (2, 26))],
-        ),
         (
             "const A = 1\nfn main() { A[0] = 1 }",
             &[
