@@ -1,8 +1,10 @@
-error[E0010]: unexpected character `"`
+error[E0093]: string literal is not closed
  --> eof-quote.sisu:4:1
   |
 4 | "
   | ^
+  |
+  = help: write `\n` for a line break
 
 sisuc: 1 error
-sisuc: for more on a code, run `sisuc --explain <code>`: E0010
+sisuc: for more on a code, run `sisuc --explain <code>`: E0093

@@ -80,6 +80,8 @@ fn single_term(e: &ast::Expr) -> bool {
         ExprKind::Int { .. }
         | ExprKind::Bool(_)
         | ExprKind::Char(_)
+        | ExprKind::Str(_)
+        | ExprKind::Interpolate(_)
         | ExprKind::Name(_)
         | ExprKind::SelfValue
         | ExprKind::NoneLit

@@ -87,7 +87,7 @@ fn main() {
 
     #[test]
     fn lexer_error_hides_its_parse_error() {
-        let src = "fn main() {\n    let n: i64 = \"three\"\n}\n";
+        let src = "fn main() {\n    let n: i64 = $\n}\n";
         assert_eq!(codes(src), [(Code::UnexpectedCharacter, (2, 18))]);
     }
 
@@ -103,6 +103,7 @@ fn main() {
         );
     }
 
+    /// Until Task 11 checks strings, the string checks as an `i64`, so `main` checks on.
     #[test]
     fn spec_sample_with_quote() {
         let src = SAMPLE.replace(
@@ -114,7 +115,7 @@ fn main() {
             [
                 (Code::MethodAsFunction, (3, 17)),
                 (Code::AssignToImmutable, (4, 9)),
-                (Code::UnexpectedCharacter, (11, 18))
+                (Code::FunctionNotFound, (12, 11))
             ]
         );
     }
@@ -232,14 +233,17 @@ fn main() {
     /// constant is broken, and the items after it are still checked.
     #[test]
     fn skipped_text_after_a_constant_lies_in_it() {
-        for skipped in ["$", "\"const"] {
+        for (skipped, code) in [
+            ("$", Code::UnexpectedCharacter),
+            ("\"const", Code::LiteralNotClosed),
+        ] {
             let src = format!(
                 "const A = {{ 1 }} {skipped}\nconst B: u8 = 300\nfn main() {{\n    print(A)\n    let b: bool = 1\n}}\n"
             );
             assert_eq!(
                 codes(&src),
                 [
-                    (Code::UnexpectedCharacter, (1, 17)),
+                    (code, (1, 17)),
                     (Code::IntegerDoesNotFit, (2, 15)),
                     (Code::Mismatch, (5, 19))
                 ],
@@ -290,38 +294,57 @@ fn main() {
         assert!(front_end(&fixed).1.is_empty(), "{fixed}");
     }
 
+    /// The fix of a `}` in a string leaves a program that passes the whole front end, after an
+    /// escaped backslash, after an interpolation and in a string inside one.
+    #[test]
+    fn brace_in_string_fix_passes_the_front_end() {
+        for text in [r#""}""#, r#""\\}""#, r#""{n}}""#, r#""{ "}" }""#] {
+            let src = format!("fn main() {{\n    let n = 1\n    print({text})\n}}\n");
+            let ds = front_end(&src).1;
+            let [d] = ds.as_slice() else {
+                panic!("expected one diagnostic, got {ds:?}");
+            };
+            assert_eq!(d.code(), Code::BraceInString, "{src}");
+            assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+            let fixed = apply_fix(&src, d);
+            assert!(front_end(&fixed).1.is_empty(), "{fixed}");
+        }
+    }
+
     #[test]
     fn unnamed_item_stops_the_checker() {
         let src = "def total() {}\nfn main() {\n    let b: bool = 1\n}\n";
         assert_eq!(codes(src), [(Code::Expected, (1, 1))]);
     }
 
-    /// Skipped text outside every item that holds `fn`, `class` or `const` may have swallowed an
-    /// item, so no name lookup can be trusted.
+    /// A string that is not closed outside every item is an unnamed item, so the checker does
+    /// not run: the string may have swallowed an item, and no name lookup can be trusted.
     #[test]
-    fn swallowed_item_stops_the_checker() {
-        for src in [
-            "\"fn helper() {}\nfn main() {\n    helper()\n}\n",
-            "\"class Helper {}\nfn helper() -> Helper {\n    return Helper()\n}\nfn main() {}\n",
-            "\"fn main() {}\n",
-            "\"const A = 1\nfn main() {\n    print(A)\n}\n",
+    fn unclosed_string_outside_items_stops_the_checker() {
+        for (src, at) in [
+            ("\"fn helper() {}\nfn main() {\n    helper()\n}\n", (1, 1)),
+            (
+                "\"class Helper {}\nfn helper() -> Helper {\n    return Helper()\n}\nfn main() {}\n",
+                (1, 1),
+            ),
+            ("\"fn main() {}\n", (1, 1)),
+            ("\"const A = 1\nfn main() {\n    print(A)\n}\n", (1, 1)),
+            (
+                "fn f() {} \"a note\nfn main() {\n    let b: bool = 1\n}\n",
+                (1, 11),
+            ),
         ] {
-            assert_eq!(codes(src), [(Code::UnexpectedCharacter, (1, 1))], "{src}");
+            assert_eq!(codes(src), [(Code::LiteralNotClosed, at)], "{src}");
         }
-        // Skipped text without either word keeps the checker on.
-        for src in [
-            "fn f() {} $\nfn main() {\n    let b: bool = 1\n}\n",
-            "fn f() {} \"a note\nfn main() {\n    let b: bool = 1\n}\n",
-        ] {
-            assert_eq!(
-                codes(src),
-                [
-                    (Code::UnexpectedCharacter, (1, 11)),
-                    (Code::Mismatch, (3, 19))
-                ],
-                "{src}"
-            );
-        }
+        // Skipped text keeps the checker on.
+        let src = "fn f() {} $\nfn main() {\n    let b: bool = 1\n}\n";
+        assert_eq!(
+            codes(src),
+            [
+                (Code::UnexpectedCharacter, (1, 11)),
+                (Code::Mismatch, (3, 19))
+            ]
+        );
     }
 
     /// Text skipped at the start of a top-level line lies in the unnamed segment after it, whose
@@ -457,13 +480,13 @@ fn main() {
 
     #[test]
     fn lexer_error_after_a_nested_block() {
-        let src = "fn f() {\n    if true {\n    }\n    let n: i64 = \"three\"\n}\nfn main() {}\n";
+        let src = "fn f() {\n    if true {\n    }\n    let n: i64 = $\n}\nfn main() {}\n";
         assert_eq!(codes(src), [(Code::UnexpectedCharacter, (4, 18))]);
     }
 
     #[test]
     fn lexer_error_breaks_only_its_method() {
-        let src = "class C {\n    n: i64\n    fn m(self) {\n        let n: i64 = \"three\"\n    }\n}\nfn main() {\n    let c = C(n: true)\n}\n";
+        let src = "class C {\n    n: i64\n    fn m(self) {\n        let n: i64 = $\n    }\n}\nfn main() {\n    let c = C(n: true)\n}\n";
         assert_eq!(
             codes(src),
             [

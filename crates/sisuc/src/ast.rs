@@ -186,6 +186,11 @@ pub(crate) enum ExprKind {
     Bool(bool),
     /// A `char` literal, decoded.
     Char(char),
+    /// A string literal, or a text piece of an interpolation, decoded.
+    Str(String),
+    /// A string literal with interpolations: its text pieces as `Str`, without empty ones, and
+    /// its expressions, in order.
+    Interpolate(Vec<Expr>),
     Name(String),
     Call {
         callee: Ident,
@@ -482,6 +487,12 @@ impl fmt::Display for Expr {
             ExprKind::Int { value, .. } => write!(f, "{value}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::Char(c) => write!(f, "{c:?}"),
+            ExprKind::Str(s) => write!(f, "{s:?}"),
+            ExprKind::Interpolate(parts) => {
+                f.write_str("(interp")?;
+                spaced(f, parts)?;
+                f.write_str(")")
+            }
             ExprKind::Name(name) => f.write_str(name),
             ExprKind::Call { callee, args } => {
                 write!(f, "(call {}", callee.name)?;

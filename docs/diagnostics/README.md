@@ -101,8 +101,11 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0090](E0090.md) | error | malformed `\u` escape |
 | [E0091](E0091.md) | error | escape that is not a Unicode scalar value |
 | [E0092](E0092.md) | error | `char` literal that is not one code point |
-| [E0093](E0093.md) | error | `char` literal that is not closed |
+| [E0093](E0093.md) | error | literal that is not closed |
 | [E0094](E0094.md) | error | arithmetic on `char` |
+| [E0095](E0095.md) | error | `}` in a string |
+| [E0096](E0096.md) | error | empty interpolation |
+| [E0097](E0097.md) | error | comment inside an interpolation |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 

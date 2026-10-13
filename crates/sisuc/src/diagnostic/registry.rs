@@ -134,6 +134,9 @@ codes! {
     NotOneCodePoint = "E0092",
     LiteralNotClosed = "E0093",
     ArithmeticOnChar = "E0094",
+    BraceInString = "E0095",
+    EmptyInterpolation = "E0096",
+    CommentInInterpolation = "E0097",
 }
 
 impl Code {
@@ -504,8 +507,9 @@ pub(crate) enum DiagnosticKind {
     /// The `\u{...}` escape `escape`, as written, at `at`, whose value is not a Unicode scalar
     /// value.
     NotScalarValue { escape: String, at: Span },
-    /// The `char` literal at `at`, which holds no code point or more than one.
-    NotOneCodePoint { at: Span },
+    /// The `char` literal at `at`, which holds no code point or more than one; `string` when its
+    /// text holds no `"`, `{` or `}`, which a string literal would read differently.
+    NotOneCodePoint { at: Span, string: bool },
     /// The literal of `kind` that starts at `at` and stops at a line break or the end of the file.
     LiteralNotClosed { kind: LiteralKind, at: Span },
     /// Arithmetic on the `char` at `at`; `convert` is the rewrite through `i64`, when the
@@ -514,12 +518,19 @@ pub(crate) enum DiagnosticKind {
         at: Span,
         convert: Option<CharArithmetic>,
     },
+    /// The `}` at `at` in the text of a string literal, which no interpolation opened.
+    BraceInString { at: Span },
+    /// The interpolation at `at`, its braces included, which holds only spaces.
+    EmptyInterpolation { at: Span },
+    /// The `//` at `at`, inside an interpolation.
+    CommentInInterpolation { at: Span },
 }
 
 /// What a literal that is not closed is the literal of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LiteralKind {
     Char,
+    String,
 }
 
 /// A run-time panic that folding a constant meets.
@@ -677,6 +688,10 @@ pub(crate) enum Immutable {
 }
 
 impl DiagnosticKind {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per diagnostic code, so the table reads in one place"
+    )]
     pub(crate) fn code(&self) -> Code {
         match self {
             DiagnosticKind::AssignToImmutable { .. } => Code::AssignToImmutable,
@@ -775,6 +790,9 @@ impl DiagnosticKind {
             DiagnosticKind::NotOneCodePoint { .. } => Code::NotOneCodePoint,
             DiagnosticKind::LiteralNotClosed { .. } => Code::LiteralNotClosed,
             DiagnosticKind::ArithmeticOnChar { .. } => Code::ArithmeticOnChar,
+            DiagnosticKind::BraceInString { .. } => Code::BraceInString,
+            DiagnosticKind::EmptyInterpolation { .. } => Code::EmptyInterpolation,
+            DiagnosticKind::CommentInInterpolation { .. } => Code::CommentInInterpolation,
         }
     }
 }
@@ -1583,11 +1601,26 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("`{escape}` is not a Unicode scalar value"))
                     .with_help("scalar values run from 0 to 10FFFF, without D800 to DFFF")
             }
-            DiagnosticKind::NotOneCodePoint { at } => {
-                Diagnostic::coded(code, at, "a `char` holds one code point")
+            DiagnosticKind::NotOneCodePoint { at, string } => {
+                let d = Diagnostic::coded(code, at, "a `char` holds one code point");
+                if string {
+                    let quote = |at| Edit {
+                        span: Span::new(at, at + 1),
+                        replacement: "\"".to_string(),
+                    };
+                    d.with_fix(Fix {
+                        message: "if you meant a string, write it in double quotes".to_string(),
+                        certain: false,
+                        edits: vec![quote(at.start), quote(at.end - 1)],
+                    })
+                } else {
+                    d
+                }
             }
             DiagnosticKind::LiteralNotClosed { kind, at } => match kind {
                 LiteralKind::Char => Diagnostic::coded(code, at, "`char` literal is not closed"),
+                LiteralKind::String => Diagnostic::coded(code, at, "string literal is not closed")
+                    .with_help(r"write `\n` for a line break"),
             },
             DiagnosticKind::ArithmeticOnChar { at, convert } => {
                 let d = Diagnostic::coded(code, at, "arithmetic does not apply to `char`");
@@ -1600,7 +1633,32 @@ impl From<DiagnosticKind> for Diagnostic {
                     None => d,
                 }
             }
+            DiagnosticKind::BraceInString { at } => {
+                Diagnostic::coded(code, at, "a `}` in a string must be escaped").with_fix(Fix {
+                    message: r"write `\}`".to_string(),
+                    certain: true,
+                    edits: vec![backslash(at.start)],
+                })
+            }
+            DiagnosticKind::EmptyInterpolation { at } => {
+                Diagnostic::coded(code, at, "empty interpolation").with_fix(Fix {
+                    message: r"write `\{\}` for literal braces".to_string(),
+                    certain: false,
+                    edits: vec![backslash(at.start), backslash(at.end - 1)],
+                })
+            }
+            DiagnosticKind::CommentInInterpolation { at } => {
+                Diagnostic::coded(code, at, "a comment cannot appear inside an interpolation")
+            }
         }
+    }
+}
+
+/// The edit that writes a `\` at `at`.
+fn backslash(at: usize) -> Edit {
+    Edit {
+        span: Span::new(at, at),
+        replacement: "\\".to_string(),
     }
 }
 

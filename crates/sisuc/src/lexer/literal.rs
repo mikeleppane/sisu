@@ -1,5 +1,5 @@
-//! Literals: numbers (decimal, and `0x`, `0b` and `0o` with digit separators), `char` literals
-//! and the escapes in them.
+//! Literals: numbers (decimal, and `0x`, `0b` and `0o` with digit separators), `char` and
+//! string literals, and the escapes in them.
 
 use super::{Chars, MIN_MAGNITUDE, TokenKind, literal_too_large, take_while};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, LiteralKind, Span};
@@ -139,9 +139,83 @@ fn char_literal(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKi
         (Some(c), None) => Ok(TokenKind::Char(c)),
         _ => Err(DiagnosticKind::NotOneCodePoint {
             at: Span::new(start, end),
+            string: !source[start..end].contains(['"', '{', '}']),
         }
         .into()),
     }
+}
+
+/// How a piece of a string literal's text ends.
+pub(super) enum End {
+    /// At the closing `"`.
+    Quote,
+    /// At the `{` of an interpolation.
+    Brace,
+    /// At a line break or the end of the file.
+    Open,
+}
+
+/// The text of a string literal after its `"`, or after the `}` that ends an interpolation,
+/// which `chars` has consumed: up to and with its closing `"` or the `{` of an interpolation, or
+/// up to the line end, which the caller reports. The first error is the one reported.
+pub(super) fn string_text(
+    source: &str,
+    chars: &mut Chars,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (String, End) {
+    let mut error = None;
+    let mut text = String::new();
+    let end = loop {
+        let Some((i, c)) = chars.next_if(|&(_, c)| c != '\n') else {
+            break End::Open;
+        };
+        match c {
+            '"' => break End::Quote,
+            '{' => {
+                let inside = &source[i + 1..];
+                let close = source.len() - inside.trim_start_matches([' ', '\t']).len();
+                if !source[close..].starts_with('}') {
+                    break End::Brace;
+                }
+                while chars.next_if(|&(j, _)| j <= close).is_some() {}
+                error.get_or_insert_with(|| {
+                    DiagnosticKind::EmptyInterpolation {
+                        at: Span::new(i, close + 1),
+                    }
+                    .into()
+                });
+            }
+            '}' => {
+                error.get_or_insert_with(|| {
+                    DiagnosticKind::BraceInString {
+                        at: Span::new(i, i + 1),
+                    }
+                    .into()
+                });
+            }
+            // A `\` at the line end is followed by the "not closed" error of the next turn.
+            '\\' if chars.peek().is_none_or(|&(_, n)| n == '\n') => {}
+            '\\' => match escape(source, i, chars) {
+                Ok(c) => text.push(c),
+                Err(d) => {
+                    error.get_or_insert(d);
+                }
+            },
+            c => text.push(c),
+        }
+    };
+    diagnostics.extend(error);
+    (text, end)
+}
+
+/// The error for a string literal whose `"` stands at `quote` and that a line break or the end
+/// of the file stops.
+pub(super) fn not_closed(quote: usize) -> Diagnostic {
+    DiagnosticKind::LiteralNotClosed {
+        kind: LiteralKind::String,
+        at: Span::new(quote, quote + 1),
+    }
+    .into()
 }
 
 /// Decodes the escape after a `\`, which `chars` has just consumed at `backslash`. A char that is

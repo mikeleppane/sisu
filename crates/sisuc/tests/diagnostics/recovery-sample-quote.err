@@ -24,11 +24,16 @@ help: declare it with `let mut`
 2 |     let mut sum = 0
   |         +++
 
-error[E0010]: unexpected character `"`
-  --> recovery-sample-quote.sisu:11:18
+error[E0052]: cannot find function `totl`
+  --> recovery-sample-quote.sisu:12:11
    |
-11 |     let n: i64 = "three"
-   |                  ^
+12 |     print(totl(xs))
+   |           ^^^^
+   |
+help: a function with a similar name exists: `total`
+   |
+12 |     print(total(xs))
+   |              +
 
 sisuc: 3 errors
-sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0010, E0070
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0052, E0070

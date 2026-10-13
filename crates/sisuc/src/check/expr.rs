@@ -63,6 +63,9 @@ impl Checker {
             ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
             ExprKind::Char(c) => node(tir::ExprKind::Char(*c), Type::Char),
+            // shortcut: a string types as the `i64` 0, so that explanations and certain fixes
+            // that hold one check clean; Task 11 checks `Str` and Task 14 `Interpolate`.
+            ExprKind::Str(_) | ExprKind::Interpolate(_) => node(tir::ExprKind::Int(0), Type::I64),
             ExprKind::ArrayLit(elements) => self.array_lit(e.span, elements, expected),
             ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
             ExprKind::Index { base, index } => self.index(e.span, base, index),

@@ -29,7 +29,6 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         tokens,
         diagnostics,
         comments,
-        swallowed,
     } = lexed;
     Parser {
         tokens: &tokens,
@@ -37,7 +36,6 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         depth: 0,
         lexer: &diagnostics,
         comments: &comments,
-        swallowed: &swallowed,
     }
     .program()
 }
@@ -124,8 +122,6 @@ struct Parser<'a> {
     lexer: &'a [Diagnostic],
     /// Where each comment starts.
     comments: &'a [usize],
-    /// Where each skip that may have swallowed an item starts.
-    swallowed: &'a [usize],
 }
 
 impl Parser<'_> {
@@ -387,10 +383,6 @@ impl Parser<'_> {
                 .filter(|d| outside(&d.span().start))
                 .cloned(),
         );
-        // Skipped text outside every item may have held one, so a name lookup cannot be trusted.
-        if self.swallowed.iter().any(outside) {
-            checkable = false;
-        }
         diagnostics.sort_by_key(|d| d.span().start);
         Parsed {
             program: Program {
@@ -655,7 +647,6 @@ impl Parser<'_> {
             depth: self.depth,
             lexer: self.lexer,
             comments: self.comments,
-            swallowed: self.swallowed,
         };
         let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
@@ -1288,6 +1279,14 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::Char(c)
             }
+            TokenKind::Str(s) => {
+                self.bump();
+                ExprKind::Str(s)
+            }
+            TokenKind::StrHead(head) => {
+                self.bump();
+                return self.interpolation(token.span, head);
+            }
             TokenKind::SelfKw => {
                 self.bump();
                 ExprKind::SelfValue
@@ -1347,6 +1346,39 @@ impl Parser<'_> {
         Ok(Expr {
             kind,
             span: token.span,
+        })
+    }
+
+    /// The rest of a string literal with interpolations, after its `StrHead` at `start` with the
+    /// text `head`: each expression, and the text after it, up to the `StrTail`.
+    fn interpolation(&mut self, start: Span, head: String) -> Result<Expr, Diagnostic> {
+        let text = |value: String, span| {
+            (!value.is_empty()).then_some(Expr {
+                kind: ExprKind::Str(value),
+                span,
+            })
+        };
+        let base = self.depth;
+        let mut reach = base;
+        let mut parts: Vec<Expr> = text(head, start).into_iter().collect();
+        let end = loop {
+            parts.push(self.child(base, &mut reach, Self::expr)?);
+            let token = self.peek().clone();
+            match token.kind {
+                TokenKind::StrMiddle(value) => parts.extend(text(value, token.span)),
+                TokenKind::StrTail(value) => {
+                    parts.extend(text(value, token.span));
+                    self.bump();
+                    break token.span;
+                }
+                _ => return Err(self.expected("`}`")),
+            }
+            self.bump();
+        };
+        self.depth = reach;
+        Ok(Expr {
+            kind: ExprKind::Interpolate(parts),
+            span: start.to(end),
         })
     }
 
@@ -1608,6 +1640,24 @@ mod tests {
             ("fn main() { -9223372036854775808[0] }", 14),
         ] {
             assert_eq!(parse_err(src), (Code::IntegerTooLarge, 1, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn interpolation_s_expression() {
+        assert_eq!(
+            expr(r#"print("a{x}b{ "c" + y }")"#),
+            r#"(call print (interp "a" x "b" (+ "c" y)))"#
+        );
+        // Empty text pieces are dropped.
+        assert_eq!(expr(r#"print("{x}{y}")"#), "(call print (interp x y))");
+    }
+
+    /// An interpolation holds one expression, which ends at its `}`.
+    #[test]
+    fn interpolation_errors() {
+        for (src, col) in [(r#""{x y}""#, 17), (r#""{x +}""#, 18)] {
+            assert_eq!(expr_err(src), (Code::Expected, 1, col), "{src}");
         }
     }
 

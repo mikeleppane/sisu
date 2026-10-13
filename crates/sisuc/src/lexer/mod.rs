@@ -6,7 +6,8 @@ use std::fmt::Write;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-use crate::diagnostic::{Diagnostic, DiagnosticKind, Join, LineIndex, Span};
+use crate::diagnostic::{Code, Diagnostic, DiagnosticKind, Join, LineIndex, Span};
+use literal::End;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
@@ -21,6 +22,15 @@ pub(crate) enum TokenKind {
     },
     /// A `char` literal, decoded.
     Char(char),
+    /// A string literal without interpolation, decoded.
+    Str(String),
+    /// The text of a string literal up to its first interpolation, decoded. The interpolation's
+    /// tokens follow, then a `StrMiddle` before each further interpolation and a `StrTail`.
+    StrHead(String),
+    /// The text between two interpolations, decoded.
+    StrMiddle(String),
+    /// The text after the last interpolation, decoded.
+    StrTail(String),
     Fn,
     Let,
     Mut,
@@ -96,6 +106,10 @@ impl TokenKind {
             TokenKind::Underscore => "Underscore",
             TokenKind::Int { .. } => "Int",
             TokenKind::Char(_) => "Char",
+            TokenKind::Str(_) => "Str",
+            TokenKind::StrHead(_) => "StrHead",
+            TokenKind::StrMiddle(_) => "StrMiddle",
+            TokenKind::StrTail(_) => "StrTail",
             TokenKind::Fn => "Fn",
             TokenKind::Let => "Let",
             TokenKind::Mut => "Mut",
@@ -165,6 +179,7 @@ impl TokenKind {
             TokenKind::Underscore => "_",
             TokenKind::Int { text, .. } => return format!("`{text}`"),
             TokenKind::Char(c) => return format!("`{c:?}`"),
+            TokenKind::Str(_) | TokenKind::StrHead(_) => return "a string literal".to_string(),
             TokenKind::Fn => "fn",
             TokenKind::Let => "let",
             TokenKind::Mut => "mut",
@@ -208,7 +223,8 @@ impl TokenKind {
             TokenKind::LParen => "(",
             TokenKind::RParen => ")",
             TokenKind::LBrace => "{",
-            TokenKind::RBrace => "}",
+            // A string piece after an interpolation starts at the `}` that ends it.
+            TokenKind::RBrace | TokenKind::StrMiddle(_) | TokenKind::StrTail(_) => "}",
             TokenKind::Comma => ",",
             TokenKind::Colon => ":",
             TokenKind::Arrow => "->",
@@ -233,14 +249,12 @@ type Chars<'a> = Peekable<CharIndices<'a>>;
 type Open = (char, Span);
 
 /// What the lexer makes of a source: its tokens, which always end with `Eof`, a diagnostic
-/// for each error it recovered from, where each `//` comment starts, and where each skip that
-/// may have swallowed an item starts.
+/// for each error it recovered from, and where each `//` comment starts.
 #[derive(Debug)]
 pub(crate) struct Lexed {
     pub(crate) tokens: Vec<Token>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) comments: Vec<usize>,
-    pub(crate) swallowed: Vec<usize>,
 }
 
 /// The tokens of `source`, or its first diagnostic: for tests that need source that lexes clean.
@@ -259,8 +273,8 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
     let mut tokens: Vec<Token> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut comments = Vec::new();
-    let mut swallowed = Vec::new();
     let mut open: Vec<Open> = Vec::new();
+    let mut frames = Frames::default();
     let mut chars = source.char_indices().peekable();
     let mut line_start = true;
     // Where the last skipped text starts.
@@ -269,6 +283,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
         let kind = match c {
             ' ' | '\t' | '\r' => continue,
             '\n' => {
+                skipped = frames.end_line(start, &mut diagnostics).or(skipped);
                 line_start = true;
                 // Look ahead only where a `Newline` would be pushed: the next newlines of a
                 // blank run then find `Newline` last and skip it, so no gap is scanned twice.
@@ -286,6 +301,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
                 continue;
             }
             '/' if chars.next_if(|&(_, n)| n == '/').is_some() => {
+                skipped = frames.comment(start, &mut diagnostics).or(skipped);
                 comments.push(start);
                 while chars.next_if(|&(_, n)| n != '\n').is_some() {}
                 continue;
@@ -298,6 +314,13 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
             }
             c if c.is_ascii_digit() || c == '\'' => {
                 literal::token(source, start, &mut chars, &mut diagnostics)
+            }
+            // A `}` at depth 0 ends an interpolation, and the literal's text goes on after it.
+            '"' | '}' if c == '"' || frames.at_end() => {
+                let (kind, open) = frames.string(source, start, &mut chars, &mut diagnostics);
+                // The rest of the line is lost in the literal, as in a skip.
+                skipped = open.or(skipped);
+                kind
             }
             '-' if matches!(chars.peek(), Some(&(_, ' ' | '\t')))
                 && tokens.last().is_some_and(|t| t.kind == TokenKind::Newline) =>
@@ -313,9 +336,6 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
                     kind
                 } else {
                     diagnostics.push(unexpected(c, start));
-                    if skip_string(c, &mut chars) {
-                        swallowed.push(start);
-                    }
                     skipped = Some(start);
                     continue;
                 }
@@ -336,11 +356,13 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
             }
             line_start = false;
         }
+        frames.track(&kind);
         if let Err(d) = track_bracket(&mut open, &kind, span) {
             return Err(first_or(diagnostics, d));
         }
         tokens.push(Token { kind, span });
     }
+    frames.end_line(source.len(), &mut diagnostics);
     if let Some(&(c, span)) = open.last() {
         let unclosed = DiagnosticKind::UnclosedBracket {
             bracket: c,
@@ -356,8 +378,111 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
         tokens,
         diagnostics,
         comments,
-        swallowed,
     })
+}
+
+/// The open interpolations of string literals, innermost last: for each, the depth of the `{`
+/// brackets in it, and where its literal's `"` stands.
+#[derive(Default)]
+struct Frames(Vec<(usize, usize)>);
+
+impl Frames {
+    /// Whether a `}` ends the innermost interpolation, rather than a bracket in it.
+    fn at_end(&self) -> bool {
+        matches!(self.0.last(), Some((0, _)))
+    }
+
+    /// Counts a bracket `kind` inside the innermost interpolation.
+    fn track(&mut self, kind: &TokenKind) {
+        if let Some((depth, _)) = self.0.last_mut() {
+            match kind {
+                TokenKind::LBrace => *depth += 1,
+                TokenKind::RBrace => *depth -= 1,
+                _ => {}
+            }
+        }
+    }
+
+    /// Ends every open interpolation at the line end or the end of the file at `at`, and returns
+    /// `at`, or `None` when none is open.
+    fn end_line(&mut self, at: usize, diagnostics: &mut Vec<Diagnostic>) -> Option<usize> {
+        self.cut(at, literal::not_closed, diagnostics)
+    }
+
+    /// Ends every open interpolation at the comment at `at`, which takes the rest of the line, so
+    /// no interpolation on it is closed. Returns `at`, or `None` when none is open.
+    fn comment(&mut self, at: usize, diagnostics: &mut Vec<Diagnostic>) -> Option<usize> {
+        let d = |_| {
+            DiagnosticKind::CommentInInterpolation {
+                at: Span::new(at, at + 2),
+            }
+            .into()
+        };
+        self.cut(at, d, diagnostics)
+    }
+
+    /// Ends every open interpolation at `at` with the error `d` gives for the innermost
+    /// literal's `"`, and returns `at`, or `None` when none is open.
+    fn cut(
+        &mut self,
+        at: usize,
+        d: impl FnOnce(usize) -> Diagnostic,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<usize> {
+        let (&(_, outer), &(_, quote)) = (self.0.first()?, self.0.last()?);
+        unclosed(outer, d(quote), diagnostics);
+        self.0.clear();
+        Some(at)
+    }
+
+    /// The token of a string literal's text after its `"` at `start`, or after the `}` at
+    /// `start` that ends an interpolation in it, and `start` when the text is not closed. A `{`
+    /// that opens an interpolation pushes its frame, and a literal that is not closed closes
+    /// every frame, so that it is reported once.
+    fn string(
+        &mut self,
+        source: &str,
+        start: usize,
+        chars: &mut Chars,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> (TokenKind, Option<usize>) {
+        let resumed = source[start..].starts_with('}');
+        let quote = if resumed {
+            self.0.pop().map_or(start, |(_, quote)| quote)
+        } else {
+            start
+        };
+        let (text, end) = literal::string_text(source, chars, diagnostics);
+        let kind = match (&end, resumed) {
+            (End::Brace, false) => TokenKind::StrHead(text),
+            (End::Brace, true) => TokenKind::StrMiddle(text),
+            (_, false) => TokenKind::Str(text),
+            (_, true) => TokenKind::StrTail(text),
+        };
+        match end {
+            End::Brace => self.0.push((0, quote)),
+            // The literal is the innermost frame while its end is reported.
+            End::Open => {
+                self.0.push((0, quote));
+                return (kind, self.end_line(start, diagnostics));
+            }
+            End::Quote => {}
+        }
+        (kind, None)
+    }
+}
+
+/// Reports `d`, an error that leaves the string literal whose outermost `"` stands at `outer`
+/// without its end, unless an earlier error in the literal is reported. An error about a brace
+/// in its text yields to it, since the literal's end decides what a brace means.
+fn unclosed(outer: usize, d: Diagnostic, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.retain(|e| {
+        e.span().start < outer
+            || !matches!(e.code(), Code::BraceInString | Code::EmptyInterpolation)
+    });
+    if diagnostics.last().is_none_or(|e| e.span().start < outer) {
+        diagnostics.push(d);
+    }
 }
 
 /// The `Eof` after `tokens`: just after the last code, so "found end of file" points at its line.
@@ -434,7 +559,7 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 fn can_end_statement(token: Option<&Token>) -> bool {
     use TokenKind::{
         Break, Char, Continue, False, Ident, Int, NoneKw, Question, RBrace, RBracket, RParen,
-        Return, SelfKw, True, Underscore,
+        Return, SelfKw, Str, StrTail, True, Underscore,
     };
     token.is_some_and(|t| {
         matches!(
@@ -443,6 +568,8 @@ fn can_end_statement(token: Option<&Token>) -> bool {
                 | Underscore
                 | Int { .. }
                 | Char(_)
+                | Str(_)
+                | StrTail(_)
                 | True
                 | False
                 | Return
@@ -718,22 +845,6 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
         '?' => TokenKind::Question,
         _ => return None,
     })
-}
-
-/// After a stray `c`, skips the rest of a string if `c` is a `"`: to the closing `"` on this line,
-/// so a `)` inside the string survives, or else to the line end. Whether the skipped text holds
-/// the word `fn`, `class` or `const`, so that it may have swallowed an item.
-fn skip_string(c: char, chars: &mut Chars) -> bool {
-    if c != '"' {
-        return false;
-    }
-    let mut text = String::new();
-    while let Some((_, n)) = chars.next_if(|&(_, n)| n != '"' && n != '\n') {
-        text.push(n);
-    }
-    chars.next_if(|&(_, n)| n == '"');
-    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .any(|word| matches!(word, "fn" | "class" | "const"))
 }
 
 fn unexpected(c: char, at: usize) -> Diagnostic {
@@ -1284,6 +1395,227 @@ mod tests {
         let span = lexed.diagnostics[0].span();
         assert_eq!((span.start, span.end), (0, 1));
         assert_eq!(lexed.tokens[1].kind, TokenKind::Newline);
+    }
+
+    /// Without a quote, brace or comment in its text, the literal gets a guess fix that turns it
+    /// into a string.
+    #[test]
+    fn not_one_code_point_fix() {
+        for (src, fixed) in [
+            ("'ab'", r#""ab""#),
+            ("''", r#""""#),
+            ("'e\u{301}'", "\"e\u{301}\""),
+            (r"'a\tb'", r#""a\tb""#),
+        ] {
+            let d = only(src);
+            assert_eq!(
+                fix_edits(&d).map(|(certain, _)| certain),
+                Some(false),
+                "{src}"
+            );
+            assert_eq!(apply_fix(src, &d), fixed);
+        }
+        for src in ["'a{'", "'a}'", r#"'a"'"#, r#"'a\"'"#] {
+            assert_eq!(fix_edits(&only(src)), None, "{src}");
+        }
+    }
+
+    fn str(s: &str) -> TokenKind {
+        TokenKind::Str(s.to_string())
+    }
+
+    #[test]
+    fn string_literals() {
+        assert_eq!(
+            kinds(r#""" "ab" "ä😀" "\{\}" "a\0b""#),
+            [
+                str(""),
+                str("ab"),
+                str("ä😀"),
+                str("{}"),
+                str("a\0b"),
+                TokenKind::Eof
+            ]
+        );
+    }
+
+    /// A string reports an escape error as a `char` literal does, and only that error.
+    #[test]
+    fn string_escape_errors() {
+        for (src, expected) in [
+            (r#""\q""#, (Code::UnknownEscape, 1, 2)),
+            (r#""\u{D800}""#, (Code::NotScalarValue, 1, 2)),
+        ] {
+            assert_eq!(err(src), expected, "{src}");
+        }
+        // The backslash guess works in a string too.
+        let src = r#"print("a\q")"#;
+        assert_eq!(apply_fix(src, &only(src)), r#"print("a\\q")"#);
+    }
+
+    /// Each error is the literal's only one; the last column is the source text it covers.
+    #[test]
+    fn string_errors() {
+        use Code::{
+            BraceInString, CommentInInterpolation, EmptyInterpolation, LiteralNotClosed,
+            UnknownEscape,
+        };
+        for (src, expected, text) in [
+            ("\"ab\n", (LiteralNotClosed, 1, 1), "\""),
+            ("\"ab", (LiteralNotClosed, 1, 1), "\""),
+            ("let s = \"\\\n", (LiteralNotClosed, 1, 9), "\""),
+            ("let s = \"\\", (LiteralNotClosed, 1, 9), "\""),
+            (r#""a}b""#, (BraceInString, 1, 3), "}"),
+            (r#""{x}}""#, (BraceInString, 1, 5), "}"),
+            (r#""{ "}" }""#, (BraceInString, 1, 5), "}"),
+            (r#""{}""#, (EmptyInterpolation, 1, 2), "{}"),
+            ("\"{ \t}\"", (EmptyInterpolation, 1, 2), "{ \t}"),
+            (r#""{x // c}""#, (CommentInInterpolation, 1, 5), "//"),
+            ("\"{x\n", (LiteralNotClosed, 1, 1), "\""),
+            ("\"{x", (LiteralNotClosed, 1, 1), "\""),
+            ("\"a{x}b\n", (LiteralNotClosed, 1, 1), "\""),
+            ("\"{ \"a\n", (LiteralNotClosed, 1, 4), "\""),
+            ("\"{ \"{x\n", (LiteralNotClosed, 1, 4), "\""),
+            // A brace error yields to the end the literal lacks; an escape error does not.
+            ("\"a}b\n", (LiteralNotClosed, 1, 1), "\""),
+            ("\"{ }\n", (LiteralNotClosed, 1, 1), "\""),
+            ("\"a}{x\n", (LiteralNotClosed, 1, 1), "\""),
+            ("\"a}{ \"b\n", (LiteralNotClosed, 1, 6), "\""),
+            ("\"a}{x // c}\"", (CommentInInterpolation, 1, 7), "//"),
+            ("\"\\q\n", (UnknownEscape, 1, 2), "\\q"),
+            ("\"\\q{x\n", (UnknownEscape, 1, 2), "\\q"),
+        ] {
+            let d = only(src);
+            assert_eq!(at(src, &d), expected, "{src:?}");
+            assert_eq!(&src[d.span().start..d.span().end], text, "{src:?}");
+        }
+        // A literal that is not closed keeps the errors before it.
+        assert_eq!(
+            found("\"a}b\" \"c\n"),
+            [(BraceInString, 1, 3), (LiteralNotClosed, 1, 7)]
+        );
+        assert_eq!(
+            found("$ \"c\n"),
+            [(Code::UnexpectedCharacter, 1, 1), (LiteralNotClosed, 1, 3)]
+        );
+        // The text after an empty interpolation decodes on.
+        let lexed = lex("\"a{ }b\"").expect("the lexer recovers");
+        assert_eq!(lexed.tokens[0].kind, str("ab"));
+    }
+
+    /// A `}` gets a certain fix and an empty interpolation a guess; the others have none.
+    #[test]
+    fn string_error_fixes() {
+        for (src, certain, fixed) in [
+            (r#""a}b""#, true, r#""a\}b""#),
+            (r#""{}""#, false, r#""\{\}""#),
+            (r#""{ }""#, false, r#""\{ \}""#),
+        ] {
+            let d = only(src);
+            assert_eq!(fix_edits(&d).map(|(c, _)| c), Some(certain), "{src}");
+            assert_eq!(apply_fix(src, &d), fixed);
+        }
+        for src in ["\"ab\n", r#""{x // c}""#] {
+            assert_eq!(fix_edits(&only(src)), None, "{src:?}");
+        }
+    }
+
+    #[test]
+    fn interpolation_tokens() {
+        use TokenKind::{Eof, LParen, RParen, StrHead, StrMiddle, StrTail};
+        assert_eq!(
+            kinds(r#""a{x}b{ f(1) }c""#),
+            [
+                StrHead("a".to_string()),
+                ident("x"),
+                StrMiddle("b".to_string()),
+                ident("f"),
+                LParen,
+                int(1),
+                RParen,
+                StrTail("c".to_string()),
+                Eof
+            ]
+        );
+    }
+
+    /// Braces inside literals and blocks of an interpolation do not end it.
+    #[test]
+    fn interpolation_nesting() {
+        use TokenKind::{Eof, EqEq, LBrace, LParen, RBrace, RParen, StrHead, StrTail};
+        let empty = String::new;
+        for (src, expected) in [
+            (
+                r#""{ "\}" }""#,
+                vec![StrHead(empty()), str("}"), StrTail(empty()), Eof],
+            ),
+            (
+                r#""{ c == '}' }""#,
+                vec![
+                    StrHead(empty()),
+                    ident("c"),
+                    EqEq,
+                    TokenKind::Char('}'),
+                    StrTail(empty()),
+                    Eof,
+                ],
+            ),
+            (
+                r#""{ g({1}) }""#,
+                vec![
+                    StrHead(empty()),
+                    ident("g"),
+                    LParen,
+                    LBrace,
+                    int(1),
+                    RBrace,
+                    RParen,
+                    StrTail(empty()),
+                    Eof,
+                ],
+            ),
+            (
+                r#""{ "{x}" }""#,
+                vec![
+                    StrHead(empty()),
+                    StrHead(empty()),
+                    ident("x"),
+                    StrTail(empty()),
+                    StrTail(empty()),
+                    Eof,
+                ],
+            ),
+        ] {
+            assert_eq!(kinds(src), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn string_ends_statement() {
+        use TokenKind::{Eof, Eq, LParen, Let, Newline, RParen, StrHead, StrTail};
+        assert_eq!(
+            all_kinds("let s = \"a\"\nlet t = \"{s}\"\nprint(t)"),
+            [
+                Let,
+                ident("s"),
+                Eq,
+                str("a"),
+                Newline,
+                Let,
+                ident("t"),
+                Eq,
+                StrHead(String::new()),
+                ident("s"),
+                StrTail(String::new()),
+                Newline,
+                ident("print"),
+                LParen,
+                ident("t"),
+                RParen,
+                Newline,
+                Eof
+            ]
+        );
     }
 
     #[test]
@@ -2054,9 +2386,9 @@ mod tests {
     }
 
     #[test]
-    fn quote_skip_that_unbalances_reports_the_quote() {
+    fn unclosed_string_that_unbalances_reports_the_string() {
         let src = "fn main() { print(\"abc) }";
-        assert_eq!(at(src, &fatal(src)), (Code::UnexpectedCharacter, 1, 19));
+        assert_eq!(at(src, &fatal(src)), (Code::LiteralNotClosed, 1, 19));
     }
 
     #[test]
@@ -2066,19 +2398,19 @@ mod tests {
         assert_eq!(d.span(), Span::new(1, 2));
     }
 
+    /// A bracket in a string is text.
     #[test]
-    fn quote_skips_to_the_closing_quote() {
+    fn string_holds_brackets() {
         use TokenKind::{Eof, LParen, Newline, RParen};
-        let src = "print(\"a)\")\n";
-        let lexed = lex(src).expect("the lexer recovers");
-        let found: Vec<_> = lexed.diagnostics.iter().map(|d| at(src, d)).collect();
-        assert_eq!(found, [(Code::UnexpectedCharacter, 1, 7)]);
-        let kinds: Vec<_> = lexed.tokens.into_iter().map(|t| t.kind).collect();
-        assert_eq!(kinds, [ident("print"), LParen, RParen, Newline, Eof]);
+        assert_eq!(
+            all_kinds("print(\"a)\")\n"),
+            [ident("print"), LParen, str("a)"), RParen, Newline, Eof]
+        );
     }
 
+    /// A string that is not closed takes the rest of its line, and lexing goes on at the next.
     #[test]
-    fn quote_without_a_close_skips_the_line() {
+    fn string_without_a_close_ends_at_the_line() {
         use TokenKind::{Eof, Eq, Let, Newline};
         let src = "let n = \"abc\nlet m = 1\n";
         let lexed = lex(src).expect("the lexer recovers");
@@ -2090,6 +2422,8 @@ mod tests {
                 Let,
                 ident("n"),
                 Eq,
+                str("abc"),
+                Newline,
                 Let,
                 ident("m"),
                 Eq,
@@ -2098,14 +2432,14 @@ mod tests {
                 Eof
             ]
         );
-        assert_eq!(line_col(src, lexed.tokens[3].span.start), (2, 1));
+        assert_eq!(line_col(src, lexed.tokens[5].span.start), (2, 1));
     }
 
     #[test]
     fn quote_at_end_of_file() {
         let src = "fn main() {}\n\"";
         let d = only(src);
-        assert_eq!(at(src, &d), (Code::UnexpectedCharacter, 2, 1));
+        assert_eq!(at(src, &d), (Code::LiteralNotClosed, 2, 1));
         assert_eq!(d.span(), Span::new(13, 14));
     }
 
@@ -2151,8 +2485,8 @@ mod tests {
     #[test]
     fn a_skip_damages_its_line() {
         use Code::{
-            BraceOnNewLine, BracketOnNewLine, ElseOnNewLine, LeadingBinaryMinus,
-            UnexpectedCharacter,
+            BraceOnNewLine, BracketOnNewLine, CommentInInterpolation, ElseOnNewLine,
+            LeadingBinaryMinus, LiteralNotClosed, UnexpectedCharacter,
         };
         for (src, want) in [
             // Text skipped on the previous line: the line-start error may be its consequence.
@@ -2168,9 +2502,18 @@ mod tests {
                 "fn main() {\n    if true &\n    {\n    }\n}",
                 vec![(UnexpectedCharacter, 2, 13)],
             ),
+            // A string that is not closed loses the rest of its line too.
             (
                 "fn main() {\n    let x = 1 \"+\n        - 2\n}",
-                vec![(UnexpectedCharacter, 2, 15)],
+                vec![(LiteralNotClosed, 2, 15)],
+            ),
+            (
+                "fn main() {\n    let x = \"{a\n        - 2\n}",
+                vec![(LiteralNotClosed, 2, 13)],
+            ),
+            (
+                "fn main() {\n    let x = \"{a // c\n        - 2\n}",
+                vec![(CommentInInterpolation, 2, 17)],
             ),
             (
                 "fn main() {\n    if don$e\n    {\n    }\n}",
@@ -2190,7 +2533,7 @@ mod tests {
             ("let t = a\n$b\n- c", vec![(UnexpectedCharacter, 2, 1)]),
             // Text skipped earlier on the current line.
             (
-                "fn main() {\n    print(1)\n    \"if true\" { print(2) }\n}",
+                "fn main() {\n    print(1)\n    $ { print(2) }\n}",
                 vec![(UnexpectedCharacter, 3, 5)],
             ),
             ("let t = a\n$ - b", vec![(UnexpectedCharacter, 2, 1)]),
@@ -2253,7 +2596,6 @@ mod tests {
                     tokens,
                     diagnostics: Vec::new(),
                     comments: Vec::new(),
-                    swallowed: Vec::new(),
                 });
                 assert!(
                     parsed.diagnostics.is_empty() && parsed.checkable,
