@@ -92,6 +92,8 @@ pub(crate) fn compile<'ctx>(
     let print_str = declare_print(&module, "sisu_print_str", &bytes_len);
     let compare = i64_type.fn_type(&[bytes_len, bytes_len].concat(), false);
     let str_compare = module.add_function("sisu_str_compare", compare, None);
+    // A pure function of the bytes it reads: `ArgMem` `Ref` (1) and no other location.
+    add_nounwind_memory(&module, str_compare, 0b01);
     // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
     // index, length)` prints a bounds panic and exits.
     let panic = declare_noreturn(&module, "sisu_panic", &[ptr_type.into(), i64_type.into()]);
@@ -202,18 +204,22 @@ fn declare_print<'ctx>(
         .any(|param| matches!(param, BasicMetadataTypeEnum::PointerType(_)));
     let context = module.get_context();
     let function = module.add_function(name, context.void_type().fn_type(params, false), None);
+    add_nounwind_memory(module, function, MEMORY | u64::from(reads_args));
+    function
+}
+
+/// Marks `function` `nounwind` with the `memory` effects `memory`, encoded as `declare_print`
+/// describes.
+fn add_nounwind_memory(module: &Module<'_>, function: FunctionValue<'_>, memory: u64) {
+    let context = module.get_context();
     function.add_attribute(
         AttributeLoc::Function,
         context.create_enum_attribute(Attribute::get_named_enum_kind_id("nounwind"), 0),
     );
     function.add_attribute(
         AttributeLoc::Function,
-        context.create_enum_attribute(
-            Attribute::get_named_enum_kind_id("memory"),
-            MEMORY | u64::from(reads_args),
-        ),
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("memory"), memory),
     );
-    function
 }
 
 fn zeroext(context: &Context) -> Attribute {

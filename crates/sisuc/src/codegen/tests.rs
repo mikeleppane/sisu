@@ -747,13 +747,14 @@ fn fast_path_skips_base_count() {
 
 /// The runtime's print functions touch only memory the module cannot reach (their buffer,
 /// `errno`) and what a pointer argument points to, which they read, and never unwind, but
-/// they can exit the process, so they are not `willreturn`.
+/// they can exit the process, so they are not `willreturn`. `sisu_str_compare` only reads its
+/// arguments' bytes.
 #[test]
 fn print_declarations_carry_attributes() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "fn main() { print(1)\n    print(true)\n    print(\"s\") }",
+        "fn main() { print(1)\n    print(true)\n    print(\"s\")\n    print(\"a\" < \"b\") }",
     )
     .print_to_string()
     .to_string();
@@ -763,6 +764,7 @@ fn print_declarations_carry_attributes() {
         ("sisu_print_int", own),
         ("sisu_print_bool", own),
         ("sisu_print_str", reads),
+        ("sisu_str_compare", "memory(argmem: read)"),
     ] {
         let declaration = ir
             .lines()

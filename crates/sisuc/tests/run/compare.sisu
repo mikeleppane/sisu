@@ -37,6 +37,7 @@ fn main() {
     print("abc" >= "abc")            // true
     print("abc" >= "abz")            // false
     print("ab" < "abc")              // true: a prefix sorts first
+    print("b" > "abc")               // true: the first byte decides, not the length
     print("Zoe" < "anna")            // true: upper case sorts before lower case
     print("z" < "ä")                 // true: `ä` is two bytes, the first above `z`
     print("" < "a")                  // true
