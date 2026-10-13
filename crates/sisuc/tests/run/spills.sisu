@@ -11,6 +11,11 @@ fn interpolated(s: string, c: bool) -> i64 {
     t.len()
 }
 
+// A part that never finishes comes after a counted one, which is released.
+fn never(s: string) -> string {
+    "{s}{ { return "x" + "" } }"
+}
+
 fn f() -> string {
     print("f")                       // f
     "a" + ""
@@ -31,6 +36,7 @@ fn main() {
     print(join("a" + "b", "c" + "d", true)) // 0
     print(interpolated("a" + "b", false)) // 3
     print(interpolated("a" + "b", true)) // 0
+    print(never("a" + "b"))          // x
     chain("0" + "", "z" + "", true)  // f
     // `"b" < f()` fails, so `g` never runs.
     print("b" < f() < g())           // f, then false

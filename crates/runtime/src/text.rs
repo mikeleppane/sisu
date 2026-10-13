@@ -59,14 +59,14 @@ unsafe fn write(text: &[u8], out: *mut u8) -> usize {
 ///
 /// # Safety
 ///
-/// `out` has room for 20 bytes.
+/// `out` has room for the decimal text of `value`, at most 20 bytes.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sisu_write_int(value: i64, out: *mut u8) -> usize {
-    // SAFETY: the caller promises room for 20 bytes, the most `int_text` gives.
+    // SAFETY: the caller promises room for the text, at most the 20 bytes `int_text` gives.
     unsafe { write(int_text(value, &mut [0; INT_BYTES]), out) }
 }
 

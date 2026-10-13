@@ -21,6 +21,19 @@ fn scalars(c: bool) {
     print("{1}{true}{ if c { return } else { 'a' } }")
 }
 
+// A lone part, so no spare bytes hide a block too small for it: the widest text of each type.
+fn tight(b: u8, c: bool, ch: char) {
+    let tb = "{b}"
+    let tc = "{c}"
+    let tch = "{ch}"
+    print(tb)
+    print(tb.len())
+    print(tc)
+    print(tc.len())
+    print(tch)
+    print(tch.len())
+}
+
 // A part that never finishes: neither does the interpolation, which allocates nothing.
 fn leave() -> i64 {
     "{1}{ { return 5 } }"
@@ -40,4 +53,5 @@ fn main() {
     scalars(false)                   // 1truea
     scalars(true)
     print(leave())                   // 5
+    tight(255, false, '😀')          // 255, 3, false, 5, 😀, 4
 }
