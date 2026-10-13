@@ -113,6 +113,7 @@ for i in "${!names[@]}"; do
             ;;
     esac
 done
-got=$("$out/build_large/main") || fail "build_large's program exited non-zero"
-[[ $got == $((sections - 1)) ]] || fail "build_large's program printed something other than $((sections - 1))"
+"$out/build_large/main" >"$out/stdout" 2>"$out/stderr" || fail "build_large's program exited non-zero"
+[[ ! -s $out/stderr ]] || fail "build_large's program printed to stderr"
+printf '%d\n' $((sections - 1)) | cmp -s - "$out/stdout" || fail "build_large's program printed something other than $((sections - 1))"
 echo "codspeed-prep: ok"

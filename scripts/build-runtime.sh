@@ -10,6 +10,11 @@ set -euo pipefail
 # Not git rev-parse: cargo-mutants runs this in a copy of the tree without .git.
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 if [[ -z ${SISU_COVERAGE_TARGET_DIR:-} ]]; then
+	# A bare cargo llvm-cov run would leave an instrumented runtime in target/debug.
+	[[ -z ${CARGO_LLVM_COV:-} ]] || {
+		echo "build-runtime: run coverage through scripts/coverage.sh, not cargo llvm-cov directly" >&2
+		exit 1
+	}
 	cargo build --quiet -p sisu-runtime
 else
 	# cargo-llvm-cov instruments through RUSTC_WRAPPER, so a build without it is plain.

@@ -18,6 +18,8 @@ running the same checks as CI. Sisu builds and runs on x86-64 Linux.
   end-to-end tests link against.
 - [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) and
   [cargo-mutants](https://mutants.rs) for the commands below.
+- [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) for
+  `scripts/coverage.sh`.
 - Valgrind. The end-to-end tests run each program under it to catch leaks
   and memory errors.
 
@@ -34,6 +36,7 @@ Run these once per clone:
 $ ./scripts/install-llvm.sh             # LLVM 22 into .llvm/22
 $ prek install                          # run the checks on every commit
 $ cargo install --locked cargo-mutants  # mutation testing
+$ cargo install --locked cargo-llvm-cov # coverage
 ```
 
 ## Build and test

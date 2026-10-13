@@ -13,12 +13,12 @@ TOTALS = {"lines": {"percent": 87.34}, "regions": {"percent": 85.06}}
 
 
 def func(name, regions, file="/r/a.rs", count=None, files=None):
-    """A function record; each region is (l1, c1, l2, c2, count[, file_id])."""
+    """A function record; each region is (l1, c1, l2, c2, count[, file_id[, kind]])."""
     return {
         "name": name,
         "filenames": files or [file],
         "count": regions[0][4] if count is None else count,
-        "regions": [[*r[:5], r[5] if len(r) > 5 else 0, 0, 0] for r in regions],
+        "regions": [[*r[:5], r[5] if len(r) > 5 else 0, 0, r[6] if len(r) > 6 else 0] for r in regions],
     }
 
 
@@ -58,6 +58,11 @@ class ChangedLines(unittest.TestCase):
              "+x\n+++ b/fake.rs\n+y\n")
         self.assertEqual(cr.changed_lines(d), {"a.rs": {1, 2, 3}})
 
+    def test_changed_lines_follows_u0_hunks_across_files(self):
+        d = ("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -2 +1,0 @@\n-x\n@@ -5,0 +5 @@\n+y\n"
+             "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-p\n+q\n")
+        self.assertEqual(cr.changed_lines(d), {"a.rs": {5}, "b.rs": {1}})
+
     def test_changed_lines_skips_deleted_test_and_non_rust_files(self):
         d = (
             "diff --git a/b.rs b/b.rs\ndeleted file mode 100644\n--- a/b.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
@@ -78,12 +83,15 @@ class Report(unittest.TestCase):
         self.assertTrue(other[0].startswith("a.rs:20:1-21:2: "))
 
     def test_identical_regions_take_the_highest_count(self):
-        exp = export(
-            func("_RA", [(1, 1, 9, 1, 3), (5, 1, 6, 1, 0)]),
-            func("_RB", [(1, 1, 9, 1, 3), (5, 1, 6, 1, 3)]),
-        )
-        _, touching, other = sections(run(exp, df=diff(start=5)))
-        self.assertEqual((touching, other), (["(none)"], ["(none)"]))
+        a = func("_RA", [(1, 1, 9, 1, 3), (5, 1, 6, 1, 0)])
+        b = func("_RB", [(1, 1, 9, 1, 3), (5, 1, 6, 1, 3)])
+        for order in ((a, b), (b, a)):
+            _, touching, other = sections(run(export(*order), df=diff(start=5)))
+            self.assertEqual((touching, other), (["(none)"], ["(none)"]))
+
+    def test_zero_count_regions_of_other_kinds_are_not_listed(self):
+        exp = export(func("f", [(1, 1, 9, 1, 1), (3, 1, 4, 1, 0, 0, 3)]))
+        self.assertEqual(cr.uncovered(exp, ROOT), {})
 
     def test_a_never_run_function_is_one_line(self):
         exp = export(func("f", [(10, 1, 14, 2, 0), (11, 1, 11, 5, 0), (12, 1, 12, 5, 0)]))
@@ -106,7 +114,8 @@ class Report(unittest.TestCase):
     def test_the_function_count_is_the_highest_across_instantiations(self):
         a = func("_RA", [(10, 1, 14, 2, 0), (11, 1, 11, 5, 0)], count=0)
         b = func("_RB", [(10, 1, 14, 2, 0), (11, 1, 11, 5, 0)], count=3)
-        self.assertNotIn("never run:", run(export(a, b), df=diff(start=11)))
+        for order in ((a, b), (b, a)):
+            self.assertNotIn("never run:", run(export(*order), df=diff(start=11)))
 
     def test_regions_resolve_their_own_file(self):
         exp = export(func("f", [(1, 1, 9, 1, 1), (3, 1, 4, 1, 0, 1), (5, 1, 6, 1, 0, 2)],
@@ -124,7 +133,6 @@ class Report(unittest.TestCase):
 
     def test_no_changed_rust_line_says_none(self):
         head, touching, other = sections(run(export(func("f", [(1, 1, 2, 1, 1)]))))
-        self.assertTrue(head.endswith("changed lines: none."))
         self.assertEqual((touching, other), (["(none)"], ["(none)"]))
         self.assertEqual(head, "Coverage: lines 87.3%, regions 85.1%, changed lines: none.")
 
@@ -171,24 +179,24 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(err.startswith("coverage_report:"))
 
-    def test_an_export_without_totals_exits_1(self):
-        code, err = self.call(json.dumps({"data": [{}]}))
-        self.assertEqual(code, 1)
-        self.assertTrue(err.startswith("coverage_report:"))
-
     def test_malformed_inputs_exit_1_without_a_traceback(self):
         good = json.dumps(export(func("f", [(1, 1, 2, 1, 1)])))
         bad_func = json.dumps({"data": [{"totals": TOTALS, "functions": [{"count": 1}]}]})
         bad_pct = json.dumps({"data": [{"totals": {"lines": {"percent": "x"}, "regions": {"percent": 1}}, "functions": []}]})
-        for args in ((bad_func,), (bad_pct,), (good, "SF:/r/a.rs\nDA:1,x\n", diff()), ("{", "", "")):
+        for args in ((bad_func,), (bad_pct,), (json.dumps({"data": [{}]}),), (good, "SF:/r/a.rs\nDA:1,x\n", diff()), ("{", "", "")):
             code, err = self.call(*args)
             self.assertEqual(code, 1, args)
             self.assertRegex(err, r"^coverage_report: [^\n]+\n$")
 
     def test_a_wrong_argument_count_exits_1(self):
-        code, err = self.run_main(["only-one"])
-        self.assertEqual(code, 1)
-        self.assertTrue(err.startswith("coverage_report:"))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f")
+            with open(path, "w") as f:
+                f.write(json.dumps(export()))
+            for count in (2, 4):
+                code, err = self.run_main([path] * count)
+                self.assertEqual(code, 1)
+                self.assertIn("usage: coverage_report.py", err)
 
     def test_a_valid_export_exits_0(self):
         code, _ = self.call(json.dumps(export()))
