@@ -163,6 +163,12 @@ pub(crate) enum ExprKind {
     },
     /// `base.len()`.
     Len(Box<Expr>),
+    /// `base.chars()`: the code points of the string `base`, as a new `[char]`.
+    Chars(Box<Expr>),
+    /// `base.bytes()`: the UTF-8 bytes of the string `base`, as a new `[u8]`.
+    Bytes(Box<Expr>),
+    /// `string(base)`: a new string that encodes the `[char]` `base`.
+    FromChars(Box<Expr>),
     /// `base.sum()`, on an `[i64]`.
     Sum(Box<Expr>),
     /// `base.contains(value)`, by `==`.
@@ -251,6 +257,9 @@ impl Expr {
             | ExprKind::Interpolate(operands) => operands.iter().any(Expr::exits),
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
+            | ExprKind::Chars(operand)
+            | ExprKind::Bytes(operand)
+            | ExprKind::FromChars(operand)
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
@@ -436,6 +445,9 @@ impl Printer<'_> {
             ExprKind::ArrayFill { value, len } => self.binary(f, "array-fill", value, len),
             ExprKind::Index { base, index } => self.binary(f, "index", base, index),
             ExprKind::Len(base) => self.unary(f, "len", base),
+            ExprKind::Chars(base) => self.unary(f, "chars", base),
+            ExprKind::Bytes(base) => self.unary(f, "bytes", base),
+            ExprKind::FromChars(base) => self.unary(f, "string", base),
             ExprKind::Sum(base) => self.unary(f, "sum", base),
             ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
@@ -960,6 +972,44 @@ mod tests {
         assert_eq!(
             program.to_string(),
             r#"(fn f ((s#0 string) (n#1 i64)) unit (block (print (interp "a" s#0 n#1))))"#
+        );
+    }
+
+    #[test]
+    fn prints_chars_bytes_and_string_from_chars() {
+        // fn f(s: string) { let cs = s.chars(); print(s.bytes().len()); print(string(cs)) }
+        let s = || Box::new(expr(ExprKind::Local(LocalId(0)), Type::String));
+        let chars = || {
+            Box::new(expr(
+                ExprKind::Local(LocalId(1)),
+                Type::Array(Box::new(Type::Char)),
+            ))
+        };
+        let bytes = expr(ExprKind::Bytes(s()), Type::Array(Box::new(Type::U8)));
+        let print = |arg| Stmt::Expr(expr(ExprKind::Print(Box::new(arg)), Type::Unit));
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0)],
+                ret: Type::Unit,
+                locals: vec![
+                    param("s", Type::String),
+                    param("cs", Type::Array(Box::new(Type::Char))),
+                ],
+                body: block(vec![
+                    Stmt::Let {
+                        local: LocalId(1),
+                        init: expr(ExprKind::Chars(s()), Type::Array(Box::new(Type::Char))),
+                    },
+                    print(expr(ExprKind::Len(Box::new(bytes)), Type::I64)),
+                    print(expr(ExprKind::FromChars(chars()), Type::String)),
+                ]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            "(fn f ((s#0 string)) unit (block (let cs#1 (chars s#0)) (print (len (bytes s#0))) (print (string cs#1))))"
         );
     }
 

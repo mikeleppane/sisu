@@ -1,6 +1,7 @@
-//! `string`: interpolation, `+` that joins two, a chain of comparisons over them, `len()`, and
-//! the guess to interpolate a value that `+` meets beside one. Conversions between the scalar
-//! types: `i64(x)`, `u8(x)` and `char(x)`.
+//! `string`: interpolation, `+` that joins two, a chain of comparisons over them, `len()`,
+//! `chars()` and `bytes()`, and the guess to interpolate a value that `+` or `string(x)` meets.
+//! Conversions: `i64(x)`, `u8(x)` and `char(x)` between the scalar types, and `string(cs)` from
+//! a `[char]`.
 
 use super::array::pair;
 use super::expr::{local, no_member, path, typed};
@@ -163,7 +164,7 @@ impl Checker {
         block_expr(lets, Some(rest), Type::Bool, span)
     }
 
-    /// `receiver.method(args)` on a `string`, whose one method is `len()`.
+    /// `receiver.method(args)` on a `string`: `len()`, `chars()` and `bytes()`.
     pub(super) fn string_method(
         &mut self,
         span: Span,
@@ -171,11 +172,16 @@ impl Checker {
         method: &ast::Ident,
         args: &[ast::Arg],
     ) -> Checked {
-        if method.name != "len" {
-            let owner = self.type_name(&Type::String);
-            let d = no_member(Definition::Method, owner, method, ["len"]);
-            return self.rejected(d, args);
-        }
+        let (ty, node): (_, fn(Box<tir::Expr>) -> tir::ExprKind) = match method.name.as_str() {
+            "len" => (Type::I64, tir::ExprKind::Len),
+            "chars" => (Type::Array(Box::new(Type::Char)), tir::ExprKind::Chars),
+            "bytes" => (Type::Array(Box::new(Type::U8)), tir::ExprKind::Bytes),
+            _ => {
+                let owner = self.type_name(&Type::String);
+                let d = no_member(Definition::Method, owner, method, ["len", "chars", "bytes"]);
+                return self.rejected(d, args);
+            }
+        };
         if !args.is_empty() {
             let d = DiagnosticKind::ArgumentCount {
                 name: method.name.clone(),
@@ -185,12 +191,13 @@ impl Checker {
             };
             return self.rejected(d.into(), args);
         }
-        let kind = receiver.ok().map(|r| tir::ExprKind::Len(Box::new(r)));
-        typed(span, Type::I64, false, kind)
+        let kind = receiver.ok().map(|r| node(Box::new(r)));
+        typed(span, ty, false, kind)
     }
 
-    /// `to(arg)`: `i64(x)` takes a `u8` or a `char`; `u8(x)` and `char(x)` take an `i64`. Its
-    /// argument expects no type, so a literal one is an `i64`.
+    /// `to(arg)`: `i64(x)` takes a `u8` or a `char`; `u8(x)` and `char(x)` take an `i64`; and
+    /// `string(x)` takes a `[char]`. The argument of a scalar conversion expects no type, so a
+    /// literal one is an `i64`; `string([])` is the empty string.
     pub(super) fn convert(&mut self, span: Span, to: Type, args: &[ast::Arg]) -> Checked {
         let labeled = self.labels(args);
         let [arg] = args else {
@@ -203,24 +210,26 @@ impl Checker {
             self.stray(args);
             return Err(Poisoned::error());
         };
-        let from: &[Type] = if to == Type::I64 {
-            &[Type::U8, Type::Char]
-        } else {
-            &[Type::I64]
+        let chars = [Type::Array(Box::new(Type::Char))];
+        let from: &[Type] = match to {
+            Type::I64 => &[Type::U8, Type::Char],
+            Type::String => &chars,
+            _ => &[Type::I64],
         };
-        let checked = self.value(&arg.value, None);
+        let checked = self.value(&arg.value, (to == Type::String).then_some(&chars[0]));
+        // The head, `to(`, and the tail, `)`, are the text a rewrite of the call deletes.
+        let head = span.start..arg.value.span.start;
+        let tail = arg.value.span.end..span.end;
         let d = match type_of(&checked) {
             Some(ty) if *ty == to => {
                 let grouped = !single_term(&arg.value);
                 // The removal deletes the head, and the tail unless the value stays grouped.
-                let head = span.start..arg.value.span.start;
-                let tail = arg.value.span.end..span.end;
                 let commented = self
                     .comments
                     .iter()
                     .any(|c| head.contains(c) || (!grouped && tail.contains(c)));
                 DiagnosticKind::AlreadyConverted {
-                    value: path(&arg.value),
+                    value: path(&arg.value).or_else(|| literal(&arg.value)),
                     ty: self.type_name(&to),
                     at: arg.value.span,
                     conversion: span,
@@ -230,8 +239,12 @@ impl Checker {
                 }
                 .into()
             }
-            // The one type `x` should have is offered a conversion to it.
+            // The one type `x` should have is offered a conversion to it, or for a `string`,
+            // interpolation of the value.
             Some(ty) if !from.contains(ty) => match from {
+                [only] if to == Type::String => {
+                    self.string_call_mismatch(span, &arg.value, ty, only, &[head, tail])
+                }
                 [only] => self.mismatch(arg.value.span, Some(&arg.value), only, ty),
                 _ => DiagnosticKind::Mismatch {
                     want: from.iter().map(|ty| self.type_name(ty)).collect(),
@@ -242,15 +255,61 @@ impl Checker {
                 .into(),
             },
             _ => {
+                let node = if to == Type::String {
+                    tir::ExprKind::FromChars
+                } else {
+                    tir::ExprKind::Convert
+                };
                 let kind = checked
                     .ok()
                     .filter(|_| !labeled)
-                    .map(|arg| tir::ExprKind::Convert(Box::new(arg)));
+                    .map(|arg| node(Box::new(arg)));
                 return typed(span, to, labeled, kind);
             }
         };
         self.diagnostics.push(d);
         Err(Poisoned::error())
+    }
+
+    /// `string(arg)` where `arg`, of type `got`, is not a `want`. A value that interpolation
+    /// prints is offered `"{arg}"` instead, unless a comment sits in `deleted`, the text the
+    /// rewrite replaces, or the argument spans a line break, which a string literal cannot hold.
+    fn string_call_mismatch(
+        &self,
+        call: Span,
+        arg: &ast::Expr,
+        got: &Type,
+        want: &Type,
+        deleted: &[std::ops::Range<usize>],
+    ) -> Diagnostic {
+        let printed = matches!(got, Type::I64 | Type::U8 | Type::Bool | Type::Char);
+        let commented = self
+            .comments
+            .iter()
+            .any(|c| deleted.iter().any(|d| d.contains(c)));
+        let next = self.breaks.partition_point(|&b| b < arg.span.start);
+        let lines = self.breaks.get(next).is_some_and(|&b| b < arg.span.end);
+        if !printed || commented || lines {
+            return self.mismatch(arg.span, Some(arg), want, got);
+        }
+        DiagnosticKind::Mismatch {
+            want: vec![self.type_name(want)],
+            got: self.type_name(got),
+            at: arg.span,
+            fix: Some(MismatchFix::InterpolateCall {
+                call,
+                arg: arg.span,
+            }),
+        }
+        .into()
+    }
+}
+
+/// A string literal as written, for the message: no other literal is named.
+fn literal(e: &ast::Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Str(text) => Some(format!("{text:?}")),
+        _ => None,
     }
 }
 

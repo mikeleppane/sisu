@@ -1,0 +1,14 @@
+error[E0054]: `"hi!"` is already `string`
+ --> E0054-string.sisu:2:18
+  |
+2 |     print(string("hi!"))
+  |                  ^^^^^
+  |
+help: remove the conversion
+  |
+2 -     print(string("hi!"))
+2 +     print("hi!")
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0054

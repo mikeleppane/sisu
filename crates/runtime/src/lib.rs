@@ -494,6 +494,16 @@ mod tests {
             "zero" => (0, 8),
             "invalid_align" => (8, 3),
             "overflow" => (usize::MAX - 8, 4096),
+            "utf8_bytes" => {
+                // SAFETY: one readable byte; it is not UTF-8, so the call aborts.
+                unsafe { crate::text::sisu_utf8_count([0xFF].as_ptr(), 1) };
+                return;
+            }
+            "utf8_scalar" => {
+                // SAFETY: one readable `u32`; it is a surrogate, so the call aborts.
+                unsafe { crate::text::sisu_utf8_len([0xD800].as_ptr(), 1) };
+                return;
+            }
             realloc_case => {
                 let new_size = match realloc_case {
                     "realloc_zero" => 0,
@@ -578,6 +588,18 @@ mod tests {
     #[test]
     fn alloc_aborts_when_layout_overflows() {
         assert_child_aborts("overflow");
+    }
+
+    /// A compiler bug that breaks the string invariant stops the program.
+    #[test]
+    fn utf8_aborts_on_invalid_bytes() {
+        assert_child_aborts("utf8_bytes");
+    }
+
+    /// So does a `[char]` holding a value that is no scalar value.
+    #[test]
+    fn utf8_aborts_on_invalid_scalar() {
+        assert_child_aborts("utf8_scalar");
     }
 
     #[test]

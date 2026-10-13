@@ -349,6 +349,107 @@ impl<'ctx> Codegen<'ctx, '_> {
         Some(result.into())
     }
 
+    /// `base`, a string or an array, borrowed when it is a local, and whether it was: the
+    /// caller releases it otherwise. For a read that ends before anything can replace the base.
+    fn borrow_pointer(&mut self, base: &Expr) -> (PointerValue<'ctx>, bool) {
+        let (value, borrowed) = self.borrow_or_expr(base);
+        let value = value.expect("the checker should only give these nodes a string or an array, which lower to a pointer");
+        (value.into_pointer_value(), borrowed)
+    }
+
+    /// `Chars`: sizes the `[char]` by `sisu_utf8_count`, allocates it, and has
+    /// `sisu_utf8_decode` fill it. The string is released after.
+    pub(super) fn chars(&mut self, base: &Expr) -> PointerValue<'ctx> {
+        let (string, borrowed) = self.borrow_pointer(base);
+        let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
+        let count = self.utf8_size("sisu_utf8_count", bytes, len);
+        let array = self.alloc_array(&Type::Char, count, None);
+        let first = self.element_ptr(&Type::Char, array, self.context.i64_type().const_zero());
+        self.utf8_fill("sisu_utf8_decode", bytes, len, first);
+        if !borrowed {
+            self.release(string.into(), &base.ty);
+        }
+        array
+    }
+
+    /// `Bytes`: a `[u8]` as long as the string, with its bytes copied in. The string is
+    /// released after.
+    pub(super) fn bytes(&mut self, base: &Expr) -> PointerValue<'ctx> {
+        let (string, borrowed) = self.borrow_pointer(base);
+        let len = self.string_len(string);
+        let array = self.alloc_array(&Type::U8, len, None);
+        let first = self.element_ptr(&Type::U8, array, self.context.i64_type().const_zero());
+        self.copy_bytes(first, string, len);
+        if !borrowed {
+            self.release(string.into(), &base.ty);
+        }
+        array
+    }
+
+    /// `FromChars`: sizes the string by `sisu_utf8_len`, allocates it, and has
+    /// `sisu_utf8_encode` fill it. The `[char]` is released after.
+    pub(super) fn string_from_chars(&mut self, base: &Expr) -> PointerValue<'ctx> {
+        let (array, borrowed) = self.borrow_pointer(base);
+        let zero = self.context.i64_type().const_zero();
+        let (chars, count) = (
+            self.element_ptr(&Type::Char, array, zero),
+            self.array_len(array),
+        );
+        let len = self.utf8_size("sisu_utf8_len", chars, count);
+        let string = self.new_string(len);
+        self.utf8_fill(
+            "sisu_utf8_encode",
+            chars,
+            count,
+            self.string_byte(string, zero),
+        );
+        self.store(self.string_field(string, LEN), len.into());
+        if !borrowed {
+            self.release(array.into(), &base.ty);
+        }
+        string
+    }
+
+    /// A call of the runtime's `name(text, n) -> i64`, which sizes the `n` units at `text`;
+    /// declared on first use, so that a module without these nodes stays as it was.
+    fn utf8_size(&self, name: &str, text: PointerValue<'ctx>, n: IntValue<'ctx>) -> IntValue<'ctx> {
+        let i64_type = self.context.i64_type();
+        let function = self.module.get_function(name).unwrap_or_else(|| {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let fn_type = i64_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+            self.module.add_function(name, fn_type, None)
+        });
+        self.builder
+            .build_call(function, &[text.into(), n.into()], "size")
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("a `sisu_utf8_*` sizing function should return an `i64`, as the runtime declares it")
+            .into_int_value()
+    }
+
+    /// A call of the runtime's `name(text, n, out)`, which converts the `n` units at `text` into
+    /// `out`; declared on first use, as `utf8_size` is.
+    fn utf8_fill(
+        &self,
+        name: &str,
+        text: PointerValue<'ctx>,
+        n: IntValue<'ctx>,
+        out: PointerValue<'ctx>,
+    ) {
+        let function = self.module.get_function(name).unwrap_or_else(|| {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let params = [
+                ptr_type.into(),
+                self.context.i64_type().into(),
+                ptr_type.into(),
+            ];
+            let fn_type = self.context.void_type().fn_type(&params, false);
+            self.module.add_function(name, fn_type, None)
+        });
+        self.call(function, &[text.into(), n.into(), out.into()]);
+    }
+
     /// A call of the runtime's `name(value, out) -> len`, which writes the text of `value` at
     /// `out`; declared on first use, so that a module without interpolation stays as it was.
     fn write_text(

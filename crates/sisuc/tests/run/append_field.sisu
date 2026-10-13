@@ -12,4 +12,6 @@ fn main() {
         p.name += "x"
     }
     print(p.name.len())              // 1001 (1 with no iterations)
+    let cs = p.name.chars()
+    print(cs[cs.len() - 1])          // x (a with no iterations): the last char, read through `chars()`
 }

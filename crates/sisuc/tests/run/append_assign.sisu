@@ -8,4 +8,6 @@ fn main() {
         s = s + "x"
     }
     print(s.len())                   // 1001 (1 with no iterations)
+    let cs = s.chars()
+    print(cs[cs.len() - 1])          // x (a with no iterations): the last char, read through `chars()`
 }

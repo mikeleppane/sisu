@@ -94,7 +94,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// A block with count 1 and length `len`. A literal passes a constant length, and `unique`
-    /// a run-time length that already passed the checks; `[v; n]` gets them at `span`.
+    /// a run-time length that already passed the checks; `[v; n]` gets them at `span`. A length
+    /// taken from an existing string, as `chars()` and `bytes()` do, needs no check.
     pub(super) fn alloc_array(
         &self,
         element: &Type,

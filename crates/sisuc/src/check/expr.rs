@@ -923,7 +923,9 @@ impl Checker {
         if callee.name == "print" {
             return self.print(span, args);
         }
-        if let Some(to @ (Type::I64 | Type::U8 | Type::Char)) = built_in_type(&callee.name) {
+        if let Some(to @ (Type::I64 | Type::U8 | Type::Char | Type::String)) =
+            built_in_type(&callee.name)
+        {
             return self.convert(span, to, args);
         }
         match declared {
@@ -980,7 +982,7 @@ impl Checker {
             .function_ids
             .keys()
             .map(String::as_str)
-            .chain(["print", "i64", "u8", "char"])
+            .chain(["print", "i64", "u8", "char", "string"])
             .map(|function| (function, Definition::Function));
         self.report(DiagnosticKind::FunctionNotFound {
             name: callee.name.clone(),

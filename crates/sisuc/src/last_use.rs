@@ -94,6 +94,10 @@ impl Walk {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per node kind, so the evaluation order reads in one place"
+    )]
     fn expr(&mut self, e: &mut Expr) {
         if let ExprKind::Local(local) | ExprKind::Move(local) = e.kind {
             if self.rewrite && self.counted[local.0] && !self.live[local.0] {
@@ -120,6 +124,9 @@ impl Walk {
             }
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
+            | ExprKind::Chars(operand)
+            | ExprKind::Bytes(operand)
+            | ExprKind::FromChars(operand)
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)

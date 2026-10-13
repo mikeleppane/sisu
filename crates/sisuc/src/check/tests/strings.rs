@@ -270,10 +270,15 @@ fn string_is() {
     }
 }
 
-/// `len()` is the one method until `chars()` and `bytes()` land; a near miss offers it.
+/// `len()`, `chars()` and `bytes()` are the methods; a near miss offers one of them.
 #[test]
 fn string_methods() {
-    for (method, fix) in [("push", None), ("chars", None), ("lem", Some("len"))] {
+    for (method, fix) in [
+        ("push", None),
+        ("lem", Some("len")),
+        ("char", Some("chars")),
+        ("byte", Some("bytes")),
+    ] {
         let src = format!("fn main() {{\n    \"a\".{method}()\n}}");
         let d = diagnostic(&src, Code::NoMember, (2, 9, method), &[]);
         let expected: Vec<FixAt> = fix
@@ -282,9 +287,35 @@ fn string_methods() {
             .collect();
         assert_eq!(fixes(&src, &d), expected);
     }
+    for method in ["len", "chars", "bytes"] {
+        codes(
+            &format!("fn main() {{\n    print(\"a\".{method}(1))\n}}"),
+            &[(Code::ArgumentCount, (2, 11))],
+        );
+    }
+}
+
+/// `chars()` is a `[char]` and `bytes()` a `[u8]`, so milestone 3's array methods apply to them
+/// and `?.` gives an optional array.
+#[test]
+fn chars_and_bytes_are_arrays() {
+    contains(
+        "fn f(s: string, m: string?) {\n    let cs: [char] = s.chars()\n    let bs: [u8] = s.bytes()\n    let o: [char]? = m?.chars()\n    print(s.chars().contains('a'))\n    print(s.bytes().len())\n}\nfn main() {}",
+        &["(chars s#0)", "(bytes s#0)"],
+    );
+    // `sum` stays `[i64]`-only.
     codes(
-        "fn main() {\n    print(\"a\".len(1))\n}",
-        &[(Code::ArgumentCount, (2, 11))],
+        "fn f(s: string) { print(s.chars().sum()) }\nfn main() {}",
+        &[(Code::SumNeedsI64, (1, 35))],
+    );
+}
+
+/// `string(cs)` takes a `[char]` and is a `string`.
+#[test]
+fn string_from_chars() {
+    contains(
+        "fn f(s: string, cs: [char]) {\n    let t: string = string(cs)\n    print(string(s.chars()) == s)\n    print(string([]))\n}\nfn main() {}",
+        &["(string cs#1)", "(string (chars s#0))"],
     );
 }
 
@@ -298,9 +329,128 @@ fn string_built_in_names() {
         "class string {}\nfn main() {}",
         &[(Code::BuiltInTypeName, (1, 7))],
     );
-    // `string(cs)` lands with `chars()`; until then it names no function.
+}
+
+/// `string(x)` with a `string` is already one, and removing the call is certain. Any other type
+/// but `[char]` is a mismatch at the argument: a value that interpolation prints is offered
+/// interpolation, as a guess; any other has no fix.
+#[test]
+fn string_call() {
+    let params = "s: string, t: string, xs: [u8], n: i64, b: u8, c: char, ok: bool, p: P";
+    let rows = [
+        // (statement, code, the argument, the statement the fix makes if there is one, certain)
+        (
+            "print(string(s))",
+            Code::AlreadyConverted,
+            (2, 18, "s"),
+            Some(("print(s)", true)),
+        ),
+        (
+            "print(string(\"hi!\"))",
+            Code::AlreadyConverted,
+            (2, 18, "\"hi!\""),
+            Some(("print(\"hi!\")", true)),
+        ),
+        (
+            "print(string(s + t))",
+            Code::AlreadyConverted,
+            (2, 18, "s + t"),
+            Some(("print((s + t))", true)),
+        ),
+        (
+            "print(string(n))",
+            Code::Mismatch,
+            (2, 18, "n"),
+            Some(("print(\"{n}\")", false)),
+        ),
+        (
+            "print(string(1))",
+            Code::Mismatch,
+            (2, 18, "1"),
+            Some(("print(\"{1}\")", false)),
+        ),
+        (
+            "print(string(b))",
+            Code::Mismatch,
+            (2, 18, "b"),
+            Some(("print(\"{b}\")", false)),
+        ),
+        (
+            "print(string(c))",
+            Code::Mismatch,
+            (2, 18, "c"),
+            Some(("print(\"{c}\")", false)),
+        ),
+        (
+            "print(string(ok))",
+            Code::Mismatch,
+            (2, 18, "ok"),
+            Some(("print(\"{ok}\")", false)),
+        ),
+        (
+            "print(string(n + 1))",
+            Code::Mismatch,
+            (2, 18, "n + 1"),
+            Some(("print(\"{n + 1}\")", false)),
+        ),
+        // A line break after the argument is deleted with the `)`, and leaves a literal on one line.
+        (
+            "print(string(n\n    ))",
+            Code::Mismatch,
+            (2, 18, "n"),
+            Some(("print(\"{n}\")", false)),
+        ),
+        // An array of anything but `char`, and a class, have no text to interpolate.
+        ("print(string(xs))", Code::Mismatch, (2, 18, "xs"), None),
+        ("print(string(p))", Code::Mismatch, (2, 18, "p"), None),
+        // The guess would delete the comment, or put a line break in a literal.
+        (
+            "print(string(\n        // why\n        n))",
+            Code::Mismatch,
+            (4, 9, "n"),
+            None,
+        ),
+        (
+            "print(string(g(1\n    )))",
+            Code::Mismatch,
+            (2, 18, "g(1\n    )"),
+            None,
+        ),
+    ];
+    for (statement, code, pos, fixed) in rows {
+        let src = with_items(&body(params, statement));
+        let d = diagnostic(&src, code, pos, &[]);
+        let found = fixes(&src, &d);
+        match fixed {
+            Some((fixed, certain)) => {
+                assert_eq!(found.len(), 1, "{src}");
+                assert_eq!(found[0].0, certain, "{src}");
+                assert_eq!(applied(&src, &d), with_items(&body(params, fixed)));
+                // Either fix leaves a program that checks.
+                clean(&with_items(&body(params, fixed)));
+            }
+            None => assert_eq!(found, [], "{src}"),
+        }
+    }
+}
+
+/// `string` takes exactly one argument, and a label on it is E0055 as for `u8(x)`.
+#[test]
+fn string_call_arguments() {
     codes(
-        "fn main() {\n    print(string(1))\n}",
-        &[(Code::FunctionNotFound, (2, 11))],
+        "fn main() {\n    print(string())\n    print(string([], []))\n}",
+        &[
+            (Code::ArgumentCount, (2, 11)),
+            (Code::ArgumentCount, (3, 11)),
+        ],
+    );
+    codes(
+        "fn main() {\n    print(string(cs: []))\n}",
+        &[(Code::LabeledArgument, (2, 18))],
+    );
+    // A broken argument is reported once, and nothing follows from it.
+    codes(
+        "fn main() {\n    print(string(nope))\n}",
+        &[(Code::BindingNotFound, (2, 18))],
     );
 }

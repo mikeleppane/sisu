@@ -134,15 +134,15 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 12] = [
     ("literal", "3000\n", "0\n", 0),
     // One copy of the literal to capacity 2, then reallocations to 4, 8, ..., 1024. Valgrind
     // counts each `realloc` as an allocation.
-    ("append_local", "1001\n", "1\n", 10),
-    ("append_assign", "1001\n", "1\n", 10),
+    ("append_local", "1001\nx\n", "1\na\n", 10),
+    ("append_assign", "1001\nx\n", "1\na\n", 10),
     // `saved` is live across each append, so each append copies once.
-    ("append_shared", "1001\n1000\n", "1\n1\n", 1000),
-    ("append_grow", "1001\n", "1\n", 10),
+    ("append_shared", "1001\n1000\nx\nx\n", "1\n1\na\na\n", 1000),
+    ("append_grow", "1001\nx\n", "1\na\n", 10),
     // A field or element append is in place too: one copy, then a reallocation per doubling.
-    ("append_field", "1001\n", "1\n", 10),
-    ("append_field_assign", "1001\n", "1\n", 10),
-    ("append_element", "1001\n", "1\n", 10),
+    ("append_field", "1001\nx\n", "1\na\n", 10),
+    ("append_field_assign", "1001\nx\n", "1\na\n", 10),
+    ("append_element", "1001\nx\n", "1\na\n", 10),
     // Each interpolation allocates its result and nothing else.
     ("interp", "9\n", "0\n", 1000),
 ];

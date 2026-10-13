@@ -651,6 +651,12 @@ pub(crate) enum MismatchFix {
         lhs: Operand,
         rhs: Operand,
     },
+    /// A `string(arg)` call, over `call`, of a value that interpolation prints, as the literal
+    /// `"{arg}"`.
+    InterpolateCall {
+        call: Span,
+        arg: Span,
+    },
 }
 
 /// An operand of a `+` that interpolation joins: where it is written, and whether it is a
@@ -1224,6 +1230,21 @@ impl From<DiagnosticKind> for Diagnostic {
                             edits,
                         })
                     }
+                    // The call's name and parentheses become the literal's quote and brace.
+                    Some(MismatchFix::InterpolateCall { call, arg }) => d.with_fix(Fix {
+                        message: "use interpolation".to_string(),
+                        certain: false,
+                        edits: vec![
+                            Edit {
+                                span: Span::new(call.start, arg.start),
+                                replacement: "\"{".to_string(),
+                            },
+                            Edit {
+                                span: Span::new(arg.end, call.end),
+                                replacement: "}\"".to_string(),
+                            },
+                        ],
+                    }),
                     None => d,
                 }
             }
