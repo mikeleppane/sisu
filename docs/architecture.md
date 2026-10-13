@@ -49,7 +49,9 @@ every item has a name.
 
 **Checker** (`check/`, `tir.rs`). Resolves every name, types every expression
 and lowers sugar: `while`, `while let` and `for` become loops, `?.` and `??`
-become `if let`, and `x += 1` becomes `x = x + 1`. It folds each top-level
+become `if let`, and `x += 1` becomes `x = x + 1`. A `+=` on a string field
+or element, or an assignment that adds to its own place, becomes an `Append`.
+It folds each top-level
 `const` to a literal and replaces every use of its name with that literal. It
 reports every error in one run: an expression that already failed gets the
 poison type, so one mistake produces one diagnostic. A program with no errors comes out as the typed tree,
@@ -85,9 +87,13 @@ A string is one counted block with a header of three `i64`s: the count, the
 length and the capacity, then the UTF-8 bytes. A literal is a private global
 whose count starts at 1, so it is never freed. `+` appends in place when the
 left operand's count is 1, growing the block through `sisu_realloc`, and
-copies otherwise. An interpolation allocates one block sized for the most text
-each part can give, then writes the parts into it. With `--rc-checks`, these helpers check each count
-before they change it, and `main` calls `sisu_rc_check_exit` before it
+copies otherwise. An `Append` reads its place, evaluates the text, then checks
+the count last, so it appends in place only when nothing else holds the string
+or an array on its path. `chars()` and `bytes()` build a new array from the
+string, and `string(cs)` encodes a `[char]` into a new block. An interpolation
+allocates one block sized for the most text each part can give, then writes the
+parts into it. With `--rc-checks`, these helpers check each count before they
+change it, and `main` calls `sisu_rc_check_exit` before it
 returns.
 
 **LLVM 22**. Runs the `mem2reg` pass, which turns stack slots into registers,
@@ -105,7 +111,9 @@ allocate and free objects, arrays and strings: `sisu_print_int`,
 `sisu_print_bool`, `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`,
 `sisu_alloc`, `sisu_realloc` and `sisu_free`. Text lives in `text.rs`:
 `sisu_print_char`, `sisu_print_str`, `sisu_str_compare`, and `sisu_write_int`,
-`sisu_write_bool` and `sisu_write_char`, which interpolation calls. `print(x)`
+`sisu_write_bool` and `sisu_write_char`, which interpolation calls, and
+`sisu_utf8_count`, `sisu_utf8_decode`, `sisu_utf8_len` and `sisu_utf8_encode`,
+which `chars()` and `string(cs)` call. `print(x)`
 and `"{x}"` share one formatter per type. The print functions write into a buffer that the runtime owns,
 and `main` calls `sisu_flush_stdout` before it returns. The runtime counts
 the blocks that are allocated and not yet freed. A program built with

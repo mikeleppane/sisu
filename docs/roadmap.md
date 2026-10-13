@@ -14,7 +14,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
-| 4 | Strings | A program reverses and compares strings | In progress: stage 3 of 5 |
+| 4 | Strings | A program reverses and compares strings | Done |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
@@ -44,7 +44,10 @@ These are adopted. Together they give Sisu a working imperative core.
   converted with `i64(c)` and `char(n)`
 - `string`: UTF-8 literals with escapes, `+` and `+=`, comparison by bytes,
   `len()` in bytes, and interpolation such as `"n = {n}"`; `+=` on a string
-  that nothing else holds appends in place
+  that nothing else holds appends in place, whether it is a local, a `mut`
+  field or an array element
+- text as arrays: `s.chars()` gives a `[char]`, `s.bytes()` a `[u8]`, and
+  `string(cs)` builds a `string` from a `[char]`; each call builds a new value
 - copy-on-write arrays: `let b = a` shares until one of them is written, and a
   counted local's last read moves it instead of copying
 - error messages in the style of `rustc`, pointing at the code, each with a
@@ -96,6 +99,32 @@ These came out of the milestone 2 design and are now part of its spec:
   `.filter(...).map(...).sum()` builds no intermediate array. A
   `filter_some`-style method on `[T?]`, which keeps the present elements,
   comes with them.
+
+### Decided in milestone 4
+
+- A `string` is always valid UTF-8, a value shared until written, with `len()`
+  in bytes and no `s[i]` ([ADR 0014](adr/0014-strings-are-utf-8-values.md)).
+  Text is taken apart with `chars()` and `bytes()`, and `string(cs)` builds a
+  string back from a `[char]`. A `char` is one code point, so grapheme
+  clusters such as `e` plus a combining accent reverse wrongly. That is
+  accepted.
+- `<`, `<=`, `>` and `>=` compare strings by bytes, which for valid UTF-8 is
+  code-point order: `"Zoe" < "anna"` and `"z" < "ä"`. There is no Unicode
+  normalisation and no case folding.
+- `+=` on a string appends in place when nothing else holds it, on a local, a
+  field or an array element. `s = s + t` and `names[i] = names[i] + t` append
+  alike, and a prepend (`"x" + s`) always copies. There is no builder type:
+  `+=` on a string held once is the builder.
+- Interpolation, `"n = {n}"`, is the only way to build text from other types.
+  `string + char` and `string + i64` are errors that point to it.
+- `let mut` replaces `var` (ADR 0011); `let _` and `for _` drop a value
+  without a name; same-scope shadowing is allowed; `0x`, `0b` and `0o`
+  literals; block expressions; top-level `const`; and a list of reserved
+  keywords for later milestones.
+- Left for later: text searching such as `split`, `trim` and `find` (with
+  milestone 5), format specifiers (milestone 6), printing classes, arrays and
+  optionals (milestone 8), and building a `string` from `[u8]`, which needs
+  UTF-8 validation and a failure path (milestone 5's input or milestone 12).
 
 ## Beyond milestone 6
 
