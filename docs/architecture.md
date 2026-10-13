@@ -102,7 +102,7 @@ zero. Both exit with code 102.
 report problems as diagnostics. `diagnostic/registry.rs` holds the code table
 and every message, label, help and fix: a stage builds a `DiagnosticKind`, and
 the registry turns it into a `Diagnostic` with a stable code
-([ADR 0012](adr/0012-diagnostics-have-stable-codes.md)). `diagnostic/render.rs`
+([ADR 0013](adr/0013-diagnostics-have-stable-codes.md)). `diagnostic/render.rs`
 writes it in the style of `rustc`: the message, the `file:line:col`, and the
 source line with the code underlined. `diagnostic/json.rs` writes the same
 diagnostic as one JSON line, and `diagnostic/suggest.rs` finds the closest

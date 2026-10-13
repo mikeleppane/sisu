@@ -22,7 +22,7 @@ These are adopted. Together they give Sisu a working imperative core.
 
 Before the rest of milestone 4, every diagnostic gets a stable code, one
 registry for its wording, a tested explanation and a JSON form for tools
-([ADR 0012](adr/0012-diagnostics-have-stable-codes.md)). Milestones keep their numbers. Milestone 4's strings are built on
+([ADR 0013](adr/0013-diagnostics-have-stable-codes.md)). Milestones keep their numbers. Milestone 4's strings are built on
 top of it, and every later milestone adds its codes the same way.
 
 ### Decided in milestone 1

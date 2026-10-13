@@ -2,7 +2,7 @@
 
 Every diagnostic that `sisuc` reports about the source has a stable code:
 `E0001`, `E0002`, ... for errors and `W0001`, `W0002`, ... for warnings
-([ADR 0012](../adr/0012-diagnostics-have-stable-codes.md)). Each code has an
+([ADR 0013](../adr/0013-diagnostics-have-stable-codes.md)). Each code has an
 explanation in this directory, which `sisuc --explain <code>` prints as it
 stands. The code may be in any case. Links in an explanation are relative to
 `docs/diagnostics/`.

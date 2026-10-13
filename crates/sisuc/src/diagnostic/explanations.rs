@@ -282,7 +282,7 @@ fn minus(mut a: Vec<Code>, b: &[Code]) -> Vec<Code> {
 }
 
 /// Applying one certain fix removes the diagnostics that carry it and no other, and adds no syntax
-/// error: a diagnostic that disappears with it was a cascade of the same mistake (ADR 0012). The
+/// error: a diagnostic that disappears with it was a cascade of the same mistake (ADR 0013). The
 /// checker may still report errors the fix reveals.
 #[test]
 fn each_certain_fix_removes_exactly_its_diagnostic() {
