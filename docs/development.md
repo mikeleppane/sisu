@@ -18,6 +18,8 @@ running the same checks as CI. Sisu builds and runs on x86-64 Linux.
   end-to-end tests link against.
 - [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) and
   [cargo-mutants](https://mutants.rs) for the commands below.
+- [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) for
+  `scripts/coverage.sh`.
 - Valgrind. The end-to-end tests run each program under it to catch leaks
   and memory errors.
 
@@ -34,6 +36,7 @@ Run these once per clone:
 $ ./scripts/install-llvm.sh             # LLVM 22 into .llvm/22
 $ prek install                          # run the checks on every commit
 $ cargo install --locked cargo-mutants  # mutation testing
+$ cargo install --locked cargo-llvm-cov # coverage
 ```
 
 ## Build and test
@@ -109,6 +112,41 @@ $ scripts/mutants.sh HEAD~1 --list    # list the mutants, run nothing
 
 The diff includes uncommitted edits. A new file counts once `git add` tracks
 it.
+
+## Coverage and performance
+
+`scripts/coverage.sh [base]` runs the tests under `cargo-llvm-cov` and prints
+a `Coverage:` line, then two lists. "Uncovered regions touching changed code"
+names regions that a changed line touches. "Other uncovered regions in changed
+files (advisory)" names the rest of those files. It never fails on low
+coverage. Agents run it before `scripts/mutants.sh`. Commit new files, or
+`git add -N` them, so the diff sees them.
+
+Programs that the tests compile link an uninstrumented runtime, built in
+`target/llvm-cov-runtime` and copied next to the instrumented `sisuc`. Runtime
+coverage therefore comes from the runtime's own unit tests. One of them,
+`print_panics_when_standard_output_cannot_be_duplicated`, is excluded under
+coverage: it exhausts file descriptors, and the profiler's error breaks its
+exact stderr check.
+
+The CI job "Coverage (informational)" runs the script. It writes the report to
+the job summary and keeps one pull request comment up to date (same-repository
+pull requests only). On `main` it reports totals only. It never turns a check
+red.
+
+CodSpeed measures Sisu against itself in simulation mode. The benchmarks are
+in `codspeed.yml`: the `fib`, `sieve` and `binary_trees` programs at reduced
+inputs, and the compiler on `bench/binary_trees` (`--check` and an `-O2`
+build) and on a generated 200-function input.
+`scripts/codspeed-prep.sh` builds them and checks every program's output
+first. The `CodSpeed` workflow runs on pushes to `main` and on pull requests
+that touch the code, the benchmarks or their tooling. It never turns a check
+red. Agents read results through the CodSpeed MCP tools and do not run
+CodSpeed locally.
+
+Set these once in the CodSpeed UI: "Informational Status Checks on Failure"
+on, PR comment mode "On Change", threshold 10%. Do not make the check
+required.
 
 ## Compile and run a program
 
@@ -242,5 +280,5 @@ report exactly its code.
 | `crates/sisuc/tests/run`, `run-fail`, `diagnostics` | End-to-end cases, each with the output it must print. |
 | `crates/sisuc/tests/programs` | The programs the small-stack tests run. |
 | `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
-| `scripts` | `install-llvm.sh`, `mutants.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
+| `scripts` | `install-llvm.sh`, `mutants.sh`, `coverage.sh`, `codspeed-prep.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
 | `docs` | Architecture, roadmap, decisions (`adr/`) and agent guides (`agents/`). |

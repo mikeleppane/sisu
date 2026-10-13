@@ -10,3 +10,4 @@
 /docs/superpowers/
 # cargo-mutants reports.
 /mutants.out*/
+__pycache__/

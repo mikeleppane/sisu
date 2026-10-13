@@ -140,3 +140,6 @@ To add a benchmark, add a directory under `bench/` with `main.sisu` and, for
 each language, `main.c`, `main.rs`, `main.go`, `Main.java` and `main.py`, all
 printing the same output. Then add its name to the default list in
 `scripts/bench.sh`.
+
+CodSpeed tracks Sisu against itself on every pull request that touches the
+code; see [Coverage and performance](development.md#coverage-and-performance).

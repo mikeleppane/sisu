@@ -1,7 +1,7 @@
 experimental = ["setup-scripts"]
 
 [scripts.setup.build-runtime]
-command = "cargo build --quiet -p sisu-runtime"
+command = "scripts/build-runtime.sh"
 
 [profile.ci]
 # Report every failure, not just the first.
