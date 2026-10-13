@@ -1217,40 +1217,41 @@ mod tests {
         );
     }
 
-    /// Each error is at its literal or its escape, and the lexer goes on after the literal.
+    /// Each error is at its escape, and the lexer goes on after the literal. An escape error
+    /// beats a literal that is not closed. The last column is the source text the error covers.
     #[test]
     fn escape_errors() {
         use Code::{MalformedUnicodeEscape, NotScalarValue, UnknownEscape};
-        for (src, expected) in [
-            (r"'\q'", (UnknownEscape, 1, 2)),
-            (r"'\u{}'", (MalformedUnicodeEscape, 1, 2)),
-            (r"'\u{1234567}'", (MalformedUnicodeEscape, 1, 2)),
-            (r"'\u{12'", (MalformedUnicodeEscape, 1, 2)),
-            (r"'\uE4'", (MalformedUnicodeEscape, 1, 2)),
-            (r"'\u{12G4}'", (MalformedUnicodeEscape, 1, 2)),
-            (r"'\u{D800}'", (NotScalarValue, 1, 2)),
-            (r"'\u{DFFF}'", (NotScalarValue, 1, 2)),
-            (r"'\u{110000}'", (NotScalarValue, 1, 2)),
-            (r"'ab\q'", (UnknownEscape, 1, 4)),
+        for (src, expected, text) in [
+            (r"'\q'", (UnknownEscape, 1, 2), r"\q"),
+            ("'\\q\n", (UnknownEscape, 1, 2), r"\q"),
+            ("'\\\u{200B}'", (UnknownEscape, 1, 2), "\\\u{200B}"),
+            (r"'\u{}'", (MalformedUnicodeEscape, 1, 2), r"\u{}"),
+            (
+                r"'\u{1234567}'",
+                (MalformedUnicodeEscape, 1, 2),
+                r"\u{1234567}",
+            ),
+            (r"'\u{12'", (MalformedUnicodeEscape, 1, 2), r"\u{12"),
+            (r"'\uE4'", (MalformedUnicodeEscape, 1, 2), r"\u"),
+            (r"'\u{12G4}'", (MalformedUnicodeEscape, 1, 2), r"\u{12"),
+            (r"'\u{D800}'", (NotScalarValue, 1, 2), r"\u{D800}"),
+            (r"'\u{DFFF}'", (NotScalarValue, 1, 2), r"\u{DFFF}"),
+            (r"'\u{110000}'", (NotScalarValue, 1, 2), r"\u{110000}"),
+            (r"'ab\q'", (UnknownEscape, 1, 4), r"\q"),
         ] {
-            assert_eq!(err(src), expected, "{src}");
+            let d = only(src);
+            assert_eq!(at(src, &d), expected, "{src:?}");
+            assert_eq!(&src[d.span().start..d.span().end], text, "{src:?}");
         }
     }
 
+    /// An unknown escape guesses that the `\` was meant as a backslash, and writes another one.
     #[test]
-    fn escape_error_spans() {
-        for (src, text) in [
-            (r"'\q'", r"\q"),
-            (r"'\u{}'", r"\u{}"),
-            (r"'\u{1234567}'", r"\u{1234567}"),
-            (r"'\u{12'", r"\u{12"),
-            (r"'\uE4'", r"\u"),
-            (r"'\u{12G4}'", r"\u{12"),
-            (r"'\u{D800}'", r"\u{D800}"),
-        ] {
-            let span = only(src).span();
-            assert_eq!(&src[span.start..span.end], text, "{src}");
-        }
+    fn unknown_escape_fix() {
+        let d = only(r"'\q'");
+        assert_eq!(fix_edits(&d), Some((false, vec![(1, 1, "\\".to_string())])));
+        assert_eq!(apply_fix(r"'\q'", &d), r"'\\q'");
     }
 
     #[test]
@@ -1301,6 +1302,35 @@ mod tests {
                 TokenKind::RParen,
                 TokenKind::Newline,
                 TokenKind::Eof
+            ]
+        );
+    }
+
+    /// Inside brackets no `Newline` follows a char literal.
+    #[test]
+    fn char_in_brackets_has_no_newline() {
+        use TokenKind::{Comma, Eof, LBracket, LParen, Newline, RBracket, RParen};
+        assert_eq!(
+            all_kinds("print('a'\n)"),
+            [
+                ident("print"),
+                LParen,
+                TokenKind::Char('a'),
+                RParen,
+                Newline,
+                Eof
+            ]
+        );
+        assert_eq!(
+            all_kinds("['a'\n, 'b']"),
+            [
+                LBracket,
+                TokenKind::Char('a'),
+                Comma,
+                TokenKind::Char('b'),
+                RBracket,
+                Newline,
+                Eof
             ]
         );
     }

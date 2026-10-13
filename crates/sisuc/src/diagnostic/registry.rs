@@ -901,13 +901,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("`{digit}` is not {base} digit"))
             }
             DiagnosticKind::UnexpectedCharacter { c, at } => {
-                // A character the user cannot see is named by its code point, not printed.
-                let shown = if c.is_whitespace() || c.is_control() || is_format(c) {
-                    format!("U+{:04X}", u32::from(c))
-                } else {
-                    format!("`{c}`")
-                };
-                let d = Diagnostic::coded(code, at, format!("unexpected character {shown}"));
+                let d = Diagnostic::coded(code, at, format!("unexpected character {}", shown(c)));
                 match c {
                     '&' => d.with_fix(guess("if you meant logical and, use `&&`", at, "&&")),
                     '|' => d.with_fix(guess("if you meant logical or, use `||`", at, "||")),
@@ -1495,16 +1489,28 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, panic.message())
             }
             DiagnosticKind::UnknownEscape { found, at } => {
-                Diagnostic::coded(code, at, format!("unknown escape `\\{found}`")).with_help(
-                    r#"the escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\{`, `\}` and `\u{...}`"#,
-                )
+                let escape = if invisible(found) {
+                    format!("`\\` followed by {}", shown(found))
+                } else {
+                    format!("`\\{found}`")
+                };
+                Diagnostic::coded(code, at, format!("unknown escape {escape}"))
+                    .with_help(
+                        r#"the escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\{`, `\}` and `\u{...}`"#,
+                    )
+                    .with_fix(guess(
+                        r"if you meant a backslash, write `\\`",
+                        Span::new(at.start, at.start),
+                        "\\",
+                    ))
             }
             DiagnosticKind::MalformedUnicodeEscape { at } => {
-                Diagnostic::coded(code, at, r"`\u` takes 1 to 6 hex digits in braces")
-                    .with_help(r"write `\u{E4}`")
+                Diagnostic::coded(code, at, r"malformed `\u` escape")
+                    .with_help(r"write `\u{` and 1 to 6 hex digits, then `}`")
             }
             DiagnosticKind::NotScalarValue { escape, at } => {
                 Diagnostic::coded(code, at, format!("`{escape}` is not a Unicode scalar value"))
+                    .with_help("scalar values run from 0 to 10FFFF, without D800 to DFFF")
             }
             DiagnosticKind::NotOneCodePoint { at } => {
                 Diagnostic::coded(code, at, "a `char` holds one code point")
@@ -1550,6 +1556,20 @@ fn similar(d: Diagnostic, at: Span, suggestion: Option<Suggestion>) -> Diagnosti
         at,
         &name,
     ))
+}
+
+/// Whether `c` is a character the user cannot see.
+fn invisible(c: char) -> bool {
+    c.is_whitespace() || c.is_control() || is_format(c)
+}
+
+/// `c` as a message names it: a character the user cannot see by its code point, not printed.
+fn shown(c: char) -> String {
+    if invisible(c) {
+        format!("U+{:04X}", u32::from(c))
+    } else {
+        format!("`{c}`")
+    }
 }
 
 /// Whether `c` is in Unicode category Cf (format). Neither the standard library nor a dependency

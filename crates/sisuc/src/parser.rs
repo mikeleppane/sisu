@@ -1554,6 +1554,15 @@ mod tests {
         }
     }
 
+    /// A `char` literal where an expression ends is the unexpected token.
+    #[test]
+    fn char_is_an_unexpected_token() {
+        assert_eq!(
+            parse_err("fn main() {\n    let b = 'x' 'y'\n}"),
+            (Code::Expected, 2, 17)
+        );
+    }
+
     /// A `-` applied directly to 2^63 is the one literal `i64::MIN`, with the `-` in its span.
     #[test]
     fn minus_min_magnitude_is_one_literal() {
