@@ -26,7 +26,9 @@ lists. `--format json` switches the diagnostics to JSON Lines, and
 **Lexer** (`lexer/`). Turns source text into tokens. A line break that can
 end a statement becomes a `Newline` token, because statements end at
 newlines, not semicolons
-([ADR 0001](adr/0001-newline-terminated-statements.md)). After most errors
+([ADR 0001](adr/0001-newline-terminated-statements.md)). It decodes a `char`
+literal and its escapes into one scalar value, so later stages never see the
+escape text. After most errors
 the lexer skips the bad text and goes on, so it records every one of them,
 and the parser keeps the earliest per item. A bracket that is unclosed or does
 not match is the exception: the run then reports one diagnostic and the parser
@@ -91,7 +93,7 @@ removed whether or not the link succeeds.
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
 into every program. Generated code calls it to print values, to panic and to
 allocate and free objects and arrays: `sisu_print_int`, `sisu_print_bool`,
-`sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and
+`sisu_print_char` (in `text.rs`, which is for text), `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and
 `sisu_free`. The print functions write into a buffer that the runtime owns,
 and `main` calls `sisu_flush_stdout` before it returns. The runtime counts
 the blocks that are allocated and not yet freed. A program built with

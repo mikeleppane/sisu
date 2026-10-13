@@ -14,7 +14,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
-| 4 | Strings | A program reverses and compares strings | In progress: stage 1 of 5 |
+| 4 | Strings | A program reverses and compares strings | In progress: stage 2 of 5 |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
@@ -810,7 +810,7 @@ These do not make code nicer to write, so they wait:
   - What NaN, infinity and a division by zero do, checked against ADR 0003
     and ADR 0006: a silent NaN is a wrong answer that does not stop the
     program.
-  - Conversions. They follow `i64(x)` and `u8(x)`, which exist today. A float
+  - Conversions. They follow `i64(x)`, `u8(x)` and `char(x)`, which exist today. A float
     converted to an integer that cannot hold it panics or is rejected, never
     wraps.
 - **Values with fields.** Decide before milestone 7 or records (milestone

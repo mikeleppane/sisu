@@ -79,7 +79,9 @@ normalisation.
 _Avoid_: str, text
 
 **`char`**:
-One Unicode scalar value: a code point that is not a surrogate.
+One Unicode scalar value: a code point that is not a surrogate. It is written
+between single quotes, as in `'a'` or `'\u{1F600}'`. It compares by code point
+and has no arithmetic: `i64(c)` and `char(n)` convert.
 _Avoid_: character (readers take it to mean what they see, which can be
 several scalar values)
 

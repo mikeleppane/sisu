@@ -45,6 +45,6 @@
   ],
   "cards": [
     { "dot": "emerald", "title": "Driver", "items": ["main.rs runs the stages in order", "last_use.rs marks moves after the checker", "--emit tokens|ast|tir|ir|ir-raw stops early and prints", "--check stops after the checker", "--format json prints diagnostics as JSON Lines", "--explain prints a code's explanation", "-O2 runs LLVM's default<O2> pipeline", "--rc-checks builds count checks into the program"] },
-    { "dot": "amber", "title": "Runtime", "items": ["C ABI, linked into every program", "sisu_print_int, sisu_print_bool, sisu_flush_stdout", "sisu_panic, sisu_panic_bounds", "sisu_alloc, sisu_free for objects and arrays", "sisu_rc_fault, sisu_rc_check_exit under --rc-checks"] }
+    { "dot": "amber", "title": "Runtime", "items": ["C ABI, linked into every program", "sisu_print_int, sisu_print_bool, sisu_print_char, sisu_flush_stdout", "sisu_panic, sisu_panic_bounds", "sisu_alloc, sisu_free for objects and arrays", "sisu_rc_fault, sisu_rc_check_exit under --rc-checks"] }
   ]
 }
