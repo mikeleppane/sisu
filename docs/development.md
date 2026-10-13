@@ -280,5 +280,5 @@ report exactly its code.
 | `crates/sisuc/tests/run`, `run-fail`, `diagnostics` | End-to-end cases, each with the output it must print. |
 | `crates/sisuc/tests/programs` | The programs the small-stack tests run. |
 | `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
-| `scripts` | `install-llvm.sh`, `mutants.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
+| `scripts` | `install-llvm.sh`, `mutants.sh`, `coverage.sh`, `codspeed-prep.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
 | `docs` | Architecture, roadmap, decisions (`adr/`) and agent guides (`agents/`). |
