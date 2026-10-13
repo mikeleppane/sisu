@@ -25,6 +25,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(rendering_many_diagnostics_in_a_large_file_is_linear)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Each unclosed string literal once rescanned every earlier diagnostic, so many of them were
+# quadratic and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_unclosed_strings_lex_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 [[profile.default.scripts]]
 filter = "package(sisuc) & kind(test)"
 setup = "build-runtime"

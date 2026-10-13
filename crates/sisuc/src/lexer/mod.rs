@@ -273,8 +273,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
     let mut tokens: Vec<Token> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut comments = Vec::new();
-    let mut open: Vec<Open> = Vec::new();
-    let mut frames = Frames::default();
+    let mut brackets = Brackets::default();
     let mut chars = source.char_indices().peekable();
     let mut line_start = true;
     // Where the last skipped text starts.
@@ -283,11 +282,12 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
         let kind = match c {
             ' ' | '\t' | '\r' => continue,
             '\n' => {
-                skipped = frames.end_line(start, &mut diagnostics).or(skipped);
+                let cut = brackets.end_line(start, &mut tokens, &mut diagnostics);
+                skipped = cut.or(skipped);
                 line_start = true;
                 // Look ahead only where a `Newline` would be pushed: the next newlines of a
                 // blank run then find `Newline` last and skip it, so no gap is scanned twice.
-                if ends_statement(&tokens, &open) {
+                if ends_statement(&tokens, &brackets.open) {
                     if let Some(gap) = continues_line(&source[start..]) {
                         // Jump to the `.`/`?.`, so a long gap is scanned once.
                         while chars.next_if(|&(i, _)| i < start + gap).is_some() {}
@@ -301,7 +301,8 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
                 continue;
             }
             '/' if chars.next_if(|&(_, n)| n == '/').is_some() => {
-                skipped = frames.comment(start, &mut diagnostics).or(skipped);
+                let cut = brackets.comment(start, &mut tokens, &mut diagnostics);
+                skipped = cut.or(skipped);
                 comments.push(start);
                 while chars.next_if(|&(_, n)| n != '\n').is_some() {}
                 continue;
@@ -315,11 +316,13 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
             c if c.is_ascii_digit() || c == '\'' => {
                 literal::token(source, start, &mut chars, &mut diagnostics)
             }
-            // A `}` at depth 0 ends an interpolation, and the literal's text goes on after it.
-            '"' | '}' if c == '"' || frames.at_end() => {
-                let (kind, open) = frames.string(source, start, &mut chars, &mut diagnostics);
+            // A `}` that closes no bracket opened in an interpolation ends it, and the literal's
+            // text goes on after it.
+            '"' | '}' if c == '"' || brackets.at_end() => {
+                let (kind, cut) =
+                    brackets.string(source, start, &mut chars, &mut tokens, &mut diagnostics);
                 // The rest of the line is lost in the literal, as in a skip.
-                skipped = open.or(skipped);
+                skipped = cut.or(skipped);
                 kind
             }
             '-' if matches!(chars.peek(), Some(&(_, ' ' | '\t')))
@@ -344,7 +347,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
         let end = chars.peek().map_or(source.len(), |&(i, _)| i);
         let span = Span::new(start, end);
         if line_start {
-            if let Some(d) = check_line_start(source, &tokens, &open, &kind, span) {
+            if let Some(d) = check_line_start(source, &tokens, &brackets.open, &kind, span) {
                 // A `{` on its own line lexes as if written on the line above. No other line-start
                 // error follows a `Newline`: each fires only inside `(` or `[`.
                 if tokens.last().is_some_and(|t| t.kind == TokenKind::Newline) {
@@ -356,21 +359,20 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
             }
             line_start = false;
         }
-        frames.track(&kind);
-        if let Err(d) = track_bracket(&mut open, &kind, span) {
+        if let Err(d) = track_bracket(&mut brackets.open, &kind, span) {
             return Err(first_or(diagnostics, d));
         }
         tokens.push(Token { kind, span });
     }
-    frames.end_line(source.len(), &mut diagnostics);
-    if let Some(&(c, span)) = open.last() {
+    brackets.end_line(source.len(), &mut tokens, &mut diagnostics);
+    if let Some(&(c, span)) = brackets.open.last() {
         let unclosed = DiagnosticKind::UnclosedBracket {
             bracket: c,
             at: span,
         };
         return Err(first_or(diagnostics, unclosed.into()));
     }
-    if ends_statement(&tokens, &open) {
+    if ends_statement(&tokens, &brackets.open) {
         tokens.push(newline(Span::new(source.len(), source.len())));
     }
     tokens.push(eof(&tokens));
@@ -381,76 +383,104 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
     })
 }
 
-/// The open interpolations of string literals, innermost last: for each, the depth of the `{`
-/// brackets in it, and where its literal's `"` stands.
+/// An open interpolation of a string literal.
+struct Frame {
+    /// Where its `{` stands among the open brackets, so that no bracket opened in it outlives it.
+    brace: usize,
+    /// Where its literal's `"` stands.
+    quote: usize,
+    /// Where its literal's first token stands among the tokens.
+    token: usize,
+    /// How many diagnostics came before its literal.
+    before: usize,
+}
+
+/// The open brackets, and the open interpolations of string literals among them, innermost
+/// last. An interpolation's `{` is a bracket, so a bracket opened in it closes before it.
 #[derive(Default)]
-struct Frames(Vec<(usize, usize)>);
+struct Brackets {
+    open: Vec<Open>,
+    frames: Vec<Frame>,
+}
 
-impl Frames {
-    /// Whether a `}` ends the innermost interpolation, rather than a bracket in it.
+impl Brackets {
+    /// Whether a `}` ends the innermost interpolation: every bracket opened in it is closed.
     fn at_end(&self) -> bool {
-        matches!(self.0.last(), Some((0, _)))
-    }
-
-    /// Counts a bracket `kind` inside the innermost interpolation.
-    fn track(&mut self, kind: &TokenKind) {
-        if let Some((depth, _)) = self.0.last_mut() {
-            match kind {
-                TokenKind::LBrace => *depth += 1,
-                TokenKind::RBrace => *depth -= 1,
-                _ => {}
-            }
-        }
+        self.frames
+            .last()
+            .is_some_and(|f| f.brace + 1 == self.open.len())
     }
 
     /// Ends every open interpolation at the line end or the end of the file at `at`, and returns
     /// `at`, or `None` when none is open.
-    fn end_line(&mut self, at: usize, diagnostics: &mut Vec<Diagnostic>) -> Option<usize> {
-        self.cut(at, literal::not_closed, diagnostics)
+    fn end_line(
+        &mut self,
+        at: usize,
+        tokens: &mut Vec<Token>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<usize> {
+        self.cut(at, literal::not_closed, tokens, diagnostics)
     }
 
     /// Ends every open interpolation at the comment at `at`, which takes the rest of the line, so
     /// no interpolation on it is closed. Returns `at`, or `None` when none is open.
-    fn comment(&mut self, at: usize, diagnostics: &mut Vec<Diagnostic>) -> Option<usize> {
+    fn comment(
+        &mut self,
+        at: usize,
+        tokens: &mut Vec<Token>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<usize> {
         let d = |_| {
             DiagnosticKind::CommentInInterpolation {
                 at: Span::new(at, at + 2),
             }
             .into()
         };
-        self.cut(at, d, diagnostics)
+        self.cut(at, d, tokens, diagnostics)
     }
 
     /// Ends every open interpolation at `at` with the error `d` gives for the innermost
-    /// literal's `"`, and returns `at`, or `None` when none is open.
+    /// literal's `"`, and returns `at`, or `None` when none is open. The outermost literal becomes
+    /// one `Str` token, so that no bracket opened in an interpolation stays open.
     fn cut(
         &mut self,
         at: usize,
         d: impl FnOnce(usize) -> Diagnostic,
+        tokens: &mut Vec<Token>,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<usize> {
-        let (&(_, outer), &(_, quote)) = (self.0.first()?, self.0.last()?);
-        unclosed(outer, d(quote), diagnostics);
-        self.0.clear();
+        let (outer, inner) = (self.frames.first()?, self.frames.last()?);
+        unclosed(outer.before, d(inner.quote), diagnostics);
+        self.open.truncate(outer.brace);
+        // A literal whose own text the cut ends has no token yet: the caller pushes it.
+        tokens.truncate(outer.token + 1);
+        if let Some(t) = tokens.get_mut(outer.token) {
+            t.kind = TokenKind::Str(String::new());
+        }
+        self.frames.clear();
         Some(at)
     }
 
     /// The token of a string literal's text after its `"` at `start`, or after the `}` at
     /// `start` that ends an interpolation in it, and `start` when the text is not closed. A `{`
-    /// that opens an interpolation pushes its frame, and a literal that is not closed closes
-    /// every frame, so that it is reported once.
+    /// that opens an interpolation pushes its frame and opens a bracket, and a literal that is
+    /// not closed closes every frame, so that it is reported once.
     fn string(
         &mut self,
         source: &str,
         start: usize,
         chars: &mut Chars,
+        tokens: &mut Vec<Token>,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> (TokenKind, Option<usize>) {
         let resumed = source[start..].starts_with('}');
-        let quote = if resumed {
-            self.0.pop().map_or(start, |(_, quote)| quote)
-        } else {
-            start
+        let (quote, token, before) = match self.frames.pop_if(|_| resumed) {
+            // The `}` closes the interpolation's `{`.
+            Some(f) => {
+                self.open.pop();
+                (f.quote, f.token, f.before)
+            }
+            None => (start, tokens.len(), diagnostics.len()),
         };
         let (text, end) = literal::string_text(source, chars, diagnostics);
         let kind = match (&end, resumed) {
@@ -459,12 +489,23 @@ impl Frames {
             (_, false) => TokenKind::Str(text),
             (_, true) => TokenKind::StrTail(text),
         };
+        let frame = Frame {
+            brace: self.open.len(),
+            quote,
+            token,
+            before,
+        };
         match end {
-            End::Brace => self.0.push((0, quote)),
+            End::Brace => {
+                // The text ends just after its `{`.
+                let brace = chars.peek().map_or(source.len(), |&(i, _)| i) - 1;
+                self.open.push(('{', Span::new(brace, brace + 1)));
+                self.frames.push(frame);
+            }
             // The literal is the innermost frame while its end is reported.
             End::Open => {
-                self.0.push((0, quote));
-                return (kind, self.end_line(start, diagnostics));
+                self.frames.push(frame);
+                return (kind, self.end_line(start, tokens, diagnostics));
             }
             End::Quote => {}
         }
@@ -472,15 +513,17 @@ impl Frames {
     }
 }
 
-/// Reports `d`, an error that leaves the string literal whose outermost `"` stands at `outer`
-/// without its end, unless an earlier error in the literal is reported. An error about a brace
-/// in its text yields to it, since the literal's end decides what a brace means.
-fn unclosed(outer: usize, d: Diagnostic, diagnostics: &mut Vec<Diagnostic>) {
-    diagnostics.retain(|e| {
-        e.span().start < outer
-            || !matches!(e.code(), Code::BraceInString | Code::EmptyInterpolation)
-    });
-    if diagnostics.last().is_none_or(|e| e.span().start < outer) {
+/// Reports `d`, an error that leaves a string literal without its end, unless an earlier error
+/// in the literal is reported. The literal's errors are those after the first `before`
+/// diagnostics. An error about a brace in its text yields to `d`, since the literal's end
+/// decides what a brace means.
+fn unclosed(before: usize, d: Diagnostic, diagnostics: &mut Vec<Diagnostic>) {
+    let own = diagnostics.split_off(before);
+    diagnostics.extend(
+        own.into_iter()
+            .filter(|e| !matches!(e.code(), Code::BraceInString | Code::EmptyInterpolation)),
+    );
+    if diagnostics.len() == before {
         diagnostics.push(d);
     }
 }
@@ -1377,6 +1420,7 @@ mod tests {
             ("let c = '", (LiteralNotClosed, 1, 9)),
             ("let c = '\\", (LiteralNotClosed, 1, 9)),
             ("let c = '\\\n", (LiteralNotClosed, 1, 9)),
+            ("let c = '\\\r\n", (LiteralNotClosed, 1, 9)),
         ] {
             assert_eq!(err(src), expected, "{src:?}");
         }
@@ -1437,6 +1481,9 @@ mod tests {
                 TokenKind::Eof
             ]
         );
+        // The text after an empty interpolation decodes on.
+        let lexed = lex("\"a{ }b\"").expect("the lexer recovers");
+        assert_eq!(lexed.tokens[0].kind, str("ab"));
     }
 
     /// A string reports an escape error as a `char` literal does, and only that error.
@@ -1465,10 +1512,13 @@ mod tests {
             ("\"ab", (LiteralNotClosed, 1, 1), "\""),
             ("let s = \"\\\n", (LiteralNotClosed, 1, 9), "\""),
             ("let s = \"\\", (LiteralNotClosed, 1, 9), "\""),
+            ("let s = \"\\\r\n", (LiteralNotClosed, 1, 9), "\""),
             (r#""a}b""#, (BraceInString, 1, 3), "}"),
             (r#""{x}}""#, (BraceInString, 1, 5), "}"),
             (r#""{ "}" }""#, (BraceInString, 1, 5), "}"),
             (r#""{}""#, (EmptyInterpolation, 1, 2), "{}"),
+            (r#""{ }""#, (EmptyInterpolation, 1, 2), "{ }"),
+            ("\"{\r}\"", (EmptyInterpolation, 1, 2), "{\r}"),
             ("\"{ \t}\"", (EmptyInterpolation, 1, 2), "{ \t}"),
             (r#""{x // c}""#, (CommentInInterpolation, 1, 5), "//"),
             ("\"{x\n", (LiteralNotClosed, 1, 1), "\""),
@@ -1476,6 +1526,13 @@ mod tests {
             ("\"a{x}b\n", (LiteralNotClosed, 1, 1), "\""),
             ("\"{ \"a\n", (LiteralNotClosed, 1, 4), "\""),
             ("\"{ \"{x\n", (LiteralNotClosed, 1, 4), "\""),
+            // Brackets opened in an interpolation close with it, so lexing goes on.
+            ("\"a{ f(x\nlet t = 1", (LiteralNotClosed, 1, 1), "\""),
+            (
+                "\"a{ [x // c\nlet t = 1",
+                (CommentInInterpolation, 1, 8),
+                "//",
+            ),
             // A brace error yields to the end the literal lacks; an escape error does not.
             ("\"a}b\n", (LiteralNotClosed, 1, 1), "\""),
             ("\"{ }\n", (LiteralNotClosed, 1, 1), "\""),
@@ -1498,9 +1555,6 @@ mod tests {
             found("$ \"c\n"),
             [(Code::UnexpectedCharacter, 1, 1), (LiteralNotClosed, 1, 3)]
         );
-        // The text after an empty interpolation decodes on.
-        let lexed = lex("\"a{ }b\"").expect("the lexer recovers");
-        assert_eq!(lexed.tokens[0].kind, str("ab"));
     }
 
     /// A `}` gets a certain fix and an empty interpolation a guess; the others have none.
@@ -1588,6 +1642,63 @@ mod tests {
         ] {
             assert_eq!(kinds(src), expected, "{src}");
         }
+    }
+
+    /// A `}` or other closer in an interpolation cannot close past a bracket opened in it, nor
+    /// close one opened before it; the error points at the closer and the bracket left open.
+    #[test]
+    fn interpolation_confines_brackets() {
+        for (src, closer, opened) in [
+            ("fn main() {\n    print(\"{ f( }\")\n}", (2, 17), (2, 15)),
+            ("print(\"{x)}\")", (1, 10), (1, 8)),
+            ("let s = \"a{ (x }\"", (1, 16), (1, 13)),
+        ] {
+            let d = fatal(src);
+            assert_eq!(
+                at(src, &d),
+                (Code::UnexpectedClosingBracket, closer.0, closer.1),
+                "{src}"
+            );
+            let [(open, _)] = d.secondary() else {
+                panic!("one secondary span, got {:?}", d.secondary());
+            };
+            assert_eq!(line_col(src, open.start), opened, "{src}");
+            assert_eq!(open.end, open.start + 1, "{src}");
+        }
+    }
+
+    /// A literal that is not closed is one `Str` token, so no bracket opened in it stays open,
+    /// and the line break after it ends its statement.
+    #[test]
+    fn unclosed_interpolation_is_one_token() {
+        use TokenKind::{Eof, Eq, Let, Newline};
+        let lexed = lex("let s = \"a{ f(x\nlet t = 1").expect("the lexer recovers");
+        let kinds: Vec<_> = lexed.tokens.into_iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                Let,
+                ident("s"),
+                Eq,
+                str(""),
+                Newline,
+                Let,
+                ident("t"),
+                Eq,
+                int(1),
+                Newline,
+                Eof
+            ]
+        );
+    }
+
+    /// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
+    /// update the override there. Each unclosed literal once rescanned every earlier diagnostic.
+    #[test]
+    fn many_unclosed_strings_lex_in_linear_time() {
+        const LINES: usize = 160_000;
+        let lexed = lex(&"\"x\n".repeat(LINES)).expect("the lexer recovers");
+        assert_eq!(lexed.diagnostics.len(), LINES);
     }
 
     #[test]

@@ -120,8 +120,8 @@ fn char_literal(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKi
         };
         match c {
             '\'' => break i + 1,
-            // A `\` at the line end is followed by the "not closed" error of the next turn.
-            '\\' if chars.peek().is_none_or(|&(_, n)| n == '\n') => {}
+            // A `\` at the line end is followed by the "not closed" error of a later turn.
+            '\\' if line_ends(source, chars) => {}
             '\\' => match escape(source, i, chars) {
                 Ok(c) => points.push(c),
                 Err(d) => {
@@ -173,7 +173,8 @@ pub(super) fn string_text(
             '"' => break End::Quote,
             '{' => {
                 let inside = &source[i + 1..];
-                let close = source.len() - inside.trim_start_matches([' ', '\t']).len();
+                // What the main loop skips.
+                let close = source.len() - inside.trim_start_matches([' ', '\t', '\r']).len();
                 if !source[close..].starts_with('}') {
                     break End::Brace;
                 }
@@ -193,8 +194,8 @@ pub(super) fn string_text(
                     .into()
                 });
             }
-            // A `\` at the line end is followed by the "not closed" error of the next turn.
-            '\\' if chars.peek().is_none_or(|&(_, n)| n == '\n') => {}
+            // A `\` at the line end is followed by the "not closed" error of a later turn.
+            '\\' if line_ends(source, chars) => {}
             '\\' => match escape(source, i, chars) {
                 Ok(c) => text.push(c),
                 Err(d) => {
@@ -216,6 +217,13 @@ pub(super) fn not_closed(quote: usize) -> Diagnostic {
         at: Span::new(quote, quote + 1),
     }
     .into()
+}
+
+/// Whether the line or the file ends at the next char of `chars`, where `\r\n` ends a line too.
+fn line_ends(source: &str, chars: &mut Chars) -> bool {
+    chars
+        .peek()
+        .is_none_or(|&(i, _)| source[i..].starts_with('\n') || source[i..].starts_with("\r\n"))
 }
 
 /// Decodes the escape after a `\`, which `chars` has just consumed at `backslash`. A char that is

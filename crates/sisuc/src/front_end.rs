@@ -311,6 +311,17 @@ fn main() {
         }
     }
 
+    /// A bracket left open in an interpolation that is not closed does not stop the lexer, so a
+    /// later function is still checked.
+    #[test]
+    fn unclosed_interpolation_keeps_later_items() {
+        let src = "fn main() {\n    let s = \"a{ f(x\n}\nfn g() {\n    let b: bool = 1\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::LiteralNotClosed, (2, 13)), (Code::Mismatch, (5, 19))]
+        );
+    }
+
     #[test]
     fn unnamed_item_stops_the_checker() {
         let src = "def total() {}\nfn main() {\n    let b: bool = 1\n}\n";
