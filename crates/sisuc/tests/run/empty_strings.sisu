@@ -1,0 +1,6 @@
+// The empty string is a real string: it has a length, equals itself and sorts first.
+fn main() {
+    print("".len())                  // 0
+    print("" == "")                  // true
+    print("" < "a")                  // true
+}

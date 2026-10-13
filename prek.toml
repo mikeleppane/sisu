@@ -5,10 +5,11 @@
 [[repos]]
 repo = "builtin"
 hooks = [
-  { id = "trailing-whitespace" },
+  # `escapes.out` holds the raw `\t`, `\0` and `\r` that `escapes.sisu` prints.
+  { id = "trailing-whitespace", exclude = '^crates/sisuc/tests/run/escapes\.out$' },
   # `no_trailing_newline.sisu` and `eof-quote.sisu` must not end in a newline, and the stderr snapshots end in one blank line.
-  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/diagnostics/(.*\.err|no_trailing_newline\.sisu|eof-quote\.sisu)$' },
-  { id = "mixed-line-ending" },
+  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/(diagnostics/(.*\.err|no_trailing_newline\.sisu|eof-quote\.sisu)|run/escapes\.out)$' },
+  { id = "mixed-line-ending", exclude = '^crates/sisuc/tests/run/escapes\.out$' },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files" },
   { id = "check-toml" },

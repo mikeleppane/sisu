@@ -31,7 +31,7 @@ fn counted_core(ty: &Type) -> Option<&Type> {
 
 impl<'ctx> Codegen<'ctx, '_> {
     /// Declares `sisu_rc.<release|drop|eq|unique>.<name>` on first use and queues its body; `name` is a
-    /// class's name, or `[<element name>]` for an array (`[Node?]`, `[[i64]]`).
+    /// class's name, `string`, or `[<element name>]` for an array (`[Node?]`, `[[i64]]`).
     pub(super) fn helper(&self, kind: Helper, ty: &Type) -> FunctionValue<'ctx> {
         let key = (kind, ty.clone());
         if let Some(function) = self.helpers.borrow().get(&key) {
@@ -67,7 +67,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Both return at once on `null`. Drop does not release the chain field: it loads it,
     /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
     /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`. An array's `drop`, `eq` and
-    /// `unique` come from `define_array_helper`. Defining a body can declare more helpers, so this
+    /// `unique` come from `define_array_helper`, a string's `drop` and `eq` from
+    /// `define_string_helper`. Defining a body can declare more helpers, so this
     /// runs until none is left to define.
     pub(super) fn define_helpers(&self) {
         let (object, done) = self.helper_entry(self.rc_retain);
@@ -83,6 +84,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             match (kind, &ty) {
                 (Helper::Release, _) => self.define_release(function, &ty),
                 (_, Type::Array(element)) => self.define_array_helper(kind, element, function),
+                (_, Type::String) => self.define_string_helper(kind, function),
                 (Helper::Drop, _) => self.define_drop(function, &ty),
                 (Helper::Eq, _) => self.define_eq(function, &ty),
                 (Helper::Unique, _) => {

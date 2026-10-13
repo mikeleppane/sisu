@@ -86,15 +86,41 @@ struct Stdout {
 
 impl Stdout {
     fn append(&mut self, line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.open()?;
+        // Writing to a `Vec` cannot fail.
+        let _ = writeln!(self.buffer, "{line}");
+        self.end_line()
+    }
+
+    /// Adds `bytes` and a newline. Bytes that would outgrow the buffer go straight out, after
+    /// what the buffer holds.
+    fn append_bytes(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.open()?;
+        // The buffer is below `BUFFER_CAPACITY` here, and the newline needs one byte of room.
+        if bytes.len() < RESERVED - self.buffer.len() {
+            self.buffer.extend_from_slice(bytes);
+        } else {
+            self.flush()?;
+            write_to(self.sink.as_mut(), bytes)?;
+        }
+        self.buffer.push(b'\n');
+        self.end_line()
+    }
+
+    /// Opens the sink at the first `print`.
+    fn open(&mut self) -> std::io::Result<()> {
         if self.sink.is_none() {
             // One allocation, once: the buffer never outgrows this. A flush follows any
             // line that takes it to `BUFFER_CAPACITY`.
             self.buffer.reserve_exact(RESERVED);
             self.sink = Some(Sink::open()?);
         }
+        Ok(())
+    }
+
+    /// Writes out the buffer when the terminal wants each line, or when it is full enough.
+    fn end_line(&mut self) -> std::io::Result<()> {
         let line_buffered = self.sink.as_ref().is_some_and(|sink| sink.line_buffered);
-        // Writing to a `Vec` cannot fail.
-        let _ = writeln!(self.buffer, "{line}");
         if line_buffered || self.buffer.len() >= BUFFER_CAPACITY {
             self.flush()
         } else {
@@ -105,12 +131,17 @@ impl Stdout {
     /// Writes out the buffer. The buffer is emptied even when the write fails, so nothing
     /// tries the same bytes again, and the panic that a failure causes is the only error.
     fn flush(&mut self) -> std::io::Result<()> {
-        let result = match self.sink.as_mut().and_then(|sink| sink.file.as_mut()) {
-            Some(file) => file.write_all(&self.buffer),
-            None => Ok(()),
-        };
+        let result = write_to(self.sink.as_mut(), &self.buffer);
         self.buffer.clear();
         result
+    }
+}
+
+/// Writes `bytes` to the sink's file; with no file, standard output is closed and they are dropped.
+fn write_to(sink: Option<&mut Sink>, bytes: &[u8]) -> std::io::Result<()> {
+    match sink.and_then(|sink| sink.file.as_mut()) {
+        Some(file) => file.write_all(bytes),
+        None => Ok(()),
     }
 }
 
@@ -131,6 +162,14 @@ fn with_stdout<R>(f: impl FnOnce(&mut Stdout) -> R) -> R {
 fn print_line(line: std::fmt::Arguments<'_>) {
     // The lock is released here: the panic below flushes the buffer through it again.
     let result = with_stdout(|out| out.append(line));
+    if let Err(error) = result {
+        stdout_panic(&error);
+    }
+}
+
+/// Adds `bytes` and a newline to the output, as `print_line` does for formatted text.
+fn print_bytes(bytes: &[u8]) {
+    let result = with_stdout(|out| out.append_bytes(bytes));
     if let Err(error) = result {
         stdout_panic(&error);
     }
@@ -347,8 +386,8 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        SIGPIPE, signal, sisu_alloc, sisu_flush_stdout, sisu_free, sisu_panic_bounds,
-        sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
+        BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_flush_stdout,
+        sisu_free, sisu_panic_bounds, sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
     };
     use std::os::fd::AsRawFd;
     use std::os::unix::process::ExitStatusExt;
@@ -554,6 +593,17 @@ mod tests {
                 crate::text::sisu_print_char(0x1F600);
                 sisu_flush_stdout();
             }
+            "print_str" => {
+                let long = [b'x'; RESERVED];
+                // SAFETY: each slice is readable for its length.
+                #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+                unsafe {
+                    crate::text::sisu_print_str(b"a\0b".as_ptr(), 3);
+                    crate::text::sisu_print_str(long.as_ptr(), long.len());
+                }
+                sisu_print_int(5);
+                sisu_flush_stdout();
+            }
             other => panic!("unknown rc case {other}"),
         }
     }
@@ -595,6 +645,44 @@ mod tests {
         let out = run_rc_child("print_char");
         assert!(out.status.success(), "child exited with {:?}", out.status);
         assert!(String::from_utf8_lossy(&out.stdout).contains("\u{1F600}\n"));
+    }
+
+    /// `sisu_print_str` writes the bytes as they are, zero bytes included, then a newline; a
+    /// string longer than the buffer still comes out in order.
+    #[test]
+    fn print_str_writes_bytes_in_order() {
+        let out = run_rc_child("print_str");
+        assert!(out.status.success(), "child exited with {:?}", out.status);
+        let mut want = b"a\0b\n".to_vec();
+        want.extend([b'x'; RESERVED]);
+        want.extend(b"\n5\n");
+        // The child is a test binary, so libtest's own lines surround the output.
+        assert!(out.stdout.windows(want.len()).any(|w| w == want));
+    }
+
+    /// Bytes that fit, with their newline, join the buffer; longer ones go straight out, so
+    /// the buffer keeps its one allocation.
+    #[test]
+    fn append_bytes_never_outgrows_the_buffer() {
+        let mut out = Stdout {
+            buffer: Vec::with_capacity(RESERVED),
+            sink: Some(Sink {
+                file: None,
+                line_buffered: false,
+            }),
+        };
+        out.append_bytes(b"ab").expect("a closed sink drops output");
+        assert_eq!(out.buffer, b"ab\n");
+        // One byte too many to fit beside the newline.
+        out.append_bytes(&[b'x'; RESERVED - 3])
+            .expect("a closed sink drops output");
+        assert_eq!(out.buffer, b"\n");
+        assert_eq!(out.buffer.capacity(), RESERVED);
+        // Fits, and takes the buffer past `BUFFER_CAPACITY`, which writes it out.
+        out.append_bytes(&[b'x'; BUFFER_CAPACITY])
+            .expect("a closed sink drops output");
+        assert_eq!(out.buffer, b"");
+        assert_eq!(out.buffer.capacity(), RESERVED);
     }
 
     /// A standard output that is open but cannot be duplicated (EMFILE) is a failed write,

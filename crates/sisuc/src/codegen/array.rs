@@ -350,14 +350,18 @@ impl<'ctx> Codegen<'ctx, '_> {
         value
     }
 
-    /// `Len`: the length of `base`, which is then released, unless it is a local: the local
-    /// keeps the block alive, so codegen skips its retain and release.
+    /// `Len`: the length of `base`, an array or a string, which is then released, unless it is
+    /// a local: the local keeps the block alive, so codegen skips its retain and release.
     pub(super) fn len(&mut self, base: &Expr) -> IntValue<'ctx> {
         let (array, borrowed) = self.borrow_or_expr(base);
         let array = array
-            .expect("the checker should only call `len` on an array, which lowers to a pointer")
+            .expect("the checker should only call `len` on an array or a string, which lower to a pointer")
             .into_pointer_value();
-        let len = self.array_len(array);
+        let len = if base.ty == Type::String {
+            self.string_len(array)
+        } else {
+            self.array_len(array)
+        };
         if !borrowed {
             self.release(array.into(), &base.ty);
         }
