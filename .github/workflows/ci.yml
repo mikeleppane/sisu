@@ -90,7 +90,7 @@ jobs:
         if: steps.toolchain.outcome == 'success'
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
-          tool: cargo-nextest,cargo-llvm-cov@0.9.1,no-such-tool
+          tool: cargo-nextest,cargo-llvm-cov@0.9.1
       - id: llvm
         continue-on-error: true
         if: steps.tools.outcome == 'success'
