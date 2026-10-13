@@ -322,6 +322,33 @@ fn main() {
         );
     }
 
+    /// A literal cut at its line end leaves one token, whichever segment the cut ends: its
+    /// first, one resumed after a `}`, or a literal nested in an interpolation. So the error in
+    /// the literal is reported, its function ends at its `}`, and the next function is checked.
+    #[test]
+    fn cut_literal_leaves_one_token() {
+        for (literal, escape) in [
+            ("\"a\\q", 15),
+            ("\"a{x}b\\q", 19),
+            ("\"a{x}b{y}c\\q", 23),
+            ("\"a{x}b\\q{y", 19),
+            ("\"a{ \"b\\q", 19),
+            ("\"a{ \"b{x}c\\q", 23),
+        ] {
+            let src = format!(
+                "fn main() {{\n    let s = {literal}\n}}\nfn g() {{\n    let b: bool = 1\n}}\n"
+            );
+            assert_eq!(
+                codes(&src),
+                [
+                    (Code::UnknownEscape, (2, escape)),
+                    (Code::Mismatch, (5, 19))
+                ],
+                "{literal}"
+            );
+        }
+    }
+
     #[test]
     fn unnamed_item_stops_the_checker() {
         let src = "def total() {}\nfn main() {\n    let b: bool = 1\n}\n";

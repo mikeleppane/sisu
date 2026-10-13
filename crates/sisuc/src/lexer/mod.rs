@@ -323,6 +323,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
                     brackets.string(source, start, &mut chars, &mut tokens, &mut diagnostics);
                 // The rest of the line is lost in the literal, as in a skip.
                 skipped = cut.or(skipped);
+                let Some(kind) = kind else { continue };
                 kind
             }
             '-' if matches!(chars.peek(), Some(&(_, ' ' | '\t')))
@@ -365,11 +366,8 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
         tokens.push(Token { kind, span });
     }
     brackets.end_line(source.len(), &mut tokens, &mut diagnostics);
-    if let Some(&(c, span)) = brackets.open.last() {
-        let unclosed = DiagnosticKind::UnclosedBracket {
-            bracket: c,
-            at: span,
-        };
+    if let Some(&(bracket, at)) = brackets.open.last() {
+        let unclosed = DiagnosticKind::UnclosedBracket { bracket, at };
         return Err(first_or(diagnostics, unclosed.into()));
     }
     if ends_statement(&tokens, &brackets.open) {
@@ -440,8 +438,10 @@ impl Brackets {
     }
 
     /// Ends every open interpolation at `at` with the error `d` gives for the innermost
-    /// literal's `"`, and returns `at`, or `None` when none is open. The outermost literal becomes
-    /// one `Str` token, so that no bracket opened in an interpolation stays open.
+    /// literal's `"`, and returns `at`, or `None` when none is open. The outermost literal's
+    /// first token, and every token after it, become one `Str` token, so that no bracket opened
+    /// in an interpolation stays open. When the cut ends that first token's own text, the token
+    /// is not pushed yet, and `string` returns it.
     fn cut(
         &mut self,
         at: usize,
@@ -452,7 +452,6 @@ impl Brackets {
         let (outer, inner) = (self.frames.first()?, self.frames.last()?);
         unclosed(outer.before, d(inner.quote), diagnostics);
         self.open.truncate(outer.brace);
-        // A literal whose own text the cut ends has no token yet: the caller pushes it.
         tokens.truncate(outer.token + 1);
         if let Some(t) = tokens.get_mut(outer.token) {
             t.kind = TokenKind::Str(String::new());
@@ -464,7 +463,8 @@ impl Brackets {
     /// The token of a string literal's text after its `"` at `start`, or after the `}` at
     /// `start` that ends an interpolation in it, and `start` when the text is not closed. A `{`
     /// that opens an interpolation pushes its frame and opens a bracket, and a literal that is
-    /// not closed closes every frame, so that it is reported once.
+    /// not closed closes every frame, so that it is reported once. There is no token when that
+    /// cut leaves an outer literal's token as the literal's one token.
     fn string(
         &mut self,
         source: &str,
@@ -472,7 +472,7 @@ impl Brackets {
         chars: &mut Chars,
         tokens: &mut Vec<Token>,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> (TokenKind, Option<usize>) {
+    ) -> (Option<TokenKind>, Option<usize>) {
         let resumed = source[start..].starts_with('}');
         let (quote, token, before) = match self.frames.pop_if(|_| resumed) {
             // The `}` closes the interpolation's `{`.
@@ -505,11 +505,13 @@ impl Brackets {
             // The literal is the innermost frame while its end is reported.
             End::Open => {
                 self.frames.push(frame);
-                return (kind, self.end_line(start, tokens, diagnostics));
+                let pushed = self.frames.first().is_some_and(|f| f.token < tokens.len());
+                let cut = self.end_line(start, tokens, diagnostics);
+                return ((!pushed).then_some(kind), cut);
             }
             End::Quote => {}
         }
-        (kind, None)
+        (Some(kind), None)
     }
 }
 
@@ -1527,7 +1529,6 @@ mod tests {
             ("\"{ \"a\n", (LiteralNotClosed, 1, 4), "\""),
             ("\"{ \"{x\n", (LiteralNotClosed, 1, 4), "\""),
             // Brackets opened in an interpolation close with it, so lexing goes on.
-            ("\"a{ f(x\nlet t = 1", (LiteralNotClosed, 1, 1), "\""),
             (
                 "\"a{ [x // c\nlet t = 1",
                 (CommentInInterpolation, 1, 8),
@@ -1667,36 +1668,45 @@ mod tests {
         }
     }
 
-    /// A literal that is not closed is one `Str` token, so no bracket opened in it stays open,
-    /// and the line break after it ends its statement.
+    /// A literal that is not closed is one `Str` token, whichever segment its line end cuts, so
+    /// no bracket opened in it stays open, and the line break after it ends its statement.
     #[test]
-    fn unclosed_interpolation_is_one_token() {
+    fn unclosed_literal_is_one_str_token() {
         use TokenKind::{Eof, Eq, Let, Newline};
-        let lexed = lex("let s = \"a{ f(x\nlet t = 1").expect("the lexer recovers");
-        let kinds: Vec<_> = lexed.tokens.into_iter().map(|t| t.kind).collect();
-        assert_eq!(
-            kinds,
-            [
-                Let,
-                ident("s"),
-                Eq,
-                str(""),
-                Newline,
-                Let,
-                ident("t"),
-                Eq,
-                int(1),
-                Newline,
-                Eof
-            ]
-        );
+        for (literal, text) in [
+            ("\"ab", "ab"),
+            ("\"a{ f(x", ""),
+            ("\"a{x}b", ""),
+            ("\"a{ \"b", ""),
+            ("\"a{x}b{ \"c{y}d", ""),
+        ] {
+            let lexed = lex(&format!("let s = {literal}\nlet t = 1")).expect("the lexer recovers");
+            let kinds: Vec<_> = lexed.tokens.into_iter().map(|t| t.kind).collect();
+            assert_eq!(
+                kinds,
+                [
+                    Let,
+                    ident("s"),
+                    Eq,
+                    str(text),
+                    Newline,
+                    Let,
+                    ident("t"),
+                    Eq,
+                    int(1),
+                    Newline,
+                    Eof
+                ],
+                "{literal}"
+            );
+        }
     }
 
     /// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
     /// update the override there. Each unclosed literal once rescanned every earlier diagnostic.
     #[test]
     fn many_unclosed_strings_lex_in_linear_time() {
-        const LINES: usize = 160_000;
+        const LINES: usize = 500_000;
         let lexed = lex(&"\"x\n".repeat(LINES)).expect("the lexer recovers");
         assert_eq!(lexed.diagnostics.len(), LINES);
     }
