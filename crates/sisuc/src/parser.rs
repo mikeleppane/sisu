@@ -1284,6 +1284,10 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::Bool(token.kind == TokenKind::True)
             }
+            TokenKind::Char(c) => {
+                self.bump();
+                ExprKind::Char(c)
+            }
             TokenKind::SelfKw => {
                 self.bump();
                 ExprKind::SelfValue
@@ -1596,6 +1600,14 @@ mod tests {
         ] {
             assert_eq!(parse_err(src), (Code::IntegerTooLarge, 1, col), "{src}");
         }
+    }
+
+    #[test]
+    fn char_s_expression() {
+        assert_eq!(
+            body("fn main() {\n    let c = 'ä'\n    let n = '\\n'\n}"),
+            "(block (let c 'ä') (let n '\\n'))"
+        );
     }
 
     #[test]

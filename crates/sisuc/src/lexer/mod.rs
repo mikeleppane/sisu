@@ -19,6 +19,8 @@ pub(crate) enum TokenKind {
         value: u64,
         text: String,
     },
+    /// A `char` literal, decoded.
+    Char(char),
     Fn,
     Let,
     Mut,
@@ -93,6 +95,7 @@ impl TokenKind {
             TokenKind::Ident(_) => "Ident",
             TokenKind::Underscore => "Underscore",
             TokenKind::Int { .. } => "Int",
+            TokenKind::Char(_) => "Char",
             TokenKind::Fn => "Fn",
             TokenKind::Let => "Let",
             TokenKind::Mut => "Mut",
@@ -161,6 +164,7 @@ impl TokenKind {
             TokenKind::Ident(name) => name.as_str(),
             TokenKind::Underscore => "_",
             TokenKind::Int { text, .. } => return format!("`{text}`"),
+            TokenKind::Char(c) => return format!("`{c:?}`"),
             TokenKind::Fn => "fn",
             TokenKind::Let => "let",
             TokenKind::Mut => "mut",
@@ -292,14 +296,8 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
                 });
                 keyword_or_ident(&source[start..end])
             }
-            c if c.is_ascii_digit() => {
-                literal::number(source, start, &mut chars).unwrap_or_else(|d| {
-                    diagnostics.push(d);
-                    TokenKind::Int {
-                        value: 0,
-                        text: "0".to_string(),
-                    }
-                })
+            c if c.is_ascii_digit() || c == '\'' => {
+                literal::token(source, start, &mut chars, &mut diagnostics)
             }
             '-' if matches!(chars.peek(), Some(&(_, ' ' | '\t')))
                 && tokens.last().is_some_and(|t| t.kind == TokenKind::Newline) =>
@@ -435,8 +433,8 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 /// Whether `token` can end a statement (Go's rule).
 fn can_end_statement(token: Option<&Token>) -> bool {
     use TokenKind::{
-        Break, Continue, False, Ident, Int, NoneKw, Question, RBrace, RBracket, RParen, Return,
-        SelfKw, True, Underscore,
+        Break, Char, Continue, False, Ident, Int, NoneKw, Question, RBrace, RBracket, RParen,
+        Return, SelfKw, True, Underscore,
     };
     token.is_some_and(|t| {
         matches!(
@@ -444,6 +442,7 @@ fn can_end_statement(token: Option<&Token>) -> bool {
             Ident(_)
                 | Underscore
                 | Int { .. }
+                | Char(_)
                 | True
                 | False
                 | Return
@@ -1174,6 +1173,135 @@ mod tests {
         assert_eq!(
             err("99999999999999999999999"),
             (Code::IntegerTooLarge, 1, 1)
+        );
+    }
+
+    fn chars(src: &str) -> Vec<char> {
+        kinds(src)
+            .into_iter()
+            .filter_map(|k| match k {
+                TokenKind::Char(c) => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn char_literals() {
+        assert_eq!(
+            chars(r#"'a' 'ä' '😀' '{' '}' '\{' '\}' '\'' '"'"#),
+            ['a', 'ä', '😀', '{', '}', '{', '}', '\'', '"']
+        );
+    }
+
+    #[test]
+    fn escapes() {
+        assert_eq!(
+            chars(
+                r#"'\n' '\t' '\r' '\0' '\\' '\"' '\'' '\u{E4}' '\u{1F600}' '\u{D7FF}' '\u{E000}' '\u{10FFFF}'"#
+            ),
+            [
+                '\n',
+                '\t',
+                '\r',
+                '\0',
+                '\\',
+                '"',
+                '\'',
+                'ä',
+                '😀',
+                '\u{D7FF}',
+                '\u{E000}',
+                '\u{10FFFF}'
+            ]
+        );
+    }
+
+    /// Each error is at its literal or its escape, and the lexer goes on after the literal.
+    #[test]
+    fn escape_errors() {
+        use Code::{MalformedUnicodeEscape, NotScalarValue, UnknownEscape};
+        for (src, expected) in [
+            (r"'\q'", (UnknownEscape, 1, 2)),
+            (r"'\u{}'", (MalformedUnicodeEscape, 1, 2)),
+            (r"'\u{1234567}'", (MalformedUnicodeEscape, 1, 2)),
+            (r"'\u{12'", (MalformedUnicodeEscape, 1, 2)),
+            (r"'\uE4'", (MalformedUnicodeEscape, 1, 2)),
+            (r"'\u{12G4}'", (MalformedUnicodeEscape, 1, 2)),
+            (r"'\u{D800}'", (NotScalarValue, 1, 2)),
+            (r"'\u{DFFF}'", (NotScalarValue, 1, 2)),
+            (r"'\u{110000}'", (NotScalarValue, 1, 2)),
+            (r"'ab\q'", (UnknownEscape, 1, 4)),
+        ] {
+            assert_eq!(err(src), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn escape_error_spans() {
+        for (src, text) in [
+            (r"'\q'", r"\q"),
+            (r"'\u{}'", r"\u{}"),
+            (r"'\u{1234567}'", r"\u{1234567}"),
+            (r"'\u{12'", r"\u{12"),
+            (r"'\uE4'", r"\u"),
+            (r"'\u{12G4}'", r"\u{12"),
+            (r"'\u{D800}'", r"\u{D800}"),
+        ] {
+            let span = only(src).span();
+            assert_eq!(&src[span.start..span.end], text, "{src}");
+        }
+    }
+
+    #[test]
+    fn char_literal_errors() {
+        use Code::{LiteralNotClosed, NotOneCodePoint};
+        for (src, expected) in [
+            ("''", (NotOneCodePoint, 1, 1)),
+            ("'ab'", (NotOneCodePoint, 1, 1)),
+            ("'e\u{301}'", (NotOneCodePoint, 1, 1)),
+            ("'a\n", (LiteralNotClosed, 1, 1)),
+            ("'a", (LiteralNotClosed, 1, 1)),
+            ("let c = '", (LiteralNotClosed, 1, 9)),
+            ("let c = '\\", (LiteralNotClosed, 1, 9)),
+            ("let c = '\\\n", (LiteralNotClosed, 1, 9)),
+        ] {
+            assert_eq!(err(src), expected, "{src:?}");
+        }
+    }
+
+    /// The error covers the whole literal, and the next token starts after it.
+    #[test]
+    fn char_literal_error_recovery() {
+        let src = "'ab' 7";
+        let lexed = lex(src).expect("the lexer recovers");
+        let span = lexed.diagnostics[0].span();
+        assert_eq!((span.start, span.end), (0, 4));
+        assert_eq!(lexed.tokens[1].kind, int(7));
+        let src = "'a 7\nx";
+        let lexed = lex(src).expect("the lexer recovers");
+        let span = lexed.diagnostics[0].span();
+        assert_eq!((span.start, span.end), (0, 1));
+        assert_eq!(lexed.tokens[1].kind, TokenKind::Newline);
+    }
+
+    #[test]
+    fn char_ends_statement() {
+        assert_eq!(
+            all_kinds("let c = 'a'\nprint(c)"),
+            [
+                TokenKind::Let,
+                ident("c"),
+                TokenKind::Eq,
+                TokenKind::Char('a'),
+                TokenKind::Newline,
+                ident("print"),
+                TokenKind::LParen,
+                ident("c"),
+                TokenKind::RParen,
+                TokenKind::Newline,
+                TokenKind::Eof
+            ]
         );
     }
 

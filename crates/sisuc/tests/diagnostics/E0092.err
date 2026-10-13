@@ -1,0 +1,8 @@
+error[E0092]: a `char` holds one code point
+ --> E0092.sisu:2:13
+  |
+2 |     let c = 'ab'
+  |             ^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0092

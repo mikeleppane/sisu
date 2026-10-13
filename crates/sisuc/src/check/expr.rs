@@ -62,6 +62,8 @@ impl Checker {
         match &e.kind {
             ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
+            // Until Task 8 gives `char` its type, a literal checks as its code point.
+            ExprKind::Char(c) => node(tir::ExprKind::Int(i64::from(u32::from(*c))), Type::I64),
             ExprKind::ArrayLit(elements) => self.array_lit(e.span, elements, expected),
             ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
             ExprKind::Index { base, index } => self.index(e.span, base, index),

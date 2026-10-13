@@ -1,0 +1,8 @@
+error[E0091]: `\u{D800}` is not a Unicode scalar value
+ --> E0091.sisu:2:14
+  |
+2 |     let c = '\u{D800}'
+  |              ^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0091

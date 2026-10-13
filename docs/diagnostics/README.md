@@ -97,6 +97,11 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0086](E0086.md) | error | constant value not known at compile time |
 | [E0087](E0087.md) | error | constant that uses itself or a constant below it |
 | [E0088](E0088.md) | error | constant whose value would panic |
+| [E0089](E0089.md) | error | unknown escape |
+| [E0090](E0090.md) | error | malformed `\u` escape |
+| [E0091](E0091.md) | error | escape that is not a Unicode scalar value |
+| [E0092](E0092.md) | error | `char` literal that is not one code point |
+| [E0093](E0093.md) | error | `char` literal that is not closed |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 

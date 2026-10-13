@@ -128,6 +128,11 @@ codes! {
     ConstantNotKnown = "E0086",
     ConstantOrder = "E0087",
     ConstantPanics = "E0088",
+    UnknownEscape = "E0089",
+    MalformedUnicodeEscape = "E0090",
+    NotScalarValue = "E0091",
+    NotOneCodePoint = "E0092",
+    LiteralNotClosed = "E0093",
 }
 
 impl Code {
@@ -483,6 +488,23 @@ pub(crate) enum DiagnosticKind {
     },
     /// The operation at `at` in a constant's value, which would `panic` at run time.
     ConstantPanics { panic: Panic, at: Span },
+    /// The escape `\` and `found`, at `at`, which is none of the escapes.
+    UnknownEscape { found: char, at: Span },
+    /// The `\u` escape at `at`, as far as it reaches, which is not 1 to 6 hex digits in braces.
+    MalformedUnicodeEscape { at: Span },
+    /// The `\u{...}` escape `escape`, as written, at `at`, whose value is not a Unicode scalar
+    /// value.
+    NotScalarValue { escape: String, at: Span },
+    /// The `char` literal at `at`, which holds no code point or more than one.
+    NotOneCodePoint { at: Span },
+    /// The literal of `kind` that starts at `at` and stops at a line break or the end of the file.
+    LiteralNotClosed { kind: LiteralKind, at: Span },
+}
+
+/// What a literal that is not closed is the literal of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiteralKind {
+    Char,
 }
 
 /// A run-time panic that folding a constant meets.
@@ -719,6 +741,11 @@ impl DiagnosticKind {
             DiagnosticKind::ConstantNotKnown { .. } => Code::ConstantNotKnown,
             DiagnosticKind::ConstantOrder { .. } => Code::ConstantOrder,
             DiagnosticKind::ConstantPanics { .. } => Code::ConstantPanics,
+            DiagnosticKind::UnknownEscape { .. } => Code::UnknownEscape,
+            DiagnosticKind::MalformedUnicodeEscape { .. } => Code::MalformedUnicodeEscape,
+            DiagnosticKind::NotScalarValue { .. } => Code::NotScalarValue,
+            DiagnosticKind::NotOneCodePoint { .. } => Code::NotOneCodePoint,
+            DiagnosticKind::LiteralNotClosed { .. } => Code::LiteralNotClosed,
         }
     }
 }
@@ -1467,6 +1494,24 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::ConstantPanics { panic, at } => {
                 Diagnostic::coded(code, at, panic.message())
             }
+            DiagnosticKind::UnknownEscape { found, at } => {
+                Diagnostic::coded(code, at, format!("unknown escape `\\{found}`")).with_help(
+                    r#"the escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\{`, `\}` and `\u{...}`"#,
+                )
+            }
+            DiagnosticKind::MalformedUnicodeEscape { at } => {
+                Diagnostic::coded(code, at, r"`\u` takes 1 to 6 hex digits in braces")
+                    .with_help(r"write `\u{E4}`")
+            }
+            DiagnosticKind::NotScalarValue { escape, at } => {
+                Diagnostic::coded(code, at, format!("`{escape}` is not a Unicode scalar value"))
+            }
+            DiagnosticKind::NotOneCodePoint { at } => {
+                Diagnostic::coded(code, at, "a `char` holds one code point")
+            }
+            DiagnosticKind::LiteralNotClosed { kind, at } => match kind {
+                LiteralKind::Char => Diagnostic::coded(code, at, "`char` literal is not closed"),
+            },
         }
     }
 }

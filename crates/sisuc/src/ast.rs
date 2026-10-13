@@ -184,6 +184,8 @@ pub(crate) enum ExprKind {
         text: String,
     },
     Bool(bool),
+    /// A `char` literal, decoded.
+    Char(char),
     Name(String),
     Call {
         callee: Ident,
@@ -479,6 +481,7 @@ impl fmt::Display for Expr {
         match &self.kind {
             ExprKind::Int { value, .. } => write!(f, "{value}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
+            ExprKind::Char(c) => write!(f, "{c:?}"),
             ExprKind::Name(name) => f.write_str(name),
             ExprKind::Call { callee, args } => {
                 write!(f, "(call {}", callee.name)?;

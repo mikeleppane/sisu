@@ -1,16 +1,37 @@
-//! Number literals: decimal, and `0x`, `0b` and `0o` with digit separators.
+//! Literals: numbers (decimal, and `0x`, `0b` and `0o` with digit separators), `char` literals
+//! and the escapes in them.
 
 use super::{Chars, MIN_MAGNITUDE, TokenKind, literal_too_large, take_while};
-use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, LiteralKind, Span};
+
+/// The number or `char` literal that starts at `source[start..]`, whose first char `chars` has
+/// consumed. After an error it records the diagnostic and gives a placeholder token, so that
+/// lexing and parsing go on.
+pub(super) fn token(
+    source: &str,
+    start: usize,
+    chars: &mut Chars,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> TokenKind {
+    let (literal, placeholder) = if source[start..].starts_with('\'') {
+        (char_literal(source, start, chars), TokenKind::Char('\0'))
+    } else {
+        let zero = TokenKind::Int {
+            value: 0,
+            text: "0".to_string(),
+        };
+        (number(source, start, chars), zero)
+    };
+    literal.unwrap_or_else(|d| {
+        diagnostics.push(d);
+        placeholder
+    })
+}
 
 /// The literal that starts at the digit `source[start..]`, whose first char `chars` has consumed.
 /// A prefixed literal takes every ASCII letter, digit and `_` after its prefix, so a wrong digit
 /// is reported at that digit and not as the start of an identifier.
-pub(super) fn number(
-    source: &str,
-    start: usize,
-    chars: &mut Chars,
-) -> Result<TokenKind, Diagnostic> {
+fn number(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKind, Diagnostic> {
     let prefix = if source[start..].starts_with('0') {
         chars.next_if(|&(_, c)| matches!(c, 'x' | 'X' | 'b' | 'B' | 'o' | 'O'))
     } else {
@@ -79,4 +100,104 @@ pub(super) fn number(
         value,
         text: source[start..end].to_string(),
     })
+}
+
+/// The `char` literal that starts at the `'` at `source[start..]`, which `chars` has consumed.
+/// It reads on to the closing `'`, so that an error leaves the rest of the literal behind it, or
+/// to the line end when there is none. The first error is the one reported.
+fn char_literal(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKind, Diagnostic> {
+    let mut error = None;
+    let mut points = String::new();
+    let end = loop {
+        let Some((i, c)) = chars.next_if(|&(_, c)| c != '\n') else {
+            return Err(error.unwrap_or_else(|| {
+                DiagnosticKind::LiteralNotClosed {
+                    kind: LiteralKind::Char,
+                    at: Span::new(start, start + 1),
+                }
+                .into()
+            }));
+        };
+        match c {
+            '\'' => break i + 1,
+            // A `\` at the line end is followed by the "not closed" error of the next turn.
+            '\\' if chars.peek().is_none_or(|&(_, n)| n == '\n') => {}
+            '\\' => match escape(source, i, chars) {
+                Ok(c) => points.push(c),
+                Err(d) => {
+                    error.get_or_insert(d);
+                }
+            },
+            c => points.push(c),
+        }
+    };
+    if let Some(d) = error {
+        return Err(d);
+    }
+    let mut points = points.chars();
+    match (points.next(), points.next()) {
+        (Some(c), None) => Ok(TokenKind::Char(c)),
+        _ => Err(DiagnosticKind::NotOneCodePoint {
+            at: Span::new(start, end),
+        }
+        .into()),
+    }
+}
+
+/// Decodes the escape after a `\`, which `chars` has just consumed at `backslash`. A char that is
+/// not a line break must follow: the caller reports a literal that ends there as not closed.
+pub(super) fn escape(
+    source: &str,
+    backslash: usize,
+    chars: &mut Chars,
+) -> Result<char, Diagnostic> {
+    let Some((at, c)) = chars.next() else {
+        unreachable!("the caller checked that a char follows the backslash")
+    };
+    match c {
+        'n' => Ok('\n'),
+        't' => Ok('\t'),
+        'r' => Ok('\r'),
+        '0' => Ok('\0'),
+        '\\' | '"' | '\'' | '{' | '}' => Ok(c),
+        'u' => unicode_escape(source, backslash, chars),
+        _ => Err(DiagnosticKind::UnknownEscape {
+            found: c,
+            at: Span::new(backslash, at + c.len_utf8()),
+        }
+        .into()),
+    }
+}
+
+/// The value of `\u{...}`, whose `\` stands at `backslash` and whose `u` `chars` has consumed.
+fn unicode_escape(source: &str, backslash: usize, chars: &mut Chars) -> Result<char, Diagnostic> {
+    let malformed = |end| -> Diagnostic {
+        DiagnosticKind::MalformedUnicodeEscape {
+            at: Span::new(backslash, end),
+        }
+        .into()
+    };
+    let digits_at = backslash + 3;
+    if chars.next_if(|&(_, c)| c == '{').is_none() {
+        return Err(malformed(backslash + 2));
+    }
+    let digits_end = take_while(chars, source, |c| c.is_ascii_hexdigit());
+    if chars.next_if(|&(_, c)| c == '}').is_none() {
+        return Err(malformed(digits_end));
+    }
+    let end = digits_end + 1;
+    let digits = &source[digits_at..digits_end];
+    if digits.is_empty() || digits.len() > 6 {
+        return Err(malformed(end));
+    }
+    u32::from_str_radix(digits, 16)
+        .ok()
+        .and_then(char::from_u32)
+        .ok_or_else(|| {
+            DiagnosticKind::NotScalarValue {
+                escape: source[backslash..end].to_string(),
+                at: Span::new(backslash, end),
+            }
+            .into()
+        })
 }

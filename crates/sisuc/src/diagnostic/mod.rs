@@ -9,7 +9,7 @@ mod suggest;
 
 pub(crate) use registry::{
     Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable, Join, LetField, Literal,
-    Panic, SemicolonPlace, Unwrap,
+    LiteralKind, Panic, SemicolonPlace, Unwrap,
 };
 pub(crate) use suggest::{Suggestion, suggestion};
 
