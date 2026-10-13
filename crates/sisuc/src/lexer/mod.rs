@@ -23,6 +23,9 @@ pub(crate) enum TokenKind {
     Let,
     Mut,
     Var,
+    /// A word that a later milestone gives meaning. The milestone that does so gives it its own
+    /// variant and removes it from `keyword_or_ident`.
+    Reserved(&'static str),
     If,
     Else,
     While,
@@ -93,6 +96,7 @@ impl TokenKind {
             TokenKind::Let => "Let",
             TokenKind::Mut => "Mut",
             TokenKind::Var => "Var",
+            TokenKind::Reserved(_) => "Reserved",
             TokenKind::If => "If",
             TokenKind::Else => "Else",
             TokenKind::While => "While",
@@ -159,6 +163,7 @@ impl TokenKind {
             TokenKind::Let => "let",
             TokenKind::Mut => "mut",
             TokenKind::Var => "var",
+            TokenKind::Reserved(word) => word,
             TokenKind::If => "if",
             TokenKind::Else => "else",
             TokenKind::While => "while",
@@ -624,6 +629,19 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "let" => TokenKind::Let,
         "mut" => TokenKind::Mut,
         "var" => TokenKind::Var,
+        "import" => TokenKind::Reserved("import"),
+        "pub" => TokenKind::Reserved("pub"),
+        "enum" => TokenKind::Reserved("enum"),
+        "match" => TokenKind::Reserved("match"),
+        "record" => TokenKind::Reserved("record"),
+        "type" => TokenKind::Reserved("type"),
+        "weak" => TokenKind::Reserved("weak"),
+        "test" => TokenKind::Reserved("test"),
+        "todo" => TokenKind::Reserved("todo"),
+        "echo" => TokenKind::Reserved("echo"),
+        "interface" => TokenKind::Reserved("interface"),
+        "extern" => TokenKind::Reserved("extern"),
+        "as" => TokenKind::Reserved("as"),
         "if" => TokenKind::If,
         "else" => TokenKind::Else,
         "while" => TokenKind::While,
@@ -816,6 +834,38 @@ mod tests {
         assert_eq!(
             kinds("fn let mut var if else while return true false"),
             [Fn, Let, Mut, Var, If, Else, While, Return, True, False, Eof]
+        );
+    }
+
+    #[test]
+    fn reserved_words() {
+        use TokenKind::{Eof, Reserved};
+        let words = [
+            "import",
+            "pub",
+            "enum",
+            "match",
+            "record",
+            "type",
+            "weak",
+            "test",
+            "todo",
+            "echo",
+            "interface",
+            "extern",
+            "as",
+        ];
+        let mut expected: Vec<_> = words.iter().map(|w| Reserved(w)).collect();
+        expected.extend([
+            ident("matches"),
+            ident("type_"),
+            ident("pubx"),
+            ident("ask"),
+        ]);
+        expected.push(Eof);
+        assert_eq!(
+            kinds(&format!("{} matches type_ pubx ask", words.join(" "))),
+            expected
         );
     }
 

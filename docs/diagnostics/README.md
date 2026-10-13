@@ -91,6 +91,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0080](E0080.md) | error | `_` used as a name |
 | [E0081](E0081.md) | error | block that stands alone as a statement |
 | [E0082](E0082.md) | error | `break` or `continue` in a loop header |
+| [E0083](E0083.md) | error | word reserved for a later version |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 

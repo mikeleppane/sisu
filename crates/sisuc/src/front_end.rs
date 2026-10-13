@@ -376,7 +376,7 @@ fn main() {
             [(Code::Expected, (1, 1)), (Code::Expected, (3, 9))]
         );
         // `fn` within a line does not start an item.
-        let src = "pub fn main() {\n    let = 1\n}\n";
+        let src = "export fn main() {\n    let = 1\n}\n";
         assert_eq!(codes(src), [(Code::Expected, (1, 1))]);
         assert_eq!(
             codes("fn main() {}\nstruct P {}\n"),

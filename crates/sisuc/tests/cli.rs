@@ -53,6 +53,19 @@ fn emit_tokens_names_the_class_and_optional_tokens() {
 }
 
 #[test]
+fn emit_tokens_reserved() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("emit_tokens_reserved.sisu"), "match\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_reserved.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("1:1 Reserved match\n"));
+}
+
+#[test]
 fn lexer_error_exits_1() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(dir.join("lexer_error_exits_1.sisu"), "a & b\n").expect("writes");

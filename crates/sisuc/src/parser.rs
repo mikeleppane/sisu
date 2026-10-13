@@ -208,13 +208,17 @@ impl Parser<'_> {
     }
 
     /// "expected <what>, found <the next token>", pointing at the next token.
-    /// A stray `var` always gets its own diagnostic, wherever it appears.
+    /// A stray `var` or reserved word always gets its own diagnostic, wherever it appears.
     fn expected(&self, what: &str) -> Diagnostic {
         let found = self.peek();
         match found.kind {
             TokenKind::Var => DiagnosticKind::Var {
                 at: found.span,
                 field: false,
+            },
+            TokenKind::Reserved(word) => DiagnosticKind::ReservedWord {
+                word,
+                at: found.span,
             },
             _ => DiagnosticKind::Expected {
                 what: what.to_string(),
@@ -2384,6 +2388,25 @@ mod tests {
             assert!(d.help().is_some());
             assert_eq!(fix_edits(d), None);
         }
+    }
+
+    #[test]
+    fn reserved_errors() {
+        // One row per place that wants a name or an expression.
+        for (src, line, col) in [
+            ("fn main() {\n    let match = 1\n}", 2, 9),
+            ("class C {\n    enum: i64\n}", 2, 5),
+            ("fn main() {\n    print(todo)\n}", 2, 11),
+            ("fn main() {\n    print(p.type)\n}", 2, 13),
+            ("import x", 1, 1),
+        ] {
+            assert_eq!(parse_err(src), (Code::ReservedWord, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn mut_before_a_reserved_word_is_still_reported() {
+        assert_eq!(parse_err("fn f(mut type: i64) {}"), (Code::Expected, 1, 6));
     }
 
     #[test]

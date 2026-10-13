@@ -122,6 +122,7 @@ codes! {
     UnderscoreName = "E0080",
     BlockAsStatement = "E0081",
     JumpInLoopHeader = "E0082",
+    ReservedWord = "E0083",
 }
 
 impl Code {
@@ -458,6 +459,8 @@ pub(crate) enum DiagnosticKind {
         at: Span,
         loop_at: Span,
     },
+    /// The word `word` at `at`, which a later version of Sisu gives a meaning.
+    ReservedWord { word: &'static str, at: Span },
 }
 
 /// A literal that takes its type from its position.
@@ -663,6 +666,7 @@ impl DiagnosticKind {
             DiagnosticKind::UnderscoreName { .. } => Code::UnderscoreName,
             DiagnosticKind::BlockAsStatement { .. } => Code::BlockAsStatement,
             DiagnosticKind::JumpInLoopHeader { .. } => Code::JumpInLoopHeader,
+            DiagnosticKind::ReservedWord { .. } => Code::ReservedWord,
         }
     }
 }
@@ -1367,6 +1371,11 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("`{keyword}` cannot appear in a loop header"))
                     .with_secondary(loop_at, "the header of this loop")
             }
+            DiagnosticKind::ReservedWord { word, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{word}` is reserved for a later version of Sisu"),
+            ),
         }
     }
 }
