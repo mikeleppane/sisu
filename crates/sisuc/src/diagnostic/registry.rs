@@ -133,6 +133,7 @@ codes! {
     NotScalarValue = "E0091",
     NotOneCodePoint = "E0092",
     LiteralNotClosed = "E0093",
+    ArithmeticOnChar = "E0094",
 }
 
 impl Code {
@@ -270,10 +271,10 @@ pub(crate) enum DiagnosticKind {
         want: String,
         at: Span,
     },
-    /// A value of type `got`, at `at`, where `want` is expected; `convert` is the conversion
-    /// that would fit.
+    /// A value of type `got`, at `at`, where one of the types `want` is expected; `convert` is
+    /// the conversion that would fit.
     Mismatch {
-        want: String,
+        want: Vec<String>,
         got: String,
         at: Span,
         convert: Option<Conversion>,
@@ -357,11 +358,14 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A conversion to `ty` of the value at `at`, which already has that type. `value` is its
-    /// path as written, when it has one.
+    /// path as written, when it has one, and `conversion` is the whole call. `grouped` is set
+    /// when the value is more than one term, so removing the conversion keeps its parentheses.
     AlreadyConverted {
         value: Option<String>,
         ty: String,
         at: Span,
+        conversion: Span,
+        grouped: bool,
     },
     /// A label at `at` on an argument of a call that is not a constructor.
     LabeledArgument { at: Span },
@@ -499,6 +503,12 @@ pub(crate) enum DiagnosticKind {
     NotOneCodePoint { at: Span },
     /// The literal of `kind` that starts at `at` and stops at a line break or the end of the file.
     LiteralNotClosed { kind: LiteralKind, at: Span },
+    /// Arithmetic on the `char` at `at`; `convert` is the rewrite through `i64`, when the
+    /// expression can be rewritten in place.
+    ArithmeticOnChar {
+        at: Span,
+        convert: Option<CharArithmetic>,
+    },
 }
 
 /// What a literal that is not closed is the literal of.
@@ -513,6 +523,7 @@ pub(crate) enum Panic {
     Overflow,
     DivisionByZero,
     NotU8,
+    NotChar,
 }
 
 impl Panic {
@@ -522,6 +533,7 @@ impl Panic {
             Panic::Overflow => "integer overflow",
             Panic::DivisionByZero => "division by zero",
             Panic::NotU8 => "value does not fit in `u8`",
+            Panic::NotChar => "value is not a valid `char`",
         }
     }
 }
@@ -588,11 +600,22 @@ pub(crate) enum Earlier {
     BuiltIn,
 }
 
-/// Converting the expression at `operand` to the type `to`: `u8` or `i64`.
+/// Converting the expression at `operand` to the type `to`: `u8`, `i64` or `char`. `u8` and
+/// `char` convert into each other `through` `i64`.
 #[derive(Clone, Copy)]
 pub(crate) struct Conversion {
     pub(crate) to: &'static str,
+    pub(crate) through: Option<&'static str>,
     pub(crate) operand: Span,
+}
+
+/// Arithmetic done on `char`s by converting each to `i64` and the result back: `operands` is the
+/// expression from its left operand to its right one, and `chars` are the operands that are
+/// `char`s, in source order.
+#[derive(Clone)]
+pub(crate) struct CharArithmetic {
+    pub(crate) operands: Span,
+    pub(crate) chars: Vec<Span>,
 }
 
 /// Moving a token up to the code before it: the `gap` between them becomes a space.
@@ -746,6 +769,7 @@ impl DiagnosticKind {
             DiagnosticKind::NotScalarValue { .. } => Code::NotScalarValue,
             DiagnosticKind::NotOneCodePoint { .. } => Code::NotOneCodePoint,
             DiagnosticKind::LiteralNotClosed { .. } => Code::LiteralNotClosed,
+            DiagnosticKind::ArithmeticOnChar { .. } => Code::ArithmeticOnChar,
         }
     }
 }
@@ -1059,7 +1083,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 suggestion,
             } => similar(
                 Diagnostic::coded(code, at, format!("cannot find type `{name}`")).with_help(
-                    "the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`",
+                    "the types are `i64`, `u8`, `bool`, `char`, classes and arrays such as `[i64]`",
                 ),
                 at,
                 suggestion,
@@ -1075,19 +1099,30 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 convert,
             } => {
-                let d = Diagnostic::coded(code, at, format!("expected `{want}`, found `{got}`"));
+                let want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
+                let d = Diagnostic::coded(
+                    code,
+                    at,
+                    format!("expected {}, found `{got}`", want.join(" or ")),
+                );
                 match convert {
-                    Some(Conversion { to, operand }) => d.with_fix(Fix {
+                    Some(Conversion {
+                        to,
+                        through,
+                        operand,
+                    }) => d.with_fix(Fix {
                         message: format!("if the types are right, convert it with `{to}(...)`"),
                         certain: false,
                         edits: vec![
                             Edit {
                                 span: Span::new(operand.start, operand.start),
-                                replacement: format!("{to}("),
+                                replacement: through.map_or(format!("{to}("), |through| {
+                                    format!("{to}({through}(")
+                                }),
                             },
                             Edit {
                                 span: Span::new(operand.end, operand.end),
-                                replacement: ")".to_string(),
+                                replacement: ")".repeat(1 + usize::from(through.is_some())),
                             },
                         ],
                     }),
@@ -1235,8 +1270,31 @@ impl From<DiagnosticKind> for Diagnostic {
                     format!("`{name}` takes {want} argument{plural}, found {found}"),
                 )
             }
-            DiagnosticKind::AlreadyConverted { value, ty, at } => {
-                Diagnostic::coded(code, at, format!("{} is already `{ty}`", named(value)))
+            DiagnosticKind::AlreadyConverted {
+                value,
+                ty,
+                at,
+                conversion,
+                grouped,
+            } => {
+                let edit = |span: Span, replacement: &str| Edit {
+                    span,
+                    replacement: replacement.to_string(),
+                };
+                // The head, `T(` and what sits before the value, then the `)` after it.
+                let head = Span::new(conversion.start, at.start);
+                let edits = if grouped {
+                    vec![edit(head, "(")]
+                } else {
+                    vec![edit(head, ""), edit(Span::new(at.end, conversion.end), "")]
+                };
+                Diagnostic::coded(code, at, format!("{} is already `{ty}`", named(value))).with_fix(
+                    Fix {
+                        message: "remove the conversion".to_string(),
+                        certain: true,
+                        edits,
+                    },
+                )
             }
             DiagnosticKind::LabeledArgument { at } => {
                 Diagnostic::coded(code, at, "labels on arguments come in milestone 10")
@@ -1278,7 +1336,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 format!("`{name}` is a field of `{owner}`, not a method"),
             ),
             DiagnosticKind::PrintArgument { at, class } => {
-                let takes = "`print` takes one `i64`, `u8` or `bool`";
+                let takes = "`print` takes one `i64`, `u8`, `bool` or `char`";
                 match class {
                     Some(class) => Diagnostic::coded(code, at, format!("cannot print `{class}`"))
                         .with_help(takes),
@@ -1466,7 +1524,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 })
             }
             DiagnosticKind::ConstantType { at } => {
-                Diagnostic::coded(code, at, "a constant is `i64`, `u8` or `bool`")
+                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `bool` or `char`")
             }
             DiagnosticKind::ConstantNotKnown { at } => {
                 Diagnostic::coded(code, at, "a constant's value must be known at compile time")
@@ -1518,8 +1576,39 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::LiteralNotClosed { kind, at } => match kind {
                 LiteralKind::Char => Diagnostic::coded(code, at, "`char` literal is not closed"),
             },
+            DiagnosticKind::ArithmeticOnChar { at, convert } => {
+                let d = Diagnostic::coded(code, at, "arithmetic does not apply to `char`");
+                match convert {
+                    Some(CharArithmetic { operands, chars }) => d.with_fix(Fix {
+                        message: "convert to `i64` and back".to_string(),
+                        certain: false,
+                        edits: char_arithmetic_edits(operands, &chars),
+                    }),
+                    None => d,
+                }
+            }
         }
     }
+}
+
+/// The edits that turn the expression `operands` into `char(...)` of the same arithmetic on
+/// `i64`s, wrapping each of `chars` in `i64(...)`. Insertions at one offset are one edit.
+fn char_arithmetic_edits(operands: Span, chars: &[Span]) -> Vec<Edit> {
+    let mut edits: Vec<Edit> = Vec::new();
+    let mut insert = |at: usize, text: &str| match edits.last_mut() {
+        Some(last) if last.span.start == at => last.replacement.push_str(text),
+        _ => edits.push(Edit {
+            span: Span::new(at, at),
+            replacement: text.to_string(),
+        }),
+    };
+    insert(operands.start, "char(");
+    for c in chars {
+        insert(c.start, "i64(");
+        insert(c.end, ")");
+    }
+    insert(operands.end, ")");
+    edits
 }
 
 /// The help that lists a class's `fields` in declaration order.

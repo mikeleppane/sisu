@@ -4,7 +4,7 @@ error[E0059]: cannot print `Point`
 7 |     print(p)
   |           ^
   |
-  = help: `print` takes one `i64`, `u8` or `bool`
+  = help: `print` takes one `i64`, `u8`, `bool` or `char`
 
 sisuc: 1 error
 sisuc: for more on a code, run `sisuc --explain <code>`: E0059

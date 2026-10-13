@@ -217,6 +217,44 @@ fn fold_errors() {
     }
 }
 
+/// A `char` constant folds, compares by code point and converts as run time does.
+#[test]
+fn const_char() {
+    contains(
+        "const C = 'ä'\nconst LESS = 'a' < 'b'\nconst E = char(i64(C) + 1)\nconst N: char = 'x'\nconst I = i64(C)\nfn main() {\n    print(C)\n    print(LESS)\n    print(E)\n    print(N)\n    print(I)\n    print(C == 'ä')\n    print(char(55295) < char(57344))\n}",
+        &[
+            "(print 'ä')",
+            "(print true)",
+            "(print 'å')",
+            "(print 'x')",
+            "(print 228)",
+            "(print true)",
+            "(print true)",
+        ],
+    );
+    // No arithmetic, even in a constant: the guess wraps the constant as it does a local.
+    let src = with_main("const C = 'ä'\nconst D = C + 1");
+    let d = diagnostic(&src, Code::ArithmeticOnChar, (2, 11, "C"), &[]);
+    assert_eq!(
+        applied(&src, &d),
+        with_main("const C = 'ä'\nconst D = char(i64(C) + 1)")
+    );
+    // A scalar value converts; the surrogates and everything above `10FFFF` panic as run time does.
+    for value in ["0xD800", "0xDFFF", "0x110000", "-1"] {
+        let src = with_main(&format!("const F = char({value})"));
+        let d = diagnostic(
+            &src,
+            Code::ConstantPanics,
+            (1, 11, &format!("char({value})")),
+            &[],
+        );
+        assert_eq!(fixes(&src, &d), []);
+    }
+    clean(&with_main(
+        "const F = char(0xD7FF)\nconst G = char(0xE000)\nconst H = char(0x10FFFF)",
+    ));
+}
+
 /// Constants share the namespace of functions and classes.
 #[test]
 fn name_errors() {

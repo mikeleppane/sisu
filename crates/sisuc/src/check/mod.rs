@@ -6,6 +6,7 @@ mod constant;
 mod expr;
 mod place;
 mod stmt;
+mod string;
 
 use std::collections::HashMap;
 
@@ -536,7 +537,7 @@ impl Checker {
                     Type::Class(id)
                 } else {
                     let span = Span::new(ty.span.start, ty.span.start + name.len());
-                    let types = ["i64", "u8", "bool"].map(|ty| (ty, Definition::Type));
+                    let types = ["i64", "u8", "bool", "char"].map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
                     self.report(DiagnosticKind::UnknownType {
                         name: name.clone(),
@@ -660,8 +661,8 @@ impl Checker {
     }
 
     /// "expected `want`, found `got`" at `span`, where `source` is the expression found, when
-    /// known. Between `u8` and `i64` it offers to convert `source`, unless that is an `if`: an
-    /// `else if` is one, and `else u8(if ...)` does not parse.
+    /// known. Between `u8`, `i64` and `char` it offers to convert `source`, unless that is an
+    /// `if`: an `else if` is one, and `else u8(if ...)` does not parse.
     fn mismatch(
         &self,
         span: Span,
@@ -669,13 +670,17 @@ impl Checker {
         want: &Type,
         got: &Type,
     ) -> Diagnostic {
-        let to = match (payload(want), got) {
-            (Type::U8, Type::I64) => Some("u8"),
-            (Type::I64, Type::U8) => Some("i64"),
-            _ => None,
+        // `u8` and `char` convert into each other through `i64`.
+        let (to, through) = match (payload(want), got) {
+            (Type::U8, Type::I64) => (Some("u8"), None),
+            (Type::I64, Type::U8 | Type::Char) => (Some("i64"), None),
+            (Type::Char, Type::I64) => (Some("char"), None),
+            (Type::U8, Type::Char) => (Some("u8"), Some("i64")),
+            (Type::Char, Type::U8) => (Some("char"), Some("i64")),
+            _ => (None, None),
         };
         DiagnosticKind::Mismatch {
-            want: self.type_name(want),
+            want: vec![self.type_name(want)],
             got: self.type_name(got),
             at: span,
             convert: to
@@ -687,6 +692,7 @@ impl Checker {
                 }))
                 .map(|(to, e)| Conversion {
                     to,
+                    through,
                     operand: e.span,
                 }),
         }
@@ -700,6 +706,7 @@ fn built_in_type(name: &str) -> Option<Type> {
         "i64" => Some(Type::I64),
         "u8" => Some(Type::U8),
         "bool" => Some(Type::Bool),
+        "char" => Some(Type::Char),
         _ => None,
     }
 }

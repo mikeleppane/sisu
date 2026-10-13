@@ -102,6 +102,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0091](E0091.md) | error | escape that is not a Unicode scalar value |
 | [E0092](E0092.md) | error | `char` literal that is not one code point |
 | [E0093](E0093.md) | error | `char` literal that is not closed |
+| [E0094](E0094.md) | error | arithmetic on `char` |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 

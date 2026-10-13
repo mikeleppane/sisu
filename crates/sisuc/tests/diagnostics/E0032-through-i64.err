@@ -1,0 +1,13 @@
+error[E0032]: expected `char`, found `u8`
+ --> E0032-through-i64.sisu:3:19
+  |
+3 |     let c: char = b
+  |                   ^
+  |
+help: if the types are right, convert it with `char(...)`
+  |
+3 |     let c: char = char(i64(b))
+  |                   +++++++++ ++
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

@@ -268,6 +268,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::U8 => Some(self.context.i8_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
+            Type::Char => panic!("`char` lands in Task 9"),
             Type::Unit | Type::Never => None,
             // An object or an array is a pointer to its block.
             Type::Class(_) | Type::Array(_) => {
@@ -689,6 +690,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
+            ExprKind::Char(_) => panic!("`char` lands in Task 9"),
             ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {
                 return Some(self.array_fill(&e.ty, value, len).into());

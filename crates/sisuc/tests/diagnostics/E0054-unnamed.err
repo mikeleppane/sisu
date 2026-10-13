@@ -3,6 +3,12 @@ error[E0054]: this value is already `i64`
   |
 3 |     print(i64(n + 1))
   |               ^^^^^
+  |
+help: remove the conversion
+  |
+3 -     print(i64(n + 1))
+3 +     print((n + 1))
+  |
 
 sisuc: 1 error
 sisuc: for more on a code, run `sisuc --explain <code>`: E0054

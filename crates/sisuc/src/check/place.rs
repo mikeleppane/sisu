@@ -75,6 +75,12 @@ impl Checker {
             if self.lookup(name).is_none() {
                 return self.assign(span, target, value);
             }
+            // A `char` has no arithmetic, and a rewrite of the statement would break the
+            // assignment: `target` stands for the value, which `assign` accepts.
+            if self.lookup(name).is_some_and(|b| b.ty == Some(Type::Char)) {
+                self.char_compound(target, value);
+                return self.assign(span, target, target);
+            }
             // The `op` spans the statement.
             let value = ast::Expr {
                 kind: ast::ExprKind::Binary {
@@ -92,6 +98,10 @@ impl Checker {
             let _ = self.expr(value, Some(&UNKNOWN));
             return Err(unit());
         };
+        if ty == Type::Char {
+            self.char_compound(target, value);
+            return Err(unit());
+        }
         let (op, _) = operator(op).expect(
             "the parser should produce only arithmetic operators for a compound assignment",
         );
@@ -128,6 +138,17 @@ impl Checker {
         let operands = reads(&temps);
         lets.push(self.write(span, root, operands, value));
         Ok(tir::Stmt::Expr(block_expr(lets, None, Type::Unit, span)))
+    }
+
+    /// Reports the compound assignment to the `char` place `target`, with no fix, and checks
+    /// `value` for its own mistakes.
+    fn char_compound(&mut self, target: &ast::Expr, value: &ast::Expr) {
+        self.report(DiagnosticKind::ArithmeticOnChar {
+            at: target.span,
+            convert: None,
+        });
+        // Only its diagnostics matter.
+        let _ = self.expr(value, Some(&UNKNOWN));
     }
 
     /// The constant `name` as the root of a place that `span` assigns, reported, if `name` names

@@ -155,12 +155,16 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.int_compare(predicate, lhs, rhs)
     }
 
-    /// `i64(u8)` and `u8(i64)`, the target being `e.ty`. Narrowing panics at `e.span` unless
+    /// `i64(u8)` and `u8(i64)`, the target being `e.ty`; a `char` conversion lands in Task 9. Narrowing panics at `e.span` unless
     /// the value is in `0..=255`; one unsigned compare also catches the negatives.
     pub(super) fn convert(&mut self, e: &Expr) -> IntValue<'ctx> {
         let ExprKind::Convert(operand) = &e.kind else {
             unreachable!("`convert` should be called on a `Convert` node");
         };
+        assert!(
+            e.ty != Type::Char && operand.ty != Type::Char,
+            "`char` lands in Task 9"
+        );
         let value = self.value(operand);
         if e.ty == Type::I64 {
             return self

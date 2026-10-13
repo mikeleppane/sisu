@@ -104,6 +104,7 @@ impl Walk {
         match &mut e.kind {
             ExprKind::Int(_)
             | ExprKind::Bool(_)
+            | ExprKind::Char(_)
             | ExprKind::None
             | ExprKind::Local(_)
             | ExprKind::Move(_) => {}

@@ -1,0 +1,14 @@
+error[E0054]: this value is already `i64`
+ --> E0054-grouped.sisu:3:15
+  |
+3 |     print(i64(x + 1) * 2)
+  |               ^^^^^
+  |
+help: remove the conversion
+  |
+3 -     print(i64(x + 1) * 2)
+3 +     print((x + 1) * 2)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0054

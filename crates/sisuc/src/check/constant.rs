@@ -12,15 +12,20 @@ enum Constant {
     Int(i64),
     U8(u8),
     Bool(bool),
+    Char(char),
 }
 
 impl Constant {
-    /// The integer `n` as a value of the integer type `ty`, or `None` when it does not fit.
+    /// The integer `n` as a value of the type `ty`, or `None` when it does not fit: a `u8`
+    /// holds `0..=255` and a `char` a Unicode scalar value.
     fn of(n: i64, ty: &Type) -> Option<Constant> {
-        if *ty == Type::U8 {
-            u8::try_from(n).ok().map(Constant::U8)
-        } else {
-            Some(Constant::Int(n))
+        match ty {
+            Type::U8 => u8::try_from(n).ok().map(Constant::U8),
+            Type::Char => u32::try_from(n)
+                .ok()
+                .and_then(char::from_u32)
+                .map(Constant::Char),
+            _ => Some(Constant::Int(n)),
         }
     }
 
@@ -29,6 +34,7 @@ impl Constant {
             Constant::Int(_) => Type::I64,
             Constant::U8(_) => Type::U8,
             Constant::Bool(_) => Type::Bool,
+            Constant::Char(_) => Type::Char,
         }
     }
 
@@ -38,6 +44,7 @@ impl Constant {
             Constant::Int(n) => tir::ExprKind::Int(n),
             Constant::U8(n) => tir::ExprKind::Int(i64::from(n)),
             Constant::Bool(b) => tir::ExprKind::Bool(b),
+            Constant::Char(c) => tir::ExprKind::Char(c),
         };
         tir::Expr {
             kind,
@@ -46,11 +53,13 @@ impl Constant {
         }
     }
 
-    /// The value of an `i64` or a `u8`.
+    /// The value of an `i64` or a `u8`, or the code point of a `char`, which comparisons and
+    /// `i64(c)` use.
     fn int(self) -> i64 {
         match self {
             Constant::Int(n) => n,
             Constant::U8(n) => i64::from(n),
+            Constant::Char(c) => i64::from(u32::from(c)),
             Constant::Bool(_) => {
                 unreachable!("the checker should give an integer operator integers")
             }
@@ -60,7 +69,7 @@ impl Constant {
     fn bool(self) -> bool {
         match self {
             Constant::Bool(b) => b,
-            Constant::Int(_) | Constant::U8(_) => {
+            Constant::Int(_) | Constant::U8(_) | Constant::Char(_) => {
                 unreachable!("the checker should give a `bool` operator `bool`s")
             }
         }
@@ -116,7 +125,7 @@ impl Checker {
             None => None,
             Some(ty) => match self.resolve(ty) {
                 None => return (None, None),
-                Some(resolved @ (Type::I64 | Type::U8 | Type::Bool)) => Some(resolved),
+                Some(resolved @ (Type::I64 | Type::U8 | Type::Bool | Type::Char)) => Some(resolved),
                 Some(_) => {
                     self.report(DiagnosticKind::ConstantType { at: ty.span });
                     return (None, None);
@@ -152,11 +161,13 @@ impl Checker {
             parts.filter(|part| !c.gate(part, user, order)).count() == 0
         };
         match &e.kind {
-            ExprKind::Int { .. } | ExprKind::Bool(_) => true,
+            ExprKind::Int { .. } | ExprKind::Bool(_) | ExprKind::Char(_) => true,
             ExprKind::Unary { operand, .. } => self.gate(operand, user, order),
             ExprKind::Binary { lhs, rhs, .. } => all(self, &mut [&**lhs, &**rhs].into_iter()),
             ExprKind::Compare { operands, .. } => all(self, &mut operands.iter()),
-            ExprKind::Call { callee, args } if matches!(callee.name.as_str(), "i64" | "u8") => {
+            ExprKind::Call { callee, args }
+                if matches!(callee.name.as_str(), "i64" | "u8" | "char") =>
+            {
                 all(self, &mut args.iter().map(|arg| &arg.value))
             }
             ExprKind::Name(name) => {
@@ -212,6 +223,7 @@ fn evaluate(e: &tir::Expr) -> Result<Constant, Diagnostic> {
             Constant::of(*n, &e.ty).expect("the checker should fit a literal in its type")
         }
         tir::ExprKind::Bool(b) => Constant::Bool(*b),
+        tir::ExprKind::Char(c) => Constant::Char(*c),
         tir::ExprKind::Unary { op, operand } => {
             let operand = evaluate(operand)?;
             match op {
@@ -267,7 +279,12 @@ fn evaluate(e: &tir::Expr) -> Result<Constant, Diagnostic> {
             Constant::Bool((evaluate(lhs)? == evaluate(rhs)?) != *negated)
         }
         tir::ExprKind::Convert(operand) => {
-            Constant::of(evaluate(operand)?.int(), &e.ty).ok_or_else(|| panic(Panic::NotU8))?
+            let not_fit = if e.ty == Type::Char {
+                Panic::NotChar
+            } else {
+                Panic::NotU8
+            };
+            Constant::of(evaluate(operand)?.int(), &e.ty).ok_or_else(|| panic(not_fit))?
         }
         _ => unreachable!("the gate should let only literals, operators and conversions through"),
     })

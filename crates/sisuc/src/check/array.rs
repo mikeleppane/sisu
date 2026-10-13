@@ -28,7 +28,7 @@ impl Checker {
                 Some(ty) if *ty == UNKNOWN => return Err(Poisoned::error()),
                 Some(ty) => (
                     DiagnosticKind::Mismatch {
-                        want: self.type_name(ty),
+                        want: vec![self.type_name(ty)],
                         got: "[]".to_string(),
                         at: span,
                         convert: None,

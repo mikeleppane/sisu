@@ -21,12 +21,13 @@ pub(crate) enum Type {
     I64,
     U8,
     Bool,
+    Char,
     Unit,
     Never,
     Class(ClassId),
     /// `[T]`.
     Array(Box<Type>),
-    /// Holds `I64`, `U8`, `Bool`, `Class` or `Array`.
+    /// Holds `I64`, `U8`, `Bool`, `Char`, `Class` or `Array`.
     Optional(Box<Type>),
 }
 
@@ -119,6 +120,8 @@ pub(crate) struct Expr {
 pub(crate) enum ExprKind {
     Int(i64),
     Bool(bool),
+    /// A `char` literal.
+    Char(char),
     None,
     Local(LocalId),
     /// A read of a counted local that takes its reference; only `last_use` makes one.
@@ -138,7 +141,7 @@ pub(crate) enum ExprKind {
     },
     /// A `T` where a `T?` is expected.
     Wrap(Box<Expr>),
-    /// `u8(e)` or `i64(e)`: `e` converted to the node's own type.
+    /// `u8(e)`, `i64(e)` or `char(e)`: `e` converted to the node's own type.
     Convert(Box<Expr>),
     Print(Box<Expr>),
     /// `[a, b]`.
@@ -221,6 +224,7 @@ impl Expr {
         match &self.kind {
             ExprKind::Int(_)
             | ExprKind::Bool(_)
+            | ExprKind::Char(_)
             | ExprKind::None
             | ExprKind::Local(_)
             | ExprKind::Move(_) => false,
@@ -306,6 +310,7 @@ impl fmt::Display for Type {
             Type::I64 => "i64",
             Type::U8 => "u8",
             Type::Bool => "bool",
+            Type::Char => "char",
             Type::Unit => "unit",
             Type::Never => "never",
             // A class's name lives in the program: `Program::type_name` prints it.
@@ -387,6 +392,7 @@ impl Printer<'_> {
             ExprKind::Int(n) if expr.ty == Type::U8 => write!(f, "{n}u8"),
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
+            ExprKind::Char(c) => write!(f, "{c:?}"),
             ExprKind::None => f.write_str("None"),
             ExprKind::Local(id) => self.local(f, *id),
             ExprKind::Move(id) => {
@@ -839,6 +845,32 @@ mod tests {
         for (op, symbol) in ops {
             assert_eq!(op.to_string(), symbol);
         }
+    }
+
+    #[test]
+    fn prints_char_literals_and_conversions() {
+        // fn f(c: char) { print('ä'); print(i64(c)); print(char(228)) }
+        let char_lit = expr(ExprKind::Char('ä'), Type::Char);
+        let to_i64 = expr(
+            ExprKind::Convert(Box::new(expr(ExprKind::Local(LocalId(0)), Type::Char))),
+            Type::I64,
+        );
+        let to_char = expr(ExprKind::Convert(Box::new(int(228))), Type::Char);
+        let print = |arg| Stmt::Expr(expr(ExprKind::Print(Box::new(arg)), Type::Unit));
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0)],
+                ret: Type::Unit,
+                locals: vec![param("c", Type::Char)],
+                body: block(vec![print(char_lit), print(to_i64), print(to_char)]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            "(fn f ((c#0 char)) unit (block (print 'ä') (print (i64 c#0)) (print (char 228))))"
+        );
     }
 
     fn block_expr(stmts: Vec<Stmt>, value: Option<Expr>) -> Expr {
