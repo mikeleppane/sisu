@@ -27,6 +27,6 @@ out=target/llvm-cov
 mkdir -p "$out"
 cargo llvm-cov report --json --output-path "$out/coverage.json"
 cargo llvm-cov report --lcov --output-path "$out/lcov.info"
-git diff -U0 "$base" >"$out/changes.diff"
+git diff -U0 --src-prefix=a/ --dst-prefix=b/ "$base" >"$out/changes.diff"
 
 python3 scripts/coverage_report.py target/llvm-cov/coverage.json target/llvm-cov/lcov.info target/llvm-cov/changes.diff

@@ -11,7 +11,7 @@ import sys
 from typing import Callable, NamedTuple
 
 TEST_DIR = re.compile(r'^crates/[^/]+/tests/')
-HUNK = re.compile(r'^@@ -\S+ \+(\d+)')
+HUNK = re.compile(r'^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
 
 
 class Region(NamedTuple):
@@ -26,22 +26,30 @@ def changed_lines(diff: str) -> dict[str, set[int]]:
     """The new-side line numbers of added lines, per Rust file outside crates/*/tests/."""
     result: dict[str, set[int]] = {}
     path = None
-    line = 0
+    line = old_left = new_left = 0
     for text in diff.splitlines():
-        if text.startswith('+++ '):
+        if old_left > 0 or new_left > 0:  # inside a hunk, "+++ " is an added line
+            if text.startswith('+'):
+                if path:
+                    result.setdefault(path, set()).add(line)
+                line += 1
+                new_left -= 1
+            elif text.startswith('-'):
+                old_left -= 1
+            elif text.startswith(' '):
+                line += 1
+                old_left -= 1
+                new_left -= 1
+        elif text.startswith('+++ '):
             name = text[4:].removeprefix('b/')
             ok = name.endswith('.rs') and not TEST_DIR.match(name)
             path = name if ok else None
         elif text.startswith('diff --git '):
             path = None
         elif m := HUNK.match(text):
-            line = int(m[1])
-        elif text.startswith('+'):
-            if path:
-                result.setdefault(path, set()).add(line)
-            line += 1
-        elif text.startswith(' '):
-            line += 1
+            old_left = int(1 if m[1] is None else m[1])
+            line = int(m[2])
+            new_left = int(1 if m[3] is None else m[3])
     return result
 
 
@@ -53,36 +61,43 @@ def uncovered(export: dict, root: str) -> dict[str, list[Region]]:
     """Zero-count regions per file; a function that never ran is one never_run region."""
     # A source function is its file plus the span of its first region; its instantiations
     # have different mangled names, so they are grouped by that key and merged span by span.
-    functions: dict[tuple, dict[tuple, int]] = {}
+    functions: dict[tuple, tuple[int, dict[tuple, int]]] = {}
     for record in export['data'][0]['functions']:
         regions = [r for r in record['regions'] if r[7] == 0]
         if not regions:
             continue
-        path = relative(record['filenames'][regions[0][5]], root)
-        if path is None:
-            continue
-        spans = functions.setdefault((path, tuple(regions[0][:4])), {})
+        names = record['filenames']
+        first = regions[0]
+        count, spans = functions.setdefault((names[first[5]], tuple(first[:4])), (0, {}))
+        functions[(names[first[5]], tuple(first[:4]))] = (max(count, record['count']), spans)
         for r in regions:
-            span = tuple(r[:4])
-            spans[span] = max(spans.get(span, 0), r[4])
+            key = (names[r[5]], *r[:4])
+            spans[key] = max(spans.get(key, 0), r[4])
     result: dict[str, list[Region]] = {}
-    for (path, first), spans in functions.items():
-        if spans[first] == 0:
-            found = [Region(*first, True)]
-        else:
-            found = [Region(*s, False) for s, count in spans.items() if count == 0]
-        result.setdefault(path, []).extend(found)
+    for (name, first), (count, spans) in functions.items():
+        if count == 0:
+            path = relative(name, root)
+            if path is None:
+                continue
+            # The head region alone often misses the body, so the function spans all its regions.
+            own = [k for k in spans if k[0] == name]
+            top = min(own, key=lambda k: k[1:])
+            result.setdefault(path, []).append(Region(top[1], top[2], max(k[3] for k in own), 0, True))
+            continue
+        for (file, *span), n in spans.items():
+            if n == 0 and (path := relative(file, root)) is not None:
+                result.setdefault(path, []).append(Region(*span, False))
     return {p: sorted(rs) for p, rs in result.items()}
 
 
 def line_hits(lcov: str, root: str) -> dict[str, dict[int, int]]:
     result: dict[str, dict[int, int]] = {}
-    hits = None
+    hits: dict[int, int] = {}
     for text in lcov.splitlines():
         if text.startswith('SF:'):
             path = relative(text[3:], root)
-            hits = result.setdefault(path, {}) if path else None
-        elif text.startswith('DA:') and hits is not None:
+            hits = result.setdefault(path, {}) if path else {}
+        elif text.startswith('DA:'):
             number, count = text[3:].split(',')[:2]
             hits[int(number)] = hits.get(int(number), 0) + int(count)
     return result
@@ -118,22 +133,6 @@ def report(export: dict, lcov: str, diff: str, root: str,
 
 
 def main(argv: list[str]) -> int:
-    try:
-        coverage_path, lcov_path, diff_path = argv
-        with open(coverage_path) as f:
-            export = json.load(f)
-        with open(lcov_path, errors='replace') as f:
-            lcov = f.read()
-        with open(diff_path, errors='replace') as f:
-            diff = f.read()
-        export['data'][0]['totals']['lines']['percent']
-        export['data'][0]['totals']['regions']['percent']
-        export['data'][0]['functions']
-        root = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True,
-                              text=True, check=True).stdout.strip()
-    except (OSError, ValueError, LookupError, TypeError, subprocess.CalledProcessError) as e:
-        print(f'coverage_report: {type(e).__name__}: {e}', file=sys.stderr)
-        return 1
     cache: dict[str, list[str]] = {}
 
     def read_line(path: str, number: int) -> str:
@@ -146,7 +145,29 @@ def main(argv: list[str]) -> int:
         lines = cache[path]
         return lines[number - 1] if 0 < number <= len(lines) else ''
 
-    print(report(export, lcov, diff, root, read_line))
+    try:
+        if len(argv) != 3:
+            raise ValueError('usage: coverage_report.py COVERAGE.json LCOV.info CHANGES.diff')
+        texts = []
+        for path in argv:
+            with open(path, errors='replace') as f:
+                texts.append(f.read())
+        export = json.loads(texts[0])
+        data = export['data'][0]
+        for kind in ('lines', 'regions'):
+            if not isinstance(data['totals'][kind]['percent'], (int, float)):
+                raise ValueError(f'totals.{kind}.percent is not a number')
+        if not isinstance(data['functions'], list):
+            raise ValueError('functions is not a list')
+        root = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True,
+                              text=True, check=True).stdout.strip()
+        text = report(export, texts[1], texts[2], root, read_line)
+    except (OSError, ValueError, LookupError, TypeError, AttributeError,
+            subprocess.CalledProcessError) as e:
+        reason = ' '.join(f'{type(e).__name__}: {e}'.split())
+        print(f'coverage_report: {reason}', file=sys.stderr)
+        return 1
+    print(text)
     return 0
 
 

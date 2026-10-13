@@ -12,13 +12,13 @@ ROOT = "/r"
 TOTALS = {"lines": {"percent": 87.34}, "regions": {"percent": 85.06}}
 
 
-def func(name, regions, file="/r/a.rs"):
-    """A function record; each region is (l1, c1, l2, c2, count)."""
+def func(name, regions, file="/r/a.rs", count=None, files=None):
+    """A function record; each region is (l1, c1, l2, c2, count[, file_id])."""
     return {
         "name": name,
-        "filenames": [file],
-        "count": regions[0][4],
-        "regions": [[*r, 0, 0, 0] for r in regions],
+        "filenames": files or [file],
+        "count": regions[0][4] if count is None else count,
+        "regions": [[*r[:5], r[5] if len(r) > 5 else 0, 0, 0] for r in regions],
     }
 
 
@@ -53,6 +53,11 @@ class ChangedLines(unittest.TestCase):
         d = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -3,2 +3,3 @@\n+a\n+b\n+c\n"
         self.assertEqual(cr.changed_lines(d), {"a.rs": {3, 4, 5}})
 
+    def test_a_plus_plus_plus_line_inside_a_hunk_is_added_text(self):
+        d = ("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,0 +1,3 @@\n"
+             "+x\n+++ b/fake.rs\n+y\n")
+        self.assertEqual(cr.changed_lines(d), {"a.rs": {1, 2, 3}})
+
     def test_changed_lines_skips_deleted_test_and_non_rust_files(self):
         d = (
             "diff --git a/b.rs b/b.rs\ndeleted file mode 100644\n--- a/b.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
@@ -83,8 +88,35 @@ class Report(unittest.TestCase):
     def test_a_never_run_function_is_one_line(self):
         exp = export(func("f", [(10, 1, 14, 2, 0), (11, 1, 11, 5, 0), (12, 1, 12, 5, 0)]))
         out = run(exp, df=diff(start=11))
-        self.assertEqual(out.count("never run:"), 1)
-        self.assertIn("a.rs:10: never run: line 10", out)
+        self.assertEqual(sections(out)[1], ["a.rs:10: never run: line 10"])
+
+    def test_a_never_run_function_touches_changes_anywhere_in_its_body(self):
+        # The head region is one line; the change is in a later region of the body.
+        exp = export(func("f", [(10, 1, 10, 20, 0), (11, 1, 14, 2, 0)]))
+        self.assertEqual(sections(run(exp, df=diff(start=13)))[1], ["a.rs:10: never run: line 10"])
+        _, touching, other = sections(run(exp, df=diff(start=15)))
+        self.assertEqual((touching, other), (["(none)"], ["a.rs:10: never run: line 10"]))
+
+    def test_never_run_uses_the_function_count_not_the_first_region(self):
+        exp = export(func("f", [(10, 1, 14, 2, 0), (11, 1, 11, 5, 0)], count=2))
+        out = run(exp, df=diff(start=11))
+        self.assertNotIn("never run:", out)
+        self.assertEqual(sections(out)[1], ["a.rs:10:1-14:2: line 10", "a.rs:11:1-11:5: line 11"])
+
+    def test_the_function_count_is_the_highest_across_instantiations(self):
+        a = func("_RA", [(10, 1, 14, 2, 0), (11, 1, 11, 5, 0)], count=0)
+        b = func("_RB", [(10, 1, 14, 2, 0), (11, 1, 11, 5, 0)], count=3)
+        self.assertNotIn("never run:", run(export(a, b), df=diff(start=11)))
+
+    def test_regions_resolve_their_own_file(self):
+        exp = export(func("f", [(1, 1, 9, 1, 1), (3, 1, 4, 1, 0, 1), (5, 1, 6, 1, 0, 2)],
+                          files=["/r/a.rs", "/r/b.rs", "/rustc/x/lib.rs"]))
+        self.assertEqual(cr.uncovered(exp, ROOT), {"b.rs": [cr.Region(3, 1, 4, 1, False)]})
+
+    def test_zero_regions_in_unchanged_files_are_not_listed(self):
+        exp = export(func("f", [(1, 1, 9, 1, 1), (3, 1, 4, 1, 0)], file="/r/b.rs"))
+        _, touching, other = sections(run(exp, df=diff(path="a.rs", start=3)))
+        self.assertEqual((touching, other), (["(none)"], ["(none)"]))
 
     def test_changed_lines_coverage_counts_only_instrumented_lines(self):
         out = run(export(), lcov(**{"a.rs": {1: 1, 2: 1, 3: 0}}), diff(start=1, count=4))
@@ -97,9 +129,9 @@ class Report(unittest.TestCase):
         self.assertEqual(head, "Coverage: lines 87.3%, regions 85.1%, changed lines: none.")
 
     def test_paths_outside_the_root_are_dropped(self):
-        exp = export(func("f", [(1, 1, 5, 1, 1), (3, 1, 4, 1, 0)], file="/rustc/abc/lib.rs"))
-        _, touching, other = sections(run(exp, df=diff(path="lib.rs", start=3)))
-        self.assertEqual((touching, other), (["(none)"], ["(none)"]))
+        exp = export(func("f", [(1, 1, 5, 1, 1), (3, 1, 4, 1, 0)], file="/rustc/abc/lib.rs"),
+                     func("g", [(1, 1, 5, 1, 0)], file="/rx/lib.rs"))
+        self.assertEqual(cr.uncovered(exp, ROOT), {})
 
     def test_instantiations_with_different_names_are_one_function(self):
         spans = [(1, 1, 9, 1), (3, 1, 4, 1), (6, 1, 7, 1)]
@@ -141,6 +173,20 @@ class Main(unittest.TestCase):
 
     def test_an_export_without_totals_exits_1(self):
         code, err = self.call(json.dumps({"data": [{}]}))
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("coverage_report:"))
+
+    def test_malformed_inputs_exit_1_without_a_traceback(self):
+        good = json.dumps(export(func("f", [(1, 1, 2, 1, 1)])))
+        bad_func = json.dumps({"data": [{"totals": TOTALS, "functions": [{"count": 1}]}]})
+        bad_pct = json.dumps({"data": [{"totals": {"lines": {"percent": "x"}, "regions": {"percent": 1}}, "functions": []}]})
+        for args in ((bad_func,), (bad_pct,), (good, "SF:/r/a.rs\nDA:1,x\n", diff()), ("{", "", "")):
+            code, err = self.call(*args)
+            self.assertEqual(code, 1, args)
+            self.assertRegex(err, r"^coverage_report: [^\n]+\n$")
+
+    def test_a_wrong_argument_count_exits_1(self):
+        code, err = self.run_main(["only-one"])
         self.assertEqual(code, 1)
         self.assertTrue(err.startswith("coverage_report:"))
 
