@@ -120,7 +120,9 @@ impl Checker {
                     }),
                 )
             }
-            ExprKind::Binary { op, lhs, rhs } => self.binary(e.span, *op, lhs, rhs, expected),
+            ExprKind::Binary { op, lhs, rhs } => {
+                self.binary(e.span, *op, lhs, rhs, expected, false)
+            }
             ExprKind::Compare { operands, ops } => self.compare(e.span, operands, ops),
             ExprKind::If {
                 cond,
@@ -218,7 +220,12 @@ impl Checker {
     }
 
     /// `operand` for `e`, already checked against `want`'s expectation.
-    fn settled(&mut self, e: &ast::Expr, checked: Checked, want: Option<&Type>) -> (Checked, bool) {
+    pub(super) fn settled(
+        &mut self,
+        e: &ast::Expr,
+        checked: Checked,
+        want: Option<&Type>,
+    ) -> (Checked, bool) {
         // `want` was rejected inside `e`, which `against` cannot tell from an `Error` operand.
         if matches!(checked, Err(Poisoned { mismatch: true, .. })) {
             return (checked, true);
@@ -254,14 +261,16 @@ impl Checker {
 
     /// Once an operand is `Error`, the other is checked against `Error` too: with that
     /// operand's type unknown, the operator may be the mistake. So `x + true` draws no
-    /// diagnostic when `x` is `Error`, and `true && 1` draws one.
-    fn binary(
+    /// diagnostic when `x` is `Error`, and `true && 1` draws one. A `compound` operator stands
+    /// for a compound assignment, a statement that a rewrite of the operator would break.
+    pub(super) fn binary(
         &mut self,
         span: Span,
         op: ast::BinaryOp,
         lhs: &ast::Expr,
         rhs: &ast::Expr,
         expected: Option<&Type>,
+        compound: bool,
     ) -> Checked {
         let Some((tir_op, want)) = operator(op) else {
             return self.equal(span, op == ast::BinaryOp::Ne, lhs, rhs);
@@ -279,8 +288,7 @@ impl Checker {
             .collect();
         if let Some(&at) = chars.first() {
             let operands = lhs.span.to(rhs.span);
-            let convert =
-                (self.compound != Some(span)).then_some(CharArithmetic { operands, chars });
+            let convert = (!compound).then_some(CharArithmetic { operands, chars });
             self.report(DiagnosticKind::ArithmeticOnChar { at, convert });
             return Err(Poisoned::error());
         }
@@ -305,8 +313,9 @@ impl Checker {
     /// `char` in a comparison, else `i64`. With none, it is `i64`, so `None + 1` expects an
     /// `i64`. Once an operand is `Error`, the later ones are checked against `Error`. An operand
     /// of `arithmetic` that is a `char` is left unreported, as the poison `typed` `char`: its
-    /// caller reports the operator, and the other operands are held to nothing. In a comparison,
-    /// a `char` after a number reports that number, as a `char` before one reports the number.
+    /// caller reports the operator, so what the operator's type finds wrong with the other
+    /// operands is dropped, in either order. In a comparison, a `char` after a number reports
+    /// that number, as a `char` before one reports the number.
     fn integers(
         &mut self,
         operands: &[&ast::Expr],
@@ -330,15 +339,20 @@ impl Checker {
         let mut want = ty.clone();
         let leader = first.as_ref().map(|(k, _)| *k);
         let (mut checked, mut mismatched) = (Vec::with_capacity(operands.len()), false);
+        // The diagnostics of the operator's type: mismatches, and a literal's, which that type
+        // types. They wait until a `char` operand is ruled out.
+        let mut deferred = Vec::new();
         for (i, e) in operands.iter().enumerate() {
+            let start = self.diagnostics.len();
             let value = match first.take_if(|(k, _)| *k == i) {
                 Some((_, operand)) => operand,
                 None => self.value(e, Some(want.as_ref().unwrap_or(&UNKNOWN))),
             };
+            if rank(e) != 0 {
+                deferred.extend(self.diagnostics.drain(start..));
+            }
             let char_value = type_of(&value) == Some(&Type::Char);
             let (operand, m) = if arithmetic && char_value {
-                // The operator is rejected whatever stands beside the `char`.
-                want = None;
                 (Err(Poisoned::typed(Type::Char)), false)
             } else if let Some(k) = leader
                 .filter(|_| char_value && !arithmetic && matches!(want, Some(Type::I64 | Type::U8)))
@@ -352,13 +366,20 @@ impl Checker {
                 want = None;
                 (Err(Poisoned::error()), true)
             } else {
-                self.settled(e, value, want.as_ref())
+                let start = self.diagnostics.len();
+                let settled = self.settled(e, value, want.as_ref());
+                deferred.extend(self.diagnostics.drain(start..));
+                settled
             };
             if type_of(&operand).is_none() {
                 want = None;
             }
             mismatched |= m;
             checked.push(operand);
+        }
+        // The operator is rejected whatever stands beside the `char`.
+        if !(arithmetic && checked.iter().any(|c| type_of(c) == Some(&Type::Char))) {
+            self.diagnostics.append(&mut deferred);
         }
         (checked, ty, mismatched)
     }

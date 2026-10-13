@@ -117,6 +117,21 @@ fn char_arithmetic() {
             (3, 5, "a[0]"),
             None,
         ),
+        // A compound assignment nested in the value leaves the outer one a statement still.
+        (
+            "fn f(c: char) {\n    let mut n = 1\n    let mut m = 1\n    n += {\n        m += 1\n        c\n    }\n}",
+            (4, 10, "{\n        m += 1\n        c\n    }"),
+            None,
+        ),
+        (
+            "fn f(c: char) {\n    let mut n = 1\n    let mut m = 1\n    n += if true {\n        m += 1\n        c\n    } else {\n        c\n    }\n}",
+            (
+                4,
+                10,
+                "if true {\n        m += 1\n        c\n    } else {\n        c\n    }",
+            ),
+            None,
+        ),
     ];
     for (src, pos, edits) in rows {
         let src = with_main(src);
@@ -135,6 +150,33 @@ fn char_arithmetic() {
             None => assert_eq!(found, [], "{src}"),
         }
     }
+}
+
+/// A compound assignment inside an ordinary `+` is reported without a fix, and the `+` keeps
+/// its guess.
+#[test]
+fn char_compound_inside_arithmetic() {
+    let src = with_main(
+        "fn f(c: char) {\n    let mut n = 1\n    print(c + {\n        n += c\n        1\n    })\n}",
+    );
+    let ds = diags(&src);
+    let found: Vec<_> = ds
+        .iter()
+        .map(|d| {
+            (
+                d.code(),
+                at(&src, d.span()),
+                fixes(&src, d).iter().map(|f| f.0).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (Code::ArithmeticOnChar, (3, 11), vec![false]),
+            (Code::ArithmeticOnChar, (4, 14), vec![]),
+        ]
+    );
 }
 
 /// The rewrite is what the types need, in each place the operator stands.
@@ -177,6 +219,20 @@ fn char_arithmetic_reports_once() {
             (Code::ArithmeticOnChar, (4, 11)),
             (Code::ArithmeticOnChar, (5, 11)),
             (Code::ArithmeticOnChar, (6, 15)),
+        ],
+    );
+    // Nor is a `bool` or a `None`, on either side, nor a literal that a `u8` context types.
+    codes(
+        &with_main(
+            "fn f(c: char) {\n    print(true + c)\n    print(c + true)\n    print(None + c)\n    print(c + None)\n    let y: u8 = None + c\n    let z: u8 = 300 + c\n}",
+        ),
+        &[
+            (Code::ArithmeticOnChar, (2, 18)),
+            (Code::ArithmeticOnChar, (3, 11)),
+            (Code::ArithmeticOnChar, (4, 18)),
+            (Code::ArithmeticOnChar, (5, 11)),
+            (Code::ArithmeticOnChar, (6, 24)),
+            (Code::ArithmeticOnChar, (7, 23)),
         ],
     );
     // An error of the other operand stays: an unknown name is its own mistake.
@@ -372,10 +428,9 @@ fn char_beside_a_number_in_equality() {
     }
 }
 
-/// Operators that take no `char`, besides the binary ones.
+/// `-c` is a number's sign, which a conversion fixes.
 #[test]
-fn char_beside_other_operators() {
-    // `-c` is a number's sign, which a conversion fixes.
+fn char_negated() {
     let src = scalars("print(-c)");
     let d = diagnostic(&src, Code::Mismatch, (2, 12, "c"), &[]);
     assert_eq!(
@@ -387,16 +442,28 @@ fn char_beside_other_operators() {
     );
     assert_eq!(applied(&src, &d), scalars("print(-i64(c))"));
     clean(&applied(&src, &d));
-    // `!c` wants a `bool`, which no conversion makes.
+}
+
+/// `!c` wants a `bool`, which no conversion makes.
+#[test]
+fn char_not() {
     let src = scalars("print(!c)");
     let d = diagnostic(&src, Code::Mismatch, (2, 12, "c"), &[]);
     assert_eq!(fixes(&src, &d), []);
-    // An optional `char` is the optional's mistake, and its arithmetic is not reported.
+}
+
+/// An optional `char` is the optional's mistake, and its arithmetic is not reported.
+#[test]
+fn optional_char_arithmetic() {
     codes(
         &with_main("fn f(m: char?) {\n    print(m + 1)\n}"),
         &[(Code::Mismatch, (2, 11))],
     );
-    // A copy of a `char` is a `char`: it is not assignable, and not arithmetic.
+}
+
+/// A copy of a `char` is a `char`: it is not assignable, and not arithmetic.
+#[test]
+fn char_copy_compound_assignment() {
     codes(
         &with_main("fn f(c: char) {\n    let d = c\n    d += 1\n}"),
         &[

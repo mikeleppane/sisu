@@ -1,7 +1,7 @@
 //! Assignment: places, which root may be written, the temps of compound operators, and spills.
 
 use super::expr::{literal_type, local, operator};
-use super::{BindingKind, Checker, Declared, Poisoned, UNKNOWN, block_expr, type_of};
+use super::{BindingKind, Checked, Checker, Declared, Poisoned, UNKNOWN, block_expr, type_of};
 use crate::ast;
 use crate::diagnostic::{DiagnosticKind, Immutable, Span};
 use crate::tir::{self, ExprKind, Type};
@@ -50,6 +50,16 @@ impl Checker {
     ) -> Result<tir::Stmt, Poisoned> {
         let place = self.place(span, target, false);
         let value = self.expect(value, place.ty.as_ref());
+        self.assigned(span, place, value)
+    }
+
+    /// The write of the checked `value` to the checked `place`.
+    fn assigned(
+        &mut self,
+        span: Span,
+        place: CheckedPlace,
+        value: Checked,
+    ) -> Result<tir::Stmt, Poisoned> {
         match (place.path, value) {
             (Some(path), Ok(value)) if place.writable => {
                 Ok(self.write(span, path.root, path.operands, value))
@@ -81,8 +91,18 @@ impl Checker {
                 self.char_compound(target, value);
                 return self.assign(span, target, target);
             }
-            // The `op` spans the statement.
-            let value = ast::Expr {
+            // `assign` of `target op value`, whose `op` spans the statement.
+            let place = self.place(span, target, false);
+            let want = place.ty.as_ref();
+            let checked = self.binary(
+                span,
+                op,
+                target,
+                value,
+                Some(want.unwrap_or(&UNKNOWN)),
+                true,
+            );
+            let expanded = ast::Expr {
                 kind: ast::ExprKind::Binary {
                     op,
                     lhs: Box::new(target.clone()),
@@ -90,10 +110,8 @@ impl Checker {
                 },
                 span,
             };
-            self.compound = Some(span);
-            let assigned = self.assign(span, target, &value);
-            self.compound = None;
-            return assigned;
+            let (checked, _) = self.settled(&expanded, checked, want);
+            return self.assigned(span, place, checked);
         }
         let place = self.place(span, target, false);
         let Some(ty) = place.ty else {
