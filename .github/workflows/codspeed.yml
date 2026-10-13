@@ -1,0 +1,84 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - crates/**
+      - bench/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - .github/actions/install-llvm/**
+      - scripts/install-llvm.sh
+      - codspeed.yml
+      - scripts/codspeed-prep.sh
+      - .github/workflows/codspeed.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Informational: every step tolerates failure and each one runs only after its
+# predecessor succeeded, so a failure skips the rest (nothing is measured or
+# uploaded after a failed prep), leaves every check green and is named in the
+# summary. CodSpeed reads codspeed.yml; the app comments on the PR on change.
+jobs:
+  benchmarks:
+    name: Benchmarks (informational)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: toolchain
+        continue-on-error: true
+        if: steps.checkout.outcome == 'success'
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+      - id: llvm
+        continue-on-error: true
+        if: steps.toolchain.outcome == 'success'
+        uses: ./.github/actions/install-llvm
+      - id: prep
+        continue-on-error: true
+        if: steps.llvm.outcome == 'success'
+        run: scripts/codspeed-prep.sh
+      - id: bench
+        continue-on-error: true
+        if: steps.prep.outcome == 'success'
+        uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
+        with:
+          mode: simulation
+      - id: summary
+        continue-on-error: true
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          failed=
+          for id in checkout toolchain llvm prep bench; do
+            if [ "$(jq -r --arg id "$id" '.[$id].outcome' <<<"$STEPS")" != success ]; then
+              failed=$id
+              break
+            fi
+          done
+          if [ -z "$failed" ]; then
+            line='Benchmarks ran. CodSpeed reports regressions on the PR.'
+          else
+            line="Benchmarks did not run: the $failed step failed."
+          fi
+          echo "$line" >>"$GITHUB_STEP_SUMMARY"
