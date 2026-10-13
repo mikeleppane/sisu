@@ -590,6 +590,52 @@ fn break_after_while_let() {
 }
 
 #[test]
+fn block_value_and_type() {
+    contains(
+        "fn main() {\n    let a: u8 = { let w = 2\n 3 }\n}",
+        &["(block (let w#0 2) 3u8)"],
+    );
+    codes(
+        "fn main() {\n    let u = { print(1) }\n}",
+        &[(Code::NoValue, (2, 13))],
+    );
+}
+
+#[test]
+fn block_scope_ends() {
+    let printed = lowered(
+        "fn main() {\n    let y = 1\n    let x = { let y = 2\n y }\n    print(y)\n    print(x)\n}",
+    );
+    assert!(printed.contains("(print y#0) (print x#2)"), "{printed}");
+}
+
+#[test]
+fn block_joins_never() {
+    clean(
+        "fn f(c: bool) -> i64 {\n    let x = { if c { return 1 } else { 2 } }\n    x\n}\nfn main() {}",
+    );
+}
+
+#[test]
+fn break_in_header() {
+    for (src, pos) in [
+        ("fn main() {\n    while { break } { }\n}", (2, 13)),
+        (
+            "fn main() {\n    while true {\n        for x in { continue\n [1] } { }\n    }\n}",
+            (3, 20),
+        ),
+        ("fn main() {\n    while let x = { break } { }\n}", (2, 21)),
+    ] {
+        codes(src, &[(Code::JumpInLoopHeader, pos)]);
+    }
+}
+
+#[test]
+fn break_in_loop_inside_header() {
+    clean("fn main() {\n    while { while true { break }\n true } { break }\n}");
+}
+
+#[test]
 fn statement_after_break() {
     codes(
         "fn main() {\n    while true {\n        break\n        print(1)\n    }\n}",

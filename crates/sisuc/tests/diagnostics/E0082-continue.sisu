@@ -1,0 +1,8 @@
+fn main() {
+    for x in {
+        continue
+        [1]
+    } {
+        print(x)
+    }
+}

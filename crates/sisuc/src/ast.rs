@@ -244,6 +244,8 @@ pub(crate) enum ExprKind {
         then_block: Block,
         else_block: Option<Block>,
     },
+    /// `{ ... }` where an expression belongs: its value is its last expression.
+    Block(Block),
 }
 
 /// A call argument; the checker decides where a label belongs.
@@ -523,6 +525,7 @@ impl fmt::Display for Expr {
                 }
                 f.write_str(")")
             }
+            ExprKind::Block(block) => write!(f, "{block}"),
         }
     }
 }

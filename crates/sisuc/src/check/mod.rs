@@ -113,6 +113,15 @@ struct Binding {
     reassigned: bool,
 }
 
+/// Which part of a loop the code being checked is in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoopContext {
+    /// The body, where `break` and `continue` act on the loop.
+    Body,
+    /// A `while` condition or a `for` source, which is not part of the body.
+    Header,
+}
+
 struct Checker {
     /// The first function of each name, and every broken one.
     function_ids: HashMap<String, Declared<tir::FuncId>>,
@@ -130,8 +139,8 @@ struct Checker {
     ret: Option<Type>,
     /// The class of the method being checked, whose `self` is local 0.
     self_class: Option<tir::ClassId>,
-    /// Loops open around the code being checked; a `while` condition counts as inside.
-    loop_depth: usize,
+    /// Loops open around the code being checked, innermost last: what a `break` would act on.
+    loops: Vec<LoopContext>,
     /// Set by a `break` or `continue` outside a loop; `scoped_block` reads it per statement.
     invalid_jump: bool,
     /// Whether the expression being checked is a link of an assigned field's base chain (field
@@ -153,7 +162,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         locals: Vec::new(),
         ret: None,
         self_class: None,
-        loop_depth: 0,
+        loops: Vec::new(),
         invalid_jump: false,
         in_target: false,
         comments: program.comments.clone(),

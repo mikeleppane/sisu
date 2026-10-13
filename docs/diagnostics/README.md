@@ -89,6 +89,8 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0078](E0078.md) | error | `mut` on `_` |
 | [E0079](E0079.md) | error | `_` used as a value |
 | [E0080](E0080.md) | error | `_` used as a name |
+| [E0081](E0081.md) | error | block that stands alone as a statement |
+| [E0082](E0082.md) | error | `break` or `continue` in a loop header |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 

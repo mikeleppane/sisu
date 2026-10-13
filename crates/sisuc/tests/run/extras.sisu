@@ -11,6 +11,11 @@ fn make(depth: i64) -> [i64] {
     xs
 }
 
+fn loud() -> i64 {
+    print(7)                          // 7, once: `let _ = loud()` still evaluates it
+    99
+}
+
 fn main() {
     for _ in 0..3 {
         print(1)                      // 1, three times
@@ -28,4 +33,17 @@ fn main() {
     print(30)                         // 30
     let _ = xs                        // a local read: `xs` is still live
     print(xs[0] + xs[1])              // 11
+    let area = {
+        let w = 6
+        let h = 7
+        w * h
+    }
+    print(area)                       // 42: a block's value is its last expression
+    let count = {
+        let ys = [1, 2, 3]
+        ys.len()
+    }
+    print(count)                      // 3: the block's array is released at its `}`
+    print(0xFF + 0b1 + 0o10)          // 264
+    let _ = loud()
 }

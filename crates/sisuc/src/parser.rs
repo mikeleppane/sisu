@@ -832,6 +832,7 @@ impl Parser<'_> {
                 self.bump();
                 StmtKind::Continue
             }
+            TokenKind::LBrace => return Err(DiagnosticKind::BlockAsStatement { at: start }.into()),
             _ => self.expr_or_assign()?,
         };
         // `let_stmt` and `expr_or_assign` leave their own height in `self.depth`.
@@ -1279,6 +1280,13 @@ impl Parser<'_> {
                 return self.array(token.span);
             }
             TokenKind::If => return self.if_expr(),
+            TokenKind::LBrace => {
+                let block = self.block()?;
+                return Ok(Expr {
+                    span: block.span,
+                    kind: ExprKind::Block(block),
+                });
+            }
             TokenKind::Underscore => {
                 return Err(DiagnosticKind::UnderscoreValue {
                     at: token.span,
@@ -1785,6 +1793,31 @@ mod tests {
     #[test]
     fn parenthesized_primary() {
         assert_eq!(body("fn main() { (f()) }"), "(block (call f))");
+    }
+
+    #[test]
+    fn block_expression_positions() {
+        let rows = [
+            ("let a = { 1 }", "(let a (block 1))"),
+            ("f({ 1 })", "(call f (block 1))"),
+            ("1 + { 2 }", "(+ 1 (block 2))"),
+            ("if { c } { }", "(if (block c) (block))"),
+            ("while { c } { }", "(while (block c) (block))"),
+            ("for x in { xs } { }", "(for x (block xs) (block))"),
+        ];
+        for (src, expected) in rows {
+            assert_eq!(expr(src), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn block_statement() {
+        for (src, line, col) in [
+            ("fn main() {\n    { 1 }\n}", 2, 5),
+            ("fn main() {\n    if c { {1} }\n}", 2, 12),
+        ] {
+            assert_eq!(parse_err(src), (Code::BlockAsStatement, line, col), "{src}");
+        }
     }
 
     #[test]

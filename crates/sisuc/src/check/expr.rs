@@ -139,6 +139,14 @@ impl Checker {
                 else_block.as_ref(),
                 expected,
             ),
+            ExprKind::Block(block) => self.block(block, expected).map(|block| {
+                let ty = block.ty.clone();
+                tir::Expr {
+                    kind: tir::ExprKind::Block(block),
+                    ty,
+                    span: e.span,
+                }
+            }),
         }
     }
 

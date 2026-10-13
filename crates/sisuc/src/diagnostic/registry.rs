@@ -120,6 +120,8 @@ codes! {
     MutOnUnderscore = "E0078",
     UnderscoreValue = "E0079",
     UnderscoreName = "E0080",
+    BlockAsStatement = "E0081",
+    JumpInLoopHeader = "E0082",
 }
 
 impl Code {
@@ -447,6 +449,10 @@ pub(crate) enum DiagnosticKind {
     UnderscoreValue { at: Span, bind: bool },
     /// The `_` at `at`, where a name belongs.
     UnderscoreName { at: Span },
+    /// The `{` at `at`, which starts a statement.
+    BlockAsStatement { at: Span },
+    /// A `break` or `continue` (`keyword`) at `at`, in the header of a loop.
+    JumpInLoopHeader { keyword: &'static str, at: Span },
 }
 
 /// A literal that takes its type from its position.
@@ -648,6 +654,8 @@ impl DiagnosticKind {
             DiagnosticKind::MutOnUnderscore { .. } => Code::MutOnUnderscore,
             DiagnosticKind::UnderscoreValue { .. } => Code::UnderscoreValue,
             DiagnosticKind::UnderscoreName { .. } => Code::UnderscoreName,
+            DiagnosticKind::BlockAsStatement { .. } => Code::BlockAsStatement,
+            DiagnosticKind::JumpInLoopHeader { .. } => Code::JumpInLoopHeader,
         }
     }
 }
@@ -1333,6 +1341,13 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::UnderscoreName { at } => {
                 Diagnostic::coded(code, at, "`_` cannot be a name")
+            }
+            DiagnosticKind::BlockAsStatement { at } => {
+                Diagnostic::coded(code, at, "a block cannot stand alone as a statement")
+                    .with_help("bind its value: `let x = { ... }`")
+            }
+            DiagnosticKind::JumpInLoopHeader { keyword, at } => {
+                Diagnostic::coded(code, at, format!("`{keyword}` cannot appear in a loop header"))
             }
         }
     }

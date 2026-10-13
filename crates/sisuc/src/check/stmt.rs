@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use super::array::optional_array;
 use super::expr::local;
-use super::{Binding, BindingKind, CheckedBlock, Checker, Poisoned, block_expr, type_of};
+use super::{
+    Binding, BindingKind, CheckedBlock, Checker, LoopContext, Poisoned, block_expr, type_of,
+};
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
 use crate::tir::{self, ExprKind, Type};
@@ -122,10 +124,8 @@ impl Checker {
                 })
             }
             StmtKind::While { cond, body } => {
-                self.loop_depth += 1;
-                let cond = self.expect(cond, Some(&Type::Bool));
-                let body = self.block(body, None);
-                self.loop_depth -= 1;
+                let cond = self.in_loop(LoopContext::Header, |c| c.expect(cond, Some(&Type::Bool)));
+                let body = self.in_loop(LoopContext::Body, |c| c.block(body, None));
                 let (Ok(cond), Ok(body)) = (cond, body) else {
                     return Err(unit());
                 };
@@ -140,10 +140,12 @@ impl Checker {
                 )))
             }
             StmtKind::WhileLet { name, value, body } => {
-                self.loop_depth += 1;
-                let (scrutinee, bound, _) = self.unwrapped(Unwrap::WhileLet, value);
-                let (bind, body) = self.unwrapping_block("while let", name, bound, body, None);
-                self.loop_depth -= 1;
+                let (scrutinee, bound, _) = self.in_loop(LoopContext::Header, |c| {
+                    c.unwrapped(Unwrap::WhileLet, value)
+                });
+                let (bind, body) = self.in_loop(LoopContext::Body, |c| {
+                    c.unwrapping_block("while let", name, bound, body, None)
+                });
                 let (Ok(scrutinee), Ok(body)) = (scrutinee, body) else {
                     return Err(unit());
                 };
@@ -181,13 +183,13 @@ impl Checker {
         body: &ast::Block,
     ) -> Result<tir::Stmt, Poisoned> {
         let expr = |kind, ty| tir::Expr { kind, ty, span };
-        let (header, bound) = match source {
-            ast::ForSource::Array(e) => self.for_array(span, e),
-            ast::ForSource::Range { start, end } => self.for_range(span, start, end),
-        };
-        self.loop_depth += 1;
-        let (x, body) = self.unwrapping_block("for", name, bound, body, None);
-        self.loop_depth -= 1;
+        let (header, bound) = self.in_loop(LoopContext::Header, |c| match source {
+            ast::ForSource::Array(e) => c.for_array(span, e),
+            ast::ForSource::Range { start, end } => c.for_range(span, start, end),
+        });
+        let (x, body) = self.in_loop(LoopContext::Body, |c| {
+            c.unwrapping_block("for", name, bound, body, None)
+        });
         let (Some(header), Ok(body)) = (header, body) else {
             return Err(Poisoned::typed(Type::Unit));
         };
@@ -359,17 +361,33 @@ impl Checker {
         }))
     }
 
-    /// `break` or `continue`, of type `never` even outside a loop.
+    /// `f`, inside a loop's `context`.
+    fn in_loop<T>(&mut self, context: LoopContext, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.loops.push(context);
+        let checked = f(self);
+        self.loops.pop();
+        checked
+    }
+
+    /// `break` or `continue`, of type `never` even outside a loop. In a loop header it is
+    /// `Error`, so the condition or source around it reports nothing more.
     fn jump(
         &mut self,
         span: Span,
         keyword: &'static str,
         kind: ExprKind,
     ) -> Result<tir::Stmt, Poisoned> {
-        if self.loop_depth == 0 {
-            self.report(DiagnosticKind::JumpOutsideLoop { keyword, at: span });
-            self.invalid_jump = true;
-            return Err(Poisoned::typed(Type::Never));
+        match self.loops.last() {
+            Some(LoopContext::Body) => {}
+            Some(LoopContext::Header) => {
+                self.report(DiagnosticKind::JumpInLoopHeader { keyword, at: span });
+                return Err(Poisoned::error());
+            }
+            None => {
+                self.report(DiagnosticKind::JumpOutsideLoop { keyword, at: span });
+                self.invalid_jump = true;
+                return Err(Poisoned::typed(Type::Never));
+            }
         }
         Ok(tir::Stmt::Expr(tir::Expr {
             kind,
