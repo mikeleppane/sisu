@@ -626,7 +626,8 @@ These do not make code nicer to write, so they wait:
   - Compiling `match` in milestone 7 into a decision tree, which is simpler
     as basic blocks than as LLVM IR built directly from a tree.
   - Reference-count elision: removing increment and decrement pairs that
-    cancel out, which is why Swift has SIL.
+    cancel out, which is why Swift has SIL. ADR 0012 (proposed) removes the
+    pair around a method's `self` without it.
 
   It brings its own `--emit mir` printer, and desugaring moves out of
   codegen into the `tir`-to-`mir` step. The name follows `tir`; `sil` would
@@ -646,7 +647,9 @@ These do not make code nicer to write, so they wait:
   bitcode and link it into the program's module, so LLVM can inline runtime
   calls such as `sisu_alloc` and `sisu_free`. The reference-count helpers
   (`@sisu_rc.*`) are already generated into each program, so LLVM inlines
-  them today. Wait for a benchmark that shows allocation calls matter.
+  them today. On the binary_trees benchmark, a direct call to `malloc` ran
+  no faster than `sisu_alloc` ([Benchmarks](benchmarks.md)), so wait for a benchmark
+  that shows runtime calls matter.
 - A formatter, `sisu fmt`, after milestone 7, once `enum` and `match` have
   fixed most of the syntax. It has one style and no options, as with `gofmt`
   and `zig fmt`. It must keep comments, but the lexer drops them today

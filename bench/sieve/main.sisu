@@ -1,0 +1,24 @@
+// Counts the primes up to 50 000 000 with the sieve of Eratosthenes.
+fn sieve(n: i64) -> [bool] {
+    let mut is_prime = [true; n + 1]
+    is_prime[0] = false
+    is_prime[1] = false
+    for i in 2..n + 1 {
+        if is_prime[i] {
+            let mut j = i * i
+            while j <= n {
+                is_prime[j] = false
+                j += i
+            }
+        }
+    }
+    is_prime
+}
+
+fn main() {
+    let mut count = 0
+    for p in sieve(50_000_000) {
+        if p { count += 1 }
+    }
+    print(count)
+}

@@ -8,6 +8,11 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, PoisonError};
 
 /// Number of objects `sisu_alloc` returned that `sisu_free` has not yet freed.
+///
+/// A Sisu program runs on one thread, so a separate load and store keep the count exact.
+/// `fetch_add` and `fetch_sub` would be locked instructions, each a full memory barrier on
+/// x86-64, on every allocation and free: a quarter of the `binary_trees` benchmark's time.
+/// Tasks on several threads (ADR 0010) will need a count per thread.
 static LIVE: AtomicU64 = AtomicU64::new(0);
 
 /// Prints `value` and a newline to standard output. Sisu's `print` calls this for an `i64`
@@ -266,7 +271,7 @@ pub extern "C" fn sisu_alloc(size: usize, align: usize) -> *mut u8 {
     if ptr.is_null() {
         handle_alloc_error(layout)
     }
-    LIVE.fetch_add(1, Relaxed);
+    LIVE.store(LIVE.load(Relaxed).wrapping_add(1), Relaxed);
     ptr
 }
 
@@ -289,7 +294,7 @@ pub unsafe extern "C" fn sisu_free(ptr: *mut u8, size: usize, align: usize) {
     // SAFETY: the caller upholds the `# Safety` contract above: `ptr` was allocated with
     // `layout` and is not used again.
     unsafe { dealloc(ptr, layout) };
-    LIVE.fetch_sub(1, Relaxed);
+    LIVE.store(LIVE.load(Relaxed).wrapping_sub(1), Relaxed);
 }
 
 /// Exit code for a reference-count check failure under `--rc-checks`.

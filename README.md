@@ -59,6 +59,7 @@ Milestones 1 to 3 are done. `sisuc` compiles:
 | Build Sisu and compile a program | [Developing Sisu](docs/development.md) |
 | See how the compiler is put together | [Architecture](docs/architecture.md) |
 | See what is planned | [Roadmap](docs/roadmap.md) |
+| Compare Sisu's speed, memory and binary size with other languages | [Benchmarks](docs/benchmarks.md) |
 | Change the code | [Contributing](CONTRIBUTING.md) |
 | Look up a term | [Glossary](GLOSSARY.md) |
 | Read why a design choice was made | [Decisions](docs/adr) |
