@@ -21,7 +21,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             return self.short_circuit(op == BinaryOp::And, lhs, rhs);
         }
-        let signed = !matches!(lhs.ty, Type::U8 | Type::Char);
+        let signed = lhs.ty != Type::U8;
         let (l, r) = (self.value(lhs), self.value(rhs));
         let intrinsic = |name| {
             format!(
@@ -61,7 +61,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         span: Span,
     ) -> IntValue<'ctx> {
         let (result, overflow) = self.overflowing(intrinsic, lhs, rhs);
-        self.panic_if(overflow, span, "integer overflow");
+        self.panic_if(overflow, span, Panic::Overflow.message());
         result
     }
 
@@ -107,7 +107,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     ) -> IntValue<'ctx> {
         let i64_type = self.context.i64_type();
         let zero = self.int_compare(IntPredicate::EQ, rhs, rhs.get_type().const_zero());
-        self.panic_if(zero, span, "division by zero");
+        self.panic_if(zero, span, Panic::DivisionByZero.message());
         if !signed {
             return if rem {
                 self.builder.build_int_unsigned_rem(lhs, rhs, "rem")
@@ -126,7 +126,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 "overflow",
             )
             .expect(POSITIONED);
-        self.panic_if(overflow, span, "integer overflow");
+        self.panic_if(overflow, span, Panic::Overflow.message());
         if rem {
             self.builder.build_int_signed_rem(lhs, rhs, "rem")
         } else {
@@ -178,7 +178,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             value,
             value.get_type().const_int(u64::from(u8::MAX), false),
         );
-        self.panic_if(too_big, e.span, "value does not fit in `u8`");
+        self.panic_if(too_big, e.span, Panic::NotU8.message());
         self.builder
             .build_int_truncate(value, self.context.i8_type(), "narrowed")
             .expect(POSITIONED)

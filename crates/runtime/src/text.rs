@@ -108,7 +108,7 @@ pub unsafe extern "C" fn sisu_write_char(c: u32, out: *mut u8) -> usize {
 ///
 /// # Safety
 ///
-/// `len` bytes at `bytes` are readable.
+/// `bytes` is not null and `len` bytes at it are readable.
 #[expect(
     unsafe_code,
     reason = "reads through the pointer generated code passes"
@@ -127,7 +127,7 @@ unsafe fn utf8<'a>(bytes: *const u8, len: usize) -> &'a str {
 ///
 /// # Safety
 ///
-/// `n` `u32`s at `chars` are readable.
+/// `chars` is not null and aligned, and `n` `u32`s at it are readable.
 #[expect(
     unsafe_code,
     reason = "reads through the pointer generated code passes"
@@ -146,8 +146,8 @@ unsafe fn scalars<'a>(chars: *const u32, n: usize) -> impl Iterator<Item = char>
 ///
 /// # Safety
 ///
-/// `len` bytes at `bytes` are readable. They are valid UTF-8; if they are not, the program
-/// aborts.
+/// `bytes` is not null and `len` bytes at it are readable. They are valid UTF-8; if they are
+/// not, the program aborts.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
@@ -163,8 +163,9 @@ pub unsafe extern "C" fn sisu_utf8_count(bytes: *const u8, len: usize) -> usize 
 ///
 /// # Safety
 ///
-/// `len` bytes at `bytes` are readable and valid UTF-8; if they are not, the program aborts.
-/// `out` has room for `sisu_utf8_count(bytes, len)` `u32`s, and they do not overlap `bytes`.
+/// `bytes` is not null and `len` bytes at it are readable and valid UTF-8; if they are not,
+/// the program aborts. `out` is aligned and has room for `sisu_utf8_count(bytes, len)` `u32`s,
+/// apart from `bytes`.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
@@ -185,8 +186,8 @@ pub unsafe extern "C" fn sisu_utf8_decode(bytes: *const u8, len: usize, out: *mu
 ///
 /// # Safety
 ///
-/// `n` `u32`s at `chars` are readable. They are scalar values, which a `[char]` holds; if one
-/// is not, the program aborts.
+/// `chars` is not null and aligned, and `n` `u32`s at it are readable. They are scalar values,
+/// which a `[char]` holds; if one is not, the program aborts.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
@@ -202,8 +203,9 @@ pub unsafe extern "C" fn sisu_utf8_len(chars: *const u32, n: usize) -> usize {
 ///
 /// # Safety
 ///
-/// `n` `u32`s at `chars` are readable and scalar values; if one is not, the program aborts.
-/// `out` has room for `sisu_utf8_len(chars, n)` bytes, which do not overlap `chars`.
+/// `chars` is not null and aligned, and `n` `u32`s at it are readable and scalar values; if
+/// one is not, the program aborts. `out` has room for `sisu_utf8_len(chars, n)` bytes, which do
+/// not overlap `chars`.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
@@ -224,7 +226,7 @@ pub unsafe extern "C" fn sisu_utf8_encode(chars: *const u32, n: usize, out: *mut
 ///
 /// # Safety
 ///
-/// `len` bytes at `bytes` are readable; valid UTF-8 is not required.
+/// `bytes` is not null and `len` bytes at it are readable; valid UTF-8 is not required.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
@@ -242,7 +244,7 @@ pub unsafe extern "C" fn sisu_print_str(bytes: *const u8, len: usize) {
 ///
 /// # Safety
 ///
-/// `a_len` bytes at `a` and `b_len` bytes at `b` are readable.
+/// `a` and `b` are not null, and `a_len` bytes at `a` and `b_len` bytes at `b` are readable.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"

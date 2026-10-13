@@ -1,6 +1,6 @@
 //! Strings at run time. A string is a pointer to one block: a header of three `i64`s, the count,
-//! the length and the capacity, then `cap` bytes. A literal's block is a writable global whose
-//! count starts at 1, so it is never freed. This module is the only one that reads a string
+//! the length and the capacity, then `cap` bytes. A literal's block is a writable global that
+//! holds a reference of its own, so it is never freed and never reused in place. This module is the only one that reads a string
 //! header: it owns the layout, the string nodes and the bodies of the string helpers, which
 //! `define_helpers` reaches through `define_string_helper`.
 
