@@ -7,6 +7,8 @@ const SUM = M + 15
 const CHAIN = 1 < L < AREA
 const B = 255
 const BYTE = u8(B)
+const C = 'a'
+const NEXT = char(i64(C) + 1)
 
 fn main() {
     let l = 100
@@ -26,4 +28,7 @@ fn main() {
     let b = 255
     print(BYTE) // 255
     print(u8(b)) // 255
+    let c = 'a'
+    print(NEXT) // b
+    print(char(i64(c) + 1)) // b
 }

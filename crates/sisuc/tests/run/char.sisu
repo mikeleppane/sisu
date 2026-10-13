@@ -1,0 +1,40 @@
+// `char`: literals, printing, conversions to and from `i64`, optionals and arrays.
+// `climb` is recursive, and not in tail position, and `main` calls it from a loop with a depth that
+// changes, so `-O2` keeps the call: a `char` crosses a real call as an argument and as a result,
+// and the conversion on its way out checks a value `-O2` does not know.
+// o2-calls: main climb 1
+fn climb(c: char, steps: i64) -> char {
+    if steps == 0 { c } else { char(i64(climb(c, steps - 1)) + 1) }
+}
+
+fn maybe(c: bool) -> char? { if c { 'ä' } else { None } }
+
+fn main() {
+    print('a')                       // a
+    print('ä')                       // ä, two bytes in UTF-8
+    print('😀')                      // 😀, four bytes in UTF-8
+    print('\n' == '\u{a}')           // true: both escapes are line feed
+    print(i64('ä'))                  // 228
+    let low = 0xD7FF
+    let high = 0xE000
+    let top = 0x10FFFF
+    print(i64(char(low)))            // 55295: the last scalar value below the surrogates
+    print(i64(char(high)))           // 57344: the first one above them
+    print(i64(char(top)))            // 1114111: the last scalar value
+    print(char(top) == '\u{10FFFF}') // true
+    let mut total = 0
+    for i in 0..1000 {
+        total += i64(climb('a', i % 50 + 1))
+    }
+    print(total)                     // 122500: 1000 times 98, plus 20 times (0 + 1 + ... + 49)
+    print(maybe(true) == 'ä')        // true
+    print(maybe(true) != 'a')        // true
+    print(maybe(false) == None)      // true
+    let cs = ['a', 'ä', '😀']
+    print(cs.len())                  // 3
+    print(cs[2])                     // 😀
+    print(cs.contains('ä'))          // true
+    print(cs.contains('b'))          // false
+    print(cs == ['a', 'ä', '😀'])    // true
+    print(cs == ['a', 'ä'])          // false
+}

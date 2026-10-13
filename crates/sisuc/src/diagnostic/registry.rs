@@ -532,8 +532,8 @@ pub(crate) enum Panic {
 }
 
 impl Panic {
-    /// The run-time panic's message.
-    fn message(self) -> &'static str {
+    /// The run-time panic's message, which codegen also uses.
+    pub(crate) fn message(self) -> &'static str {
         match self {
             Panic::Overflow => "integer overflow",
             Panic::DivisionByZero => "division by zero",

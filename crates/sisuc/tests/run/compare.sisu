@@ -1,0 +1,26 @@
+// Every comparison operator on `char`, by code point rather than by byte or alphabet.
+fn main() {
+    let a = 'a'
+    let z = 'z'
+    let umlaut = 'ä'
+    let emoji = '😀'
+    print(a == a)                    // true
+    print(a != a)                    // false
+    print(a == z)                    // false
+    print(a != z)                    // true
+    print(a < z)                     // true
+    print(z < a)                     // false
+    print(a <= a)                    // true
+    print(z <= a)                    // false
+    print(z > a)                     // true
+    print(a > z)                     // false
+    print(z >= z)                    // true
+    print(a >= z)                    // false
+    print(z < umlaut)                // true: 122 is below 228, so `z` sorts before `ä`
+    print(umlaut < emoji)            // true: 228 is below 128512
+    print(emoji > umlaut)            // true
+    print(emoji >= emoji)            // true
+    print(a < umlaut < emoji)        // true: a chain holds when every link holds
+    print(a < z < umlaut)            // true
+    print(a < umlaut < z)            // false: the second link fails
+}

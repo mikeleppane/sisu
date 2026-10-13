@@ -6,7 +6,7 @@ use inkwell::intrinsics::Intrinsic;
 use inkwell::values::IntValue;
 
 use super::{Codegen, POSITIONED};
-use crate::diagnostic::Span;
+use crate::diagnostic::{Panic, Span};
 use crate::tir::{BinaryOp, CompareOp, Expr, ExprKind, Type};
 
 impl<'ctx> Codegen<'ctx, '_> {
@@ -21,7 +21,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             return self.short_circuit(op == BinaryOp::And, lhs, rhs);
         }
-        let signed = lhs.ty != Type::U8;
+        let signed = !matches!(lhs.ty, Type::U8 | Type::Char);
         let (l, r) = (self.value(lhs), self.value(rhs));
         let intrinsic = |name| {
             format!(
@@ -155,23 +155,23 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.int_compare(predicate, lhs, rhs)
     }
 
-    /// `i64(u8)` and `u8(i64)`, the target being `e.ty`; a `char` conversion lands in Task 9.
-    /// Narrowing panics at `e.span` unless the value is in `0..=255`; one unsigned compare also
+    /// `i64(u8)`, `i64(char)`, `u8(i64)` and `char(i64)`, the target being `e.ty`. Narrowing
+    /// panics at `e.span`: `u8` unless the value is in `0..=255`, and `char` unless it is a
+    /// scalar value, `0..=0x10FFFF` without `0xD800..=0xDFFF`. One unsigned compare also
     /// catches the negatives.
     pub(super) fn convert(&mut self, e: &Expr) -> IntValue<'ctx> {
         let ExprKind::Convert(operand) = &e.kind else {
             unreachable!("`convert` should be called on a `Convert` node");
         };
-        assert!(
-            e.ty != Type::Char && operand.ty != Type::Char,
-            "`char` lands in Task 9"
-        );
         let value = self.value(operand);
         if e.ty == Type::I64 {
             return self
                 .builder
                 .build_int_z_extend(value, self.context.i64_type(), "widened")
                 .expect(POSITIONED);
+        }
+        if e.ty == Type::Char {
+            return self.narrow_to_char(value, e.span);
         }
         let too_big = self.int_compare(
             IntPredicate::UGT,
@@ -181,6 +181,31 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.panic_if(too_big, e.span, "value does not fit in `u8`");
         self.builder
             .build_int_truncate(value, self.context.i8_type(), "narrowed")
+            .expect(POSITIONED)
+    }
+
+    /// Panics at `span` unless the `i64` `value` is a Unicode scalar value, then truncates it.
+    fn narrow_to_char(&self, value: IntValue<'ctx>, span: Span) -> IntValue<'ctx> {
+        let i64_type = value.get_type();
+        let above = self.int_compare(
+            IntPredicate::UGT,
+            value,
+            i64_type.const_int(u64::from(char::MAX), false),
+        );
+        // `value - 0xD800` is below `0x800` exactly for the surrogates.
+        let shifted = self
+            .builder
+            .build_int_sub(value, i64_type.const_int(0xD800, false), "shifted")
+            .expect(POSITIONED);
+        let surrogate =
+            self.int_compare(IntPredicate::ULT, shifted, i64_type.const_int(0x800, false));
+        let invalid = self
+            .builder
+            .build_or(above, surrogate, "invalid")
+            .expect(POSITIONED);
+        self.panic_if(invalid, span, Panic::NotChar.message());
+        self.builder
+            .build_int_truncate(value, self.context.i32_type(), "narrowed")
             .expect(POSITIONED)
     }
 }

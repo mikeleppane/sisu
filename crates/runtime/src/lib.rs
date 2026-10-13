@@ -1,5 +1,7 @@
 //! The Sisu runtime: functions that compiled Sisu programs call over the C ABI.
 
+pub mod text;
+
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::fs::File;
 use std::io::{IsTerminal, Write};
@@ -345,8 +347,8 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        SIGPIPE, signal, sisu_alloc, sisu_free, sisu_panic_bounds, sisu_print_int,
-        sisu_rc_check_exit, sisu_rc_fault,
+        SIGPIPE, signal, sisu_alloc, sisu_flush_stdout, sisu_free, sisu_panic_bounds,
+        sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
     };
     use std::os::fd::AsRawFd;
     use std::os::unix::process::ExitStatusExt;
@@ -548,6 +550,10 @@ mod tests {
                 sisu_print_int(5);
                 sisu_rc_fault(1);
             }
+            "print_char" => {
+                crate::text::sisu_print_char(0x1F600);
+                sisu_flush_stdout();
+            }
             other => panic!("unknown rc case {other}"),
         }
     }
@@ -581,6 +587,14 @@ mod tests {
         // SAFETY: `fd` is an open descriptor and 1 is a valid target.
         let result = unsafe { dup2(fd, 1) };
         assert_eq!(result, 1, "dup2 should succeed");
+    }
+
+    /// `sisu_print_char` writes the character as UTF-8, then a newline.
+    #[test]
+    fn print_char_writes_utf8() {
+        let out = run_rc_child("print_char");
+        assert!(out.status.success(), "child exited with {:?}", out.status);
+        assert!(String::from_utf8_lossy(&out.stdout).contains("\u{1F600}\n"));
     }
 
     /// A standard output that is open but cannot be duplicated (EMFILE) is a failed write,

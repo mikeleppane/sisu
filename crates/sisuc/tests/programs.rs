@@ -269,6 +269,10 @@ fn panic_cases() {
             "u8(a)",
             "value does not fit in `u8`",
         ),
+        char_case("char_negative", "-1"),
+        char_case("char_d800", "0xD800"),
+        char_case("char_dfff", "0xDFFF"),
+        char_case("char_above", "0x110000"),
         sum_case("sum_overflow", "9_223_372_036_854_775_807, 1"),
         // The total fits, but the running sum overflows at the second element.
         sum_case("sum_overflow_midway", "9_223_372_036_854_775_807, 1, -1"),
@@ -332,6 +336,16 @@ fn print_case(
         name,
         format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
         format!("3:11: {message}"),
+    )
+}
+
+/// A `panic_cases` row whose `char(a)` panics for `a` set to `value`.
+fn char_case(name: &'static str, value: &str) -> (&'static str, String, String) {
+    print_case(
+        name,
+        &format!("let a = {value}"),
+        "char(a)",
+        "value is not a valid `char`",
     )
 }
 

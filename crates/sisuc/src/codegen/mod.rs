@@ -84,6 +84,7 @@ pub(crate) fn compile<'ctx>(
     let print_int = declare_print(&module, "sisu_print_int", i64_type.into());
     let print_bool = declare_print(&module, "sisu_print_bool", context.bool_type().into());
     print_bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
+    let print_char = declare_print(&module, "sisu_print_char", context.i32_type().into());
     // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
     // index, length)` prints a bounds panic and exits.
     let panic = declare_noreturn(&module, "sisu_panic", &[ptr_type.into(), i64_type.into()]);
@@ -104,6 +105,7 @@ pub(crate) fn compile<'ctx>(
         builder: context.create_builder(),
         print_int,
         print_bool,
+        print_char,
         panic,
         panic_bounds,
         alloc,
@@ -228,6 +230,7 @@ struct Codegen<'ctx, 'src> {
     builder: Builder<'ctx>,
     print_int: FunctionValue<'ctx>,
     print_bool: FunctionValue<'ctx>,
+    print_char: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
     panic_bounds: FunctionValue<'ctx>,
     alloc: FunctionValue<'ctx>,
@@ -268,7 +271,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::U8 => Some(self.context.i8_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
-            Type::Char => panic!("`char` lands in Task 9"),
+            Type::Char => Some(self.context.i32_type().into()),
             Type::Unit | Type::Never => None,
             // An object or an array is a pointer to its block.
             Type::Class(_) | Type::Array(_) => {
@@ -645,7 +648,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn equal_expr(&mut self, negated: bool, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let equal = match lhs.ty {
-            Type::I64 | Type::U8 | Type::Bool if negated => {
+            Type::I64 | Type::U8 | Type::Bool | Type::Char if negated => {
                 self.int_compare(IntPredicate::NE, l.into_int_value(), r.into_int_value())
             }
             _ if negated => {
@@ -690,7 +693,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
-            ExprKind::Char(_) => panic!("`char` lands in Task 9"),
+            ExprKind::Char(c) => self.context.i32_type().const_int(u64::from(*c), false),
             ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {
                 return Some(self.array_fill(&e.ty, value, len).into());
@@ -914,10 +917,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect(POSITIONED);
         }
         let is_bool = operand.ty == Type::Bool;
-        let print = if is_bool {
-            self.print_bool
-        } else {
-            self.print_int
+        let print = match operand.ty {
+            Type::Bool => self.print_bool,
+            Type::Char => self.print_char,
+            _ => self.print_int,
         };
         let call = self
             .builder
@@ -1013,7 +1016,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("a comparison chain should have at least one operator");
         let function = self.current_function();
         let mut false_from = Vec::new();
-        let signed = operands[0].ty != Type::U8;
+        let signed = !matches!(operands[0].ty, Type::U8 | Type::Char);
         let mut lhs = self.value(&operands[0]);
         for (op, operand) in first_ops.iter().zip(&operands[1..]) {
             let rhs = self.value(operand);
