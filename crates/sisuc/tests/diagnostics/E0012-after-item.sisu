@@ -1,0 +1,7 @@
+class C {
+    x: i64
+};
+
+fn main() {
+    print(1)
+}

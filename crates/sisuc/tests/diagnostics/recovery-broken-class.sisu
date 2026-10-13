@@ -1,0 +1,21 @@
+class Tree {
+    value i64
+    fn size(self) -> i64 {
+        let b: bool = 1
+        1
+    }
+}
+
+class Counter {
+    n: i64
+    fn bump(self, by: i64) {
+        let = by
+    }
+}
+
+fn main() {
+    let t: Tree = Tree(value: 1)
+    print(t.size())
+    let c = Counter(n: 0)
+    c.bump(nope)
+}

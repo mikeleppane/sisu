@@ -125,126 +125,105 @@ fn element_write_counts_as_reassigning() {
 
 #[test]
 fn element_of_a_let() {
-    expect_error(
-        "fn main() {\n    let xs = [0]\n    xs[0] = 1\n}",
-        "cannot assign to an element of `xs`",
-        (3, 5, "xs[0] = 1"),
-        None,
-        &[(2, 9, "declared with `let` here")],
-        Some("declare it with `let mut`"),
-    );
+    let src = "fn main() {\n    let xs = [0]\n    xs[0] = 1\n}";
+    let d = diagnostic(src, Code::AssignToImmutable, (3, 5, "xs[0] = 1"), &[(2, 9)]);
+    fix_removes_its_code(src, &d);
 }
 
 #[test]
 fn element_of_a_parameter() {
-    expect_error(
+    diagnostic(
         "fn f(xs: [i64]) { xs[0] = 1 }\nfn main() {}",
-        "cannot assign to an element of `xs`",
+        Code::AssignToImmutable,
         (1, 19, "xs[0] = 1"),
-        None,
-        &[(1, 6, "declared as a parameter here")],
-        Some("copy it into a variable: `let mut xs = xs`"),
+        &[(1, 6)],
     );
 }
 
 #[test]
 fn element_of_an_if_let_binding() {
-    expect_error(
+    diagnostic(
         "fn f(m: [i64]?) { if let xs = m { xs[0] = 1 } }\nfn main() {}",
-        "cannot assign to an element of `xs`",
+        Code::AssignToImmutable,
         (1, 35, "xs[0] = 1"),
-        None,
-        &[(1, 26, "bound by `if let` here")],
-        None,
+        &[(1, 26)],
     );
 }
 
 #[test]
 fn element_of_a_for_variable() {
-    expect_error(
+    diagnostic(
         "fn f(grid: [[i64]]) { for row in grid { row[0] = 1 } }\nfn main() {}",
-        "cannot assign to an element of `row`",
+        Code::AssignToImmutable,
         (1, 41, "row[0] = 1"),
-        None,
-        &[(1, 27, "bound by `for` here")],
-        None,
+        &[(1, 27)],
     );
 }
 
 #[test]
 fn element_of_a_while_let_binding() {
-    expect_error(
+    diagnostic(
         "fn f(m: [i64]?) { while let xs = m { xs[0] = 1 } }\nfn main() {}",
-        "cannot assign to an element of `xs`",
+        Code::AssignToImmutable,
         (1, 38, "xs[0] = 1"),
-        None,
-        &[(1, 29, "bound by `while let` here")],
-        None,
+        &[(1, 29)],
     );
 }
 
 #[test]
 fn element_of_a_bare_field() {
-    expect_error(
+    diagnostic(
         "class C {\n    cells: [i64]\n    fn set(self) { self.cells[0] = 1 }\n}\nfn main() {}",
-        "cannot assign to an element of `cells`",
+        Code::AssignToImmutable,
         (3, 20, "self.cells[0] = 1"),
-        None,
-        &[(2, 5, "declared without `mut` here")],
-        Some("mark the field `mut`"),
+        &[(2, 5)],
     );
 }
 
 #[test]
 fn element_value_of_the_wrong_type() {
-    error(
+    codes(
         "fn main() {\n    let mut xs = [0]\n    xs[0] = true\n}",
-        "expected `i64`, found `bool`",
-        (3, 13),
+        &[(Code::Mismatch, (3, 13))],
     );
 }
 
 #[test]
 fn element_of_an_optional_array() {
-    expect_error(
+    let d = diagnostic(
         "fn main() {\n    let mut m: [i64]? = None\n    m[0] = 1\n}",
-        "`m` may be `None`",
+        Code::MayBeNone,
         (3, 5, "m"),
-        None,
         &[],
-        Some("unwrap it with `if let`"),
     );
+    assert!(d.fixes().is_empty(), "{d:?}");
 }
 
 #[test]
 fn element_of_a_non_array() {
-    expect_error(
+    diagnostic(
         "fn main() {\n    let mut n = 1\n    n[0] = 2\n}",
-        "cannot index `i64`",
+        Code::CannotIndex,
         (3, 5, "n"),
-        None,
         &[],
-        Some("only arrays can be indexed"),
     );
 }
 
 /// An unknown root is reported once, and nothing more about the write.
 #[test]
 fn element_of_an_unknown_name() {
-    errors(
+    codes(
         "fn main() {\n    nope[0] = 1\n}",
-        &[("cannot find `nope` in this scope", (2, 5))],
+        &[(Code::BindingNotFound, (2, 5))],
     );
 }
 
 #[test]
 fn element_index_of_the_wrong_type() {
-    expect_error(
+    diagnostic(
         "fn f(b: u8) {\n    let mut xs = [0]\n    xs[b] = 1\n}\nfn main() {}",
-        "expected `i64`, found `u8`",
+        Code::Mismatch,
         (3, 8, "b"),
-        None,
         &[],
-        Some("convert it: `i64(b)`"),
     );
 }

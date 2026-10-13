@@ -1,0 +1,6 @@
+fn print(n: i64) {
+}
+
+fn main() {
+    print(1)
+}

@@ -11,7 +11,7 @@ Sisu is a small, statically typed language compiled to native x86-64 Linux code 
 |---|---|
 | Build | `cargo build --workspace` |
 | Test | `cargo nextest run --workspace` (not `cargo test`: a nextest setup script builds the runtime) |
-| Fill the expected `.out`/`.err` files of the end-to-end cases (see `docs/development.md`) | `SISU_BLESS=1 cargo nextest run -E 'binary(cases)'` |
+| Fill the expected `.out`/`.err`/`.json` files of the end-to-end cases (see `docs/development.md`) | `SISU_BLESS=1 cargo nextest run -E 'binary(cases)'` |
 | Lint and format check (the same hooks CI runs) | `prek run --all-files` |
 | Dependency audit | `cargo deny check` |
 | Mutation test a branch's changes (on a stacked branch, pass the stage's base) | `scripts/mutants.sh [base]` |

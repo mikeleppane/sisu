@@ -169,6 +169,43 @@ The type the checker gives an expression that already failed a rule, so that
 one mistake produces one diagnostic.
 _Avoid_: error type (ambiguous with diagnostics)
 
+**Diagnostic**:
+An error or a warning the compiler reports about the source. An error stops
+the build; a warning does not.
+_Avoid_: report, message
+
+**Diagnostic code**:
+The stable name of one kind of diagnostic, such as `E0007` or `W0002`. A code
+is never reused, and the same code always reads the same way.
+_Avoid_: error code (warnings have codes too)
+
+**Help**:
+Advice in a diagnostic that cannot be written as an edit, such as "optionals
+do not nest".
+
+**Fix**:
+An edit to the source, with a message, that resolves a diagnostic. A fix is
+either certain or a guess.
+_Avoid_: suggestion, quick fix
+
+**Explanation**:
+The long-form page for one diagnostic code: the rule, why Sisu has it, and a
+broken and a fixed example.
+_Avoid_: error index entry
+
+**Broken item**:
+A function, class or method that contains a syntax error. Its body is not
+checked, and a use of it is never reported as unknown or mistyped.
+
+**Cascade**:
+A diagnostic that exists only because of another one. Sisu never reports
+one.
+_Avoid_: follow-on error, knock-on error
+
+**Foreign idiom**:
+A habit from another language, such as `var` or `len(xs)`, that has its own
+diagnostic code naming the Sisu way.
+
 **Reference count**:
 The number of references to an object; the object is dropped when it reaches
 0.

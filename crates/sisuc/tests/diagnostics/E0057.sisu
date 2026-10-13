@@ -1,0 +1,12 @@
+class Square {
+    side: i64
+
+    fn area(self) -> i64 {
+        self.side * self.side
+    }
+}
+
+fn main() {
+    let s = Square(side: 2)
+    print(s.area)
+}

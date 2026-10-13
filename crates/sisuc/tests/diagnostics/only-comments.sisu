@@ -1,0 +1,2 @@
+// A file of only comments has no `main`.
+// It reports at 1:1.

@@ -770,7 +770,7 @@ fn build_error_makes_no_executable() {
         "fn main() {\n    let n = 0\n    n = 1\n}\n",
     );
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error[E0001]: cannot assign to `n`"));
     assert!(!exe.exists());
 }
 
@@ -782,7 +782,8 @@ fn build_warning_still_makes_the_executable() {
     );
     assert_eq!(out.status.code(), Some(0));
     assert!(
-        String::from_utf8_lossy(&out.stderr).starts_with("warning: `count` is never reassigned")
+        String::from_utf8_lossy(&out.stderr)
+            .starts_with("warning[W0002]: `count` is never reassigned")
     );
     let run = Command::new(exe).output().expect("the program starts");
     assert_eq!(String::from_utf8_lossy(&run.stdout), "0\n");
@@ -1017,15 +1018,15 @@ fn bless_writes_neither_file_when_one_is_missing() {
     assert!(!dir.join("a.err").exists());
 }
 
-/// A program that compiles is no compile-fail case, whatever its `.err` holds.
+/// A program that reports nothing is no diagnostics case, whatever its `.err` holds.
 #[test]
-fn compile_fail_rejects_a_valid_program() {
+fn diagnostics_rejects_a_clean_program() {
     let dir = fixture(
-        "compile_fail_rejects_a_valid_program",
+        "diagnostics_rejects_a_clean_program",
         &[("a.sisu", "fn main() {}\n"), ("a.err", "")],
     );
-    let message = panic_message(|| support::compile_fail(&dir.join("a.sisu"), true));
-    assert!(message.contains("Some(0)"), "{message}");
+    let message = panic_message(|| support::diagnostics(&dir.join("a.sisu"), true));
+    assert!(message.contains("reports no diagnostic"), "{message}");
     assert_eq!(
         fs::read_to_string(dir.join("a.err")).expect("reads a.err"),
         ""

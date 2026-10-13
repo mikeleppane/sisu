@@ -1,0 +1,13 @@
+class Point {
+    mut x: i64
+
+    fn reset(self) {
+        self = Point(x: 0)
+    }
+}
+
+fn main() {
+    let p = Point(x: 1)
+    p.reset()
+    print(p.x)
+}

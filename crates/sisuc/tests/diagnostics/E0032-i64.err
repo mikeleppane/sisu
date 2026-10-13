@@ -1,0 +1,13 @@
+error[E0032]: expected `i64`, found `u8`
+ --> E0032-i64.sisu:7:10
+  |
+7 |     show(b)
+  |          ^
+  |
+help: if the types are right, convert it with `i64(...)`
+  |
+7 |     show(i64(b))
+  |          ++++ +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

@@ -1,0 +1,12 @@
+error[E0001]: cannot assign to `n`
+ --> E0001-param.sisu:2:5
+  |
+1 | fn double(n: i64) -> i64 {
+  |           - declared as a parameter here
+2 |     n *= 2
+  |     ^^^^^^
+  |
+  = help: copy it into a variable: `let mut n = n`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001

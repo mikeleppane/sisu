@@ -1,0 +1,14 @@
+error[E0062]: this value may be `None`
+  --> E0062-unnamed.sisu:11:11
+   |
+11 |     print(first().value)
+   |           ^^^^^^^
+   |
+   = help: to use the value only when it is present, unwrap it with `if let`
+help: if a `None` result is fine, use `?.`
+   |
+11 |     print(first()?.value)
+   |                  +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0062

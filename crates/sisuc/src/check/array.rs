@@ -1,9 +1,9 @@
 //! Array expressions: literals and their element join, `[v; n]`, indexing and methods.
 
-use super::expr::{fits, literal_type, no_member, none_literal, quoted, rank, typed};
+use super::expr::{fits, literal_type, no_member, none_literal, path, rank, typed};
 use super::{Checked, Checker, Poisoned, UNKNOWN, optional_of, payload, type_of, wrap};
 use crate::ast;
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Definition, Diagnostic, DiagnosticKind, Literal, Span};
 use crate::tir::{self, Type};
 
 impl Checker {
@@ -27,16 +27,23 @@ impl Checker {
             let (d, mismatch) = match expected {
                 Some(ty) if *ty == UNKNOWN => return Err(Poisoned::error()),
                 Some(ty) => (
-                    Diagnostic::error(span, format!("expected {}, found `[]`", self.show(ty))),
+                    DiagnosticKind::Mismatch {
+                        want: self.type_name(ty),
+                        got: "[]".to_string(),
+                        at: span,
+                        convert: None,
+                    },
                     true,
                 ),
                 None => (
-                    Diagnostic::error(span, "cannot infer the type of `[]`")
-                        .help("write the type: `let xs: [i64] = []`"),
+                    DiagnosticKind::CannotInfer {
+                        literal: Literal::EmptyArray,
+                        at: span,
+                    },
                     false,
                 ),
             };
-            self.diagnostics.push(d);
+            self.report(d);
             return Err(Poisoned { ty: None, mismatch });
         }
         self.joined(span, elements, expected == Some(&UNKNOWN))
@@ -153,15 +160,10 @@ impl Checker {
             .filter(|ty| matches!(ty, Type::Class(_)) && !none_literal(value))
             .map(|ty| self.type_name(ty));
         if let Some(class) = &class {
-            self.diagnostics.push(
-                Diagnostic::error(
-                    value.span,
-                    format!("every element would be the same `{class}` object"),
-                )
-                .help(format!(
-                    "start from `[None; n]` with type `[{class}?]` and fill it in a loop"
-                )),
-            );
+            self.report(DiagnosticKind::SameObject {
+                class: class.clone(),
+                at: value.span,
+            });
         }
         let (checked, mismatched) = match &element {
             Some(element) => self.against(value, checked, Some(element)),
@@ -185,6 +187,8 @@ impl Checker {
     pub(super) fn index(&mut self, span: Span, base: &ast::Expr, index: &ast::Expr) -> Checked {
         let checked = self.value(base, None);
         let element = self.element(base, type_of(&checked));
+        // The index is not part of an assignment target's chain; `expr` restores the flag.
+        self.in_target = false;
         let (index, mismatched) = self.operand(index, Some(&Type::I64));
         match (checked, index, element) {
             (Ok(base), Ok(index), Some(element)) => {
@@ -203,8 +207,11 @@ impl Checker {
         let d = match ty? {
             Type::Array(element) => return Some((**element).clone()),
             Type::Optional(payload) if matches!(**payload, Type::Array(_)) => optional_array(base),
-            ty => Diagnostic::error(base.span, format!("cannot index {}", self.show(ty)))
-                .help("only arrays can be indexed"),
+            ty => DiagnosticKind::CannotIndex {
+                ty: self.type_name(ty),
+                at: base.span,
+            }
+            .into(),
         };
         self.diagnostics.push(d);
         None
@@ -227,15 +234,24 @@ impl Checker {
         let arity = match name {
             "len" | "sum" => 0,
             "contains" => 1,
-            _ => return self.rejected(no_member("method", &self.show(ty), method), args),
+            _ => {
+                let d = no_member(
+                    Definition::Method,
+                    self.type_name(ty),
+                    method,
+                    ["len", "sum", "contains"],
+                );
+                return self.rejected(d, args);
+            }
         };
         if args.len() != arity {
-            let plural = if arity == 1 { "" } else { "s" };
-            let message = format!(
-                "`{name}` takes {arity} argument{plural}, found {}",
-                args.len()
-            );
-            return self.rejected(Diagnostic::error(span, message), args);
+            let d = DiagnosticKind::ArgumentCount {
+                name: name.to_string(),
+                want: arity,
+                found: args.len(),
+                at: span,
+            };
+            return self.rejected(d.into(), args);
         }
         match name {
             "len" => {
@@ -243,8 +259,11 @@ impl Checker {
                 typed(span, Type::I64, false, kind)
             }
             "sum" if **element != Type::I64 => {
-                let message = format!("`sum` needs an `[i64]`, found {}", self.show(ty));
-                self.rejected(Diagnostic::error(method.span, message), args)
+                let d = DiagnosticKind::SumNeedsI64 {
+                    ty: self.type_name(ty),
+                    at: method.span,
+                };
+                self.rejected(d.into(), args)
             }
             "sum" => {
                 let kind = receiver.ok().map(|r| tir::ExprKind::Sum(Box::new(r)));
@@ -281,8 +300,12 @@ impl Checker {
 
 /// "`m` may be `None`", at the optional array `base` that an index or a `for` needs unwrapped.
 pub(super) fn optional_array(base: &ast::Expr) -> Diagnostic {
-    Diagnostic::error(base.span, format!("{} may be `None`", quoted(base)))
-        .help("unwrap it with `if let`")
+    DiagnosticKind::MayBeNone {
+        value: path(base),
+        at: base.span,
+        access: None,
+    }
+    .into()
 }
 
 /// `E`, when `expected` is `[E]` or `[E]?`.

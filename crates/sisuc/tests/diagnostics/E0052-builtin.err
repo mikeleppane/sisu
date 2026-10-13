@@ -1,0 +1,13 @@
+error[E0052]: cannot find function `prnt`
+ --> E0052-builtin.sisu:2:5
+  |
+2 |     prnt(1)
+  |     ^^^^
+  |
+help: a function with a similar name exists: `print`
+  |
+2 |     print(1)
+  |       +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0052

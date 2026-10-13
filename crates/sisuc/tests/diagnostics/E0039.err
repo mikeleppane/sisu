@@ -1,0 +1,10 @@
+error[E0039]: `total` is already declared in this scope
+ --> E0039.sisu:3:9
+  |
+2 |     let total = 1
+  |         ----- first declared here
+3 |     let total = 2
+  |         ^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0039

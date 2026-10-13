@@ -1,0 +1,4 @@
+fn main() {
+    let flags = [true, false]
+    print(flags.sum())
+}

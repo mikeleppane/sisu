@@ -1,6 +1,0 @@
-error: expected `i64`, found `i64?`
- --> optional_misuse.sisu:3:18
-  |
-3 |     let n: i64 = maybe
-  |                  ^^^^^
-

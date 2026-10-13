@@ -1,0 +1,8 @@
+error[E0054]: this value is already `i64`
+ --> E0054-unnamed.sisu:3:15
+  |
+3 |     print(i64(n + 1))
+  |               ^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0054

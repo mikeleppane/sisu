@@ -1,0 +1,3 @@
+class A {
+    mut 1: i64
+}

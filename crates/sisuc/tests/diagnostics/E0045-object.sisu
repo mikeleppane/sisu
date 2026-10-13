@@ -1,0 +1,6 @@
+class Node {}
+
+fn main() {
+    let n = Node()
+    print(n is None)
+}

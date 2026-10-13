@@ -1,0 +1,8 @@
+warning[W0001]: unreachable code
+ --> W0001.sisu:6:9
+  |
+6 |         print(i)
+  |         ^^^^^^^^
+
+sisuc: 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: W0001

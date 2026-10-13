@@ -1,0 +1,10 @@
+error[E0062]: `xs` may be `None`
+ --> E0062-for.sisu:3:14
+  |
+3 |     for x in xs {
+  |              ^^
+  |
+  = help: unwrap it with `if let`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0062

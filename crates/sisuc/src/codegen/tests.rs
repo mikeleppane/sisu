@@ -1,7 +1,6 @@
 use super::*;
 use crate::check::check;
-use crate::lexer::lex;
-use crate::parser::parse;
+use crate::parser::parse_ok;
 
 /// Lexes, parses, checks (no errors allowed), marks last uses in and compiles `src`, then
 /// verifies the module.
@@ -11,7 +10,7 @@ fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
 
 /// `compiled`, with the RC checks if `rc_checks`.
 fn compiled_with<'ctx>(context: &'ctx Context, src: &str, rc_checks: bool) -> Module<'ctx> {
-    let program = parse(&lex(src).expect("source lexes")).expect("source parses");
+    let program = parse_ok(src);
     let (program, diagnostics) = check(&program);
     let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
     crate::last_use::mark(&mut program);

@@ -1,0 +1,14 @@
+error[E0028]: no `main` function
+ --> E0011-expected-paren.sisu:1:1
+  |
+1 | fn f {}
+  | ^
+
+error[E0011]: expected `(`, found `{`
+ --> E0011-expected-paren.sisu:1:6
+  |
+1 | fn f {}
+  |      ^
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011, E0028

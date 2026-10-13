@@ -1,0 +1,11 @@
+class Counter {
+    mut n: i64
+
+    fn add(by: i64, self) {
+        self.n += by
+    }
+}
+
+fn main() {
+    print(1)
+}

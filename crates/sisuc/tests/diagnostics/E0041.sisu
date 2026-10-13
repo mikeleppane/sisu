@@ -1,0 +1,11 @@
+class Counter {
+    n: i64
+}
+
+fn show() {
+    print(self.n)
+}
+
+fn main() {
+    show()
+}

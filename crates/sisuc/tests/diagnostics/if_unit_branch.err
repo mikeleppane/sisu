@@ -1,0 +1,8 @@
+error[E0043]: expression has no value
+ --> if_unit_branch.sisu:4:39
+  |
+4 |     let y: i64 = if true { 1 } else { nothing() }
+  |                                       ^^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0043

@@ -1,0 +1,14 @@
+error[E0028]: no `main` function
+ --> E0011-expected-type.sisu:1:1
+  |
+1 | fn f(a: ) {}
+  | ^
+
+error[E0011]: expected a type, found `)`
+ --> E0011-expected-type.sisu:1:9
+  |
+1 | fn f(a: ) {}
+  |         ^
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011, E0028

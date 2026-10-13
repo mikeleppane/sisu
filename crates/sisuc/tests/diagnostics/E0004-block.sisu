@@ -1,0 +1,9 @@
+fn main() {
+    let big = true
+    let even = true
+    if big &&
+        even
+    {
+        print(1)
+    }
+}

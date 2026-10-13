@@ -1,0 +1,14 @@
+error[E0063]: `Point` has no field `y`
+ --> E0063-label.sisu:6:19
+  |
+6 |     let p = Point(y: 1)
+  |                   ^
+  |
+help: a field with a similar name exists: `x`
+  |
+6 -     let p = Point(y: 1)
+6 +     let p = Point(x: 1)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0063

@@ -1,0 +1,11 @@
+fn total(xs: [i64]) -> i64 {
+    let mut t = 0
+    for x in xs {
+        t += x $ 1
+    }
+    t
+}
+
+fn main() {
+    print(total([1, 2]) # 2)
+}

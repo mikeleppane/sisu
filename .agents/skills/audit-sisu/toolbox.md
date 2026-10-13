@@ -134,7 +134,7 @@ on `main` itself it has nothing to mutate. A killed run leaves
 
 Write small generators into `$D` that print Sisu programs rather than typing
 programs by hand; run Python with `python3 -I`. Seeds come from
-`crates/sisuc/tests/run`, `run-fail` and `compile-fail`. Keep the generator
+`crates/sisuc/tests/run`, `run-fail` and `diagnostics`. Keep the generator
 and its seed with each finding.
 
 A reference implementation (Python or Rust) used as an oracle must keep

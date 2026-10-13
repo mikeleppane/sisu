@@ -1,7 +1,8 @@
 use super::*;
+use crate::diagnostic::explanations::apply;
 use crate::diagnostic::line_col;
-use crate::lexer::lex;
-use crate::parser::parse;
+use crate::diagnostic::{Code, Fix};
+use crate::parser::parse_ok;
 
 mod arrays;
 mod for_loops;
@@ -9,7 +10,7 @@ mod places;
 mod u8;
 
 fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
-    check(&parse(&lex(src).expect("source lexes")).expect("source parses"))
+    check(&parse_ok(src))
 }
 
 fn diags(src: &str) -> Vec<Diagnostic> {
@@ -31,93 +32,95 @@ fn contains(src: &str, parts: &[&str]) {
     }
 }
 
-/// Asserts the diagnostics are exactly these errors, in order: `(message, (line, col))`,
-/// and that no `tir` comes out.
-fn errors(src: &str, expected: &[(&str, (usize, usize))]) {
+/// The diagnostics are exactly these, in order: `(code, (line, col))`; no `tir` if one is an
+/// error.
+fn codes(src: &str, expected: &[(Code, (usize, usize))]) {
     let (program, ds) = checked(src);
-    assert!(program.is_none(), "an error yields no `tir`");
-    let found: Vec<_> = ds
-        .iter()
-        .map(|d| (d.severity, d.message.as_str(), at(src, d.span)))
-        .collect();
-    let expected: Vec<_> = expected
-        .iter()
-        .map(|&(message, pos)| (Severity::Error, message, pos))
-        .collect();
+    let found: Vec<_> = ds.iter().map(|d| (d.code(), at(src, d.span()))).collect();
     assert_eq!(found, expected);
+    let failed = expected
+        .iter()
+        .any(|(c, _)| c.severity() == Severity::Error);
+    assert_eq!(
+        program.is_none(),
+        failed,
+        "only an error withholds the `tir`"
+    );
+}
+
+/// Exactly one diagnostic, of `code`, whose primary span is `pos` = (line, col, text) and whose
+/// secondary spans start at `secondary`.
+fn diagnostic(
+    src: &str,
+    code: Code,
+    pos: (usize, usize, &str),
+    secondary: &[(usize, usize)],
+) -> Diagnostic {
+    let (program, mut ds) = checked(src);
+    assert_eq!(ds.len(), 1, "{ds:?}");
+    let d = ds.remove(0);
+    assert_eq!(d.code(), code);
+    assert_eq!(
+        program.is_none(),
+        code.severity() == Severity::Error,
+        "only an error withholds the `tir`"
+    );
+    let span = d.span();
+    assert_eq!(
+        (at(src, span), &src[span.start..span.end]),
+        ((pos.0, pos.1), pos.2)
+    );
+    let found: Vec<_> = d.secondary().iter().map(|(s, _)| at(src, *s)).collect();
+    assert_eq!(found, secondary);
+    d
+}
+
+/// A fix as (certain, [(line, col, replaced text, replacement)]).
+type FixAt<'a> = (bool, Vec<(usize, usize, &'a str, String)>);
+
+/// `d`'s fixes, located in `src`.
+fn fixes<'a>(src: &'a str, d: &Diagnostic) -> Vec<FixAt<'a>> {
+    d.fixes()
+        .iter()
+        .map(|f| {
+            let edits = f
+                .edits()
+                .iter()
+                .map(|e| {
+                    let s = e.span();
+                    let (line, col) = at(src, s);
+                    (line, col, &src[s.start..s.end], e.replacement().to_string())
+                })
+                .collect();
+            (f.certain(), edits)
+        })
+        .collect()
+}
+
+/// Asserts that applying `d`'s certain fixes to `src` leaves no diagnostic of `d`'s code.
+fn fix_removes_its_code(src: &str, d: &Diagnostic) {
+    let edits: Vec<_> = d
+        .fixes()
+        .iter()
+        .filter(|f| f.certain())
+        .flat_map(Fix::edits)
+        .collect();
+    assert!(!edits.is_empty(), "{d:?} has no certain fix");
+    let result = apply(src, &edits);
+    let left: Vec<_> = diags(&result).iter().map(Diagnostic::code).collect();
+    assert!(!left.contains(&d.code()), "{result}: {left:?}");
+}
+
+/// `src` with every fix of `d` applied, which must still lex and parse.
+fn applied(src: &str, d: &Diagnostic) -> String {
+    let edits: Vec<_> = d.fixes().iter().flat_map(Fix::edits).collect();
+    let result = apply(src, &edits);
+    parse_ok(&result);
+    result
 }
 
 fn at(src: &str, span: Span) -> (usize, usize) {
     line_col(src, span.start)
-}
-
-/// Asserts exactly one error and no `tir`, and returns it.
-fn single_error(src: &str, message: &str) -> Diagnostic {
-    let (program, mut ds) = checked(src);
-    assert!(program.is_none(), "an error yields no `tir`");
-    assert_eq!(ds.len(), 1, "{ds:?}");
-    let d = ds.remove(0);
-    assert_eq!(d.severity, Severity::Error);
-    assert_eq!(d.message, message);
-    d
-}
-
-/// Asserts exactly one error with these parts, and no `tir`; `pos` is `(line, col, text)`
-/// of the whole primary span, `secondary` is `(line, col, text)` rows.
-fn expect_error(
-    src: &str,
-    message: &str,
-    pos: (usize, usize, &str),
-    label: Option<&str>,
-    secondary: &[(usize, usize, &str)],
-    help: Option<&str>,
-) {
-    let d = single_error(src, message);
-    assert_eq!(
-        (at(src, d.span), &src[d.span.start..d.span.end]),
-        ((pos.0, pos.1), pos.2)
-    );
-    assert_eq!(d.label.as_deref(), label);
-    let found: Vec<_> = d
-        .secondary
-        .iter()
-        .map(|(span, text)| {
-            let (line, col) = at(src, *span);
-            (line, col, text.as_str())
-        })
-        .collect();
-    assert_eq!(found, secondary);
-    assert_eq!(d.help.as_deref(), help);
-}
-
-/// Asserts exactly one error with this message and position, and no label or help.
-fn error(src: &str, message: &str, pos: (usize, usize)) {
-    let d = single_error(src, message);
-    assert_eq!(at(src, d.span), pos);
-    assert_eq!(d.label, None);
-    assert!(d.secondary.is_empty(), "{:?}", d.secondary);
-    assert_eq!(d.help, None);
-}
-
-/// Asserts exactly one error: a `never` expression used as a value, at `pos`.
-fn never_value(src: &str, pos: (usize, usize)) {
-    let d = single_error(src, "this expression never produces a value");
-    assert_eq!(at(src, d.span), pos);
-    assert_eq!(
-        d.help.as_deref(),
-        Some("every path through it returns, breaks or continues")
-    );
-    assert_eq!(d.label, None);
-    assert!(d.secondary.is_empty(), "{:?}", d.secondary);
-}
-
-/// Asserts exactly one diagnostic: a warning with this message and position.
-fn warning(src: &str, message: &str, pos: (usize, usize)) {
-    let ds = diags(src);
-    assert_eq!(ds.len(), 1, "{ds:?}");
-    assert_eq!(ds[0].severity, Severity::Warning);
-    assert_eq!(ds[0].message, message);
-    assert_eq!(at(src, ds[0].span), pos);
 }
 
 fn clean(src: &str) {
@@ -127,116 +130,98 @@ fn clean(src: &str) {
 
 #[test]
 fn duplicate_function() {
-    expect_error(
+    diagnostic(
         "fn main() {}\nfn main() {}",
-        "function `main` is defined twice",
+        Code::DefinedTwice,
         (2, 4, "main"),
-        None,
-        &[(1, 4, "first defined here")],
-        None,
+        &[(1, 4)],
     );
 }
 
 #[test]
 fn print_is_built_in() {
-    expect_error(
+    diagnostic(
         "fn print() {}\nfn main() {}",
-        "`print` is a built-in function",
+        Code::DefinedTwice,
         (1, 4, "print"),
-        None,
         &[],
-        None,
     );
 }
 
 #[test]
 fn missing_main() {
     let src = "fn f() {}";
-    expect_error(src, "no `main` function", (1, 1, ""), None, &[], None);
-    assert_eq!(diags(src)[0].span, Span::new(0, 0));
+    diagnostic(src, Code::NoMain, (1, 1, ""), &[]);
+    assert_eq!(diags(src)[0].span(), Span::new(0, 0));
 }
 
 #[test]
 fn main_with_params() {
-    expect_error(
+    diagnostic(
         "fn main(x: i64) {}",
-        "`main` takes no parameters and returns no value",
+        Code::MainSignature,
         (1, 4, "main"),
-        None,
         &[],
-        None,
     );
 }
 
 #[test]
 fn main_with_return_type() {
-    expect_error(
+    diagnostic(
         "fn main() -> i64 { 0 }",
-        "`main` takes no parameters and returns no value",
+        Code::MainSignature,
         (1, 4, "main"),
-        None,
         &[],
-        None,
     );
 }
 
 #[test]
 fn unknown_type() {
-    expect_error(
+    diagnostic(
         "fn main() { let x: str = 1 }",
-        "unknown type `str`",
+        Code::UnknownType,
         (1, 20, "str"),
-        None,
         &[],
-        Some("the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`"),
     );
 }
 
 #[test]
 fn unknown_name() {
-    expect_error(
+    diagnostic(
         "fn main() { print(y) }",
-        "cannot find `y` in this scope",
+        Code::BindingNotFound,
         (1, 19, "y"),
-        None,
         &[],
-        None,
     );
 }
 
 #[test]
 fn unknown_function() {
-    expect_error(
+    diagnostic(
         "fn main() { g() }",
-        "cannot find function or class `g`",
+        Code::FunctionNotFound,
         (1, 13, "g"),
-        None,
         &[],
-        None,
     );
 }
 
 #[test]
 fn redeclare_in_block() {
-    expect_error(
+    diagnostic(
         "fn main() {\n    let x = 1\n    let x = 2\n}",
-        "`x` is already declared in this scope",
+        Code::AlreadyDeclared,
         (3, 9, "x"),
-        None,
-        &[(2, 9, "first declared here")],
-        None,
+        &[(2, 9)],
     );
 }
 
 #[test]
 fn repeated_param() {
-    expect_error(
+    diagnostic(
         "fn f(a: i64, a: i64) {}\nfn main() {}",
-        "`a` is already declared in this scope",
+        Code::AlreadyDeclared,
         (1, 14, "a"),
-        None,
-        &[(1, 6, "first declared here")],
-        None,
+        &[(1, 6)],
     );
 }
 
@@ -259,159 +244,160 @@ fn variable_may_shadow_a_param() {
 
 #[test]
 fn every_error_in_one_run() {
-    errors(
+    codes(
         "fn main() {\n    print(a)\n    let b: bool = 1\n    print(1 + true)\n}",
         &[
-            ("cannot find `a` in this scope", (2, 11)),
-            ("expected `bool`, found `i64`", (3, 19)),
-            ("expected `i64`, found `bool`", (4, 15)),
+            (Code::BindingNotFound, (2, 11)),
+            (Code::Mismatch, (3, 19)),
+            (Code::Mismatch, (4, 15)),
         ],
     );
 }
 
 #[test]
 fn poisoned_binding_reports_once() {
-    errors(
+    codes(
         "fn main() {\n    let x = nope\n    print(x + 1)\n}",
-        &[("cannot find `nope` in this scope", (2, 13))],
+        &[(Code::BindingNotFound, (2, 13))],
     );
 }
 
 #[test]
 fn poisoned_operand_checks_siblings() {
-    errors(
+    codes(
         "fn f(a: i64, b: i64) {}\nfn main() {\n    f(nope, 1 + true)\n}",
-        &[
-            ("cannot find `nope` in this scope", (3, 7)),
-            ("expected `i64`, found `bool`", (3, 17)),
-        ],
+        &[(Code::BindingNotFound, (3, 7)), (Code::Mismatch, (3, 17))],
     );
 }
 
 #[test]
 fn if_with_failed_branch_takes_other_type() {
-    errors(
+    codes(
         "fn main() {\n    let y = if true { nope } else { 1 }\n    print(y + true)\n}",
-        &[
-            ("cannot find `nope` in this scope", (2, 23)),
-            ("expected `i64`, found `bool`", (3, 15)),
-        ],
+        &[(Code::BindingNotFound, (2, 23)), (Code::Mismatch, (3, 15))],
     );
 }
 
 #[test]
 fn unknown_let_type_poisons() {
-    errors(
+    codes(
         "fn main() {\n    let x: str = 1\n    print(x + true)\n}",
-        &[("unknown type `str`", (2, 12))],
+        &[(Code::UnknownType, (2, 12))],
     );
 }
 
 #[test]
 fn unknown_param_type_still_checks_body() {
-    errors(
+    codes(
         "fn f(a: str) -> i64 { true }\nfn main() { f(1) }",
-        &[
-            ("unknown type `str`", (1, 9)),
-            ("expected `i64`, found `bool`", (1, 23)),
-        ],
+        &[(Code::UnknownType, (1, 9)), (Code::Mismatch, (1, 23))],
     );
 }
 
 #[test]
 fn duplicate_checked_against_own_signature() {
-    errors(
+    codes(
         "fn f(a: i64) {}\nfn f(b: bool) -> bool { b }\nfn main() {}",
-        &[("function `f` is defined twice", (2, 4))],
+        &[(Code::DefinedTwice, (2, 4))],
     );
 }
 
 #[test]
 fn duplicate_call_resolves_to_first() {
-    errors(
+    codes(
         "fn f(a: i64) -> i64 { a }\nfn f(b: bool) -> bool { b }\nfn main() {\n    print(f(1))\n}",
-        &[("function `f` is defined twice", (2, 4))],
+        &[(Code::DefinedTwice, (2, 4))],
     );
 }
 
+/// A redeclared name is poisoned: only the redeclaration is reported, not the uses after it nor
+/// the first binding.
 #[test]
-fn duplicate_let_keeps_first() {
-    errors(
-        "fn main() {\n    let x = 1\n    let x = true\n    print(x + 1)\n}",
-        &[("`x` is already declared in this scope", (3, 9))],
-    );
+fn redeclared_name_is_poisoned() {
+    for (src, at) in [
+        ("let x = 1\n    let x = true\n    print(x + 1)", (3, 9)),
+        ("let x = 1\n    let mut x = 2\n    x = 3", (3, 13)),
+        ("let x = 1\n    let mut x = 2\n    print(x)", (3, 13)),
+        ("let mut x = 1\n    let x = 2\n    x = 3", (3, 9)),
+        ("let mut x = 1\n    let x = 2\n    print(x)", (3, 9)),
+        (
+            "let x = 1\n    let x: bool = true\n    let b: bool = x\n    print(b)",
+            (3, 9),
+        ),
+    ] {
+        codes(
+            &format!("fn main() {{\n    {src}\n}}"),
+            &[(Code::AlreadyDeclared, at)],
+        );
+    }
 }
 
 #[test]
 fn failed_call_still_checks_arguments() {
-    const MISMATCH: &str = "expected `i64`, found `bool`";
     let rows = [
         (
             "unknown function",
             "fn main() {\n    g(1 + true)\n}",
-            vec![
-                ("cannot find function or class `g`", (2, 5)),
-                (MISMATCH, (2, 11)),
-            ],
+            [(Code::FunctionNotFound, (2, 5)), (Code::Mismatch, (2, 11))],
         ),
         (
             "arity",
             "fn f(a: i64) {}\nfn main() {\n    f(1 + true, 2)\n}",
-            vec![
-                ("`f` takes 1 argument, found 2", (3, 5)),
-                (MISMATCH, (3, 11)),
-            ],
+            [(Code::ArgumentCount, (3, 5)), (Code::Mismatch, (3, 11))],
         ),
         (
             "print arity",
             "fn main() {\n    print(1 + true, 2)\n}",
-            vec![
-                ("`print` takes one `i64`, `u8` or `bool`", (2, 5)),
-                (MISMATCH, (2, 15)),
-            ],
+            [(Code::PrintArgument, (2, 5)), (Code::Mismatch, (2, 15))],
         ),
     ];
     for (name, src, expected) in rows {
         println!("row: {name}");
-        errors(src, &expected);
+        codes(src, &expected);
     }
 }
 
 #[test]
 fn duplicate_body_still_checked() {
-    errors(
+    codes(
         "fn f() {}\nfn f() { print(nope) }\nfn main() {}",
         &[
-            ("function `f` is defined twice", (2, 4)),
-            ("cannot find `nope` in this scope", (2, 16)),
+            (Code::DefinedTwice, (2, 4)),
+            (Code::BindingNotFound, (2, 16)),
         ],
+    );
+}
+
+/// The `main` rejected as a duplicate still exists; only the duplicate is reported.
+#[test]
+fn main_after_a_class_named_main_is_not_missing() {
+    codes(
+        "class main {}\nfn main() {}",
+        &[(Code::DefinedTwice, (2, 4))],
     );
 }
 
 #[test]
 fn missing_main_and_body_error() {
-    errors(
+    codes(
         "fn f() { print(nope) }",
-        &[
-            ("no `main` function", (1, 1)),
-            ("cannot find `nope` in this scope", (1, 16)),
-        ],
+        &[(Code::NoMain, (1, 1)), (Code::BindingNotFound, (1, 16))],
     );
 }
 
 #[test]
 fn duplicate_body_uses_own_return_type() {
-    errors(
+    codes(
         "fn f() -> i64 { 1 }\nfn f() -> bool { true }\nfn main() {}",
-        &[("function `f` is defined twice", (2, 4))],
+        &[(Code::DefinedTwice, (2, 4))],
     );
 }
 
 #[test]
 fn if_with_failed_and_never_branches_is_error() {
-    errors(
+    codes(
         "fn main() {\n    let c = true\n    let x = if c { nope } else { return }\n    print(1)\n}",
-        &[("cannot find `nope` in this scope", (3, 20))],
+        &[(Code::BindingNotFound, (3, 20))],
     );
 }
 
@@ -419,9 +405,9 @@ fn if_with_failed_and_never_branches_is_error() {
 /// and uses it where a typed result would cascade into a second error.
 #[test]
 fn failed_rule_makes_its_expression_error() {
-    const MISMATCH: &str = "expected `i64`, found `bool`";
+    const MISMATCH: Code = Code::Mismatch;
     const F: &str = "fn f(a: i64) -> i64 { a }\n";
-    let rows: [(&str, String, &str, (usize, usize)); 12] = [
+    let rows: [(&str, String, Code, (usize, usize)); 12] = [
         (
             "unary",
             "fn main() {\n    let x = -true\n    print(x == false)\n}".into(),
@@ -449,13 +435,13 @@ fn failed_rule_makes_its_expression_error() {
         (
             "equal",
             "fn main() {\n    let x = 1 == true\n    print(x + 1)\n}".into(),
-            "cannot compare `i64` with `bool`",
+            Code::CannotCompare,
             (2, 13),
         ),
         (
             "call arity",
             format!("{F}fn main() {{\n    let x = f()\n    print(x == false)\n}}"),
-            "`f` takes 1 argument, found 0",
+            Code::ArgumentCount,
             (3, 13),
         ),
         (
@@ -467,14 +453,14 @@ fn failed_rule_makes_its_expression_error() {
         (
             "print arity",
             "fn main() {\n    let x = print(1, 2)\n    print(x)\n}".into(),
-            "`print` takes one `i64`, `u8` or `bool`",
+            Code::PrintArgument,
             (2, 13),
         ),
         (
             "print unit argument",
             "fn main() {\n    let x = print(print(1))\n    print(x)\n}".into(),
-            "expression has no value",
-            (2, 19),
+            Code::PrintArgument,
+            (2, 13),
         ),
         (
             "if branches",
@@ -486,55 +472,37 @@ fn failed_rule_makes_its_expression_error() {
         (
             "if condition with else",
             "fn main() {\n    let x = if 1 { 2 } else { 3 }\n    print(x == false)\n}".into(),
-            "expected `bool`, found `i64`",
+            MISMATCH,
             (2, 16),
         ),
         (
             "if condition without else",
             "fn main() {\n    let x = if 1 { print(2) }\n    print(x)\n}".into(),
-            "expected `bool`, found `i64`",
+            MISMATCH,
             (2, 16),
         ),
     ];
-    for (name, src, message, pos) in rows {
+    for (name, src, code, pos) in rows {
         println!("row: {name}");
-        errors(&src, &[(message, pos)]);
+        codes(&src, &[(code, pos)]);
     }
 }
 
 #[test]
 fn warning_only_program_lowers() {
     let src = "fn main() {\n    let mut x = 1\n    print(x)\n}";
-    let (program, ds) = checked(src);
-    assert!(program.is_some());
-    assert_eq!(ds.len(), 1, "{ds:?}");
-    assert_eq!(ds[0].severity, Severity::Warning);
-    assert_eq!(ds[0].message, "`x` is never reassigned");
-    assert_eq!(at(src, ds[0].span), (2, 13));
+    codes(src, &[(Code::NeverReassigned, (2, 13))]);
 }
 
 #[test]
 fn warning_and_error_in_position_order() {
     // The warning is found when the scope closes, after the error.
-    let src = "fn main() {\n    let mut x = 1\n    print(nope)\n}";
-    let found: Vec<_> = diags(src)
-        .iter()
-        .map(|d| (d.severity, d.message.clone(), at(src, d.span)))
-        .collect();
-    assert_eq!(
-        found,
-        [
-            (
-                Severity::Warning,
-                "`x` is never reassigned".to_string(),
-                (2, 13)
-            ),
-            (
-                Severity::Error,
-                "cannot find `nope` in this scope".to_string(),
-                (3, 11)
-            ),
-        ]
+    codes(
+        "fn main() {\n    let mut x = 1\n    print(nope)\n}",
+        &[
+            (Code::NeverReassigned, (2, 13)),
+            (Code::BindingNotFound, (3, 11)),
+        ],
     );
 }
 
@@ -593,42 +561,38 @@ fn lowers_continue() {
 
 #[test]
 fn break_outside_loop() {
-    errors(
-        "fn main() { break }",
-        &[("`break` outside a loop", (1, 13))],
-    );
+    codes("fn main() { break }", &[(Code::JumpOutsideLoop, (1, 13))]);
 }
 
 #[test]
 fn continue_outside_loop() {
-    errors(
+    codes(
         "fn main() { continue }",
-        &[("`continue` outside a loop", (1, 13))],
+        &[(Code::JumpOutsideLoop, (1, 13))],
     );
 }
 
 #[test]
 fn break_after_loop() {
-    errors(
+    codes(
         "fn main() {\n    while true {}\n    break\n}",
-        &[("`break` outside a loop", (3, 5))],
+        &[(Code::JumpOutsideLoop, (3, 5))],
     );
 }
 
 #[test]
 fn break_after_while_let() {
-    errors(
+    codes(
         "fn f(n: i64?) {\n    while let x = n {}\n    break\n}\nfn main() {}",
-        &[("`break` outside a loop", (3, 5))],
+        &[(Code::JumpOutsideLoop, (3, 5))],
     );
 }
 
 #[test]
 fn statement_after_break() {
-    warning(
+    codes(
         "fn main() {\n    while true {\n        break\n        print(1)\n    }\n}",
-        "unreachable code",
-        (4, 9),
+        &[(Code::UnreachableCode, (4, 9))],
     );
 }
 
@@ -660,182 +624,150 @@ fn lowers_not_equal() {
 
 #[test]
 fn unknown_type_in_signature() {
-    expect_error(
+    diagnostic(
         "fn f(a: str) {}\nfn main() {}",
-        "unknown type `str`",
+        Code::UnknownType,
         (1, 9, "str"),
-        None,
         &[],
-        Some("the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`"),
     );
 }
 
 #[test]
 fn condition_must_be_bool() {
-    error(
-        "fn main() { if 1 { } }",
-        "expected `bool`, found `i64`",
-        (1, 16),
-    );
+    codes("fn main() { if 1 { } }", &[(Code::Mismatch, (1, 16))]);
 }
 
 #[test]
 fn while_condition_must_be_bool() {
-    error(
-        "fn main() { while 1 { } }",
-        "expected `bool`, found `i64`",
-        (1, 19),
-    );
+    codes("fn main() { while 1 { } }", &[(Code::Mismatch, (1, 19))]);
 }
 
 #[test]
 fn arithmetic_needs_i64() {
-    error(
+    codes(
         "fn main() { print(1 + true) }",
-        "expected `i64`, found `bool`",
-        (1, 23),
+        &[(Code::Mismatch, (1, 23))],
     );
 }
 
 #[test]
 fn not_needs_bool() {
-    error(
-        "fn main() { print(!1) }",
-        "expected `bool`, found `i64`",
-        (1, 20),
-    );
+    codes("fn main() { print(!1) }", &[(Code::Mismatch, (1, 20))]);
 }
 
 #[test]
 fn equality_needs_same_type() {
-    error(
+    codes(
         "fn main() { print(1 == true) }",
-        "cannot compare `i64` with `bool`",
-        (1, 19),
+        &[(Code::CannotCompare, (1, 19))],
     );
 }
 
 #[test]
 fn arity() {
-    error(
+    diagnostic(
         "fn f(a: i64) {}\nfn main() { f() }",
-        "`f` takes 1 argument, found 0",
-        (2, 13),
+        Code::ArgumentCount,
+        (2, 13, "f()"),
+        &[],
     );
-    error(
+    diagnostic(
         "fn f(a: i64, b: i64) {}\nfn main() { f(1) }",
-        "`f` takes 2 arguments, found 1",
-        (2, 13),
+        Code::ArgumentCount,
+        (2, 13, "f(1)"),
+        &[],
     );
 }
 
 #[test]
 fn argument_type() {
-    error(
+    codes(
         "fn f(a: i64) {}\nfn main() { f(true) }",
-        "expected `i64`, found `bool`",
-        (2, 15),
+        &[(Code::Mismatch, (2, 15))],
     );
 }
 
 #[test]
 fn print_no_argument() {
-    error(
-        "fn main() { print() }",
-        "`print` takes one `i64`, `u8` or `bool`",
-        (1, 13),
-    );
+    codes("fn main() { print() }", &[(Code::PrintArgument, (1, 13))]);
 }
 
 #[test]
 fn print_two_arguments() {
-    error(
+    codes(
         "fn main() { print(1, 2) }",
-        "`print` takes one `i64`, `u8` or `bool`",
-        (1, 13),
+        &[(Code::PrintArgument, (1, 13))],
     );
 }
 
 #[test]
 fn print_unit_argument() {
-    error(
+    codes(
         "fn g() {}\nfn main() { print(g()) }",
-        "expression has no value",
-        (2, 19),
+        &[(Code::PrintArgument, (2, 13))],
     );
 }
 
 #[test]
 fn bind_unit() {
-    error(
+    codes(
         "fn g() {}\nfn main() { let x = g() }",
-        "expression has no value",
-        (2, 21),
+        &[(Code::NoValue, (2, 21))],
     );
 }
 
 #[test]
 fn if_without_else_has_no_value() {
-    error(
+    codes(
         "fn main() {\n    let x = if true { 1 }\n}",
-        "expression has no value",
-        (2, 13),
+        &[(Code::NoValue, (2, 13))],
     );
 }
 
 #[test]
 fn if_branches_differ() {
-    error(
+    codes(
         "fn main() {\n    let x = if true { 1 } else { false }\n}",
-        "expected `i64`, found `bool`",
-        (2, 34),
+        &[(Code::Mismatch, (2, 34))],
     );
 }
 
 #[test]
 fn body_value_type() {
-    error(
+    codes(
         "fn f() -> i64 {\n    true\n}\nfn main() {}",
-        "expected `i64`, found `bool`",
-        (2, 5),
+        &[(Code::Mismatch, (2, 5))],
     );
 }
 
 #[test]
 fn body_without_value() {
     let src = "fn f() -> i64 {\n    let x = 1\n}\nfn main() {}";
-    error(
-        src,
-        "function `f` must return `i64`, but its body has no value",
-        (3, 1),
-    );
-    assert_eq!(diags(src)[0].span, Span::new(30, 31));
+    codes(src, &[(Code::BodyHasNoValue, (3, 1))]);
+    assert_eq!(diags(src)[0].span(), Span::new(30, 31));
 }
 
 #[test]
 fn return_value_type() {
-    error(
+    codes(
         "fn f() -> i64 {\n    return true\n}\nfn main() {}",
-        "expected `i64`, found `bool`",
-        (2, 12),
+        &[(Code::Mismatch, (2, 12))],
     );
 }
 
 #[test]
 fn return_needs_value() {
-    error(
+    codes(
         "fn f() -> i64 {\n    return\n}\nfn main() {}",
-        "`return` needs a value of type `i64`",
-        (2, 5),
+        &[(Code::ReturnNeedsValue, (2, 5))],
     );
 }
 
 #[test]
 fn return_value_in_unit_fn() {
-    error(
+    codes(
         "fn main() {\n    return 1\n}",
-        "this function returns no value",
-        (2, 12),
+        &[(Code::UnexpectedReturnValue, (2, 12))],
     );
 }
 
@@ -847,19 +779,25 @@ fn all_paths_return_is_fine() {
 }
 
 #[test]
+fn all_paths_of_if_let_return_is_fine() {
+    clean(
+        "fn f(x: i64?) -> i64 {\n    if let v = x { return v } else { return 0 }\n}\nfn main() {}",
+    );
+}
+
+#[test]
 fn never_as_return_value() {
-    never_value(
+    codes(
         "fn f(c: bool) -> i64 {\n    return if c { return 1 } else { return 2 }\n}\nfn main() {}",
-        (2, 12),
+        &[(Code::NoValue, (2, 12))],
     );
 }
 
 #[test]
 fn annotated_let_type() {
-    error(
+    codes(
         "fn main() { let x: bool = 1 }",
-        "expected `bool`, found `i64`",
-        (1, 27),
+        &[(Code::Mismatch, (1, 27))],
     );
 }
 
@@ -870,88 +808,103 @@ fn annotated_let_matches() {
 
 #[test]
 fn never_as_initializer() {
-    never_value(
+    codes(
         "fn f(c: bool) -> i64 {\n    let x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
-        (2, 13),
+        &[(Code::NoValue, (2, 13))],
     );
 }
 
 #[test]
 fn never_as_condition() {
-    never_value(
+    codes(
         "fn f(c: bool) -> i64 {\n    while if c { return 1 } else { return 2 } {}\n    1\n}\nfn main() {}",
-        (2, 11),
+        &[(Code::NoValue, (2, 11))],
     );
 }
 
 #[test]
 fn never_as_operand() {
-    never_value(
+    codes(
         "fn f(c: bool) -> i64 {\n    1 + if c { return 1 } else { return 2 }\n}\nfn main() {}",
-        (2, 9),
+        &[(Code::NoValue, (2, 9))],
     );
+}
+
+/// A condition of the wrong type leaves the branches' `Never`: the statement after the `if` is
+/// unreachable, and the body does not fall through to its end.
+#[test]
+fn failed_condition_keeps_never() {
+    for (head, expected) in [
+        (
+            "if 1 { return 1 } else { return 2 }",
+            (Code::Mismatch, (2, 8)),
+        ),
+        (
+            "if let v = 1 { return 1 } else { return 2 }",
+            (Code::UnwrapNeedsOptional, (2, 16)),
+        ),
+        (
+            "if c { return 1 } else if 1 { return 2 } else { return 3 }",
+            (Code::Mismatch, (2, 31)),
+        ),
+    ] {
+        codes(
+            &format!("fn f(c: bool) -> i64 {{\n    {head}\n    print(3)\n}}\nfn main() {{}}"),
+            &[expected, (Code::UnreachableCode, (3, 5))],
+        );
+    }
 }
 
 #[test]
 fn statement_after_return() {
-    warning(
+    codes(
         "fn main() {\n    return\n    print(1)\n}",
-        "unreachable code",
-        (3, 5),
+        &[(Code::UnreachableCode, (3, 5))],
     );
 }
 
 #[test]
 fn block_after_return_is_never() {
-    warning(
+    codes(
         "fn f() -> i64 {\n    return 1\n    print(2)\n}\nfn main() {}",
-        "unreachable code",
-        (3, 5),
+        &[(Code::UnreachableCode, (3, 5))],
     );
 }
 
 #[test]
 fn neg_needs_i64() {
-    error(
-        "fn main() { print(-true) }",
-        "expected `i64`, found `bool`",
-        (1, 20),
-    );
+    codes("fn main() { print(-true) }", &[(Code::Mismatch, (1, 20))]);
 }
 
 #[test]
 fn less_needs_i64() {
-    error(
+    codes(
         "fn main() { print(true < false) }",
-        "expected `i64`, found `bool`",
-        (1, 19),
+        &[(Code::Mismatch, (1, 19))],
     );
 }
 
 #[test]
 fn and_needs_bool() {
-    error(
+    codes(
         "fn main() { print(1 && true) }",
-        "expected `bool`, found `i64`",
-        (1, 19),
+        &[(Code::Mismatch, (1, 19))],
     );
 }
 
 #[test]
 fn unit_operand() {
-    error(
+    codes(
         "fn g() {}\nfn main() { print(1 + g()) }",
-        "expression has no value",
-        (2, 23),
+        &[(Code::NoValue, (2, 23))],
     );
 }
 
 #[test]
 fn unit_argument() {
-    error(
+    codes(
         "fn g() {}\nfn f(a: i64) {}\nfn main() { f(g()) }",
-        "expression has no value",
-        (3, 15),
+        &[(Code::NoValue, (3, 15))],
     );
 }
 
@@ -969,147 +922,148 @@ fn never_branch_takes_other_type() {
 
 #[test]
 fn unreachable_warned_once_per_block() {
-    warning(
+    codes(
         "fn main() {\n    return\n    print(1)\n    print(2)\n}",
-        "unreachable code",
-        (3, 5),
+        &[(Code::UnreachableCode, (3, 5))],
     );
 }
 
 #[test]
 fn statements_after_return_are_checked() {
-    let src = "fn main() {\n    return\n    print(true + 1)\n}";
-    let ds = diags(src);
-    let found: Vec<_> = ds
-        .iter()
-        .map(|d| (d.severity, d.message.as_str(), at(src, d.span)))
-        .collect();
-    assert_eq!(
-        found,
-        [
-            (Severity::Warning, "unreachable code", (3, 5)),
-            (Severity::Error, "expected `i64`, found `bool`", (3, 11)),
-        ]
+    codes(
+        "fn main() {\n    return\n    print(true + 1)\n}",
+        &[(Code::UnreachableCode, (3, 5)), (Code::Mismatch, (3, 11))],
     );
 }
 
 #[test]
 fn assign_to_let() {
     let src = "fn main() {\n    let n = 0\n    n = 1\n}";
-    expect_error(
-        src,
-        "cannot assign to `n`",
-        (3, 5, "n = 1"),
-        Some("cannot assign twice"),
-        &[(2, 9, "declared with `let` here")],
-        Some("declare it with `let mut`"),
+    let d = diagnostic(src, Code::AssignToImmutable, (3, 5, "n = 1"), &[(2, 9)]);
+    assert_eq!(
+        fixes(src, &d),
+        [(true, vec![(2, 9, "", "mut ".to_string())])]
     );
-    let span = diags(src)[0].span;
-    assert_eq!(&src[span.start..span.end], "n = 1");
+    fix_removes_its_code(src, &d);
 }
 
 #[test]
 fn never_assigned_value() {
-    never_value(
+    codes(
         "fn f(c: bool) -> i64 {\n    let mut x = 0\n    x = if c { return 1 } else { return 2 }\n    x\n}\nfn main() {}",
-        (3, 9),
+        &[(Code::NoValue, (3, 9))],
     );
 }
 
 #[test]
 fn compound_assign_to_let() {
-    expect_error(
+    diagnostic(
         "fn main() {\n    let n = 0\n    n += 1\n}",
-        "cannot assign to `n`",
+        Code::AssignToImmutable,
         (3, 5, "n += 1"),
-        Some("cannot assign twice"),
-        &[(2, 9, "declared with `let` here")],
-        Some("declare it with `let mut`"),
+        &[(2, 9)],
     );
 }
 
 #[test]
 fn assign_to_param() {
-    expect_error(
+    diagnostic(
         "fn f(n: i64) {\n    n = 1\n}\nfn main() {}",
-        "cannot assign to `n`",
+        Code::AssignToImmutable,
         (2, 5, "n = 1"),
-        None,
-        &[(1, 6, "declared as a parameter here")],
-        Some("copy it into a variable: `let mut n = n`"),
+        &[(1, 6)],
     );
 }
 
 #[test]
 fn compound_assign_to_param() {
-    expect_error(
+    diagnostic(
         "fn f(n: i64) {\n    n += 1\n}\nfn main() {}",
-        "cannot assign to `n`",
+        Code::AssignToImmutable,
         (2, 5, "n += 1"),
-        None,
-        &[(1, 6, "declared as a parameter here")],
-        Some("copy it into a variable: `let mut n = n`"),
+        &[(1, 6)],
     );
 }
 
 #[test]
 fn compound_assign_unknown_target_once() {
-    error(
+    codes(
         "fn main() {\n    nope += 1\n}",
-        "cannot find `nope` in this scope",
-        (2, 5),
+        &[(Code::BindingNotFound, (2, 5))],
     );
 }
 
 #[test]
 fn compound_assign_unknown_target_and_bad_value() {
-    errors(
+    codes(
         "fn main() {\n    nope += true + 1\n}",
-        &[
-            ("cannot find `nope` in this scope", (2, 5)),
-            ("expected `i64`, found `bool`", (2, 13)),
-        ],
+        &[(Code::BindingNotFound, (2, 5)), (Code::Mismatch, (2, 13))],
     );
 }
 
 #[test]
 fn assign_type() {
-    error(
+    codes(
         "fn main() {\n    let mut x = 1\n    x = true\n}",
-        "expected `i64`, found `bool`",
-        (3, 9),
+        &[(Code::Mismatch, (3, 9))],
     );
 }
 
 #[test]
 fn unused_variable() {
     let src = "fn main() {\n    let mut count = 0\n    print(count)\n}";
-    warning(src, "`count` is never reassigned", (2, 13));
-    assert_eq!(diags(src)[0].help.as_deref(), Some("declare it with `let`"));
+    let d = diagnostic(src, Code::NeverReassigned, (2, 13, "count"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(true, vec![(2, 9, "mut ", String::new())])]
+    );
+    fix_removes_its_code(src, &d);
 }
 
 #[test]
 fn unused_variables_in_source_order() {
     // The inner scope pops first, so this fails unless warnings are sorted.
     let src = "fn main() {\n    let mut a = 0\n    if true {\n        let mut b = 0\n        print(b)\n    }\n    print(a)\n}";
-    let found: Vec<_> = diags(src)
-        .iter()
-        .map(|d| (d.severity, d.message.clone(), at(src, d.span)))
-        .collect();
+    codes(
+        src,
+        &[
+            (Code::NeverReassigned, (2, 13)),
+            (Code::NeverReassigned, (4, 17)),
+        ],
+    );
+}
+
+#[test]
+fn param_has_help_and_no_fix() {
+    let src = "fn f(n: i64) { n = 1 }\nfn main() {}";
+    let d = diagnostic(src, Code::AssignToImmutable, (1, 16, "n = 1"), &[(1, 6)]);
+    assert!(d.help().is_some());
+    assert_eq!(fixes(src, &d), []);
+}
+
+#[test]
+fn for_variable_has_no_fix() {
+    let src = "fn main() {\n    for i in 0..3 { i = 1 }\n}";
+    let d = diagnostic(src, Code::AssignToImmutable, (2, 21, "i = 1"), &[(2, 9)]);
+    assert_eq!(d.help(), None);
+    assert_eq!(fixes(src, &d), []);
+}
+
+#[test]
+fn two_assignments_offer_the_same_edit() {
+    let src = "fn main() {\n    let n = 0\n    n = 1\n    n = 2\n    print(n)\n}";
+    codes(
+        src,
+        &[
+            (Code::AssignToImmutable, (3, 5)),
+            (Code::AssignToImmutable, (4, 5)),
+        ],
+    );
+    let ds = diags(src);
+    assert_eq!(ds[0].fixes(), ds[1].fixes());
     assert_eq!(
-        found,
-        [
-            (
-                Severity::Warning,
-                "`a` is never reassigned".to_string(),
-                (2, 13)
-            ),
-            (
-                Severity::Warning,
-                "`b` is never reassigned".to_string(),
-                (4, 17)
-            ),
-        ]
+        fixes(src, &ds[0]),
+        [(true, vec![(2, 9, "", "mut ".to_string())])]
     );
 }
 
@@ -1122,36 +1076,38 @@ fn variable_reassigned_in_inner_block() {
 fn empty_file_has_no_main() {
     let ds = diags("");
     assert_eq!(ds.len(), 1, "{ds:?}");
-    assert_eq!(ds[0].message, "no `main` function");
-    assert_eq!(at("", ds[0].span), (1, 1));
+    assert_eq!(ds[0].code(), Code::NoMain);
+    assert_eq!(at("", ds[0].span()), (1, 1));
+    // The empty span at offset 0 renders without a panic.
     assert!(
         ds[0]
-            .render("empty.sisu", "", &crate::diagnostic::LineIndex::new(""))
-            .starts_with("error: no `main` function")
+            .render(
+                "empty.sisu",
+                "",
+                &crate::diagnostic::LineIndex::new(""),
+                false
+            )
+            .contains(Code::NoMain.as_str())
     );
 }
 
 #[test]
 fn class_and_function_share_names() {
-    expect_error(
+    diagnostic(
         "class A {}\nfn A() {}\nfn main() {}",
-        "`A` is already a class",
+        Code::DefinedTwice,
         (2, 4, "A"),
-        None,
-        &[(1, 7, "first defined here")],
-        None,
+        &[(1, 7)],
     );
 }
 
 #[test]
 fn class_after_function_of_same_name() {
-    expect_error(
+    diagnostic(
         "fn A() {}\nclass A {}\nfn main() {}",
-        "`A` is already a function",
+        Code::DefinedTwice,
         (2, 7, "A"),
-        None,
-        &[(1, 4, "first defined here")],
-        None,
+        &[(1, 4)],
     );
 }
 
@@ -1159,104 +1115,81 @@ fn class_after_function_of_same_name() {
 fn class_defined_twice() {
     // The `bool` argument shows that `X` still names the first class.
     let src = "class X {\n    a: i64\n}\nclass X {\n    a: bool\n}\nfn main() { X(a: true) }";
-    errors(
+    codes(
         src,
-        &[
-            ("class `X` is defined twice", (4, 7)),
-            ("expected `i64`, found `bool`", (7, 18)),
-        ],
+        &[(Code::DefinedTwice, (4, 7)), (Code::Mismatch, (7, 18))],
     );
     let secondary: Vec<_> = diags(src)[0]
-        .secondary
+        .secondary()
         .iter()
-        .map(|(span, text)| (at(src, *span), text.clone()))
+        .map(|(span, _)| at(src, *span))
         .collect();
-    assert_eq!(secondary, [((1, 7), "first defined here".to_owned())]);
+    assert_eq!(secondary, [(1, 7)]);
 }
 
 #[test]
 fn class_named_print() {
-    expect_error(
+    diagnostic(
         "class print {}\nfn main() {}",
-        "`print` is a built-in function",
+        Code::DefinedTwice,
         (1, 7, "print"),
-        None,
         &[],
-        None,
     );
 }
 
 #[test]
 fn duplicate_member() {
-    expect_error(
+    diagnostic(
         "class A {\n    x: i64\n    fn x(self) {}\n}\nfn main() {}",
-        "`x` is already a field of `A`",
+        Code::DefinedTwice,
         (3, 8, "x"),
-        None,
-        &[(2, 5, "first defined here")],
-        None,
+        &[(2, 5)],
     );
 }
 
 #[test]
 fn duplicate_field() {
-    expect_error(
+    diagnostic(
         "class A {\n    fn x(self) {}\n    mut x: i64\n}\nfn main() {}",
-        "`x` is already a method of `A`",
+        Code::DefinedTwice,
         (3, 9, "x"),
-        None,
-        &[(2, 8, "first defined here")],
-        None,
+        &[(2, 8)],
     );
 }
 
 #[test]
 fn builtin_type_as_class() {
-    error(
+    codes(
         "class i64 {}\nfn main() {}",
-        "`i64` is a built-in type",
-        (1, 7),
+        &[(Code::BuiltInTypeName, (1, 7))],
     );
 }
 
 #[test]
 fn never_constructed_self() {
-    expect_error(
-        "class Node {\n    next: Node\n}\nfn main() {}",
-        "`Node` can never be constructed: field `next` needs a `Node`",
-        (2, 5, "next"),
-        None,
-        &[],
-        Some("make it optional: `Node?`"),
-    );
+    let src = "class Node {\n    next: Node\n}\nfn main() {}";
+    let d = diagnostic(src, Code::NeverConstructed, (2, 5, "next"), &[]);
+    assert_eq!(fixes(src, &d), [(false, vec![(2, 15, "", "?".to_owned())])]);
+    // The guess breaks the cycle, and the source still parses.
+    clean(&applied(src, &d));
 }
 
 #[test]
 fn never_constructed_cycle_of_two() {
-    expect_error(
-        "class A {\n    b: B\n}\nclass B {\n    a: A\n}\nfn main() {}",
-        "`A` can never be constructed: field `b` needs a `B`",
-        (2, 5, "b"),
-        None,
-        &[],
-        Some("make it optional: `B?`"),
-    );
+    let src = "class A {\n    b: B\n}\nclass B {\n    a: A\n}\nfn main() {}";
+    let d = diagnostic(src, Code::NeverConstructed, (2, 5, "b"), &[]);
+    assert_eq!(fixes(src, &d), [(false, vec![(2, 9, "", "?".to_owned())])]);
+    clean(&applied(src, &d));
 }
 
 #[test]
 fn never_constructed_once_per_strongly_connected_component() {
     // `A`, `B` and `C` form one component of two cycles, `E` another; `D` only points in.
-    errors(
+    codes(
         "class A {\n    b: B\n    c: C\n}\nclass B {\n    a: A\n}\nclass C {\n    a: A\n}\nclass D {\n    a: A\n}\nclass E {\n    e: E\n}\nfn main() {}",
         &[
-            (
-                "`A` can never be constructed: field `b` needs a `B`",
-                (2, 5),
-            ),
-            (
-                "`E` can never be constructed: field `e` needs a `E`",
-                (15, 5),
-            ),
+            (Code::NeverConstructed, (2, 5)),
+            (Code::NeverConstructed, (15, 5)),
         ],
     );
 }
@@ -1264,113 +1197,123 @@ fn never_constructed_once_per_strongly_connected_component() {
 /// A class that only points into a cycle, declared first, does not hide the cycle.
 #[test]
 fn never_constructed_after_a_class_that_points_in() {
-    expect_error(
+    diagnostic(
         "class D {\n    a: A\n}\nclass A {\n    next: A\n}\nfn main() {}",
-        "`A` can never be constructed: field `next` needs a `A`",
+        Code::NeverConstructed,
         (5, 5, "next"),
-        None,
         &[],
-        Some("make it optional: `A?`"),
     );
 }
 
 /// The field reported is the one into the cycle, not the first field of a class type.
 #[test]
 fn never_constructed_names_the_field_into_the_cycle() {
-    expect_error(
+    diagnostic(
         "class Tag {}\nclass A {\n    tag: Tag\n    next: A\n}\nfn main() {}",
-        "`A` can never be constructed: field `next` needs a `A`",
+        Code::NeverConstructed,
         (4, 5, "next"),
-        None,
         &[],
-        Some("make it optional: `A?`"),
     );
+}
+
+/// The `?` goes right after the type, whatever spaces surround it.
+#[test]
+fn never_constructed_fix_follows_the_type_closely() {
+    let src = "class A {\n    mut next:   A   \n}\nfn main() {}";
+    let d = diagnostic(src, Code::NeverConstructed, (2, 9, "next"), &[]);
+    assert_eq!(fixes(src, &d), [(false, vec![(2, 18, "", "?".to_owned())])]);
+    clean(&applied(src, &d));
 }
 
 #[test]
 fn constructor_missing_label() {
-    expect_error(
-        "class P {\n    x: i64\n}\nfn main() { P(1) }",
-        "this argument needs a label",
-        (4, 15, "1"),
-        None,
-        &[],
-        Some("label it with its field: `x: ...`"),
+    let src = "class P {\n    x: i64\n}\nfn main() { P(1) }";
+    let d = diagnostic(src, Code::ArgumentNeedsLabel, (4, 15, "1"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(true, vec![(4, 15, "", "x: ".to_owned())])]
     );
+    fix_removes_its_code(src, &d);
+    // The label is the field at the argument's position.
+    let src = "class P {\n    x: i64\n    y: bool\n}\nfn main() { P(x: 1, true) }";
+    let d = diagnostic(src, Code::ArgumentNeedsLabel, (5, 21, "true"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(true, vec![(5, 21, "", "y: ".to_owned())])]
+    );
+    fix_removes_its_code(src, &d);
 }
 
 #[test]
 fn constructor_unknown_label() {
-    error(
+    diagnostic(
         "class P {\n    x: i64\n}\nfn main() { P(z: 1) }",
-        "`P` has no field `z`",
-        (4, 15),
+        Code::NoMember,
+        (4, 15, "z"),
+        &[],
     );
 }
 
 #[test]
 fn constructor_out_of_order() {
-    expect_error(
+    diagnostic(
         "class P {\n    x: i64\n    y: i64\n}\nfn main() { P(y: 1, x: 2) }",
-        "expected field `x` here, found `y`",
+        Code::FieldOutOfOrder,
         (5, 15, "y"),
-        None,
         &[],
-        Some("name the fields in declaration order: `x`, `y`"),
     );
 }
 
 #[test]
 fn constructor_missing_field() {
-    expect_error(
+    diagnostic(
         "class P {\n    x: i64\n    y: i64\n}\nfn main() { P(x: 1) }",
-        "missing field `y`",
+        Code::MissingField,
         (5, 13, "P(x: 1)"),
-        None,
         &[],
-        Some("name the fields in declaration order: `x`, `y`"),
     );
 }
 
 #[test]
 fn constructor_extra_argument() {
-    error(
+    diagnostic(
         "class P {\n    x: i64\n}\nfn main() { P(x: 1, y: 2) }",
-        "too many arguments: `P` has 1 field",
-        (4, 21),
+        Code::TooManyArguments,
+        (4, 21, "y: 2"),
+        &[],
     );
-    error(
-        "class P {\n    x: i64\n    y: i64\n}\nfn main() { P(x: 1, y: 2, z: 3) }",
-        "too many arguments: `P` has 2 fields",
-        (5, 27),
+    diagnostic(
+        "class P {\n    x: i64\n    y: i64\n}\nfn main() { P(x: 1, y: 2, 3) }",
+        Code::TooManyArguments,
+        (5, 27, "3"),
+        &[],
     );
 }
 
 #[test]
 fn constructor_field_type() {
-    error(
+    codes(
         "class P {\n    x: i64\n}\nfn main() { P(x: true) }",
-        "expected `i64`, found `bool`",
-        (4, 18),
+        &[(Code::Mismatch, (4, 18))],
     );
 }
 
 #[test]
 fn label_outside_constructor() {
-    error(
+    diagnostic(
         "fn f(a: i64) {}\nfn main() { f(a: 1) }",
-        "labels on arguments come in milestone 10",
-        (2, 15),
+        Code::LabeledArgument,
+        (2, 15, "a"),
+        &[],
     );
 }
 
 /// A labeled argument fails the call: it is `Error`, so a later use draws nothing.
 #[test]
 fn labeled_call_is_error() {
-    error(
+    codes(
         "fn f(a: i64) -> i64 { a }\nfn main() {\n    print(f(a: 1) + true)\n}",
-        "labels on arguments come in milestone 10",
-        (3, 13),
+        &[(Code::LabeledArgument, (3, 13))],
     );
 }
 
@@ -1379,62 +1322,185 @@ fn labeled_call_is_error() {
 #[test]
 fn constructor_is_error_only_when_its_rule_fails() {
     let class = "class P {\n    x: i64\n    y: i64\n}\n";
-    errors(
+    codes(
         &format!("{class}fn main() {{\n    print(P(x: 1).x + true)\n}}"),
-        &[("missing field `y`", (6, 11))],
+        &[(Code::MissingField, (6, 11))],
     );
-    errors(
+    codes(
         &format!("{class}fn main() {{\n    print(P(x: nope, y: 1).x + true)\n}}"),
-        &[
-            ("cannot find `nope` in this scope", (6, 16)),
-            ("expected `i64`, found `bool`", (6, 32)),
-        ],
+        &[(Code::BindingNotFound, (6, 16)), (Code::Mismatch, (6, 32))],
     );
 }
 
 #[test]
 fn constructor_reports_its_first_mistake_and_later_expression_errors() {
     let class = "class P {\n    x: i64\n    y: i64\n}\n";
-    errors(
+    codes(
         &format!("{class}fn main() {{ P(1, nope) }}"),
         &[
-            ("this argument needs a label", (5, 15)),
-            ("cannot find `nope` in this scope", (5, 18)),
+            (Code::ArgumentNeedsLabel, (5, 15)),
+            (Code::BindingNotFound, (5, 18)),
         ],
     );
-    errors(
+    codes(
         &format!("{class}fn main() {{ P(1, 2) }}"),
-        &[("this argument needs a label", (5, 15))],
+        &[(Code::ArgumentNeedsLabel, (5, 15))],
     );
 }
 
 #[test]
 fn each_label_on_a_call_is_reported() {
-    errors(
+    codes(
         "fn f(a: i64, b: i64) {}\nfn main() { f(a: 1, b: 2) }",
         &[
-            ("labels on arguments come in milestone 10", (2, 15)),
-            ("labels on arguments come in milestone 10", (2, 21)),
+            (Code::LabeledArgument, (2, 15)),
+            (Code::LabeledArgument, (2, 21)),
         ],
     );
 }
 
 #[test]
+fn labels_on_unknown_calls_are_not_reported() {
+    // The name may have meant the class, whose constructor takes labels.
+    codes(
+        "class Bucket {\n    value: i64\n}\nfn main() {\n    let t = Bukcet(value: 1)\n}",
+        &[(Code::FunctionNotFound, (5, 13))],
+    );
+}
+
+#[test]
 fn labels_on_unknown_methods_are_reported() {
-    errors(
+    codes(
         "class P {}\nfn main() { P().missing(x: 1 + true) }",
         &[
-            ("`P` has no method `missing`", (2, 17)),
-            ("labels on arguments come in milestone 10", (2, 25)),
-            ("expected `i64`, found `bool`", (2, 32)),
+            (Code::NoMember, (2, 17)),
+            (Code::LabeledArgument, (2, 25)),
+            (Code::Mismatch, (2, 32)),
         ],
     );
-    errors(
+    codes(
         "fn main() { nope.m(x: 1 + true) }",
         &[
-            ("cannot find `nope` in this scope", (1, 13)),
-            ("labels on arguments come in milestone 10", (1, 20)),
-            ("expected `i64`, found `bool`", (1, 27)),
+            (Code::BindingNotFound, (1, 13)),
+            (Code::LabeledArgument, (1, 20)),
+            (Code::Mismatch, (1, 27)),
+        ],
+    );
+}
+
+#[test]
+fn unknown_call_arguments_are_still_checked() {
+    codes(
+        "fn main() { nope(missing) }",
+        &[
+            (Code::FunctionNotFound, (1, 13)),
+            (Code::BindingNotFound, (1, 18)),
+        ],
+    );
+}
+
+#[test]
+fn unknown_target_suppresses_never_reassigned() {
+    for target in ["totl = 1", "totl += 1", "totl[0] = 1"] {
+        codes(
+            &format!("fn main() {{\n    let mut total = 0\n    {target}\n    print(total)\n}}"),
+            &[(Code::BindingNotFound, (3, 5))],
+        );
+    }
+}
+
+#[test]
+fn unknown_target_suppresses_warnings_in_every_open_scope() {
+    codes(
+        "fn main() {\n    let mut a = 0\n    if true {\n        let mut b = 0\n        nope = 1\n        print(b)\n    }\n    print(a)\n}",
+        &[(Code::BindingNotFound, (5, 9))],
+    );
+}
+
+#[test]
+fn later_binding_still_warns() {
+    codes(
+        "fn main() {\n    nope = 1\n    let mut b = 0\n    print(b)\n}",
+        &[
+            (Code::BindingNotFound, (2, 5)),
+            (Code::NeverReassigned, (3, 13)),
+        ],
+    );
+}
+
+#[test]
+fn jump_outside_a_loop_leaves_no_unreachable() {
+    for jump in ["break", "continue"] {
+        codes(
+            &format!("fn main() {{\n    {jump}\n    print(1)\n}}"),
+            &[(Code::JumpOutsideLoop, (2, 5))],
+        );
+    }
+}
+
+#[test]
+fn jump_outside_a_loop_raises_no_return_error() {
+    for jump in ["break", "continue"] {
+        for tail in ["", "    print(1)\n"] {
+            codes(
+                &format!(
+                    "fn f() -> i64 {{\n    {jump}\n{tail}}}\nfn main() {{\n    print(f())\n}}"
+                ),
+                &[(Code::JumpOutsideLoop, (2, 5))],
+            );
+        }
+    }
+}
+
+#[test]
+fn jump_outside_a_loop_still_checks_what_follows() {
+    for jump in ["break", "continue"] {
+        codes(
+            &format!("fn main() {{\n    {jump}\n    let b: bool = 1\n}}"),
+            &[(Code::JumpOutsideLoop, (2, 5)), (Code::Mismatch, (3, 19))],
+        );
+    }
+}
+
+#[test]
+fn nested_invalid_jump_leaves_no_unreachable() {
+    for jump in ["break", "continue"] {
+        codes(
+            &format!("fn main() {{\n    if true {{ {jump} }} else {{ {jump} }}\n    print(1)\n}}"),
+            &[
+                (Code::JumpOutsideLoop, (2, 15)),
+                (Code::JumpOutsideLoop, (2, 25 + jump.len())),
+            ],
+        );
+    }
+}
+
+#[test]
+fn bad_return_value_still_warns_about_dead_code() {
+    codes(
+        "fn f() -> i64 {\n    return 1 + true\n    print(1)\n}\nfn main() {\n    print(f())\n}",
+        &[(Code::Mismatch, (2, 16)), (Code::UnreachableCode, (3, 5))],
+    );
+}
+
+#[test]
+fn return_value_in_main_still_warns_about_dead_code() {
+    codes(
+        "fn main() {\n    return 5\n    print(1)\n}",
+        &[
+            (Code::UnexpectedReturnValue, (2, 12)),
+            (Code::UnreachableCode, (3, 5)),
+        ],
+    );
+}
+
+#[test]
+fn failed_branches_that_return_still_warn_about_dead_code() {
+    codes(
+        "fn main() {\n    if true {\n        print(missing)\n        return\n    } else {\n        return\n    }\n    print(1)\n}",
+        &[
+            (Code::BindingNotFound, (3, 15)),
+            (Code::UnreachableCode, (8, 5)),
         ],
     );
 }
@@ -1443,167 +1509,191 @@ fn labels_on_unknown_methods_are_reported() {
 /// the name is reported, and the arguments are still checked.
 #[test]
 fn misspelled_constructor_is_one_error() {
-    errors(
+    codes(
         "class N {\n    v: i64\n}\nfn main() { Nod(v: 1) }",
-        &[("cannot find function or class `Nod`", (4, 13))],
+        &[(Code::FunctionNotFound, (4, 13))],
     );
-    errors(
+    codes(
         "fn main() { nope(x: 1 + true) }",
-        &[
-            ("cannot find function or class `nope`", (1, 13)),
-            ("expected `i64`, found `bool`", (1, 25)),
-        ],
+        &[(Code::FunctionNotFound, (1, 13)), (Code::Mismatch, (1, 25))],
     );
 }
 
 #[test]
 fn print_reports_labels_and_still_checks_its_arguments() {
-    errors(
+    codes(
         "fn main() { print(z: 1, 2) }",
         &[
-            ("`print` takes one `i64`, `u8` or `bool`", (1, 13)),
-            ("labels on arguments come in milestone 10", (1, 19)),
+            (Code::PrintArgument, (1, 13)),
+            (Code::LabeledArgument, (1, 19)),
         ],
     );
-    errors(
+    codes(
         "class E {}\nfn main() { print(z: E()) }",
         &[
-            ("labels on arguments come in milestone 10", (2, 19)),
-            ("cannot print `E`", (2, 22)),
+            (Code::LabeledArgument, (2, 19)),
+            (Code::PrintArgument, (2, 22)),
         ],
     );
 }
 
 #[test]
 fn unknown_field() {
-    error(
+    diagnostic(
         "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.size)\n}",
-        "`P` has no field `size`",
-        (6, 13),
+        Code::NoMember,
+        (6, 13, "size"),
+        &[],
     );
 }
 
 #[test]
 fn field_called_as_method() {
-    error(
-        "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.x())\n}",
-        "`x` is a field of `P`, not a method",
-        (6, 13),
-    );
+    let src = "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    print(p.x())\n}";
+    let d = diagnostic(src, Code::FieldNotMethod, (6, 13, "x"), &[]);
+    assert!(d.fixes().is_empty(), "{d:?}");
 }
 
 #[test]
 fn method_read_as_field() {
-    expect_error(
-        "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.m)\n}",
-        "`m` is a method of `P`, not a field",
-        (6, 13, "m"),
-        None,
-        &[],
-        Some("call it: `m()`"),
+    let src = "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.m)\n}";
+    let d = diagnostic(src, Code::MethodNotField, (6, 13, "m"), &[]);
+    assert_eq!(fixes(src, &d), [(true, vec![(6, 14, "", "()".to_owned())])]);
+    fix_removes_its_code(src, &d);
+}
+
+/// A method that takes arguments needs more than `()`, so the fix is a guess.
+#[test]
+fn method_with_arguments_read_as_field() {
+    let src = "class P {\n    fn m(self, a: i64) -> i64 { a }\n}\nfn main() {\n    let p = P()\n    print(p.m)\n}";
+    let d = diagnostic(src, Code::MethodNotField, (6, 13, "m"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(false, vec![(6, 14, "", "()".to_owned())])]
     );
+    applied(src, &d);
+}
+
+/// `()` would make an assignment target a call, which is no place. Each row is the
+/// statement, in a body where `p` is a `P` and `xs` an `[i64]`.
+#[test]
+fn method_as_assignment_target_has_no_fix() {
+    for (stmt, at) in [
+        ("p.m = 1", (6, 7, "m")),
+        ("p.m += 1", (6, 7, "m")),
+        ("p.m[0] = 1", (6, 7, "m")),
+        ("xs.len = 1", (6, 8, "len")),
+        ("xs.len += 1", (6, 8, "len")),
+    ] {
+        let src = format!(
+            "class P {{\n    mut v: i64\n    fn m(self) -> P {{ self }}\n}}\nfn f(p: P, xs: [i64]) {{\n    {stmt}\n}}\nfn main() {{}}"
+        );
+        let d = diagnostic(&src, Code::MethodNotField, at, &[]);
+        assert!(d.fixes().is_empty(), "{stmt}: {d:?}");
+    }
+}
+
+/// A method read on the way to a field that is assigned is a value, so `()` fits there.
+#[test]
+fn method_in_an_assignment_target_chain_has_a_fix() {
+    let src = "class P {\n    mut v: i64\n    fn m(self) -> P {\n        self\n    }\n}\nfn f(p: P) {\n    p.m.v = 1\n}\nfn main() {}";
+    let d = diagnostic(src, Code::MethodNotField, (8, 7, "m"), &[]);
+    assert_eq!(fixes(src, &d), [(true, vec![(8, 8, "", "()".to_owned())])]);
+    fix_removes_its_code(src, &d);
 }
 
 #[test]
 fn unknown_method() {
-    error(
+    diagnostic(
         "class P {\n    fn m(self) -> i64 { 1 }\n}\nfn main() {\n    let p = P()\n    print(p.nope())\n}",
-        "`P` has no method `nope`",
-        (6, 13),
+        Code::NoMember,
+        (6, 13, "nope"),
+        &[],
     );
 }
 
 #[test]
 fn method_through_class_name() {
-    error(
+    codes(
         "class Tree {\n    fn sum(self) -> i64 { 0 }\n}\nfn main() {\n    print(Tree.sum(Tree()))\n}",
-        "cannot find `Tree` in this scope",
-        (5, 11),
+        &[(Code::BindingNotFound, (5, 11))],
     );
 }
 
 #[test]
 fn unknown_field_type_poisons() {
-    errors(
+    codes(
         "class T {\n    mut x: Nope\n}\nfn main() { print(T(x: 1).x + true) }",
-        &[("unknown type `Nope`", (2, 12))],
+        &[(Code::UnknownType, (2, 12))],
     );
 }
 
 #[test]
 fn method_arity() {
-    error(
+    diagnostic(
         "class P {\n    fn m(self, a: i64) {}\n}\nfn main() { P().m() }",
-        "`P.m` takes 1 argument, found 0",
-        (4, 13),
+        Code::ArgumentCount,
+        (4, 13, "P().m()"),
+        &[],
     );
 }
 
 #[test]
 fn field_on_i64() {
-    error(
+    codes(
         "fn main() {\n    let x = 1\n    print(x.f)\n}",
-        "`i64` has no field `f`",
-        (3, 13),
+        &[(Code::NoMember, (3, 13))],
     );
 }
 
 #[test]
 fn method_on_i64() {
-    error(
+    codes(
         "fn main() {\n    let x = 1\n    print(x.m())\n}",
-        "`i64` has no method `m`",
-        (3, 13),
+        &[(Code::NoMember, (3, 13))],
     );
 }
 
 #[test]
 fn self_outside_method() {
-    error(
+    codes(
         "fn main() { print(self) }",
-        "`self` is only available in a method",
-        (1, 19),
+        &[(Code::SelfOutsideMethod, (1, 19))],
     );
 }
 
 #[test]
 fn bare_name_is_not_a_field() {
-    error(
+    codes(
         "class P {\n    x: i64\n    fn m(self) -> i64 { x }\n}\nfn main() {}",
-        "cannot find `x` in this scope",
-        (3, 25),
+        &[(Code::BindingNotFound, (3, 25))],
     );
 }
 
 #[test]
 fn assign_bare_field() {
-    expect_error(
-        "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = 2\n}",
-        "cannot assign to `x`",
-        (6, 5, "p.x = 2"),
-        None,
-        &[(2, 5, "declared without `mut` here")],
-        Some("mark the field `mut`"),
+    let src = "class P {\n    x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = 2\n}";
+    let d = diagnostic(src, Code::AssignToImmutable, (6, 5, "p.x = 2"), &[(2, 5)]);
+    assert_eq!(
+        fixes(src, &d),
+        [(true, vec![(2, 5, "", "mut ".to_string())])]
     );
+    fix_removes_its_code(src, &d);
 }
 
 #[test]
 fn print_class() {
-    error(
+    codes(
         "class E {}\nfn main() { print(E()) }",
-        "cannot print `E`",
-        (2, 19),
+        &[(Code::PrintArgument, (2, 19))],
     );
 }
 
 #[test]
 fn poisoned_receiver_checks_args() {
-    errors(
+    codes(
         "fn main() { nope.m(1 + true) }",
-        &[
-            ("cannot find `nope` in this scope", (1, 13)),
-            ("expected `i64`, found `bool`", (1, 24)),
-        ],
+        &[(Code::BindingNotFound, (1, 13)), (Code::Mismatch, (1, 24))],
     );
 }
 
@@ -1634,18 +1724,19 @@ fn lowers_field_assignments() {
 
 #[test]
 fn assign_field_type() {
-    error(
+    codes(
         "class P {\n    mut x: i64\n}\nfn main() {\n    let p = P(x: 1)\n    p.x = true\n}",
-        "expected `i64`, found `bool`",
-        (6, 11),
+        &[(Code::Mismatch, (6, 11))],
     );
 }
 
 #[test]
 fn never_as_print_argument() {
-    never_value(
+    diagnostic(
         "fn f(c: bool) -> i64 {\n    print(if c { return 1 } else { return 2 })\n    1\n}\nfn main() {}",
-        (2, 11),
+        Code::PrintNever,
+        (2, 11, "if c { return 1 } else { return 2 }"),
+        &[],
     );
 }
 
@@ -1808,103 +1899,222 @@ fn f_contains(prefix: &str, f: &str, part: &str) {
 
 #[test]
 fn none_needs_a_type() {
-    expect_error(
+    diagnostic(
         "fn main() { let x = None }",
-        "cannot infer the type of `None`",
+        Code::CannotInfer,
         (1, 21, "None"),
-        None,
         &[],
-        Some("write the type: `let x: Tree? = None`"),
     );
 }
 
 #[test]
 fn if_of_two_nones() {
-    errors(
+    codes(
         "class T {}\nfn main() {\n    let x = if true { None } else { None }\n}",
-        &[("cannot infer the type of `None`", (3, 23))],
+        &[(Code::CannotInfer, (3, 23))],
     );
 }
 
 #[test]
 fn none_for_non_optional() {
-    error(
+    codes(
         "fn main() { let x: i64 = None }",
-        "expected `i64`, found `None`",
-        (1, 26),
+        &[(Code::Mismatch, (1, 26))],
     );
 }
 
 #[test]
 fn dot_on_optional() {
-    expect_error(
-        "class T {\n    v: i64\n}\nfn f(node: T?) -> i64 { node.v }\nfn main() {}",
-        "`node` may be `None`",
-        (4, 25, "node"),
-        None,
-        &[],
-        Some("use `?.`, or unwrap it with `if let`"),
+    let src = "class T {\n    v: i64\n}\nfn f(node: T?) -> i64? { node.v }\nfn main() {}";
+    let d = diagnostic(src, Code::MayBeNone, (4, 26, "node"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(false, vec![(4, 30, ".", "?.".to_owned())])]
     );
+    clean(&applied(src, &d));
 }
 
-/// A path receiver is quoted as written; any other is "this value". A method call too.
+/// The fix replaces the gap between any receiver and its member, for a field and a method.
 #[test]
-fn optional_receiver_is_named_by_its_path() {
-    errors(
-        "class N {\n    next: N?\n    fn m(self) -> i64 { 1 }\n}\nfn g() -> N? { None }\nfn f(n: N) {\n    print(n.next.m())\n    print(g().next)\n}\nfn main() {}",
-        &[
-            ("`n.next` may be `None`", (7, 11)),
-            ("this value may be `None`", (8, 11)),
-        ],
+fn may_be_none_fix_follows_any_receiver() {
+    let src = "class N {\n    next: N?\n    fn m(self) -> i64 { 1 }\n}\nfn g() -> N? { None }\nfn f(n: N) {\n    let a = n.next.m()\n    let b = g() // here\n        .next\n}\nfn main() {}";
+    let ds = diags(src);
+    let found: Vec<_> = ds.iter().map(|d| (d.code(), fixes(src, d))).collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Code::MayBeNone,
+                vec![(false, vec![(7, 19, ".", "?.".to_owned())])]
+            ),
+            (
+                Code::MayBeNone,
+                vec![(false, vec![(8, 16, " // here\n        .", "?.".to_owned())])]
+            ),
+        ]
     );
+    for d in &ds {
+        applied(src, d);
+    }
 }
 
 #[test]
-fn optional_self_field_is_named_by_its_path() {
-    expect_error(
+fn optional_self_field_is_reported_at_its_path() {
+    diagnostic(
         "class N {\n    next: N?\n    v: i64\n    fn m(self) -> i64 { self.next.v }\n}\nfn main() {}",
-        "`self.next` may be `None`",
+        Code::MayBeNone,
         (4, 25, "self.next"),
-        None,
         &[],
-        Some("use `?.`, or unwrap it with `if let`"),
+    );
+}
+
+/// `?.` would make an assignment target go through `?.`, which does not parse. Each row is a
+/// statement in a body where `m` is an `N?`.
+#[test]
+fn may_be_none_in_an_assignment_target_has_no_fix() {
+    for stmt in ["m.v = 1", "m.v += 1", "m.get().v = 1", "m.o.v = 1"] {
+        let src = format!(
+            "class N {{\n    mut v: i64\n    o: N?\n    fn get(self) -> N {{\n        self\n    }}\n}}\nfn f(m: N?) {{\n    {stmt}\n}}\nfn main() {{}}"
+        );
+        let d = diagnostic(&src, Code::MayBeNone, (9, 5, "m"), &[]);
+        assert!(d.fixes().is_empty(), "{stmt}: {d:?}");
+    }
+}
+
+/// Inside an assignment target, an argument or an index is an ordinary read, so its own
+/// `n.next` keeps the `?.` guess. Each row is a statement where `n` is an `N`; the last is an
+/// argument inside an index.
+#[test]
+fn may_be_none_in_an_operand_of_an_assignment_target_keeps_its_fix() {
+    for stmt in [
+        "n.at(n.next.v).v = 1",
+        "xs[n.next.v].v = 1",
+        "g(n.next.v).v = 1",
+        "xs[n.at(n.next.v).v].v = 1",
+    ] {
+        let src = format!(
+            "class N {{\n    mut v: i64\n    next: N?\n    fn at(self, i: i64) -> N {{\n        self\n    }}\n}}\nfn g(i: i64) -> N {{ g(i) }}\nfn f(n: N, xs: [N]) {{\n    {stmt}\n}}\nfn main() {{}}"
+        );
+        let col = 5 + stmt.find("n.next").expect("each row reads `n.next`");
+        let d = diagnostic(&src, Code::MayBeNone, (10, col, "n.next"), &[]);
+        assert_eq!(
+            fixes(&src, &d),
+            [(false, vec![(10, col + 6, ".", "?.".to_owned())])],
+            "{stmt}"
+        );
+        let left: Vec<_> = diags(&applied(&src, &d))
+            .iter()
+            .map(Diagnostic::code)
+            .collect();
+        assert!(!left.contains(&Code::MayBeNone), "{stmt}: {left:?}");
+    }
+}
+
+/// An array method's arguments are reads, not part of the target. The target itself is
+/// ill-typed, so other codes appear; only `MayBeNone` is asserted.
+#[test]
+fn may_be_none_in_an_array_method_argument_of_a_target_keeps_its_fix() {
+    for stmt in [
+        "nums.contains(n.next.v).v = 1",
+        "nums.len(n.next.v).v = 1",
+        "nums.nope(n.next.v).v = 1",
+    ] {
+        let src = format!(
+            "class N {{\n    mut v: i64\n    next: N?\n}}\nfn f(n: N, nums: [i64]) {{\n    {stmt}\n}}\nfn main() {{}}"
+        );
+        let col = 5 + stmt.find("n.next").expect("each row reads `n.next`");
+        let ds = diags(&src);
+        let nones: Vec<_> = ds.iter().filter(|d| d.code() == Code::MayBeNone).collect();
+        assert_eq!(nones.len(), 1, "{stmt}: {ds:?}");
+        let d = nones[0];
+        assert_eq!(at(&src, d.span()), (6, col), "{stmt}");
+        assert_eq!(
+            fixes(&src, d),
+            [(false, vec![(6, col + 6, ".", "?.".to_owned())])],
+            "{stmt}"
+        );
+        let left: Vec<_> = diags(&applied(&src, d))
+            .iter()
+            .map(Diagnostic::code)
+            .collect();
+        assert!(!left.contains(&Code::MayBeNone), "{stmt}: {left:?}");
+    }
+}
+
+/// The receiver `n.next` is the target's own chain and gets no fix; the argument's does.
+#[test]
+fn may_be_none_in_a_target_chain_and_in_its_argument() {
+    let src = "class N {\n    mut v: i64\n    next: N?\n    fn at(self, i: i64) -> N {\n        self\n    }\n}\nfn f(n: N) {\n    n.next.at(n.next.v).v = 1\n}\nfn main() {}";
+    let found: Vec<_> = diags(src)
+        .iter()
+        .map(|d| (d.code(), at(src, d.span()), fixes(src, d)))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (Code::MayBeNone, (9, 5), vec![]),
+            (
+                Code::MayBeNone,
+                (9, 15),
+                vec![(false, vec![(9, 21, ".", "?.".to_owned())])]
+            ),
+        ]
+    );
+}
+
+/// The target's chain, where `n.next` gets no fix, ends with its statement: a read after it
+/// keeps the guess.
+#[test]
+fn may_be_none_after_an_assignment_target_keeps_its_fix() {
+    let src = "class N {\n    mut v: i64\n    next: N?\n}\nfn f(n: N, k: N) {\n    n.next.next.v = 1\n    print(k.next.v)\n}\nfn main() {}";
+    let found: Vec<_> = diags(src)
+        .iter()
+        .map(|d| (d.code(), at(src, d.span()), fixes(src, d)))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (Code::MayBeNone, (6, 5), vec![]),
+            (
+                Code::MayBeNone,
+                (7, 11),
+                vec![(false, vec![(7, 17, ".", "?.".to_owned())])]
+            ),
+        ]
     );
 }
 
 #[test]
 fn if_let_needs_optional() {
-    error(
+    codes(
         "fn main() {\n    if let x = 5 {}\n}",
-        "`if let` needs an optional; this is `i64`",
-        (2, 16),
+        &[(Code::UnwrapNeedsOptional, (2, 16))],
     );
 }
 
 #[test]
 fn while_let_needs_optional() {
-    error(
+    codes(
         "fn main() {\n    while let x = 5 {}\n}",
-        "`while let` needs an optional; this is `i64`",
-        (2, 19),
+        &[(Code::UnwrapNeedsOptional, (2, 19))],
     );
 }
 
 #[test]
 fn failed_if_let_binding_poisons() {
-    errors(
+    codes(
         "fn main() {\n    if let x = 5 {\n        print(x + true)\n    }\n}",
-        &[("`if let` needs an optional; this is `i64`", (2, 16))],
+        &[(Code::UnwrapNeedsOptional, (2, 16))],
     );
 }
 
 #[test]
 fn if_let_scope() {
-    error(
+    codes(
         &format!(
             "{T}fn f(n: T?) {{\n    if let x = n {{}} else {{ let y = x }}\n}}\nfn main() {{}}"
         ),
-        "cannot find `x` in this scope",
-        (6, 36),
+        &[(Code::BindingNotFound, (6, 36))],
     );
 }
 
@@ -1922,43 +2132,37 @@ fn none_from_every_source() {
 
 #[test]
 fn assign_if_let_binding() {
-    expect_error(
+    diagnostic(
         &format!(
             "{T}fn f(n: T?) {{\n    if let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
         ),
-        "cannot assign to `x`",
+        Code::AssignToImmutable,
         (7, 9, "x = T(v: 1, next: None)"),
-        None,
-        &[(6, 12, "bound by `if let` here")],
-        None,
+        &[(6, 12)],
     );
 }
 
 #[test]
 fn assign_while_let_binding() {
-    expect_error(
+    diagnostic(
         &format!(
             "{T}fn f(n: T?) {{\n    while let x = n {{\n        x = T(v: 1, next: None)\n    }}\n}}\nfn main() {{}}"
         ),
-        "cannot assign to `x`",
+        Code::AssignToImmutable,
         (7, 9, "x = T(v: 1, next: None)"),
-        None,
-        &[(6, 15, "bound by `while let` here")],
-        None,
+        &[(6, 15)],
     );
 }
 
 #[test]
 fn print_optional() {
-    error(
+    codes(
         &format!("{T}fn f(x: T?) {{ print(x) }}\nfn main() {{}}"),
-        "`print` takes one `i64`, `u8` or `bool`",
-        (5, 15),
+        &[(Code::PrintArgument, (5, 15))],
     );
-    error(
+    codes(
         "fn f(x: i64?) { print(x) }\nfn main() {}",
-        "`print` takes one `i64`, `u8` or `bool`",
-        (1, 17),
+        &[(Code::PrintArgument, (1, 17))],
     );
 }
 
@@ -1969,27 +2173,23 @@ fn rejected_none_reports_once() {
     let cases = [
         (
             "fn main() {\n    let x = !None\n    print(x + 1)\n}",
-            "expected `bool`, found `None`",
             (2, 14),
         ),
         (
             "fn main() {\n    let x = if None { 1 } else { 2 }\n    print(x && true)\n}",
-            "expected `bool`, found `None`",
             (2, 16),
         ),
         (
             "fn f(x: i64) -> i64 { x }\nfn main() {\n    let r = f(None)\n    print(r && true)\n}",
-            "expected `i64`, found `None`",
             (3, 15),
         ),
         (
             "fn main() {\n    let y = None + 1\n    print(y && true)\n}",
-            "expected `i64`, found `None`",
             (2, 13),
         ),
     ];
-    for (src, message, pos) in cases {
-        error(src, message, pos);
+    for (src, pos) in cases {
+        codes(src, &[(Code::Mismatch, pos)]);
     }
     // Each `None` is its own mistake; the `if` that holds them fails the rule too.
     let nested = [
@@ -2014,25 +2214,25 @@ fn rejected_none_reports_once() {
     for (src, cols, line) in nested {
         let expected: Vec<_> = cols
             .iter()
-            .map(|&col| ("expected `bool`, found `None`", (line, col)))
+            .map(|&col| (Code::Mismatch, (line, col)))
             .collect();
-        errors(&format!("{src}\nfn main() {{}}"), &expected);
+        codes(&format!("{src}\nfn main() {{}}"), &expected);
     }
     // A rejected condition or scrutinee keeps the branches' mismatch.
-    errors(
+    codes(
         "fn main() {\n    let x = !(if 1 { None } else { None })\n    print(x + 1)\n}",
         &[
-            ("expected `bool`, found `i64`", (2, 18)),
-            ("expected `bool`, found `None`", (2, 22)),
-            ("expected `bool`, found `None`", (2, 36)),
+            (Code::Mismatch, (2, 18)),
+            (Code::Mismatch, (2, 22)),
+            (Code::Mismatch, (2, 36)),
         ],
     );
-    errors(
+    codes(
         "fn main() {\n    let x = !(if let y = 5 { None } else { None })\n    print(x + 1)\n}",
         &[
-            ("`if let` needs an optional; this is `i64`", (2, 26)),
-            ("expected `bool`, found `None`", (2, 30)),
-            ("expected `bool`, found `None`", (2, 44)),
+            (Code::UnwrapNeedsOptional, (2, 26)),
+            (Code::Mismatch, (2, 30)),
+            (Code::Mismatch, (2, 44)),
         ],
     );
 }
@@ -2041,10 +2241,9 @@ fn rejected_none_reports_once() {
 /// nothing.
 #[test]
 fn rejected_if_let_scrutinee_reports_once() {
-    error(
+    codes(
         "fn main() {\n    let x = if let y = 5 { 1 } else { 2 }\n    print(x && true)\n}",
-        "`if let` needs an optional; this is `i64`",
-        (2, 24),
+        &[(Code::UnwrapNeedsOptional, (2, 24))],
     );
 }
 
@@ -2052,12 +2251,12 @@ fn rejected_if_let_scrutinee_reports_once() {
 /// down, so the `!` is still `bool`, and a later use is checked against it.
 #[test]
 fn error_branches_without_mismatch_keep_the_rule_type() {
-    errors(
+    codes(
         "fn f(c: bool) {\n    let x = !(if c { nope } else { nope })\n    print(x + 1)\n}\nfn main() {}",
         &[
-            ("cannot find `nope` in this scope", (2, 22)),
-            ("cannot find `nope` in this scope", (2, 36)),
-            ("expected `i64`, found `bool`", (3, 11)),
+            (Code::BindingNotFound, (2, 22)),
+            (Code::BindingNotFound, (2, 36)),
+            (Code::Mismatch, (3, 11)),
         ],
     );
 }
@@ -2066,10 +2265,9 @@ fn error_branches_without_mismatch_keep_the_rule_type() {
 /// and nothing more is reported.
 #[test]
 fn failed_tail_of_an_optional_body_reports_once() {
-    error(
+    codes(
         "fn f(c: bool) -> i64? {\n    let a = 1\n    if c { nope } else { a }\n}\nfn main() {}",
-        "cannot find `nope` in this scope",
-        (3, 12),
+        &[(Code::BindingNotFound, (3, 12))],
     );
 }
 
@@ -2088,10 +2286,9 @@ fn failed_join_blames_the_branch_that_does_not_fit() {
     ];
     for (site, start) in sites {
         for (value, offset) in values {
-            error(
+            codes(
                 &format!("{T}{site}{value}\n}}\nfn main() {{}}"),
-                "expected `T?`, found `i64`",
-                (6, start + offset),
+                &[(Code::Mismatch, (6, start + offset))],
             );
         }
     }
@@ -2104,11 +2301,11 @@ fn none_beside_unit_or_never_needs_a_type() {
         ("if c { g() } else { None }", 25),
         ("if c { return } else { None }", 28),
     ] {
-        errors(
+        codes(
             &format!(
                 "fn g() {{}}\nfn f(c: bool) {{\n    {value}\n    print(1)\n}}\nfn main() {{}}"
             ),
-            &[("cannot infer the type of `None`", (3, col))],
+            &[(Code::CannotInfer, (3, col))],
         );
     }
 }
@@ -2118,13 +2315,11 @@ fn none_beside_unit_or_never_needs_a_type() {
 #[test]
 fn unwrapping_block_cannot_redeclare_the_binding() {
     for (head, x, col) in [("if let", 12, 24), ("while let", 15, 27)] {
-        expect_error(
+        diagnostic(
             &format!("{T}fn f(n: T?) {{\n    {head} x = n {{ let x = 1 }}\n}}\nfn main() {{}}"),
-            "`x` is already declared in this scope",
+            Code::AlreadyDeclared,
             (6, col, "x"),
-            None,
-            &[(6, x, "first declared here")],
-            None,
+            &[(6, x)],
         );
     }
 }
@@ -2166,8 +2361,8 @@ fn unknown_optional_type_underlines_the_name() {
     let src = "fn main() { let x: Foo? = None }";
     let ds = diags(src);
     assert_eq!(ds.len(), 1, "{ds:?}");
-    assert_eq!(ds[0].message, "unknown type `Foo`");
-    assert_eq!(&src[ds[0].span.start..ds[0].span.end], "Foo");
+    assert_eq!(ds[0].code(), Code::UnknownType);
+    assert_eq!(&src[ds[0].span().start..ds[0].span().end], "Foo");
 }
 
 #[test]
@@ -2237,162 +2432,183 @@ fn lowers_while_let() {
 
 #[test]
 fn safe_call_on_non_optional() {
-    expect_error(
-        "class T {\n    v: i64\n}\nfn f(t: T) -> i64? { t?.v }\nfn main() {}",
-        "`t` is not optional",
-        (4, 22, "t"),
-        None,
-        &[],
-        Some("use `.`"),
+    let src = "class T {\n    v: i64\n}\nfn f(t: T) -> i64? { t?.v }\nfn main() {}";
+    let d = diagnostic(src, Code::SafeAccessNotOptional, (4, 22, "t"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(true, vec![(4, 23, "?.", ".".to_owned())])]
     );
+}
+
+/// Each row: the expression, and the text between the receiver and the member that the fix
+/// replaces. The rows cover each shape of receiver, a member that is a call, a chain, and a
+/// gap with a line break and a comment.
+#[test]
+fn safe_call_fix_replaces_the_gap_for_each_receiver() {
+    let rows = [
+        ("mk()?.v", "?."),
+        ("mk()?.get()", "?."),
+        ("p?.o?.v", "?."),
+        ("a[0]?.v", "?."),
+        ("(p)?.v", "?."),
+        ("p\n        ?.v", "\n        ?."),
+        ("p // note\n        ?.v", " // note\n        ?."),
+    ];
+    for (expr, gap) in rows {
+        let src = format!(
+            "class T {{\n    v: i64\n    o: T?\n    fn get(self) -> i64 {{ self.v }}\n}}\nfn mk() -> T {{\n    T(v: 1, o: None)\n}}\nfn f(p: T, a: [T]) {{\n    let r = {expr}\n}}\nfn main() {{}}"
+        );
+        let ds = diags(&src);
+        let [d] = ds.as_slice() else {
+            panic!("{src}: {ds:?}")
+        };
+        assert_eq!(d.code(), Code::SafeAccessNotOptional, "{src}");
+        let [fix] = d.fixes() else {
+            panic!("{src}: one fix")
+        };
+        assert!(fix.certain(), "{src}");
+        let [edit] = fix.edits() else {
+            panic!("{src}: {:?}", fix.edits())
+        };
+        assert_eq!(edit.replacement(), ".", "{src}");
+        assert_eq!(&src[edit.span().start..edit.span().end], gap, "{src}");
+        // The edited source parses, and has no `?.` error left.
+        let result = applied(&src, d);
+        let left: Vec<_> = diags(&result).iter().map(Diagnostic::code).collect();
+        assert!(!left.contains(&d.code()), "{result}: {left:?}");
+    }
 }
 
 /// In `a?.b.c`, the `.c` applies to a `B?`.
 #[test]
 fn safe_chain_needs_each_step() {
-    expect_error(
-        "class A {\n    b: B\n}\nclass B {\n    c: i64\n}\nfn f(a: A?) -> i64? { a?.b.c }\nfn main() {}",
-        "`a?.b` may be `None`",
-        (7, 23, "a?.b"),
-        None,
-        &[],
-        Some("use `?.`, or unwrap it with `if let`"),
+    let src = "class A {\n    b: B\n}\nclass B {\n    c: i64\n}\nfn f(a: A?) -> i64? { a?.b.c }\nfn main() {}";
+    let d = diagnostic(src, Code::MayBeNone, (7, 23, "a?.b"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(false, vec![(7, 27, ".", "?.".to_owned())])]
     );
+    clean(&applied(src, &d));
 }
 
 #[test]
 fn coalesce_left_not_optional() {
-    error(
+    codes(
         "fn main() { print(1 ?? 2) }",
-        "the left side of `??` is not optional",
-        (1, 19),
+        &[(Code::CoalesceNotOptional, (1, 19))],
     );
 }
 
 #[test]
 fn coalesce_never() {
-    never_value(
+    codes(
         "fn f(x: i64?, c: bool) -> i64 {\n    x ?? if c { return 0 } else { return 1 }\n}\nfn main() {}",
-        (2, 10),
+        &[(Code::NoValue, (2, 10))],
     );
 }
 
 #[test]
 fn coalesce_type() {
-    error(
+    codes(
         "fn f(x: i64?) -> i64 { x ?? true }\nfn main() {}",
-        "expected `i64`, found `bool`",
-        (1, 29),
+        &[(Code::Mismatch, (1, 29))],
     );
 }
 
 #[test]
 fn equal_none_on_non_optional() {
-    error(
+    codes(
         "class T {}\nfn f(x: T) -> bool { x == None }\nfn main() {}",
-        "`x` is not optional, so it is never `None`",
-        (2, 22),
+        &[(Code::NeverNone, (2, 22))],
     );
 }
 
 #[test]
 fn none_equals_none() {
-    errors(
+    codes(
         "fn main() { print(None == None) }",
-        &[("cannot infer the type of `None`", (1, 19))],
+        &[(Code::CannotInfer, (1, 19))],
     );
 }
 
 #[test]
 fn equal_unit() {
-    errors(
+    codes(
         "fn g() {}\nfn main() { print(g() == g()) }",
-        &[
-            ("expression has no value", (2, 19)),
-            ("expression has no value", (2, 26)),
-        ],
+        &[(Code::NoValue, (2, 19)), (Code::NoValue, (2, 26))],
     );
 }
 
 #[test]
 fn equal_two_classes() {
-    error(
+    codes(
         "class A {}\nclass B {}\nfn f(a: A, b: B) -> bool { a == b }\nfn main() {}",
-        "cannot compare `A` with `B`",
-        (3, 28),
+        &[(Code::CannotCompare, (3, 28))],
     );
 }
 
 #[test]
 fn is_none() {
-    expect_error(
+    diagnostic(
         "class T {}\nfn f(x: T?) -> bool { x is None }\nfn main() {}",
-        "use `==` to test for `None`",
+        Code::IsTestsNone,
         (2, 23, "x is None"),
-        None,
         &[],
-        Some("`x == None`"),
     );
 }
 
 #[test]
 fn is_on_integers() {
-    expect_error(
+    diagnostic(
         "fn main() { print(1 is 1) }",
-        "`is` needs objects; found `i64`",
+        Code::IsNeedsObjects,
         (1, 19, "1"),
-        None,
         &[],
-        Some("use `==` to compare values"),
     );
 }
 
 /// The operand that is not an object is blamed, not the whole expression.
 #[test]
 fn is_blames_the_operand_that_is_not_an_object() {
-    expect_error(
+    diagnostic(
         "class T {}\nfn f(t: T) -> bool { t is 1 }\nfn main() {}",
-        "`is` needs objects; found `i64`",
+        Code::IsNeedsObjects,
         (2, 27, "1"),
-        None,
         &[],
-        Some("use `==` to compare values"),
     );
 }
 
 /// A side with no path has no help, as `this value == None` is not code.
 #[test]
 fn is_none_without_a_path_has_no_help() {
-    expect_error(
+    let d = diagnostic(
         "class T {}\nfn make() -> T? { None }\nfn f() -> bool { make() is None }\nfn main() {}",
-        "use `==` to test for `None`",
+        Code::IsTestsNone,
         (3, 18, "make() is None"),
-        None,
         &[],
-        None,
     );
+    assert_eq!(d.help(), None);
 }
 
 /// `t == None` does not compile for a `T`, so it is not offered.
 #[test]
 fn is_none_on_a_plain_object_has_no_help() {
-    expect_error(
+    let d = diagnostic(
         "class T {}\nfn f(t: T) -> bool { t is None }\nfn main() {}",
-        "use `==` to test for `None`",
+        Code::IsTestsNone,
         (2, 22, "t is None"),
-        None,
         &[],
-        None,
     );
+    assert_eq!(d.help(), None);
 }
 
 #[test]
 fn is_none_checks_the_other_side() {
-    errors(
+    codes(
         "fn main() { print(nope is None) }",
         &[
-            ("use `==` to test for `None`", (1, 19)),
-            ("cannot find `nope` in this scope", (1, 19)),
+            (Code::IsTestsNone, (1, 19)),
+            (Code::BindingNotFound, (1, 19)),
         ],
     );
 }
@@ -2400,40 +2616,39 @@ fn is_none_checks_the_other_side() {
 /// Once an operand is `Error`, the later one is not held to `is`.
 #[test]
 fn is_after_an_error_checks_no_further() {
-    errors(
+    codes(
         "fn main() { print(nope is 1) }",
-        &[("cannot find `nope` in this scope", (1, 19))],
+        &[(Code::BindingNotFound, (1, 19))],
     );
 }
 
 #[test]
 fn is_two_classes() {
-    error(
+    codes(
         "class A {}\nclass B {}\nfn f(a: A, b: B) -> bool { a is b }\nfn main() {}",
-        "cannot compare `A` with `B`",
-        (3, 28),
+        &[(Code::CannotCompare, (3, 28))],
     );
 }
 
 /// The other operand is still checked after a `??` or `?.` fails.
 #[test]
 fn coalesce_left_not_optional_checks_the_right() {
-    errors(
+    codes(
         "fn main() { print(1 ?? nope) }",
         &[
-            ("the left side of `??` is not optional", (1, 19)),
-            ("cannot find `nope` in this scope", (1, 24)),
+            (Code::CoalesceNotOptional, (1, 19)),
+            (Code::BindingNotFound, (1, 24)),
         ],
     );
 }
 
 #[test]
 fn safe_call_on_non_optional_checks_the_member() {
-    errors(
+    codes(
         "class T {\n    v: i64\n}\nfn f(t: T) -> i64? { t?.w }\nfn main() {}",
         &[
-            ("`t` is not optional", (4, 22)),
-            ("`T` has no field `w`", (4, 25)),
+            (Code::SafeAccessNotOptional, (4, 22)),
+            (Code::NoMember, (4, 25)),
         ],
     );
 }
@@ -2441,11 +2656,11 @@ fn safe_call_on_non_optional_checks_the_member() {
 /// The member's argument is checked on the plain receiver too.
 #[test]
 fn safe_call_on_non_optional_checks_the_arguments() {
-    errors(
+    codes(
         "class T {\n    fn g(self, x: i64) -> i64 { x }\n}\nfn f(t: T) -> i64? { t?.g(nope) }\nfn main() {}",
         &[
-            ("`t` is not optional", (4, 22)),
-            ("cannot find `nope` in this scope", (4, 27)),
+            (Code::SafeAccessNotOptional, (4, 22)),
+            (Code::BindingNotFound, (4, 27)),
         ],
     );
 }
@@ -2575,16 +2790,17 @@ fn spills_equal() {
     );
 }
 
-/// `print` of a value it cannot print names the argument, not the call; a bad argument count
-/// stays on the whole call.
+/// `print` of an object names the argument, not the call; a bad argument count stays on the
+/// whole call.
 #[test]
 fn print_argument_errors_sit_on_the_argument() {
-    errors(
-        "class P {\n    x: i64\n}\nfn nothing() {}\nfn main() {\n    print(P(x: 1))\n    print(nothing())\n    print([1])\n}",
+    codes(
+        "class P {\n    x: i64\n}\nfn nothing() {}\nfn main() {\n    print(P(x: 1))\n    print(nothing())\n    print([1])\n    print(1, 2)\n}",
         &[
-            ("cannot print `P`", (6, 11)),
-            ("expression has no value", (7, 11)),
-            ("cannot print `[i64]`", (8, 11)),
+            (Code::PrintArgument, (6, 11)),
+            (Code::PrintArgument, (7, 5)),
+            (Code::PrintArray, (8, 11)),
+            (Code::PrintArgument, (9, 5)),
         ],
     );
 }
@@ -2593,86 +2809,62 @@ fn print_argument_errors_sit_on_the_argument() {
 /// first one's kind.
 #[test]
 fn duplicate_member_of_the_same_kind() {
-    expect_error(
+    diagnostic(
         "class A {\n    fn x(self) {}\n    fn x(self) {}\n}\nfn main() {}",
-        "method `x` is defined twice",
+        Code::DefinedTwice,
         (3, 8, "x"),
-        None,
-        &[(2, 8, "first defined here")],
-        None,
+        &[(2, 8)],
     );
-    expect_error(
+    diagnostic(
         "class A {\n    x: i64\n    x: i64\n}\nfn main() {}",
-        "field `x` is defined twice",
+        Code::DefinedTwice,
         (3, 5, "x"),
-        None,
-        &[(2, 5, "first defined here")],
-        None,
+        &[(2, 5)],
     );
 }
 
 #[test]
 fn unit_branch_says_no_value() {
-    expect_error(
+    codes(
         "fn nothing() {}\nfn main() { let y: i64 = if true { 1 } else { nothing() } }",
-        "expression has no value",
-        (2, 47, "nothing()"),
-        None,
-        &[],
-        None,
+        &[(Code::NoValue, (2, 47))],
     );
-    expect_error(
+    codes(
         "fn nothing() {}\nfn main() { let y: i64 = if true { nothing() } else { 1 } }",
-        "expression has no value",
-        (2, 36, "nothing()"),
-        None,
-        &[],
-        None,
+        &[(Code::NoValue, (2, 36))],
     );
     // Without a type expected, the branch with no value is still the one named.
-    expect_error(
+    codes(
         "fn nothing() {}\nfn main() { let x = if true { nothing() } else { 1 } }",
-        "expression has no value",
-        (2, 31, "nothing()"),
-        None,
-        &[],
-        None,
+        &[(Code::NoValue, (2, 31))],
     );
 }
 
-/// Branches of two other types still report a mismatch, and never say `unit`.
+/// Branches of two other types still report a mismatch.
 #[test]
 fn value_branches_of_different_types_still_mismatch() {
-    error(
+    codes(
         "fn main() { let x = if true { 1 } else { false } }",
-        "expected `i64`, found `bool`",
-        (1, 42),
+        &[(Code::Mismatch, (1, 42))],
     );
 }
 
 #[test]
 fn if_with_two_never_branches_never_produces_a_value() {
-    never_value(
+    codes(
         "fn f(c: bool) -> i64 {\n    let z = if c { return 1 } else { return 2 }\n    z\n}\nfn main() {}",
-        (2, 13),
+        &[(Code::NoValue, (2, 13))],
     );
 }
 
 #[test]
 fn assigning_to_a_function_names_it() {
-    for (src, col) in [
-        ("fn one() {}\nfn main() { one = 2 }", 13),
-        ("fn one() {}\nfn main() { one += 2 }", 13),
-        ("fn one() {}\nfn main() { one[0] = 2 }", 13),
+    for src in [
+        "fn one() {}\nfn main() { one = 2 }",
+        "fn one() {}\nfn main() { one += 2 }",
+        "fn one() {}\nfn main() { one[0] = 2 }",
     ] {
-        expect_error(
-            src,
-            "`one` is a function, not a variable",
-            (2, col, "one"),
-            None,
-            &[],
-            None,
-        );
+        diagnostic(src, Code::AssignToFunction, (2, 13, "one"), &[]);
     }
 }
 
@@ -2680,4 +2872,233 @@ fn assigning_to_a_function_names_it() {
 #[test]
 fn local_shadowing_a_function_is_assignable() {
     clean("fn one() {}\nfn main() {\n    let mut one = 1\n    one = 2\n    one += 1\n}");
+}
+
+/// The one diagnostic of `src` is `code` at `pos`, with one guess that replaces its text with
+/// `candidate`; applying it parses and leaves no diagnostic of `code`.
+fn suggests(src: &str, code: Code, pos: (usize, usize, &str), candidate: &str) {
+    let d = diagnostic(src, code, pos, &[]);
+    let edit = (pos.0, pos.1, pos.2, candidate.to_owned());
+    assert_eq!(fixes(src, &d), [(false, vec![edit])], "{src}");
+    let result = applied(src, &d);
+    let left: Vec<_> = diags(&result).iter().map(Diagnostic::code).collect();
+    assert!(!left.contains(&code), "{result}: {left:?}");
+}
+
+/// The one diagnostic of `src` is `code` at `pos`, and has no fix.
+fn suggests_nothing(src: &str, code: Code, pos: (usize, usize, &str)) {
+    let d = diagnostic(src, code, pos, &[]);
+    assert!(d.fixes().is_empty(), "{src}: {d:?}");
+}
+
+#[test]
+fn missing_function_suggests_the_closest() {
+    let src =
+        "fn total(xs: [i64]) -> i64 { 0 }\nfn main() {\n    let xs = [1]\n    print(totl(xs))\n}";
+    suggests(src, Code::FunctionNotFound, (4, 11, "totl"), "total");
+}
+
+#[test]
+fn missing_function_suggests_a_class_a_builtin_or_a_conversion() {
+    for (name, candidate) in [("prnt", "print"), ("i6", "i64"), ("u", "u8")] {
+        let src = format!(
+            "class Tree {{\n    value: i64\n}}\nfn main() {{\n    let t = 1\n    {name}(t)\n}}"
+        );
+        suggests(&src, Code::FunctionNotFound, (6, 5, name), candidate);
+    }
+}
+
+#[test]
+fn class_candidate_is_named_a_class() {
+    let src = "class Tree {\n    value: i64\n}\nfn main() {\n    let t = Trea(value: 1)\n    print(t.value)\n}";
+    suggests(src, Code::FunctionNotFound, (5, 13, "Trea"), "Tree");
+}
+
+#[test]
+fn missing_binding_suggests_the_closest_open_binding() {
+    suggests(
+        "fn main() {\n    let total = 1\n    print(totl)\n}",
+        Code::BindingNotFound,
+        (3, 11, "totl"),
+        "total",
+    );
+    // A parameter, and a binding of an enclosing block, are open.
+    suggests(
+        "fn f(count: i64) {\n    let total = 1\n    if true {\n        print(totl)\n    }\n}\nfn main() {}",
+        Code::BindingNotFound,
+        (4, 15, "totl"),
+        "total",
+    );
+    suggests(
+        "fn f(count: i64) {\n    let total = 1\n    if true {\n        print(cont)\n    }\n}\nfn main() {}",
+        Code::BindingNotFound,
+        (4, 15, "cont"),
+        "count",
+    );
+}
+
+#[test]
+fn a_binding_that_left_scope_is_not_a_candidate() {
+    suggests_nothing(
+        "fn main() {\n    if true {\n        let total = 1\n    }\n    print(totl)\n}",
+        Code::BindingNotFound,
+        (5, 11, "totl"),
+    );
+}
+
+#[test]
+fn assigning_to_a_missing_binding_suggests_the_closest() {
+    suggests(
+        "fn main() {\n    let mut total = 1\n    totl = 2\n    print(total)\n}",
+        Code::BindingNotFound,
+        (3, 5, "totl"),
+        "total",
+    );
+}
+
+#[test]
+fn missing_type_suggests_the_closest() {
+    for (ty, candidate) in [
+        ("Bukcet", "Bucket"),
+        ("bol", "bool"),
+        ("i6", "i64"),
+        ("u", "u8"),
+    ] {
+        let src = format!("class Bucket {{\n    n: i64\n}}\nfn f(b: {ty}) {{}}\nfn main() {{}}");
+        suggests(&src, Code::UnknownType, (4, 9, ty), candidate);
+    }
+}
+
+#[test]
+fn missing_type_inside_an_array_or_optional_suggests_the_closest() {
+    suggests(
+        "class Bucket {\n    n: i64\n}\nfn f(b: [Bukcet]) {}\nfn main() {}",
+        Code::UnknownType,
+        (4, 10, "Bukcet"),
+        "Bucket",
+    );
+    suggests(
+        "class Bucket {\n    n: i64\n}\nfn f(b: Bukcet?) {}\nfn main() {}",
+        Code::UnknownType,
+        (4, 9, "Bukcet"),
+        "Bucket",
+    );
+}
+
+#[test]
+fn missing_field_suggests_the_closest() {
+    suggests(
+        "class Point {\n    depth: i64\n    height: i64\n}\nfn main() {\n    let p = Point(depth: 1, height: 2)\n    print(p.dept)\n}",
+        Code::NoMember,
+        (7, 13, "dept"),
+        "depth",
+    );
+}
+
+#[test]
+fn missing_constructor_label_suggests_the_closest_field() {
+    suggests(
+        "class Point {\n    depth: i64\n}\nfn main() {\n    let p = Point(dept: 1)\n    print(p.depth)\n}",
+        Code::NoMember,
+        (5, 19, "dept"),
+        "depth",
+    );
+}
+
+#[test]
+fn missing_method_suggests_the_closest() {
+    suggests(
+        "class Point {\n    x: i64\n    fn norm(self) -> i64 { 1 }\n}\nfn main() {\n    let p = Point(x: 1)\n    print(p.nrm())\n}",
+        Code::NoMember,
+        (7, 13, "nrm"),
+        "norm",
+    );
+}
+
+#[test]
+fn missing_array_method_suggests_the_closest() {
+    for (name, candidate) in [("lenn", "len"), ("sm", "sum"), ("contain", "contains")] {
+        let src = format!("fn main() {{\n    let xs = [1, 2]\n    print(xs.{name}(1))\n}}");
+        suggests(&src, Code::NoMember, (3, 14, name), candidate);
+    }
+}
+
+#[test]
+fn a_field_suggests_no_method_and_a_method_no_field() {
+    let class = "class Point {\n    depth: i64\n    fn norm(self) -> i64 { 1 }\n}\nfn main() {\n    let p = Point(depth: 1)\n";
+    // `dept` is close to the field `depth`, but is called, so only methods are candidates.
+    suggests_nothing(
+        &format!("{class}    print(p.dept())\n}}"),
+        Code::NoMember,
+        (7, 13, "dept"),
+    );
+    suggests_nothing(
+        &format!("{class}    print(p.nrm)\n}}"),
+        Code::NoMember,
+        (7, 13, "nrm"),
+    );
+}
+
+#[test]
+fn no_suggestion_when_nothing_is_close() {
+    let class = "class Point {\n    depth: i64\n}\n";
+    for (src, code, pos) in [
+        (
+            "fn total() {}\nfn main() {\n    print(sum(1))\n}".to_owned(),
+            Code::FunctionNotFound,
+            (3, 11, "sum"),
+        ),
+        (
+            "fn main() {\n    let total = 1\n    print(price)\n}".to_owned(),
+            Code::BindingNotFound,
+            (3, 11, "price"),
+        ),
+        (
+            format!("{class}fn f(p: Number) {{}}\nfn main() {{}}"),
+            Code::UnknownType,
+            (4, 9, "Number"),
+        ),
+        (
+            format!("{class}fn main() {{\n    let p = Point(depth: 1)\n    print(p.height)\n}}"),
+            Code::NoMember,
+            (6, 13, "height"),
+        ),
+        (
+            "fn main() {\n    let xs = [1]\n    print(xs.count())\n}".to_owned(),
+            Code::NoMember,
+            (3, 14, "count"),
+        ),
+    ] {
+        suggests_nothing(&src, code, pos);
+    }
+}
+
+/// A member of a type that has none (an `i64`, or a field of an array) has nothing to suggest.
+#[test]
+fn members_of_a_memberless_type_suggest_nothing() {
+    suggests_nothing(
+        "fn main() {\n    let n = 1\n    print(n.lenn)\n}",
+        Code::NoMember,
+        (3, 13, "lenn"),
+    );
+    suggests_nothing(
+        "fn main() {\n    let xs = [1]\n    print(xs.summ)\n}",
+        Code::NoMember,
+        (3, 14, "summ"),
+    );
+}
+
+/// Review Focus 5: a function is never offered for a binding, nor a binding for a function.
+#[test]
+fn suggestions_keep_to_their_kind() {
+    suggests_nothing(
+        "fn main() {\n    let total = 1\n    totl()\n}",
+        Code::FunctionNotFound,
+        (3, 5, "totl"),
+    );
+    suggests_nothing(
+        "fn total() {}\nfn main() {\n    print(totl)\n}",
+        Code::BindingNotFound,
+        (3, 11, "totl"),
+    );
 }

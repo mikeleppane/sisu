@@ -135,10 +135,13 @@ pub(crate) fn run_fail(path: &Path, bless: bool) {
     );
 }
 
-/// Checks a `tests/compile-fail` case: `sisuc --check <name>.sisu`, run from the source's
-/// directory, exits 1 with empty stdout and `<name>.err` on stderr. With `bless`, rewrites
-/// `<name>.err` instead, after the exit code and stdout checks passed.
-pub(crate) fn compile_fail(path: &Path, bless: bool) {
+/// Checks a `tests/diagnostics` case: `sisuc --check <name>.sisu`, run from the source's
+/// directory, reports at least one diagnostic, prints nothing on stdout, and exits 1 when a
+/// stderr line starts with `error`, else 0. A case named after a code (`E0001.sisu`,
+/// `E0001-field.sisu`) reports that code. `sisuc --format json --check` exits the same, and each
+/// of its stderr lines is a JSON object, the summary last. Then the two stderrs are `<name>.err`
+/// and `<name>.json`; with `bless`, rewrites both files instead.
+pub(crate) fn diagnostics(path: &Path, bless: bool) {
     let dir = path.parent().expect("a case should sit in a directory");
     let name = path.file_name().expect("a case should have a file name");
     let sisuc = Path::new(env!("CARGO_BIN_EXE_sisuc"));
@@ -149,14 +152,63 @@ pub(crate) fn compile_fail(path: &Path, bless: bool) {
         .output()
         .expect("sisuc starts");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(1), "{}: {stderr}", path.display());
+    let display = path.display();
+    assert!(!stderr.is_empty(), "{display} reports no diagnostic");
+    let failed = stderr.lines().any(|l| l.starts_with("error"));
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "",
-        "{}",
-        path.display()
+        out.status.code(),
+        Some(i32::from(failed)),
+        "{display}: {stderr}"
     );
-    expect_files(&[(path.with_extension("err"), stderr)], bless);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{display}");
+    let stem = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .expect("a case's name should be UTF-8");
+    let code = stem.split_once('-').map_or(stem, |(code, _)| code);
+    if is_code(code) {
+        assert!(
+            stderr.contains(&format!("[{code}]")),
+            "{display} does not report {code}: {stderr}"
+        );
+    }
+    let out = Command::new(sisuc)
+        .current_dir(dir)
+        .args(["--format", "json", "--check"])
+        .arg(name)
+        .output()
+        .expect("sisuc starts");
+    let json = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(i32::from(failed)),
+        "{display} --format json: {json}"
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{display}");
+    assert!(
+        json.lines()
+            .all(|l| l.starts_with(r#"{"version":1,"kind":""#)),
+        "{display}: a stderr line is not a JSON object: {json}"
+    );
+    assert!(
+        json.lines()
+            .last()
+            .is_some_and(|l| l.contains(r#""kind":"summary""#)),
+        "{display}: the summary is not last: {json}"
+    );
+    expect_files(
+        &[
+            (path.with_extension("err"), stderr),
+            (path.with_extension("json"), json),
+        ],
+        bless,
+    );
+}
+
+/// Whether `text` is a diagnostic code: `E` or `W`, then four digits.
+fn is_code(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 5 && matches!(bytes[0], b'E' | b'W') && bytes[1..].iter().all(u8::is_ascii_digit)
 }
 
 /// Passes for a `.sisu` file, and for a file whose extension is one of `expectations` (the

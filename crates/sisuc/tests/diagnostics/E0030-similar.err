@@ -1,0 +1,15 @@
+error[E0030]: cannot find type `Bukcet`
+ --> E0030-similar.sisu:5:12
+  |
+5 | fn fill(b: Bukcet) {}
+  |            ^^^^^^
+  |
+  = help: the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`
+help: a class with a similar name exists: `Bucket`
+  |
+5 - fn fill(b: Bukcet) {}
+5 + fn fill(b: Bucket) {}
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0030

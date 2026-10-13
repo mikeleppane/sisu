@@ -1,0 +1,8 @@
+error[E0033]: cannot find binding `missing`
+ --> tab_before_error.sisu:2:8
+  |
+2 |     print(missing)
+  |           ^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0033

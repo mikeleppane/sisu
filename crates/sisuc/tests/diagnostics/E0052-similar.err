@@ -1,0 +1,13 @@
+error[E0052]: cannot find function `totl`
+ --> E0052-similar.sisu:6:11
+  |
+6 |     print(totl(1, 2))
+  |           ^^^^
+  |
+help: a function with a similar name exists: `total`
+  |
+6 |     print(total(1, 2))
+  |              +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0052

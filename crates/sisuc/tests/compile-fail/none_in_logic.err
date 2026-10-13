@@ -1,6 +1,0 @@
-error: expected `bool`, found `None`
- --> none_in_logic.sisu:2:18
-  |
-2 |     let n: i64 = None && true
-  |                  ^^^^
-

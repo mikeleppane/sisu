@@ -1,0 +1,15 @@
+error[E0001]: cannot assign to an element of `xs`
+ --> E0001-element.sisu:3:5
+  |
+2 |     let xs = [1, 2, 3]
+  |         -- declared with `let` here
+3 |     xs[0] = 4
+  |     ^^^^^^^^^
+  |
+help: declare it with `let mut`
+  |
+2 |     let mut xs = [1, 2, 3]
+  |         +++
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001

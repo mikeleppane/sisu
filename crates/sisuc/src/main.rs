@@ -4,26 +4,32 @@ mod ast;
 mod check;
 mod codegen;
 mod diagnostic;
+mod front_end;
 mod last_use;
 mod lexer;
 mod link;
 mod parser;
+mod report;
 mod tir;
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{self, ErrorKind, IsTerminal, Stderr, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use diagnostic::{Diagnostic, LineIndex, Span};
+use diagnostic::Code;
 use inkwell::context::Context;
+use report::{Format, Reporter};
 use tir::Program;
 
-const USAGE: &str = "usage: sisuc [-O2] [--rc-checks] <input.sisu> <output> | [-O2] --emit ir <input.sisu> | --emit tokens|ast|tir|ir-raw <input.sisu> | --check <input.sisu>";
+const USAGE: &str = "usage: sisuc [--format text|json] ([-O2] [--rc-checks] <input.sisu> <output> | [-O2] --emit ir <input.sisu> | --emit tokens|ast|tir|ir-raw <input.sisu> | --check <input.sisu>) | sisuc --explain <code>";
+
+/// The reporter `main` writes stderr through.
+type Report = Reporter<Stderr>;
 
 /// What the command line asks for.
 enum Mode {
@@ -34,6 +40,10 @@ enum Mode {
     },
     Check {
         input: PathBuf,
+    },
+    /// Print the explanation of a diagnostic code.
+    Explain {
+        code: String,
     },
     Build {
         input: PathBuf,
@@ -51,8 +61,18 @@ enum Stage {
     IrRaw,
 }
 
-fn parse_args(args: &[OsString]) -> Result<Mode, String> {
-    // `-O2` is accepted only as the first argument.
+/// The format and the mode the command line asks for.
+fn parse_args(args: &[OsString]) -> Result<(Format, Mode), String> {
+    // `--format` is accepted only as the first two arguments.
+    let (format, args) = match args {
+        [flag, format, rest @ ..] if flag == "--format" => match format.to_str() {
+            Some("text") => (Some(Format::Text), rest),
+            Some("json") => (Some(Format::Json), rest),
+            _ => return Err(USAGE.to_string()),
+        },
+        _ => (None, args),
+    };
+    // `-O2` is accepted only as the first argument after `--format`.
     let (o2, args) = match args {
         [flag, rest @ ..] if flag == "-O2" => (true, rest),
         _ => (false, args),
@@ -62,7 +82,10 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
         [flag, rest @ ..] if flag == "--rc-checks" => (true, rest),
         _ => (false, args),
     };
-    if args.iter().any(|a| a == "-O2" || a == "--rc-checks") {
+    if args
+        .iter()
+        .any(|a| a == "-O2" || a == "--rc-checks" || a == "--format")
+    {
         return Err(USAGE.to_string());
     }
     let mode = match args {
@@ -84,6 +107,9 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
         [flag, input] if flag == "--check" => Ok(Mode::Check {
             input: PathBuf::from(input),
         }),
+        [flag, code] if flag == "--explain" => Ok(Mode::Explain {
+            code: code.to_string_lossy().into_owned(),
+        }),
         [input, output]
             if [input, output]
                 .iter()
@@ -101,6 +127,10 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
     if rc_checks && !matches!(mode, Mode::Build { .. }) {
         return Err(USAGE.to_string());
     }
+    // `--explain` prints to stdout and takes no other flag.
+    if format.is_some() && matches!(mode, Mode::Explain { .. }) {
+        return Err(USAGE.to_string());
+    }
     // The other modes run no optimizer.
     if o2
         && !matches!(
@@ -114,7 +144,7 @@ fn parse_args(args: &[OsString]) -> Result<Mode, String> {
     {
         return Err(USAGE.to_string());
     }
-    Ok(mode)
+    Ok((format.unwrap_or(Format::Text), mode))
 }
 
 /// The stack of the thread that runs the compiler. The parser bounds the depth of the syntax tree
@@ -126,102 +156,121 @@ fn main() -> ExitCode {
     let compiler = thread::Builder::new()
         .name("main".to_string())
         .stack_size(STACK_SIZE)
-        .spawn(run)
+        .spawn(cli)
         .expect("the OS should start a thread with a 64 MiB stack");
     // `panic = "abort"` makes a panic in the compiler abort the process (SIGABRT, exit 134) on
     // this thread as it did on the main one, so `join` fails only in a build that unwinds.
     compiler.join().unwrap_or_else(|p| panic::resume_unwind(p))
 }
 
-fn run() -> ExitCode {
+/// Parses the arguments, does what they ask for, and reports.
+fn cli() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let mode = match parse_args(&args) {
-        Ok(mode) => mode,
+    let (format, mode) = match parse_args(&args) {
+        Ok(parsed) => parsed,
         Err(usage) => {
+            // The format is not known yet, so this stays plain text.
             eprintln!("{usage}");
             return ExitCode::FAILURE;
         }
     };
+    let color = report::use_color(
+        io::stderr().is_terminal(),
+        std::env::var_os("NO_COLOR").as_deref(),
+    );
+    let mut reporter = Reporter::new(io::stderr(), format, color);
+    let code = run(&mut reporter, mode);
+    reporter.finish();
+    code
+}
+
+/// Does what `mode` asks for.
+fn run(reporter: &mut Report, mode: Mode) -> ExitCode {
     match mode {
-        Mode::Emit { stage, input, o2 } => emit(&stage, &input, o2),
-        Mode::Check { input } => run_check(&input),
+        Mode::Emit { stage, input, o2 } => emit(reporter, &stage, &input, o2),
+        Mode::Check { input } => run_check(reporter, &input),
+        Mode::Explain { code } => explain(reporter, &code),
         Mode::Build {
             input,
             output,
             o2,
             rc_checks,
-        } => build(&input, &output, o2, rc_checks),
+        } => build(reporter, &input, &output, o2, rc_checks),
     }
 }
 
-/// Reads `input`, or prints why it cannot. Text that is not UTF-8 is a diagnostic at its first
+/// Prints the explanation of `code`, in any case, or that there is no such code.
+fn explain(reporter: &mut Report, code: &str) -> ExitCode {
+    if let Some(code) = Code::parse(code) {
+        print!("{}", code.explanation());
+        ExitCode::SUCCESS
+    } else {
+        reporter.tool_error(&format!("unknown diagnostic code `{code}`"));
+        ExitCode::FAILURE
+    }
+}
+
+/// Reads `input`, or reports why it cannot. Text that is not UTF-8 is a diagnostic at its first
 /// invalid byte, rendered over the valid text before it, so the renderer never sees bad UTF-8.
-fn read(input: &Path) -> Option<String> {
+fn read(reporter: &mut Report, input: &Path) -> Option<String> {
     let path = input.to_string_lossy();
     let bytes = fs::read(input)
-        .inspect_err(|e| eprintln!("sisuc: cannot read {path}: {e}"))
+        .inspect_err(|e| reporter.tool_error(&format!("cannot read {path}: {e}")))
         .ok()?;
-    String::from_utf8(bytes)
+    front_end::decode(bytes)
         .inspect_err(|e| {
-            let valid_up_to = e.utf8_error().valid_up_to();
-            // The valid text, then U+FFFD where the bad byte is, so the position is the bad
-            // byte's even when it starts a line or ends the file.
-            // The prefix is valid UTF-8, so `from_utf8_lossy` itself only borrows it; the `+`
-            // then copies it into the string.
-            let shown = String::from_utf8_lossy(&e.as_bytes()[..valid_up_to]) + "\u{FFFD}";
-            let at = Span::new(valid_up_to, shown.len());
-            report(
-                &path,
-                &shown,
-                &[Diagnostic::error(at, "source is not valid UTF-8")],
-            );
+            let (shown, d) = &**e;
+            reporter.diagnostics(&path, shown, std::slice::from_ref(d));
         })
         .ok()
 }
 
 /// Prints one stage's output for `input` to stdout.
-fn emit(stage: &Stage, input: &Path, o2: bool) -> ExitCode {
+fn emit(reporter: &mut Report, stage: &Stage, input: &Path, o2: bool) -> ExitCode {
     let path = input.to_string_lossy();
-    let Some(source) = read(input) else {
+    let Some(source) = read(reporter, input) else {
         return ExitCode::FAILURE;
     };
-    let tokens = match lexer::lex(&source) {
-        Ok(tokens) => tokens,
+    let lexed = match lexer::lex(&source) {
+        Ok(lexed) => lexed,
         Err(d) => {
-            report(&path, &source, &[d]);
+            reporter.diagnostics(&path, &source, &[d]);
             return ExitCode::FAILURE;
         }
     };
     match stage {
         Stage::Tokens => {
-            print!("{}", lexer::dump(&source, &tokens));
+            if !lexed.diagnostics.is_empty() {
+                reporter.diagnostics(&path, &source, &lexed.diagnostics);
+                return ExitCode::FAILURE;
+            }
+            print!("{}", lexer::dump(&source, &lexed.tokens));
             ExitCode::SUCCESS
         }
-        Stage::Ast => match parser::parse(&tokens) {
-            Ok(program) => {
-                println!("{program}");
-                ExitCode::SUCCESS
+        Stage::Ast => {
+            let parsed = parser::parse(lexed);
+            if !parsed.diagnostics.is_empty() {
+                reporter.diagnostics(&path, &source, &parsed.diagnostics);
+                return ExitCode::FAILURE;
             }
-            Err(d) => {
-                report(&path, &source, &[d]);
-                ExitCode::FAILURE
-            }
-        },
-        Stage::Tir => match front_end(&path, &source) {
+            println!("{}", parsed.program);
+            ExitCode::SUCCESS
+        }
+        Stage::Tir => match front_end(reporter, &path, &source) {
             Some(program) => {
                 println!("{program}");
                 ExitCode::SUCCESS
             }
             None => ExitCode::FAILURE,
         },
-        Stage::Ir => emit_ir(&path, &source, o2),
-        Stage::IrRaw => emit_ir_raw(&path, &source),
+        Stage::Ir => emit_ir(reporter, &path, &source, o2),
+        Stage::IrRaw => emit_ir_raw(reporter, &path, &source),
     }
 }
 
 /// Prints the module for `source` before and after the pipeline, once it passes the checker.
-fn emit_ir(path: &str, source: &str, o2: bool) -> ExitCode {
-    let Some(program) = front_end(path, source) else {
+fn emit_ir(reporter: &mut Report, path: &str, source: &str, o2: bool) -> ExitCode {
+    let Some(program) = front_end(reporter, path, source) else {
         return ExitCode::FAILURE;
     };
     let context = Context::create();
@@ -241,97 +290,92 @@ fn emit_ir(path: &str, source: &str, o2: bool) -> ExitCode {
             module.print_to_string().to_string()
         ))
     });
-    print_or_report(printed)
+    print_or_report(reporter, printed)
 }
 
 /// Prints `text`, or reports the error.
-fn print_or_report(text: Result<String, String>) -> ExitCode {
+fn print_or_report(reporter: &mut Report, text: Result<String, String>) -> ExitCode {
     match text {
         Ok(text) => {
             print!("{text}");
             ExitCode::SUCCESS
         }
         Err(message) => {
-            eprintln!("sisuc: {message}");
+            reporter.tool_error(&message);
             ExitCode::FAILURE
         }
     }
 }
 
 /// Prints the verified module for `source`, as codegen made it.
-fn emit_ir_raw(path: &str, source: &str) -> ExitCode {
-    let Some(program) = front_end(path, source) else {
+fn emit_ir_raw(reporter: &mut Report, path: &str, source: &str) -> ExitCode {
+    let Some(program) = front_end(reporter, path, source) else {
         return ExitCode::FAILURE;
     };
     let context = Context::create();
-    print_or_report(codegen::target_machine(false).and_then(|machine| {
-        let module = codegen::compile(&context, &program, path, source, &machine, false);
-        module.verify().map_err(|e| e.to_string())?;
-        Ok(module.print_to_string().to_string())
-    }))
+    print_or_report(
+        reporter,
+        codegen::target_machine(false).and_then(|machine| {
+            let module = codegen::compile(&context, &program, path, source, &machine, false);
+            module.verify().map_err(|e| e.to_string())?;
+            Ok(module.print_to_string().to_string())
+        }),
+    )
 }
 
-/// Lexes, parses and checks `input`; prints every diagnostic. Fails if any is an error.
-fn run_check(input: &Path) -> ExitCode {
-    match read(input).and_then(|source| front_end(&input.to_string_lossy(), &source)) {
+/// Lexes, parses and checks `input`; reports every diagnostic. Fails if any is an error.
+fn run_check(reporter: &mut Report, input: &Path) -> ExitCode {
+    let Some(source) = read(reporter, input) else {
+        return ExitCode::FAILURE;
+    };
+    match front_end(reporter, &input.to_string_lossy(), &source) {
         Some(_) => ExitCode::SUCCESS,
         None => ExitCode::FAILURE,
     }
 }
 
 /// Compiles `input` into the executable `output`.
-fn build(input: &Path, output: &Path, o2: bool, rc_checks: bool) -> ExitCode {
+fn build(
+    reporter: &mut Report,
+    input: &Path,
+    output: &Path,
+    o2: bool,
+    rc_checks: bool,
+) -> ExitCode {
     // `cc -o` would replace the source with the executable.
     let overwrites_input = match (fs::canonicalize(input), fs::canonicalize(output)) {
         (Ok(input), Ok(output)) => input == output,
         _ => input == output,
     };
     if overwrites_input {
-        eprintln!(
-            "sisuc: output {} would overwrite the input",
+        reporter.tool_error(&format!(
+            "output {} would overwrite the input",
             output.to_string_lossy()
-        );
+        ));
         return ExitCode::FAILURE;
     }
     let path = input.to_string_lossy();
-    let Some(source) = read(input) else {
+    let Some(source) = read(reporter, input) else {
         return ExitCode::FAILURE;
     };
-    let Some(program) = front_end(&path, &source) else {
+    let Some(program) = front_end(reporter, &path, &source) else {
         return ExitCode::FAILURE;
     };
     match compile(&program, &path, &source, output, o2, rc_checks) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("sisuc: {message}");
+            reporter.tool_error(&message);
             ExitCode::FAILURE
         }
     }
 }
 
-/// Lexes, parses, checks and marks last uses in `source`; prints every diagnostic. Returns
-/// the program unless a diagnostic is an error.
-fn front_end(path: &str, source: &str) -> Option<Program> {
-    let program = match lexer::lex(source).and_then(|tokens| parser::parse(&tokens)) {
-        Ok(program) => program,
-        Err(d) => {
-            report(path, source, &[d]);
-            return None;
-        }
-    };
-    let (program, diagnostics) = check::check(&program);
-    report(path, source, &diagnostics);
-    let mut program = program?;
-    last_use::mark(&mut program);
-    Some(program)
-}
-
-/// Prints each diagnostic to stderr, followed by a blank line.
-fn report(path: &str, source: &str, diagnostics: &[Diagnostic]) {
-    let lines = LineIndex::new(source);
-    for d in diagnostics {
-        eprintln!("{}\n", d.render(path, source, &lines));
-    }
+/// Runs the front end on `source` and reports every diagnostic. Returns the program unless a
+/// diagnostic is an error.
+fn front_end(reporter: &mut Report, path: &str, source: &str) -> Option<Program> {
+    let (program, diagnostics) = front_end::front_end(source);
+    reporter.diagnostics(path, source, &diagnostics);
+    program
 }
 
 /// Compiles `program` into the executable `output`, going through a temporary object file;

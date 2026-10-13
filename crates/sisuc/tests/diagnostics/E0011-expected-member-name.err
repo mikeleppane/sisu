@@ -1,0 +1,8 @@
+error[E0011]: expected a field or method name, found `0`
+ --> E0011-expected-member-name.sisu:2:15
+  |
+2 |     print([1].0)
+  |               ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011

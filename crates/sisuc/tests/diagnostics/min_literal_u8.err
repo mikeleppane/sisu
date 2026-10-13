@@ -1,0 +1,8 @@
+error[E0042]: `u8` cannot be negative
+ --> min_literal_u8.sisu:2:17
+  |
+2 |     let b: u8 = -9223372036854775808
+  |                 ^^^^^^^^^^^^^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0042

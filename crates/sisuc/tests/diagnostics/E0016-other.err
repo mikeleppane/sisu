@@ -1,0 +1,10 @@
+error[E0016]: a field takes no `let`
+ --> E0016-other.sisu:2:5
+  |
+2 |     let n = 0
+  |     ^^^
+  |
+  = help: write it bare: `name: Type`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0016

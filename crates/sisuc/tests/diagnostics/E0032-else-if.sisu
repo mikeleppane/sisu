@@ -1,0 +1,7 @@
+fn pick(a: bool, b: bool, x: u8) -> i64 {
+    if a { 1 } else if b { x } else { x }
+}
+
+fn main() {
+    print(pick(true, false, 2))
+}

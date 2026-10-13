@@ -1,0 +1,4 @@
+fn main() {
+    let ok: bool = 1
+    print(ok)
+}

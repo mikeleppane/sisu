@@ -1,0 +1,6 @@
+fn main() {
+    let n = 5
+    if let x = n {
+        print(x)
+    }
+}

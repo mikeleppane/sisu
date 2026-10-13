@@ -1,6 +1,0 @@
-error: cannot find `missing` in this scope
- --> no_trailing_newline.sisu:1:19
-  |
-1 | fn main() { print(missing) }
-  |                   ^^^^^^^
-

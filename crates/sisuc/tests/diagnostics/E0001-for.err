@@ -1,0 +1,10 @@
+error[E0001]: cannot assign to `x`
+ --> E0001-for.sisu:4:9
+  |
+3 |     for x in xs {
+  |         - bound by `for` here
+4 |         x *= 2
+  |         ^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001

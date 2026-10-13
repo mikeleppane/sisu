@@ -1,0 +1,12 @@
+fn sum_to(xs: [i64]) -> i64 {
+    let mut sum = 0
+    for x in xs {
+        x *= 2
+        sum += x
+    }
+    sum
+}
+
+fn main() {
+    print(sum_to([1, 2]))
+}

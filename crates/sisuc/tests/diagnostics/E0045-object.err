@@ -1,0 +1,8 @@
+error[E0045]: `is` tests identity, and `None` is not an object
+ --> E0045-object.sisu:5:11
+  |
+5 |     print(n is None)
+  |           ^^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0045

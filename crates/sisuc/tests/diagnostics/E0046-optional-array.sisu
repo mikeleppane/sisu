@@ -1,0 +1,5 @@
+fn main() {
+    let a: [i64]? = None
+    let b = [3]
+    print(a is b)
+}

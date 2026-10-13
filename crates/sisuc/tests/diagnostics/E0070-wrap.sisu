@@ -1,0 +1,7 @@
+fn f(m: [i64]?) -> i64 {
+    sum(m ?? [0])
+}
+
+fn main() {
+    print(f(None))
+}

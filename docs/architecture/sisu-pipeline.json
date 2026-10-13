@@ -39,8 +39,8 @@
     { "id": "llvm-to-link", "from": "llvm", "to": "link", "label": "object file", "variant": "emphasis" },
     { "id": "link-to-binary", "from": "link", "to": "binary", "label": "links", "variant": "emphasis" },
     { "id": "runtime-to-link", "from": "runtime", "to": "link", "label": "linked in", "fromSide": "top", "toSide": "bottom" },
-    { "id": "lexer-errors", "from": "lexer", "to": "diagnostics", "label": "first error", "variant": "dashed", "fromSide": "top", "toSide": "left" },
-    { "id": "parser-errors", "from": "parser", "to": "diagnostics", "label": "first error", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "lexer-errors", "from": "lexer", "to": "diagnostics", "label": "errors", "variant": "dashed", "fromSide": "top", "toSide": "left" },
+    { "id": "parser-errors", "from": "parser", "to": "diagnostics", "label": "errors", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
     { "id": "checker-errors", "from": "checker", "to": "diagnostics", "label": "every error", "variant": "dashed", "fromSide": "top", "toSide": "right" }
   ],
   "cards": [

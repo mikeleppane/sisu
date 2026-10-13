@@ -1,0 +1,14 @@
+error[E0028]: no `main` function
+ --> E0011-expected-field-name.sisu:1:1
+  |
+1 | class A {
+  | ^
+
+error[E0011]: expected a field name, found `1`
+ --> E0011-expected-field-name.sisu:2:9
+  |
+2 |     mut 1: i64
+  |         ^
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011, E0028

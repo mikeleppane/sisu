@@ -1,0 +1,13 @@
+fn total(xs: [i64]) -> i64 {
+    let sum = 0
+    for i in 0..len(xs) {
+        sum += xs[i]
+    }
+    sum
+}
+
+fn main() {
+    let xs = [1, 2, 3]
+    let n: i64 = "three"
+    print(totl(xs))
+}

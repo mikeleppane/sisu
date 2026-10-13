@@ -1,0 +1,34 @@
+error[E0070]: `len` is a method of arrays, not a function
+ --> recovery-sample-quote.sisu:3:17
+  |
+3 |     for i in 0..len(xs) {
+  |                 ^^^
+  |
+help: call `len` as a method
+  |
+3 -     for i in 0..len(xs) {
+3 +     for i in 0..xs.len() {
+  |
+
+error[E0001]: cannot assign to `sum`
+ --> recovery-sample-quote.sisu:4:9
+  |
+2 |     let sum = 0
+  |         --- declared with `let` here
+3 |     for i in 0..len(xs) {
+4 |         sum += xs[i]
+  |         ^^^^^^^^^^^^ cannot assign twice
+  |
+help: declare it with `let mut`
+  |
+2 |     let mut sum = 0
+  |         +++
+
+error[E0010]: unexpected character `"`
+  --> recovery-sample-quote.sisu:11:18
+   |
+11 |     let n: i64 = "three"
+   |                  ^
+
+sisuc: 3 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0010, E0070

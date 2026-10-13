@@ -1,0 +1,25 @@
+error[E0033]: cannot find binding `totl`
+ --> recovery-unknown-target.sisu:3:5
+  |
+3 |     totl += 1
+  |     ^^^^
+  |
+help: a binding with a similar name exists: `total`
+  |
+3 |     total += 1
+  |        +
+
+warning[W0002]: `later` is never reassigned
+ --> recovery-unknown-target.sisu:4:13
+  |
+4 |     let mut later = 0
+  |             ^^^^^
+  |
+help: declare it with `let`
+  |
+4 -     let mut later = 0
+4 +     let later = 0
+  |
+
+sisuc: 1 error, 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: E0033, W0002

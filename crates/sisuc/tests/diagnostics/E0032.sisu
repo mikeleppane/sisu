@@ -1,0 +1,5 @@
+fn main() {
+    let n: i64 = 5
+    let b: u8 = n
+    print(b)
+}

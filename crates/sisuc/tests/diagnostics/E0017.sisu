@@ -1,0 +1,11 @@
+class Counter {
+    mut n: i64
+
+    fn reset() {
+        print(0)
+    }
+}
+
+fn main() {
+    print(1)
+}

@@ -1,0 +1,8 @@
+class Node {
+    next: Node?
+}
+
+fn main() {
+    let n = Node(next: None)
+    print(n.next is None)
+}

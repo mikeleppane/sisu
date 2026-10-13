@@ -1,0 +1,16 @@
+error[E0001]: cannot assign to `count`
+ --> E0001-field.sisu:7:5
+  |
+2 |     count: i64
+  |     ----- declared without `mut` here
+...
+7 |     c.count = 1
+  |     ^^^^^^^^^^^
+  |
+help: mark the field `mut`
+  |
+2 |     mut count: i64
+  |     +++
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001

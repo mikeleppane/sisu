@@ -1,0 +1,7 @@
+fn main() {
+    let total = 0
+    for i in 0..3 {
+        total += i
+    }
+    print(total)
+}

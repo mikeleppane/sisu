@@ -1,0 +1,26 @@
+error[E0052]: cannot find function `Bukcet`
+ --> recovery-unknown-callee.sisu:6:13
+  |
+6 |     let b = Bukcet(value: 1)
+  |             ^^^^^^
+  |
+help: a class with a similar name exists: `Bucket`
+  |
+6 -     let b = Bukcet(value: 1)
+6 +     let b = Bucket(value: 1)
+  |
+
+error[E0052]: cannot find function `nope`
+ --> recovery-unknown-callee.sisu:7:5
+  |
+7 |     nope(missing)
+  |     ^^^^
+
+error[E0033]: cannot find binding `missing`
+ --> recovery-unknown-callee.sisu:7:10
+  |
+7 |     nope(missing)
+  |          ^^^^^^^
+
+sisuc: 3 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0033, E0052

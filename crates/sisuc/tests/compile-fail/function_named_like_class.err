@@ -1,9 +1,0 @@
-error: `A` is already a class
- --> function_named_like_class.sisu:3:4
-  |
-1 | class A {}
-  |       - first defined here
-2 |
-3 | fn A() {}
-  |    ^
-

@@ -1,0 +1,27 @@
+error[E0034]: field `x` is defined twice
+ --> E0034-members.sisu:3:5
+  |
+2 |     x: i64
+  |     - first defined here
+3 |     x: i64
+  |     ^
+
+error[E0034]: method `show` is defined twice
+ --> E0034-members.sisu:6:8
+  |
+5 |     fn show(self) {}
+  |        ---- first defined here
+6 |     fn show(self) {}
+  |        ^^^^
+
+error[E0034]: class `Point` is defined twice
+ --> E0034-members.sisu:9:7
+  |
+1 | class Point {
+  |       ----- first defined here
+...
+9 | class Point {
+  |       ^^^^^
+
+sisuc: 3 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0034

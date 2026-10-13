@@ -1,0 +1,8 @@
+error[E0011]: expected a function name, found end of file
+ --> E0011-eof.sisu:5:3
+  |
+5 | fn
+  |   ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011

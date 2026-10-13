@@ -1,0 +1,14 @@
+error[E0030]: cannot find type `bol`
+ --> E0030-builtin.sisu:2:16
+  |
+2 |     let ready: bol = true
+  |                ^^^
+  |
+  = help: the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`
+help: a type with a similar name exists: `bool`
+  |
+2 |     let ready: bool = true
+  |                  +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0030

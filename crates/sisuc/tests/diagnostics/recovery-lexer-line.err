@@ -1,0 +1,13 @@
+error[E0010]: unexpected character `&`
+ --> recovery-lexer-line.sisu:2:15
+  |
+2 |     let a = 1 &
+  |               ^
+  |
+help: if you meant logical and, use `&&`
+  |
+2 |     let a = 1 &&
+  |                +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0010

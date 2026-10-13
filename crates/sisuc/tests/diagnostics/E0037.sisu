@@ -1,0 +1,7 @@
+fn show() {
+    return 5
+}
+
+fn main() {
+    show()
+}

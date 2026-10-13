@@ -52,7 +52,7 @@ The end-to-end cases are files. The `cases` test binary runs one test per
 | --- | --- | --- |
 | `run/` | exit 0 with empty stderr, in a plain and an `-O2` build, both also under Valgrind, and in a `--rc-checks` build | `<name>.out`: stdout |
 | `run-fail/` | panic with exit code 101, the same in a plain and an `-O2` build | `<name>.out`: stdout; `<name>.err`: stderr |
-| `compile-fail/` | fail `sisuc --check` with exit code 1 | `<name>.err`: the diagnostics |
+| `diagnostics/` | report diagnostics under `sisuc --check`, exiting 1 if one is an error and 0 if all are warnings; a case named `<CODE>.sisu` or `<CODE>-<case>.sisu` reports that code | `<name>.err`: the diagnostics; `<name>.json`: the same under `--format json` |
 
 To add a case, write the `.sisu` file and an empty expected file beside it,
 then fill the expected file with `SISU_BLESS=1`. Read what it wrote before
@@ -65,7 +65,7 @@ $ SISU_BLESS=1 cargo nextest run -E 'binary(cases)'
 
 `SISU_BLESS=1` rewrites the expected files of cases that pass every other
 check, and only those. It never creates a file. Any other file in these
-directories fails the run: a `.out` or `.err` without its `.sisu`, an
+directories fails the run: a `.out`, `.err` or `.json` without its `.sisu`, an
 expected file that the directory's mode does not read, or a hidden file.
 
 A `run/` case whose output depends on a value crossing a real call says so
@@ -136,11 +136,14 @@ fn main() {
 
 ```console
 $ target/debug/sisuc bad.sisu bad
-error: expected `bool`, found `i64`
+error[E0032]: expected `bool`, found `i64`
  --> bad.sisu:2:19
   |
 2 |     let x: bool = 1
   |                   ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032
 ```
 
 When a compiled program fails at runtime, for example by dividing by zero,
@@ -185,9 +188,15 @@ These flags run the pipeline up to one stage and stop there.
 | `sisuc -O2 --emit ir file.sisu` | The LLVM IR, before and after LLVM's `default<O2>` pipeline |
 | `sisuc --emit ir-raw file.sisu` | The LLVM IR before any pass, as one module that LLVM's `opt` reads |
 | `sisuc --check file.sisu` | Only diagnostics; exits with code 1 if any is an error |
+| `sisuc --explain E0001` | The explanation of a diagnostic code, in any case; unknown codes exit with code 1 |
 
-`-O2` must come first. It also works when building an executable:
-`sisuc -O2 file.sisu out`.
+`--format json` writes diagnostics, tool errors and a closing summary to
+stderr as JSON Lines. It must be the first argument, and `--explain` does not
+take it. [Diagnostic codes](diagnostics/README.md#json-output) describes the
+objects.
+
+`-O2` must come first, or right after `--format`. It also works when building
+an executable: `sisuc -O2 file.sisu out`.
 
 `sisuc --rc-checks file.sisu out` builds an executable that checks its
 reference counts. Before each retain or release, it checks that the count is
@@ -197,12 +206,40 @@ with code 102. `--rc-checks` comes after `-O2`, if both are given, and works
 only when building an executable. A use after free often goes unseen: the
 freed memory may still hold a count of 1 or more. Valgrind finds those.
 
+## Add a diagnostic code
+
+Every code ships complete in one change. A new code takes the next free
+number in its series, `E` for errors and `W` for warnings.
+
+1. Write `docs/diagnostics/<CODE>.md` in the shape that
+   [the README](diagnostics/README.md#explanations) describes, and add its
+   row to the README table. The `codes!` table `include_str!`s the file, so
+   the crate does not build without it.
+2. In `crates/sisuc/src/diagnostic/registry.rs`, add a row to the `codes!`
+   table, which is where the number is chosen. Add a `DiagnosticKind` variant
+   and its arms in `DiagnosticKind::code` and `From<DiagnosticKind> for
+   Diagnostic`, with the message, labels, help and fixes. A fix is `certain`
+   only when applying it always removes the diagnostic and leaves source that
+   lexes and parses. An idiom fix is certain only if the edited source also
+   checks cleanly. When in doubt, it is a guess.
+3. Report the variant from the lexer, parser or checker.
+4. Add the fixture `crates/sisuc/tests/diagnostics/<CODE>.sisu`, and a
+   `<CODE>-<case>.sisu` for each other shape. Create the `.err` and `.json`
+   files empty, then fill them with `SISU_BLESS=1` as above and read them.
+5. Add unit tests that assert the code and its `(line, col)`. A certain fix
+   also gets a test that applies it to an input other than the explanation's
+   example and checks that the code is gone.
+
+The tests in `diagnostic/explanations.rs` fail when a code lacks its
+explanation, its README row or its fixture, or when a Broken program does not
+report exactly its code.
+
 ## Repository layout
 
 | Path | What it is |
 | --- | --- |
 | `crates/sisuc` | The compiler: lexer, parser, checker, codegen and linking. |
-| `crates/sisuc/tests/run`, `run-fail`, `compile-fail` | End-to-end cases, each with the output it must print. |
+| `crates/sisuc/tests/run`, `run-fail`, `diagnostics` | End-to-end cases, each with the output it must print. |
 | `crates/sisuc/tests/programs` | The programs the small-stack tests run. |
 | `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
 | `scripts` | `install-llvm.sh`, `mutants.sh`, and `check-expect-messages.sh`, which a prek hook runs. |

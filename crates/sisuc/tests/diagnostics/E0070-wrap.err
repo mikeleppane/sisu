@@ -1,0 +1,14 @@
+error[E0070]: `sum` is a method of arrays, not a function
+ --> E0070-wrap.sisu:2:5
+  |
+2 |     sum(m ?? [0])
+  |     ^^^
+  |
+help: call `sum` as a method
+  |
+2 -     sum(m ?? [0])
+2 +     (m ?? [0]).sum()
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0070

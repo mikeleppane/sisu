@@ -1,9 +1,9 @@
 //! Assignment: places, which root may be written, the temps of compound operators, and spills.
 
 use super::expr::{literal_type, local, operator};
-use super::{BindingKind, Checker, Poisoned, UNKNOWN, block_expr, not_found, type_of};
+use super::{BindingKind, Checker, Poisoned, UNKNOWN, block_expr, type_of};
 use crate::ast;
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{DiagnosticKind, Immutable, Span};
 use crate::tir::{self, ExprKind, Type};
 
 /// A place, flattened. `operands` are its own operands in evaluation order: a field root's
@@ -136,42 +136,40 @@ impl Checker {
         match &target.kind {
             ast::ExprKind::Name(name) => {
                 let Some(b) = self.lookup(name) else {
-                    let d = if self.function_ids.contains_key(name) {
-                        Diagnostic::error(
-                            target.span,
-                            format!("`{name}` is a function, not a variable"),
-                        )
+                    if self.function_ids.contains_key(name) {
+                        self.report(DiagnosticKind::AssignToFunction {
+                            name: name.clone(),
+                            at: target.span,
+                        });
                     } else {
-                        not_found(name, target.span)
-                    };
-                    self.diagnostics.push(d);
+                        let d = self.not_found(name, target.span);
+                        self.diagnostics.push(d);
+                        // The name may have meant any open binding; none of them warns as
+                        // unassigned.
+                        for b in self.scopes.iter_mut().flat_map(|scope| scope.values_mut()) {
+                            b.reassigned = true;
+                        }
+                    }
                     return CheckedPlace::failed();
                 };
                 b.reassigned |= b.kind == BindingKind::Var;
                 let (local, ty, kind, declared) = (b.local, b.ty.clone(), b.kind, b.span);
-                let d = cannot_assign(span, name, element);
-                let d = match kind {
+                let cause = match kind {
                     BindingKind::Var => None,
-                    BindingKind::Let => Some(
-                        if element {
-                            d
-                        } else {
-                            d.label("cannot assign twice")
-                        }
-                        .secondary(declared, "declared with `let` here")
-                        .help("declare it with `let mut`"),
-                    ),
-                    BindingKind::Param => Some(
-                        d.secondary(declared, "declared as a parameter here")
-                            .help(format!(
-                                "copy it into a variable: `let mut {name} = {name}`"
-                            )),
-                    ),
+                    BindingKind::Let => Some(Immutable::Let { declared }),
+                    BindingKind::Param => Some(Immutable::Param { declared }),
                     BindingKind::Unwrapped(keyword) => {
-                        Some(d.secondary(declared, format!("bound by `{keyword}` here")))
+                        Some(Immutable::Unwrapped { keyword, declared })
                     }
                 };
-                self.diagnostics.extend(d);
+                if let Some(cause) = cause {
+                    self.report(DiagnosticKind::AssignToImmutable {
+                        name: name.clone(),
+                        at: span,
+                        element,
+                        cause,
+                    });
+                }
                 CheckedPlace {
                     path: Some(Path {
                         root: Root::Local(local),
@@ -182,17 +180,24 @@ impl Checker {
                 }
             }
             ast::ExprKind::Field { base, name, .. } => {
+                // A `?.` anywhere in the target's chain would not parse.
+                let outer = std::mem::replace(&mut self.in_target, true);
                 let checked = self.value(base, None);
-                let Some((class, index)) = self.find_field(type_of(&checked), base, name) else {
+                self.in_target = outer;
+                let Some((class, index)) = self.find_field(type_of(&checked), base, name, true)
+                else {
                     return CheckedPlace::failed();
                 };
                 let field = &self.classes[class.0].fields[index];
                 let (ty, writable) = (field.ty.clone(), field.mutable);
                 if !writable {
-                    let d = cannot_assign(span, &field.name.name, element)
-                        .secondary(field.name.span, "declared without `mut` here")
-                        .help("mark the field `mut`");
-                    self.diagnostics.push(d);
+                    let (name, declared) = (field.name.name.clone(), field.name.span);
+                    self.report(DiagnosticKind::AssignToImmutable {
+                        name,
+                        at: span,
+                        element,
+                        cause: Immutable::Field { declared },
+                    });
                 }
                 CheckedPlace {
                     path: checked.ok().map(|base| Path {
@@ -299,11 +304,4 @@ fn build(root: Root, operands: Vec<tir::Expr>) -> tir::Place {
         };
     }
     place
-}
-
-/// "cannot assign to `name`", or "cannot assign to an element of `name`" for an `element`
-/// write, at `span`.
-fn cannot_assign(span: Span, name: &str, element: bool) -> Diagnostic {
-    let what = if element { "an element of " } else { "" };
-    Diagnostic::error(span, format!("cannot assign to {what}`{name}`"))
 }

@@ -20,17 +20,28 @@ the terms.
 **Driver** (`crates/sisuc/src/main.rs`). Reads the command line, runs the
 stages in order and prints diagnostics. The `--emit` and `--check` flags stop
 the pipeline early, as [Developing Sisu](development.md#look-inside-the-compiler)
-lists.
+lists. `--format json` switches the diagnostics to JSON Lines, and
+`--explain <code>` prints the explanation of a code and runs no stage.
 
 **Lexer** (`lexer.rs`). Turns source text into tokens. A line break that can
 end a statement becomes a `Newline` token, because statements end at
 newlines, not semicolons
-([ADR 0001](adr/0001-newline-terminated-statements.md)). The lexer stops at
-the first error.
+([ADR 0001](adr/0001-newline-terminated-statements.md)). After most errors
+the lexer skips the bad text and goes on, so it records every one of them,
+and the parser keeps the earliest per item. A bracket that is unclosed or does
+not match is the exception: the run then reports one diagnostic and the parser
+and checker do not run.
 
 **Parser** (`parser.rs`, `ast.rs`). Turns tokens into a syntax tree, the AST.
-It also stops at the first error, and it rejects a program that nests deeper
-than 256 levels, because every later stage walks the tree recursively.
+It reports one error per broken item, then resumes at the next item. The
+intact items go on to the checker, and a broken item keeps its name, so a use
+of it is not reported as missing. It rejects an item that nests deeper than
+256 levels, because every later stage walks the tree recursively.
+
+**Front end** (`front_end.rs`). Runs the lexer, parser, checker and last-use
+pass in order and returns the program and every diagnostic, in position
+order: the checker's are merged in by position. The checker runs only when
+every item has a name.
 
 **Checker** (`check/`, `tir.rs`). Resolves every name, types every expression
 and lowers sugar: `while`, `while let` and `for` become loops, `?.` and `??`
@@ -87,9 +98,17 @@ the blocks that are allocated and not yet freed. A program built with
 `sisu_rc_check_exit` at a normal exit, which fails when that number is not
 zero. Both exit with code 102.
 
-**Diagnostics** (`diagnostic.rs`). The lexer, parser and checker report
-problems as diagnostics, rendered in the style of `rustc`: the message, the
-`file:line:col`, and the source line with the code underlined.
+**Diagnostics** (`diagnostic/`, `report.rs`). The lexer, parser and checker
+report problems as diagnostics. `diagnostic/registry.rs` holds the code table
+and every message, label, help and fix: a stage builds a `DiagnosticKind`, and
+the registry turns it into a `Diagnostic` with a stable code
+([ADR 0012](adr/0012-diagnostics-have-stable-codes.md)). `diagnostic/render.rs`
+writes it in the style of `rustc`: the message, the `file:line:col`, and the
+source line with the code underlined. `diagnostic/json.rs` writes the same
+diagnostic as one JSON line, and `diagnostic/suggest.rs` finds the closest
+name for a did-you-mean fix. `report.rs` writes diagnostics and tool errors
+as text or JSON, counts them and ends with the summary. The explanations in
+[`docs/diagnostics`](diagnostics/README.md) are what `--explain` prints.
 
 ## Updating the diagram
 
@@ -100,7 +119,8 @@ change to the pipeline:
 
 1. Edit the JSON.
 2. From `docs/architecture`, render it with archify's command-line tool,
-   where `<archify>` is your archify checkout:
+   where `<archify>` is your archify checkout, or the directory of the
+   `archify` agent skill when it is installed:
    `node <archify>/bin/archify.mjs finalize architecture sisu-pipeline.json
    sisu-pipeline.html --quality showcase`. The HTML lands next to the JSON.
 3. Open the HTML, and save **Export → SVG · Light** and **Export → SVG ·

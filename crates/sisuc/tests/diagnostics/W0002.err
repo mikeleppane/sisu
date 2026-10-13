@@ -1,0 +1,14 @@
+warning[W0002]: `steps` is never reassigned
+ --> W0002.sisu:2:13
+  |
+2 |     let mut steps = 4
+  |             ^^^^^
+  |
+help: declare it with `let`
+  |
+2 -     let mut steps = 4
+2 +     let steps = 4
+  |
+
+sisuc: 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: W0002

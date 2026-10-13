@@ -1,0 +1,7 @@
+class Counter {
+    let mut n = 0
+}
+
+fn main() {
+    print(1)
+}

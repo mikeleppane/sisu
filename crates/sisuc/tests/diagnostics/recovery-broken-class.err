@@ -1,0 +1,20 @@
+error[E0011]: expected `:`, found `i64`
+ --> recovery-broken-class.sisu:2:11
+  |
+2 |     value i64
+  |           ^^^
+
+error[E0011]: expected a binding name, found `=`
+  --> recovery-broken-class.sisu:12:13
+   |
+12 |         let = by
+   |             ^
+
+error[E0033]: cannot find binding `nope`
+  --> recovery-broken-class.sisu:20:12
+   |
+20 |     c.bump(nope)
+   |            ^^^^
+
+sisuc: 3 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011, E0033

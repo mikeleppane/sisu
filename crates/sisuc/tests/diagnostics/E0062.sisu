@@ -1,0 +1,12 @@
+class Node {
+    value: i64
+    next: Node?
+}
+
+fn second(n: Node) -> i64 {
+    n.next.value
+}
+
+fn main() {
+    print(second(Node(value: 1, next: Node(value: 2, next: None))))
+}

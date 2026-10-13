@@ -1,0 +1,7 @@
+class Bucket {
+    size: i64
+}
+
+fn fill(b: Bukcet) {}
+
+fn main() {}

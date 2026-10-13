@@ -1,0 +1,8 @@
+error[E0004]: `{` must be on the same line as `fn`, `class`, `if`, `else`, `while` or `for`
+ --> E0004-let.sisu:3:5
+  |
+3 |     {
+  |     ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0004

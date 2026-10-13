@@ -1,0 +1,7 @@
+fn total(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+fn main() {
+    print(totl(1, 2))
+}

@@ -1,0 +1,11 @@
+class Node {
+    next: Node?
+}
+
+fn make() -> Node? {
+    None
+}
+
+fn main() {
+    print(make() is None)
+}

@@ -1,0 +1,11 @@
+class Counter {
+    mut n: i64
+
+    fn bump(mut self: i64) {
+        self.n += 1
+    }
+}
+
+fn main() {
+    print(1)
+}

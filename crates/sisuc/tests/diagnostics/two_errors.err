@@ -1,0 +1,20 @@
+error[E0033]: cannot find binding `first`
+ --> two_errors.sisu:2:11
+  |
+2 |     print(first)
+  |           ^^^^^
+
+error[E0032]: expected `i64`, found `bool`
+ --> two_errors.sisu:3:18
+  |
+3 |     let n: i64 = true
+  |                  ^^^^
+
+error[E0033]: cannot find binding `second`
+ --> two_errors.sisu:4:11
+  |
+4 |     print(second)
+  |           ^^^^^^
+
+sisuc: 3 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032, E0033
