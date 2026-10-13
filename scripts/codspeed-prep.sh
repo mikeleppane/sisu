@@ -58,6 +58,7 @@ SISU
     printf '\nfn main() {\n    print(f%d(0))\n}\n' $((sections - 1))
 } >"$out/large/main.sisu"
 
+false # drill A
 # Reads codspeed.yml strictly: a "benchmarks:" line, then per entry the lines
 # "  - name: X", "    id: X" (same X) and "    exec: plain words", in that
 # order. Anything else fails, so no entry can escape the check below.
