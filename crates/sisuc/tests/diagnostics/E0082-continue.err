@@ -1,6 +1,8 @@
 error[E0082]: `continue` cannot appear in a loop header
  --> E0082-continue.sisu:3:9
   |
+2 |     for x in {
+  |     --- the header of this loop
 3 |         continue
   |         ^^^^^^^^
 

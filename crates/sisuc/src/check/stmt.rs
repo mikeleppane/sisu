@@ -124,7 +124,8 @@ impl Checker {
                 })
             }
             StmtKind::While { cond, body } => {
-                let cond = self.in_loop(LoopContext::Header, |c| c.expect(cond, Some(&Type::Bool)));
+                let header = LoopContext::Header(keyword_span(stmt.span, "while"));
+                let cond = self.in_loop(header, |c| c.expect(cond, Some(&Type::Bool)));
                 let body = self.in_loop(LoopContext::Body, |c| c.block(body, None));
                 let (Ok(cond), Ok(body)) = (cond, body) else {
                     return Err(unit());
@@ -140,9 +141,9 @@ impl Checker {
                 )))
             }
             StmtKind::WhileLet { name, value, body } => {
-                let (scrutinee, bound, _) = self.in_loop(LoopContext::Header, |c| {
-                    c.unwrapped(Unwrap::WhileLet, value)
-                });
+                let header = LoopContext::Header(keyword_span(stmt.span, "while"));
+                let (scrutinee, bound, _) =
+                    self.in_loop(header, |c| c.unwrapped(Unwrap::WhileLet, value));
                 let (bind, body) = self.in_loop(LoopContext::Body, |c| {
                     c.unwrapping_block("while let", name, bound, body, None)
                 });
@@ -183,7 +184,8 @@ impl Checker {
         body: &ast::Block,
     ) -> Result<tir::Stmt, Poisoned> {
         let expr = |kind, ty| tir::Expr { kind, ty, span };
-        let (header, bound) = self.in_loop(LoopContext::Header, |c| match source {
+        let context = LoopContext::Header(keyword_span(span, "for"));
+        let (header, bound) = self.in_loop(context, |c| match source {
             ast::ForSource::Array(e) => c.for_array(span, e),
             ast::ForSource::Range { start, end } => c.for_range(span, start, end),
         });
@@ -379,8 +381,12 @@ impl Checker {
     ) -> Result<tir::Stmt, Poisoned> {
         match self.loops.last() {
             Some(LoopContext::Body) => {}
-            Some(LoopContext::Header) => {
-                self.report(DiagnosticKind::JumpInLoopHeader { keyword, at: span });
+            Some(&LoopContext::Header(loop_at)) => {
+                self.report(DiagnosticKind::JumpInLoopHeader {
+                    keyword,
+                    at: span,
+                    loop_at,
+                });
                 return Err(Poisoned::error());
             }
             None => {
@@ -582,4 +588,9 @@ fn lower_loop(
         ty,
     };
     expr(ExprKind::Loop(looped), Type::Unit)
+}
+
+/// The `keyword` that starts a loop statement at `span`.
+fn keyword_span(span: Span, keyword: &str) -> Span {
+    Span::new(span.start, span.start + keyword.len())
 }

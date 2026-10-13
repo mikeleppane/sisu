@@ -617,6 +617,16 @@ fn block_joins_never() {
 }
 
 #[test]
+fn block_ending_in_never() {
+    // A `never` block has no value to bind, as an `if` whose branches both return has none.
+    for init in ["{ return 1 }", "if c { return 1 } else { return 2 }"] {
+        let src =
+            format!("fn f(c: bool) -> i64 {{\n    let x: i64 = {init}\n    x\n}}\nfn main() {{}}");
+        codes(&src, &[(Code::NoValue, (2, 18))]);
+    }
+}
+
+#[test]
 fn break_in_header() {
     for (src, pos) in [
         ("fn main() {\n    while { break } { }\n}", (2, 13)),
@@ -625,8 +635,42 @@ fn break_in_header() {
             (3, 20),
         ),
         ("fn main() {\n    while let x = { break } { }\n}", (2, 21)),
+        ("fn main() {\n    for x in { break\n [1] } { }\n}", (2, 16)),
+        ("fn main() {\n    while { continue\n true } { }\n}", (2, 13)),
     ] {
         codes(src, &[(Code::JumpInLoopHeader, pos)]);
+    }
+}
+
+#[test]
+fn break_in_header_points_at_the_loop() {
+    // Each row: source, the keyword's position and text, the loop keyword's position and text.
+    for (src, jump, lp) in [
+        (
+            "fn main() {\n    while { break } { }\n}",
+            (2, 13, "break"),
+            (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    while let x = { break } { }\n}",
+            (2, 21, "break"),
+            (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    for x in { continue\n [1] } { }\n}",
+            (2, 16, "continue"),
+            (2, 5, "for"),
+        ),
+        // The inner loop is the one whose header holds the jump.
+        (
+            "fn main() {\n    while true {\n        for x in { continue\n [1] } { }\n    }\n}",
+            (3, 20, "continue"),
+            (3, 9, "for"),
+        ),
+    ] {
+        let d = diagnostic(src, Code::JumpInLoopHeader, jump, &[(lp.0, lp.1)]);
+        let span = d.secondary()[0].0;
+        assert_eq!(&src[span.start..span.end], lp.2, "{src}");
     }
 }
 

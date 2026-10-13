@@ -25,6 +25,14 @@ fn main() {
         a += 1
     }
     print(pairs)
+    let mut k = 0
+    let mut t = 0
+    while k < 5 {
+        k += 1
+        let v = if k == 2 { continue } else { k }
+        t += v
+    }
+    print(t)
     let mut x = 0
     let mut s = 0
     while x < 4 {

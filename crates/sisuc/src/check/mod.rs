@@ -118,8 +118,9 @@ struct Binding {
 enum LoopContext {
     /// The body, where `break` and `continue` act on the loop.
     Body,
-    /// A `while` condition or a `for` source, which is not part of the body.
-    Header,
+    /// A `while` condition or a `for` source, which is not part of the body. The span is the
+    /// loop's keyword.
+    Header(Span),
 }
 
 struct Checker {

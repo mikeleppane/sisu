@@ -451,8 +451,13 @@ pub(crate) enum DiagnosticKind {
     UnderscoreName { at: Span },
     /// The `{` at `at`, which starts a statement.
     BlockAsStatement { at: Span },
-    /// A `break` or `continue` (`keyword`) at `at`, in the header of a loop.
-    JumpInLoopHeader { keyword: &'static str, at: Span },
+    /// A `break` or `continue` (`keyword`) at `at`, in the header of the loop whose keyword is at
+    /// `loop_at`.
+    JumpInLoopHeader {
+        keyword: &'static str,
+        at: Span,
+        loop_at: Span,
+    },
 }
 
 /// A literal that takes its type from its position.
@@ -1346,8 +1351,9 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "a block cannot stand alone as a statement")
                     .with_help("bind its value: `let x = { ... }`")
             }
-            DiagnosticKind::JumpInLoopHeader { keyword, at } => {
+            DiagnosticKind::JumpInLoopHeader { keyword, at, loop_at } => {
                 Diagnostic::coded(code, at, format!("`{keyword}` cannot appear in a loop header"))
+                    .with_secondary(loop_at, "the header of this loop")
             }
         }
     }
