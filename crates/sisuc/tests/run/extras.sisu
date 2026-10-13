@@ -1,0 +1,22 @@
+// Milestone 4 extras. `_` patterns: `for _` runs the body without a name, and `let _ = e`
+// evaluates `e` and releases it at once; Valgrind proves the array from `make` is freed.
+fn make() -> [i64] {
+    print(7)                          // 7
+    [1, 2]
+}
+
+fn main() {
+    for _ in 0..3 {
+        print(1)                      // 1, three times
+    }
+    print(10)                         // 10
+    let xs = [5, 6]
+    for _ in xs {
+        print(2)                      // 2, twice
+    }
+    print(20)                         // 20
+    let _ = make()                    // 7
+    print(30)                         // 30
+    let _: [i64] = make()             // 7
+    print(40)                         // 40
+}

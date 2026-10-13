@@ -240,6 +240,28 @@ impl Parser<'_> {
         }
     }
 
+    /// An `ident` that names a function, class, field or parameter, where `_` is an error.
+    fn name(&mut self, what: &str) -> Result<Ident, Diagnostic> {
+        if self.at(&TokenKind::Underscore) {
+            return Err(DiagnosticKind::UnderscoreName {
+                at: self.peek().span,
+            }
+            .into());
+        }
+        self.ident(what)
+    }
+
+    /// The name a `let` or `for` binds, which may be `_`.
+    fn binding(&mut self) -> Result<Ident, Diagnostic> {
+        if self.at(&TokenKind::Underscore) {
+            return Ok(Ident {
+                name: "_".to_string(),
+                span: self.bump().span,
+            });
+        }
+        self.ident("a binding name")
+    }
+
     /// The only place that reads a type; later milestones extend it.
     fn parse_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.descend()?;
@@ -528,7 +550,7 @@ impl Parser<'_> {
         methods: &mut Vec<Range<usize>>,
     ) -> Result<Class, Diagnostic> {
         self.expect(&TokenKind::Class)?;
-        let name = self.ident("a class name")?;
+        let name = self.name("a class name")?;
         self.expect(&TokenKind::LBrace)?;
         let mut members = Vec::new();
         let mut broken_methods = Vec::new();
@@ -578,9 +600,9 @@ impl Parser<'_> {
 
     fn member(&mut self) -> Result<Member, Diagnostic> {
         match self.peek().kind {
-            TokenKind::Ident(_) | TokenKind::Mut => {
+            TokenKind::Ident(_) | TokenKind::Underscore | TokenKind::Mut => {
                 let mutable = self.eat(&TokenKind::Mut).is_some();
-                let name = self.ident("a field name")?;
+                let name = self.name("a field name")?;
                 self.expect(&TokenKind::Colon)?;
                 Ok(Member::Field(FieldDecl {
                     mutable,
@@ -646,7 +668,7 @@ impl Parser<'_> {
     /// `method` is true inside a class body, where `self` may be the first parameter.
     fn function(&mut self, method: bool) -> Result<Function, Diagnostic> {
         let fn_token = self.expect(&TokenKind::Fn)?;
-        let name = self.ident("a function name")?;
+        let name = self.name("a function name")?;
         self.expect(&TokenKind::LParen)?;
         let mut self_param = None;
         let mut params = Vec::new();
@@ -692,7 +714,7 @@ impl Parser<'_> {
                     }
                     continue;
                 }
-                let name = self.ident("a parameter name")?;
+                let name = self.name("a parameter name")?;
                 self.expect(&TokenKind::Colon)?;
                 let ty = self.parse_type()?;
                 self.depth = 0;
@@ -768,7 +790,7 @@ impl Parser<'_> {
             }
             TokenKind::For => {
                 self.bump();
-                let name = self.ident("a binding name")?;
+                let name = self.binding()?;
                 self.expect(&TokenKind::In)?;
                 // A range is only valid here, so the header reads its two sides itself, counted
                 // like `expr` does.
@@ -881,7 +903,7 @@ impl Parser<'_> {
         let mut reach = base;
         self.bump();
         let mutable = self.eat(&TokenKind::Mut).map(|t| t.span);
-        let name = self.ident("a binding name")?;
+        let name = self.binding()?;
         let ty = match self.eat(&TokenKind::Colon) {
             Some(_) => Some(self.child(base, &mut reach, Self::parse_type)?),
             None => None,
@@ -889,6 +911,16 @@ impl Parser<'_> {
         self.expect(&TokenKind::Eq)?;
         let init = self.child(base, &mut reach, Self::expr)?;
         self.depth = reach;
+        // Reported last, so that the fix leaves a `let` that parses.
+        if let Some(keyword) = mutable
+            && name.name == "_"
+        {
+            return Err(DiagnosticKind::MutOnUnderscore {
+                at: name.span,
+                keyword,
+            }
+            .into());
+        }
         Ok(StmtKind::Let {
             mutable,
             name,
@@ -899,6 +931,9 @@ impl Parser<'_> {
 
     /// An expression statement, or an assignment when an assignment operator follows.
     fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
+        if self.at(&TokenKind::Underscore) {
+            return Err(self.underscore_statement());
+        }
         let base = self.depth;
         let mut reach = base;
         let target = self.child(base, &mut reach, Self::expr)?;
@@ -927,6 +962,20 @@ impl Parser<'_> {
             None => StmtKind::Assign { target, value },
             Some(op) => StmtKind::CompoundAssign { op, target, value },
         })
+    }
+
+    /// The error of a statement that starts with `_`. A plain `_ = e` whose value parses and ends
+    /// the line gets the fix `let _ = e`; a value that fails to parse reports its own error.
+    fn underscore_statement(&mut self) -> Diagnostic {
+        let at = self.bump().span;
+        let mut bind = false;
+        if self.eat(&TokenKind::Eq).is_some() {
+            if let Err(error) = self.expr() {
+                return error;
+            }
+            bind = matches!(self.peek().kind, TokenKind::Newline | TokenKind::RBrace);
+        }
+        DiagnosticKind::UnderscoreValue { at, bind }.into()
     }
 
     fn expr(&mut self) -> Result<Expr, Diagnostic> {
@@ -1228,6 +1277,13 @@ impl Parser<'_> {
                 return self.array(token.span);
             }
             TokenKind::If => return self.if_expr(),
+            TokenKind::Underscore => {
+                return Err(DiagnosticKind::UnderscoreValue {
+                    at: token.span,
+                    bind: false,
+                }
+                .into());
+            }
             _ => return Err(self.expected("an expression")),
         };
         Ok(Expr {
@@ -1813,6 +1869,86 @@ mod tests {
         for src in ["1 + 2 = 3", "f()[0] = 1"] {
             assert_eq!(expr_err(src), (Code::AssignToExpression, 1, 13), "{src}");
         }
+    }
+
+    #[test]
+    fn underscore_errors() {
+        for (src, code, line, col) in [
+            (
+                "fn main() {\n    let mut _ = 1\n}",
+                Code::MutOnUnderscore,
+                2,
+                13,
+            ),
+            ("fn main() {\n    print(_)\n}", Code::UnderscoreValue, 2, 11),
+            ("fn main() {\n    _ = f()\n}", Code::UnderscoreValue, 2, 5),
+            ("fn main() {\n    _ += 1\n}", Code::UnderscoreValue, 2, 5),
+            ("fn _() {}", Code::UnderscoreName, 1, 4),
+            ("class _ {}", Code::UnderscoreName, 1, 7),
+            ("class C {\n    _: i64\n}", Code::UnderscoreName, 2, 5),
+            ("class C {\n    mut _: i64\n}", Code::UnderscoreName, 2, 9),
+            ("fn f(_: i64) {}", Code::UnderscoreName, 1, 6),
+            ("fn f(a: i64, _: i64) {}", Code::UnderscoreName, 1, 14),
+        ] {
+            assert_eq!(parse_err(src), (code, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn underscore_binds_after_let_and_for() {
+        for src in [
+            "fn main() { let _ = 1 }",
+            "fn main() { let _: i64 = 1 }",
+            "fn main() { for _ in 0..3 {} }",
+            "fn main() { for _ in xs {} }",
+        ] {
+            assert!(parsed(src).diagnostics.is_empty(), "{src}");
+        }
+    }
+
+    #[test]
+    fn mut_on_underscore_fix_leaves_a_let_that_parses() {
+        for (src, want) in [
+            ("fn main() { let mut _ = 1 }", "fn main() { let _ = 1 }"),
+            (
+                "fn main() { let mut _: i64 = 1 }",
+                "fn main() { let _: i64 = 1 }",
+            ),
+        ] {
+            let fixed = fixed(src);
+            assert_eq!(fixed, want);
+            assert!(parsed(&fixed).diagnostics.is_empty(), "{fixed}");
+        }
+        // A `let` that does not parse reports its own error first, and offers no fix.
+        assert_eq!(
+            parse_err("fn main() { let mut _ }"),
+            (Code::Expected, 1, 23)
+        );
+    }
+
+    #[test]
+    fn assigning_to_underscore_offers_let_only_when_the_value_parses() {
+        for (src, want) in [
+            ("fn main() { _ = f() }", "fn main() { let _ = f() }"),
+            ("fn main() {\n    _ = 1\n}", "fn main() {\n    let _ = 1\n}"),
+        ] {
+            let fixed = fixed(src);
+            assert_eq!(fixed, want);
+            assert!(parsed(&fixed).diagnostics.is_empty(), "{fixed}");
+        }
+        for src in [
+            "fn main() { _ += 1 }",
+            "fn main() { _[0] = 1 }",
+            "fn main() { _ == 1 }",
+            "fn main() { _ = 1; }",
+            "fn main() { _ = 1 2 }",
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::UnderscoreValue, "{src}");
+            assert!(fix_edits(&d).is_none(), "{src}");
+        }
+        // The value's own error comes first.
+        assert_eq!(parse_err("fn main() { _ = 1 + }"), (Code::Expected, 1, 21));
     }
 
     #[test]

@@ -117,6 +117,9 @@ codes! {
     BasePrefixUpperCase = "E0075",
     BasePrefixWithoutDigits = "E0076",
     DigitOutsideBase = "E0077",
+    MutOnUnderscore = "E0078",
+    UnderscoreValue = "E0079",
+    UnderscoreName = "E0080",
 }
 
 impl Code {
@@ -437,6 +440,13 @@ pub(crate) enum DiagnosticKind {
     AssignToSelf { at: Span },
     /// An assignment to `name`, at `at`, which is a function.
     AssignToFunction { name: String, at: Span },
+    /// A `let` that binds the `_` at `at` and has the `mut` at `keyword`.
+    MutOnUnderscore { at: Span, keyword: Span },
+    /// The `_` at `at` where a value belongs. `bind` is whether it starts the plain assignment
+    /// `_ = e`, which `let ` in front of it turns into a binding.
+    UnderscoreValue { at: Span, bind: bool },
+    /// The `_` at `at`, where a name belongs.
+    UnderscoreName { at: Span },
 }
 
 /// A literal that takes its type from its position.
@@ -635,6 +645,9 @@ impl DiagnosticKind {
             DiagnosticKind::InvalidUtf8 { .. } => Code::InvalidUtf8,
             DiagnosticKind::AssignToSelf { .. } => Code::AssignToSelf,
             DiagnosticKind::AssignToFunction { .. } => Code::AssignToFunction,
+            DiagnosticKind::MutOnUnderscore { .. } => Code::MutOnUnderscore,
+            DiagnosticKind::UnderscoreValue { .. } => Code::UnderscoreValue,
+            DiagnosticKind::UnderscoreName { .. } => Code::UnderscoreName,
         }
     }
 }
@@ -1290,6 +1303,36 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::AssignToFunction { name, at } => {
                 Diagnostic::coded(code, at, format!("`{name}` is a function, not a variable"))
+            }
+            DiagnosticKind::MutOnUnderscore { at, keyword } => {
+                Diagnostic::coded(code, at, "`_` binds nothing, so it cannot be `mut`").with_fix(
+                    Fix {
+                        message: "use `let _`".to_string(),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: Span::new(keyword.start, at.start),
+                            replacement: String::new(),
+                        }],
+                    },
+                )
+            }
+            DiagnosticKind::UnderscoreValue { at, bind } => {
+                let d = Diagnostic::coded(code, at, "`_` is not a value");
+                if bind {
+                    d.with_fix(Fix {
+                        message: "bind it with `let _`".to_string(),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: Span::new(at.start, at.start),
+                            replacement: "let ".to_string(),
+                        }],
+                    })
+                } else {
+                    d
+                }
+            }
+            DiagnosticKind::UnderscoreName { at } => {
+                Diagnostic::coded(code, at, "`_` cannot be a name")
             }
         }
     }

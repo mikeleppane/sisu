@@ -6,6 +6,7 @@ use crate::parser::parse_ok;
 
 mod arrays;
 mod for_loops;
+mod patterns;
 mod places;
 mod u8;
 

@@ -22,7 +22,7 @@ fn emit_tokens_names_the_class_and_optional_tokens() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(
         dir.join("emit_new_tokens.sisu"),
-        "class None is self . ? ?. ??",
+        "class None is self . ? ?. ?? _",
     )
     .expect("writes");
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
@@ -37,7 +37,7 @@ fn emit_tokens_names_the_class_and_optional_tokens() {
         .map(|l| l.split(' ').nth(1).expect("name column"))
         .collect();
     assert_eq!(
-        names[..8],
+        names[..9],
         [
             "Class",
             "NoneKw",
@@ -46,7 +46,8 @@ fn emit_tokens_names_the_class_and_optional_tokens() {
             "Dot",
             "Question",
             "QuestionDot",
-            "QuestionQuestion"
+            "QuestionQuestion",
+            "Underscore"
         ]
     );
 }

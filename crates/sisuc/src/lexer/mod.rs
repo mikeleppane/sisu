@@ -11,6 +11,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticKind, Join, LineIndex, Span};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
     Ident(String),
+    /// A lone `_`, which only `let` and `for` accept (`_x` and `x_` are names).
+    Underscore,
     /// An integer literal: its magnitude, at most `MIN_MAGNITUDE`, which only a unary `-`
     /// accepts, and its `text` as written.
     Int {
@@ -85,6 +87,7 @@ impl TokenKind {
     pub(crate) fn name(&self) -> &'static str {
         match self {
             TokenKind::Ident(_) => "Ident",
+            TokenKind::Underscore => "Underscore",
             TokenKind::Int { .. } => "Int",
             TokenKind::Fn => "Fn",
             TokenKind::Let => "Let",
@@ -150,6 +153,7 @@ impl TokenKind {
     pub(crate) fn describe(&self) -> String {
         let text = match self {
             TokenKind::Ident(name) => name.as_str(),
+            TokenKind::Underscore => "_",
             TokenKind::Int { text, .. } => return format!("`{text}`"),
             TokenKind::Fn => "fn",
             TokenKind::Let => "let",
@@ -424,12 +428,13 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 fn can_end_statement(token: Option<&Token>) -> bool {
     use TokenKind::{
         Break, Continue, False, Ident, Int, NoneKw, Question, RBrace, RBracket, RParen, Return,
-        SelfKw, True,
+        SelfKw, True, Underscore,
     };
     token.is_some_and(|t| {
         matches!(
             t.kind,
             Ident(_)
+                | Underscore
                 | Int { .. }
                 | True
                 | False
@@ -633,6 +638,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "self" => TokenKind::SelfKw,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
+        "_" => TokenKind::Underscore,
         _ => TokenKind::Ident(text.to_string()),
     }
 }
@@ -810,6 +816,15 @@ mod tests {
         assert_eq!(
             kinds("fn let mut var if else while return true false"),
             [Fn, Let, Mut, Var, If, Else, While, Return, True, False, Eof]
+        );
+    }
+
+    #[test]
+    fn underscore_token() {
+        use TokenKind::{Eof, Underscore};
+        assert_eq!(
+            kinds("_ _x x_"),
+            [Underscore, ident("_x"), ident("x_"), Eof]
         );
     }
 

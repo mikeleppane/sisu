@@ -86,6 +86,9 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0075](E0075.md) | error | base prefix in upper case |
 | [E0076](E0076.md) | error | base prefix without digits |
 | [E0077](E0077.md) | error | digit outside the literal's base |
+| [E0078](E0078.md) | error | `mut` on `_` |
+| [E0079](E0079.md) | error | `_` used as a value |
+| [E0080](E0080.md) | error | `_` used as a name |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 

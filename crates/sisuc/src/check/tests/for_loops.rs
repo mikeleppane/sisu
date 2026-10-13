@@ -125,3 +125,41 @@ fn bad_range_bound_still_checks_the_body() {
         &[(Code::BindingNotFound, (2, 14)), (Code::Mismatch, (2, 34))],
     );
 }
+
+/// `for _` lowers like the same loop over `i`, with the loop variable unnamed.
+#[test]
+fn for_underscore() {
+    for (with_name, with_underscore) in [
+        (
+            "fn main() { for i in 0..3 { print(1) } }",
+            "fn main() { for _ in 0..3 { print(1) } }",
+        ),
+        (
+            "fn main() { for i in [1, 2] { print(1) } }",
+            "fn main() { for _ in [1, 2] { print(1) } }",
+        ),
+    ] {
+        assert_eq!(
+            lowered(with_underscore),
+            lowered(with_name).replace("i#", "#")
+        );
+    }
+}
+
+#[test]
+fn for_underscore_declares_no_name() {
+    codes(
+        "fn main() {\n    for _ in 0..3 {\n        let _ = 1\n        for _ in 0..3 {}\n    }\n}",
+        &[],
+    );
+}
+
+#[test]
+fn for_underscore_still_checks_the_source() {
+    diagnostic(
+        "fn main() { for _ in 5 {} }",
+        Code::ForNeedsArray,
+        (1, 22, "5"),
+        &[],
+    );
+}

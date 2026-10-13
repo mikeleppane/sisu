@@ -35,9 +35,14 @@ impl Checker {
             // Nested blocks leave their flag set, so an enclosing statement sees it too.
             self.invalid_jump |= outer_jump;
             let stmt_ty = match checked {
-                Ok(stmt) => {
-                    let ty = stmt_type(&stmt);
-                    stmts.push(stmt);
+                Ok(lowered) => {
+                    // `let _ = e` lowers to an expression, but a `let` has no value.
+                    let ty = if matches!(stmt.kind, StmtKind::Let { .. }) {
+                        Type::Unit
+                    } else {
+                        stmt_type(&lowered)
+                    };
+                    stmts.push(lowered);
                     Some(ty)
                 }
                 Err(poisoned) => {
@@ -94,6 +99,11 @@ impl Checker {
                     Some(declared) => self.expect(init, declared.as_ref()),
                     None => self.value(init, None),
                 };
+                // `let _ = e` binds nothing: the value is an expression statement, which
+                // codegen releases at once.
+                if name.name == "_" {
+                    return init.map(tir::Stmt::Expr).map_err(|_| unit());
+                }
                 // The initializer's type, which a failed one keeps only while it is still
                 // known (`if` with one failed branch); an unknown declared type is `Error`.
                 let ty = match declared {
@@ -368,9 +378,9 @@ impl Checker {
         }))
     }
 
-    /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let` or
-    /// `while let`) binds it: the block cannot declare `name` again. The bound local, and the
-    /// block.
+    /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let`, `while let` or
+    /// `for`) binds it: the block cannot declare `name` again. The bound local, and the block.
+    /// A `for _` binds a fresh unnamed local and declares no name.
     pub(super) fn unwrapping_block(
         &mut self,
         keyword: &'static str,
@@ -380,7 +390,11 @@ impl Checker {
         expected: Option<&Type>,
     ) -> (tir::LocalId, CheckedBlock) {
         self.scopes.push(HashMap::new());
-        let bind = self.declare(name, ty, BindingKind::Unwrapped(keyword), None);
+        let bind = if name.name == "_" {
+            self.fresh(ty.unwrap_or(Type::Unit))
+        } else {
+            self.declare(name, ty, BindingKind::Unwrapped(keyword), None)
+        };
         (bind, self.scoped_block(block, expected))
     }
 
