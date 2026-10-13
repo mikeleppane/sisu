@@ -765,9 +765,6 @@ These do not make code nicer to write, so they wait:
 - Gleam's integer rules: on Erlang its `Int` has no size limit, and division
   by zero gives `0`. Sisu's fixed-size integers panic on overflow and on a
   zero divisor.
-- `async` and `await`. They split functions into two kinds, and a function of
-  one kind cannot call the other freely. They also need LLVM's coroutine
-  lowering and an executor in the runtime. Tasks keep one kind of function.
 - Mutable memory shared between tasks (ADR 0010).
 - A package registry, for a long time. A registry means hosting, security
   and name squatting. If dependencies come, path and Git dependencies come

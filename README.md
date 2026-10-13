@@ -7,41 +7,43 @@
 [![CI](https://github.com/mikeleppane/sisu/actions/workflows/ci.yml/badge.svg)](https://github.com/mikeleppane/sisu/actions/workflows/ci.yml)
 
 Sisu is a small, statically typed programming language that compiles to native
-x86-64 Linux code through LLVM. Sisu is Finnish for grit.
+x86-64 Linux code. Sisu is Finnish for grit.
 
-Sisu is a passion project: an attempt to build a language that reads like
-Python, checks like Rust and manages memory like Swift, and to build all of
-it, from source text to a running binary. The compiler, `sisuc`, is written in
-Rust and drives LLVM 22 through [inkwell](https://github.com/TheDan64/inkwell).
+Sisu takes its readable syntax from Python, its strict checks from Rust, and
+reference counting and optionals from Swift and Kotlin. Programs read top to
+bottom, the compiler catches mistakes before a program runs, and memory is
+freed without a garbage collector.
 
-## Status
+Types are checked at compile time and inferred for local variables. There is
+no null: a value that may be missing has an optional type such as `Tree?`, and
+the checker makes the program handle `None`.
 
-Sisu is very much under development. It has no releases, and any milestone may
-break programs that compiled before it. It runs on x86-64 Linux only.
-
-Milestones 1 to 3 are done: integers and booleans, classes and optionals, and
-arrays. Strings are next. The [roadmap](docs/roadmap.md) has the rest.
+Sisu is a passion project at an early stage. It cannot handle text yet, and any
+change may break programs that compiled before it. See [Status](#status).
 
 ## What Sisu values
 
-The goal is that people are productive in Sisu because things just work. Four
-values serve that goal, and when they conflict, this order settles it
-([ADR 0006](docs/adr/0006-values-correctness-simplicity-readability-performance.md)):
+The goal is that people are productive in Sisu. Four values serve that goal, in
+order of priority:
 
 1. **Correctness.** A program never gives a silent wrong answer. Failures are
-   loud and name the source line. Nothing changes behind the reader's back: no
-   hidden aliasing, no implicit conversions.
+   loud and name the source line. Nothing changes where the reader cannot see
+   it, and no value converts implicitly.
 2. **Simplicity.** Few concepts, rules without special cases, one obvious way
    to do a thing, and every effect visible where it happens.
 3. **Readability.** Little punctuation, code that reads top to bottom, and
    errors in plain words.
-4. **Performance.** Predictable and good enough, in the range of Swift and
-   Kotlin, and only from optimizations that do not change what a program
-   means.
+4. **Performance.** Sisu compiles directly to native code, and reference
+   counting keeps memory management predictable. Optimizations never change
+   what a program means.
 
 Simplicity ranks above readability because agents now write and read much of
-the code. Special cases and effects that happen elsewhere cause their mistakes,
-and a strict checker with plain-word errors lets them fix their own code.
+the code. Their mistakes come from special cases and effects that happen
+elsewhere, and a strict checker with plain-word errors lets them fix their own
+code.
+
+Sisu leaves out lifetimes and a borrow checker, inheritance and macros; the
+[roadmap](docs/roadmap.md#deliberately-avoided) says why.
 
 ## A taste of Sisu
 
@@ -74,8 +76,9 @@ fn main() {
 ```
 
 Arrays are values. Assigning one shares it until one side is written, so
-writing a copy never changes the original. `let mut` marks everything that can change,
-and comparisons chain as in mathematics.
+writing a copy never changes the original; class objects inside an array stay
+shared, as objects always are. `mut` marks everything that can change, and
+comparisons chain as in mathematics.
 
 ```rust
 fn main() {
@@ -90,8 +93,8 @@ fn main() {
 }
 ```
 
-Integer arithmetic panics on overflow and on division by zero instead of
-wrapping, and the panic names the line:
+Arithmetic never wraps silently. Overflow and division by zero stop the program
+and name the line:
 
 ```rust
 fn main() {
@@ -109,8 +112,9 @@ sisu: panic at overflow.sisu:4:11: integer overflow
 
 ## Errors that help
 
-The checker reports every error in one run. Each diagnostic has a stable code,
-points at the code, and offers a fix when it can:
+The checker reports independent errors in one run, without a cascade of
+follow-on errors. Each diagnostic has a stable code, points at the code, and
+offers a fix when it can:
 
 ```rust
 class Counter {
@@ -160,6 +164,16 @@ sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0052
 program. `sisuc --format json` writes the same diagnostics as JSON Lines for
 editors and agents, and marks each fix as certain or a guess.
 [Diagnostic codes](docs/diagnostics/README.md) lists every code.
+
+## Status
+
+Sisu has no releases and runs on x86-64 Linux only. Today it compiles
+functions, `i64`, `u8` and `bool`, classes with methods, optionals and arrays.
+Strings come next, then input and output, then floats. After that the
+[roadmap](docs/roadmap.md) proposes enums with `match`, generics, closures,
+records, modules with a standard library, and `Result` with `?`.
+
+The compiler, `sisuc`, is written in Rust and uses LLVM for code generation.
 
 ## Start here
 
