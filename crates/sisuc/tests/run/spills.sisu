@@ -6,6 +6,11 @@ fn join(a: string, b: string, c: bool) -> i64 {
     s.len()
 }
 
+fn interpolated(s: string, c: bool) -> i64 {
+    let t = "{s}{ if c { return 0 } else { 1 } }"
+    t.len()
+}
+
 fn f() -> string {
     print("f")                       // f
     "a" + ""
@@ -24,6 +29,8 @@ fn chain(a: string, b: string, c: bool) {
 fn main() {
     print(join("a" + "b", "c" + "d", false)) // 4
     print(join("a" + "b", "c" + "d", true)) // 0
+    print(interpolated("a" + "b", false)) // 3
+    print(interpolated("a" + "b", true)) // 0
     chain("0" + "", "z" + "", true)  // f
     // `"b" < f()` fails, so `g` never runs.
     print("b" < f() < g())           // f, then false

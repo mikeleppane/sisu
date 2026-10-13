@@ -20,4 +20,8 @@ fn main() {
     }
     print(z)                         // <NUL>, then a<NUL> ten times
     print(z.len())                   // 21
+    // Interpolation copies a string part by its length too.
+    let shown = "<{joined}>{1}"
+    print(shown)                     // <a<NUL>bä<NUL>c>1
+    print(shown.len())               // 10
 }

@@ -694,7 +694,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         same
     }
 
-    /// An operand of `==` or `is`.
+    /// An operand, or an argument, which the checker gives a value.
     fn operand(&mut self, e: &Expr) -> BasicValueEnum<'ctx> {
         self.expr(e)
             .expect("the checker should reject a `unit` or `never` operand, so it has a value")
@@ -718,6 +718,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
             ExprKind::Char(c) => self.context.i32_type().const_int(u64::from(*c), false),
             ExprKind::Str(text) => return Some(self.string_lit(text).into()),
+            ExprKind::Interpolate(parts) => return self.interpolate(parts),
             ExprKind::Concat { lhs, rhs } => return Some(self.concat_expr(lhs, rhs).into()),
             ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {
@@ -734,14 +735,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             ExprKind::Move(local) => return Some(self.move_local(*local)),
             ExprKind::Call { func, args } => {
-                let args: Vec<_> = args
-                    .iter()
-                    .map(|a| {
-                        self.expr(a)
-                            .expect("the checker should reject a `unit` or `never` argument, so each argument has a value")
-                            .into()
-                    })
-                    .collect();
+                let args: Vec<_> = args.iter().map(|a| self.operand(a).into()).collect();
                 return self
                     .builder
                     .build_call(self.functions[func.0], &args, "call")

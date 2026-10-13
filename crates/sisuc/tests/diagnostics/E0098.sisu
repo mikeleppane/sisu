@@ -1,0 +1,6 @@
+class P {}
+
+fn main() {
+    let p = P()
+    print("{p}")
+}

@@ -1,0 +1,15 @@
+fn iterations() -> i64 { 1000 }
+
+// An interpolation allocates one block, for its result: no temporary string for any part, the
+// `i64`, the `char` and the `bool` included. Each assignment releases the previous result.
+fn main() {
+    let s = "ab"
+    let n = 7
+    let c = 'ä'
+    let b = true
+    let mut last = ""
+    for i in 0..iterations() {
+        last = "{s}{n}{c}{b}"
+    }
+    print(last.len())                // 9: `ab7ätrue` (0 with no iterations)
+}

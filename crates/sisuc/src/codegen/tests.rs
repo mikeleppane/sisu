@@ -106,6 +106,24 @@ fn print_bool_passes_a_zero_extended_i1() {
     }
 }
 
+/// Interpolation passes a `bool` to the runtime as `print` does.
+#[test]
+fn write_bool_passes_a_zero_extended_i1() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(b: bool) -> string {\n    \"{b}\"\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "declare i64 @sisu_write_bool(i1 zeroext, ptr)",
+        "call i64 @sisu_write_bool(i1 zeroext",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+}
+
 #[test]
 fn arithmetic_calls_overflow_intrinsics() {
     let context = Context::create();

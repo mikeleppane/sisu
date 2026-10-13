@@ -137,6 +137,7 @@ codes! {
     BraceInString = "E0095",
     EmptyInterpolation = "E0096",
     CommentInInterpolation = "E0097",
+    CannotInterpolate = "E0098",
 }
 
 impl Code {
@@ -524,6 +525,13 @@ pub(crate) enum DiagnosticKind {
     EmptyInterpolation { at: Span },
     /// The `//` at `at`, inside an interpolation.
     CommentInInterpolation { at: Span },
+    /// The interpolated value at `at`, of type `ty`, which interpolation cannot write as text;
+    /// `help` is the advice for its kind of type, if there is one.
+    CannotInterpolate {
+        ty: String,
+        help: Option<InterpolateHelp>,
+        at: Span,
+    },
 }
 
 /// What a literal that is not closed is the literal of.
@@ -559,6 +567,15 @@ impl Panic {
 pub(crate) enum Literal {
     None,
     EmptyArray,
+}
+
+/// The advice for a value that interpolation cannot write as text.
+#[derive(Clone, Copy)]
+pub(crate) enum InterpolateHelp {
+    /// An array, or an optional of one.
+    ForLoop,
+    /// Any other optional.
+    Unwrap,
 }
 
 /// The statement or expression that unwraps an optional.
@@ -812,6 +829,7 @@ impl DiagnosticKind {
             DiagnosticKind::BraceInString { .. } => Code::BraceInString,
             DiagnosticKind::EmptyInterpolation { .. } => Code::EmptyInterpolation,
             DiagnosticKind::CommentInInterpolation { .. } => Code::CommentInInterpolation,
+            DiagnosticKind::CannotInterpolate { .. } => Code::CannotInterpolate,
         }
     }
 }
@@ -1706,6 +1724,16 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::CommentInInterpolation { at } => {
                 Diagnostic::coded(code, at, "a comment cannot appear inside an interpolation")
+            }
+            DiagnosticKind::CannotInterpolate { ty, help, at } => {
+                let d = Diagnostic::coded(code, at, format!("cannot interpolate `{ty}`"));
+                match help {
+                    Some(InterpolateHelp::ForLoop) => d.with_help("build the text in a `for` loop"),
+                    Some(InterpolateHelp::Unwrap) => {
+                        d.with_help("unwrap it with `if let`, or give a default with `??`")
+                    }
+                    None => d,
+                }
             }
         }
     }

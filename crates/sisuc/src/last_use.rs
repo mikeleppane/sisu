@@ -4,9 +4,9 @@
 //!
 //! The walk goes backward through each function, in the order codegen evaluates nodes, with
 //! the set of locals live after the current point. It must match codegen exactly:
-//! - `Call`, `New` and `ArrayLit` evaluate their arguments left to right; `Index` evaluates
-//!   base then index; `Contains` base then value; `ArrayFill` value then length; `Equal`,
-//!   `Is`, `Concat` and arithmetic lhs then rhs.
+//! - `Call`, `New` and `ArrayLit` evaluate their arguments left to right, and `Interpolate` its
+//!   parts; `Index` evaluates base then index; `Contains` base then value; `ArrayFill` value
+//!   then length; `Equal`, `Is`, `Concat` and arithmetic lhs then rhs.
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
@@ -109,7 +109,10 @@ impl Walk {
             | ExprKind::None
             | ExprKind::Local(_)
             | ExprKind::Move(_) => {}
-            ExprKind::Call { args, .. } | ExprKind::New { args, .. } | ExprKind::ArrayLit(args) => {
+            ExprKind::Call { args, .. }
+            | ExprKind::New { args, .. }
+            | ExprKind::ArrayLit(args)
+            | ExprKind::Interpolate(args) => {
                 for arg in args.iter_mut().rev() {
                     self.expr(arg);
                 }
@@ -332,6 +335,16 @@ mod tests {
             "fn f(xs: [[i64]]) -> bool { xs.contains(xs[0]) }",
             "f",
             &["(contains xs#0 (index (move xs#0) 0))"],
+        );
+    }
+
+    /// `Interpolate` evaluates its parts left to right: only the last one's read may move.
+    #[test]
+    fn interpolate_parts_left_to_right() {
+        has(
+            "fn f(s: string) -> string { \"{s}{s}\" }",
+            "f",
+            &["(interp s#0 (move s#0))"],
         );
     }
 

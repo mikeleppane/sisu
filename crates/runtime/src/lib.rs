@@ -25,7 +25,7 @@ static LIVE: AtomicU64 = AtomicU64::new(0);
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_int(value: i64) {
-    print_line(format_args!("{value}"));
+    print_bytes(text::int_text(value, &mut [0; 20]));
 }
 
 /// Prints `true` or `false` and a newline to standard output. Sisu's `print` calls this
@@ -36,7 +36,7 @@ pub extern "C" fn sisu_print_int(value: i64) {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_bool(value: bool) {
-    print_line(format_args!("{value}"));
+    print_bytes(text::bool_text(value));
 }
 
 /// Bytes `print` collects before it writes them out, when standard output is not a terminal.
@@ -85,13 +85,6 @@ struct Stdout {
 }
 
 impl Stdout {
-    fn append(&mut self, line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
-        self.open()?;
-        // Writing to a `Vec` cannot fail.
-        let _ = writeln!(self.buffer, "{line}");
-        self.end_line()
-    }
-
     /// Adds `bytes` and a newline. Bytes that would outgrow the buffer go straight out, after
     /// what the buffer holds.
     fn append_bytes(&mut self, bytes: &[u8]) -> std::io::Result<()> {
@@ -156,19 +149,11 @@ fn with_stdout<R>(f: impl FnOnce(&mut Stdout) -> R) -> R {
     f(&mut STDOUT.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// Adds `line` and a newline to the output. A failed write is a Sisu panic: `println!`
+/// Adds `bytes` and a newline to the output. A failed write is a Sisu panic: `println!`
 /// would panic and, with `panic = "abort"`, kill the program with SIGABRT. A pipe with no
 /// reader still kills the program with SIGPIPE, as it does a C program.
-fn print_line(line: std::fmt::Arguments<'_>) {
-    // The lock is released here: the panic below flushes the buffer through it again.
-    let result = with_stdout(|out| out.append(line));
-    if let Err(error) = result {
-        stdout_panic(&error);
-    }
-}
-
-/// Adds `bytes` and a newline to the output, as `print_line` does for formatted text.
 fn print_bytes(bytes: &[u8]) {
+    // The lock is released here: the panic below flushes the buffer through it again.
     let result = with_stdout(|out| out.append_bytes(bytes));
     if let Err(error) = result {
         stdout_panic(&error);
@@ -181,7 +166,7 @@ fn stdout_panic(error: &std::io::Error) -> ! {
     ))
 }
 
-/// Writes out what `print` has collected; a failed write is the panic of `print_line`.
+/// Writes out what `print` has collected; a failed write is the panic of `print_bytes`.
 fn flush_or_panic() {
     let result = with_stdout(Stdout::flush);
     if let Err(error) = result {
@@ -427,8 +412,8 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 mod tests {
     use super::{
         BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_flush_stdout,
-        sisu_free, sisu_panic_bounds, sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
-        sisu_realloc,
+        sisu_free, sisu_panic_bounds, sisu_print_bool, sisu_print_int, sisu_rc_check_exit,
+        sisu_rc_fault, sisu_realloc,
     };
     use std::os::fd::AsRawFd;
     use std::os::unix::process::ExitStatusExt;
@@ -690,6 +675,7 @@ mod tests {
                     crate::text::sisu_print_str(long.as_ptr(), long.len());
                 }
                 sisu_print_int(5);
+                sisu_print_bool(false);
                 sisu_flush_stdout();
             }
             other => panic!("unknown rc case {other}"),
@@ -736,14 +722,14 @@ mod tests {
     }
 
     /// `sisu_print_str` writes the bytes as they are, zero bytes included, then a newline; a
-    /// string longer than the buffer still comes out in order.
+    /// string longer than the buffer still comes out in order, before the lines after it.
     #[test]
     fn print_str_writes_bytes_in_order() {
         let out = run_rc_child("print_str");
         assert!(out.status.success(), "child exited with {:?}", out.status);
         let mut want = b"a\0b\n".to_vec();
         want.extend([b'x'; RESERVED]);
-        want.extend(b"\n5\n");
+        want.extend(b"\n5\nfalse\n");
         // The child is a test binary, so libtest's own lines surround the output.
         assert!(out.stdout.windows(want.len()).any(|w| w == want));
     }

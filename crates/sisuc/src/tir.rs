@@ -177,6 +177,9 @@ pub(crate) enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// A string literal with interpolations: its text pieces as `Str`, and its expressions, in
+    /// order.
+    Interpolate(Vec<Expr>),
     /// `lhs + rhs` on `string`s.
     Concat {
         lhs: Box<Expr>,
@@ -241,9 +244,9 @@ impl Expr {
             ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
                 args.iter().any(Expr::exits)
             }
-            ExprKind::Compare { operands, .. } | ExprKind::ArrayLit(operands) => {
-                operands.iter().any(Expr::exits)
-            }
+            ExprKind::Compare { operands, .. }
+            | ExprKind::ArrayLit(operands)
+            | ExprKind::Interpolate(operands) => operands.iter().any(Expr::exits),
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
             | ExprKind::Sum(operand)
@@ -438,6 +441,11 @@ impl Printer<'_> {
             ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
+            ExprKind::Interpolate(parts) => {
+                f.write_str("(interp")?;
+                self.each(f, parts)?;
+                f.write_str(")")
+            }
             ExprKind::Concat { lhs, rhs } => self.binary(f, "concat", lhs, rhs),
             ExprKind::Compare { operands, ops } => {
                 // `(< a b <= c)`: the first operator leads, the rest sit between operands.
@@ -912,6 +920,32 @@ mod tests {
         assert_eq!(
             program.to_string(),
             r#"(fn f ((s#0 string)) unit (block (print (concat "a\"\n" s#0))))"#
+        );
+    }
+
+    #[test]
+    fn prints_interpolation() {
+        // fn f(s: string, n: i64) { print("a{s}{n}") }
+        let parts = vec![
+            expr(ExprKind::Str("a".into()), Type::String),
+            expr(ExprKind::Local(LocalId(0)), Type::String),
+            expr(ExprKind::Local(LocalId(1)), Type::I64),
+        ];
+        let interp = expr(ExprKind::Interpolate(parts), Type::String);
+        let print = expr(ExprKind::Print(Box::new(interp)), Type::Unit);
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0), LocalId(1)],
+                ret: Type::Unit,
+                locals: vec![param("s", Type::String), param("n", Type::I64)],
+                body: block(vec![Stmt::Expr(print)]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            r#"(fn f ((s#0 string) (n#1 i64)) unit (block (print (interp "a" s#0 n#1))))"#
         );
     }
 

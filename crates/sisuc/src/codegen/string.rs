@@ -4,13 +4,14 @@
 //! header: it owns the layout, the string nodes and the bodies of the string helpers, which
 //! `define_helpers` reaches through `define_string_helper`.
 
+use inkwell::attributes::AttributeLoc;
 use inkwell::module::Linkage;
 use inkwell::types::StructType;
-use inkwell::values::{FunctionValue, IntValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, param};
-use super::{Codegen, POSITIONED};
+use super::{Codegen, POSITIONED, zeroext};
 use crate::tir::{CompareOp, Expr, Type};
 
 /// A string block's header, from the target's data layout. A block with capacity `cap` is
@@ -220,20 +221,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.branch_to(join);
 
         self.builder.position_at_end(copy);
-        let fresh = self
-            .builder
-            .build_call(
-                self.alloc,
-                &[block_size(needed).into(), align.into()],
-                "string",
-            )
-            .expect(POSITIONED)
-            .try_as_basic_value()
-            .basic()
-            .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
-            .into_pointer_value();
-        self.store(fresh, i64_type.const_int(1, false).into());
-        self.store(self.string_field(fresh, CAP), needed.into());
+        let fresh = self.new_string(needed);
         self.copy_bytes(self.string_field(fresh, BYTES), lhs, len);
         self.release(lhs.into(), &Type::String);
         let copied = self.current_block();
@@ -250,6 +238,128 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.store(self.string_field(result, LEN), needed.into());
         self.release(rhs.into(), &Type::String);
         result
+    }
+
+    /// A new block with count 1 and capacity `cap`, whose length is not yet stored.
+    fn new_string(&self, cap: IntValue<'ctx>) -> PointerValue<'ctx> {
+        let layout = self.string_layout();
+        let i64_type = self.context.i64_type();
+        let size = self
+            .builder
+            .build_int_nuw_add(i64_type.const_int(layout.size, false), cap, "size")
+            .expect(POSITIONED);
+        let align = i64_type.const_int(u64::from(layout.align), false);
+        let string = self
+            .builder
+            .build_call(self.alloc, &[size.into(), align.into()], "string")
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
+            .into_pointer_value();
+        self.store(string, i64_type.const_int(1, false).into());
+        self.store(self.string_field(string, CAP), cap.into());
+        string
+    }
+
+    /// `Interpolate`, in one pass: evaluates every part, left to right, then allocates one
+    /// block with room for the most text each part can give, writes each part at the running
+    /// offset, stores the length written and releases the `string` parts. `None` when a part
+    /// exits: nothing is allocated yet, and the checker bound every counted part before it to
+    /// a local, which the exit releases.
+    pub(super) fn interpolate(&mut self, parts: &[Expr]) -> Option<BasicValueEnum<'ctx>> {
+        let mut values = Vec::with_capacity(parts.len());
+        for part in parts {
+            values.push(self.expr(part)?);
+        }
+        let i64_type = self.context.i64_type();
+        let add = |a, b| {
+            self.builder
+                .build_int_nuw_add(a, b, "len")
+                .expect(POSITIONED)
+        };
+        // The most bytes each part's text takes: see `sisu_write_int`, `_bool` and `_char`. A
+        // string's length is below 2^47 on x86-64, so the sum cannot overflow.
+        let cap = parts
+            .iter()
+            .zip(&values)
+            .fold(i64_type.const_zero(), |cap, (part, value)| {
+                let bound = match part.ty {
+                    Type::String => return add(cap, self.string_len(value.into_pointer_value())),
+                    Type::I64 => 20,
+                    Type::U8 => 3,
+                    Type::Bool => 5,
+                    Type::Char => 4,
+                    _ => unreachable!(
+                        "the checker should accept only text, integers, `bool` and `char`"
+                    ),
+                };
+                add(cap, i64_type.const_int(bound, false))
+            });
+        let result = self.new_string(cap);
+        let mut len = i64_type.const_zero();
+        for (part, value) in parts.iter().zip(&values) {
+            let at = self.string_byte(result, len);
+            let written = match part.ty {
+                Type::String => {
+                    let string = value.into_pointer_value();
+                    let part_len = self.string_len(string);
+                    self.copy_bytes(at, string, part_len);
+                    part_len
+                }
+                Type::U8 => {
+                    let widened = self
+                        .builder
+                        .build_int_z_extend(value.into_int_value(), i64_type, "widened")
+                        .expect(POSITIONED);
+                    self.write_text("sisu_write_int", widened.into(), at)
+                }
+                Type::I64 => self.write_text("sisu_write_int", *value, at),
+                Type::Bool => self.write_text("sisu_write_bool", *value, at),
+                _ => self.write_text("sisu_write_char", *value, at),
+            };
+            len = add(len, written);
+        }
+        self.store(self.string_field(result, LEN), len.into());
+        for (part, value) in parts.iter().zip(values) {
+            self.discard(Some(value), &part.ty);
+        }
+        Some(result.into())
+    }
+
+    /// A call of the runtime's `name(value, out) -> len`, which writes the text of `value` at
+    /// `out`; declared on first use, so that a module without interpolation stays as it was.
+    fn write_text(
+        &self,
+        name: &str,
+        value: BasicValueEnum<'ctx>,
+        out: PointerValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        // `zeroext` keeps the C `bool` ABI, as for `sisu_print_bool`.
+        let bool_arg = value.get_type() == self.context.bool_type().into();
+        let function = self.module.get_function(name).unwrap_or_else(|| {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let fn_type = self
+                .context
+                .i64_type()
+                .fn_type(&[value.get_type().into(), ptr_type.into()], false);
+            let function = self.module.add_function(name, fn_type, None);
+            if bool_arg {
+                function.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
+            }
+            function
+        });
+        let call = self
+            .builder
+            .build_call(function, &[value.into(), out.into()], "written")
+            .expect(POSITIONED);
+        if bool_arg {
+            call.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
+        }
+        call.try_as_basic_value()
+            .basic()
+            .expect("a `sisu_write_*` function should return an `i64`, as the runtime declares it")
+            .into_int_value()
     }
 
     /// Copies the first `len` bytes of `string` to `to`.

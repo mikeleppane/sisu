@@ -8,8 +8,9 @@ mod render;
 mod suggest;
 
 pub(crate) use registry::{
-    CharArithmetic, Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable, Join,
-    LetField, Literal, LiteralKind, MismatchFix, Operand, Panic, SemicolonPlace, Unwrap,
+    CharArithmetic, Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable,
+    InterpolateHelp, Join, LetField, Literal, LiteralKind, MismatchFix, Operand, Panic,
+    SemicolonPlace, Unwrap,
 };
 pub(crate) use suggest::{Suggestion, suggestion};
 

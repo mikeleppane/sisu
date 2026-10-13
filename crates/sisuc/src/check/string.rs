@@ -1,12 +1,14 @@
-//! `string`: `+` that joins two, a chain of comparisons over them, `len()`, and the guess to
-//! interpolate a value that `+` meets beside one. Conversions between the scalar types:
-//! `i64(x)`, `u8(x)` and `char(x)`.
+//! `string`: interpolation, `+` that joins two, a chain of comparisons over them, `len()`, and
+//! the guess to interpolate a value that `+` meets beside one. Conversions between the scalar
+//! types: `i64(x)`, `u8(x)` and `char(x)`.
 
 use super::array::pair;
 use super::expr::{local, no_member, path, typed};
-use super::{Checked, Checker, Poisoned, block_expr, type_of};
+use super::{Checked, Checker, Poisoned, block_expr, payload, type_of};
 use crate::ast::{self, CompareOp, ExprKind};
-use crate::diagnostic::{Definition, Diagnostic, DiagnosticKind, MismatchFix, Operand, Span};
+use crate::diagnostic::{
+    Definition, Diagnostic, DiagnosticKind, InterpolateHelp, MismatchFix, Operand, Span,
+};
 use crate::tir::{self, Type};
 
 impl Checker {
@@ -25,6 +27,44 @@ impl Checker {
             let (lhs, rhs) = pair(operands);
             tir::ExprKind::Concat { lhs, rhs }
         }))
+    }
+
+    /// A string literal with interpolations. Each part is checked with no expected type, so that
+    /// a `unit` one is reported here, and must be of a type that interpolation writes as text. A
+    /// part that never finishes makes the whole never finish.
+    pub(super) fn interpolate(&mut self, span: Span, parts: &[ast::Expr]) -> Checked {
+        let mut ty = Type::String;
+        let mut checked = Vec::with_capacity(parts.len());
+        for part in parts {
+            let value = self.expr(part, None);
+            let help = match type_of(&value) {
+                None | Some(Type::I64 | Type::U8 | Type::Bool | Type::Char | Type::String) => {
+                    checked.push(value);
+                    continue;
+                }
+                Some(Type::Never) => {
+                    ty = Type::Never;
+                    checked.push(value);
+                    continue;
+                }
+                Some(other) if matches!(payload(other), Type::Array(_)) => {
+                    Some(InterpolateHelp::ForLoop)
+                }
+                Some(Type::Optional(_)) => Some(InterpolateHelp::Unwrap),
+                Some(Type::Unit | Type::Class(_) | Type::Array(_)) => None,
+            };
+            let found = type_of(&value).expect("a part reported here should have a type");
+            self.report(DiagnosticKind::CannotInterpolate {
+                ty: self.type_name(found),
+                help,
+                at: part.span,
+            });
+            checked.push(Err(Poisoned::error()));
+        }
+        match checked.into_iter().collect::<Result<Vec<_>, _>>() {
+            Ok(parts) => Ok(self.spilled(span, ty, parts, tir::ExprKind::Interpolate)),
+            Err(_) => Err(Poisoned::typed(ty)),
+        }
     }
 
     /// The operand `e` of the `+` over `operands`, of type `got`, which is not the `string` the

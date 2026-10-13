@@ -68,6 +68,35 @@ fn compare_spills() {
     );
 }
 
+/// A part of an interpolation that exits after a `string` part binds the `string` first.
+#[test]
+fn interpolation_spills() {
+    spills(
+        "fn f(c: bool, a: string) -> string {\n    \"{a}{ if c { return \"\" } else { 1 } }\"\n}\nfn main() {}",
+        "interp",
+    );
+}
+
+/// Each part that is not an `i64`, `u8`, `bool`, `char` or `string` is reported at the part; one
+/// whose type is unknown reports nothing more.
+#[test]
+fn cannot_interpolate() {
+    let params = "xs: [i64], m: [i64]?, n: i64?, p: P";
+    for part in ["xs", "m", "n", "p", "print(1)"] {
+        let src = with_items(&body(params, &format!("print(\"a{{{part}}}\")")));
+        codes(&src, &[(Code::CannotInterpolate, (2, 14))]);
+    }
+    codes(
+        &with_items(&body(params, "print(\"a{nope}\")")),
+        &[(Code::BindingNotFound, (2, 14))],
+    );
+    // A part that never finishes is accepted, and makes the interpolation never finish.
+    codes(
+        &with_items(&body(params, "print(\"a{ { return } }\")")),
+        &[(Code::PrintNever, (2, 11))],
+    );
+}
+
 /// `src` with a class `P` and a function `g` after it, on lines that come after `body`'s.
 fn with_items(src: &str) -> String {
     format!("{src}\nclass P {{}}\nfn g(x: i64) -> i64 {{\n    x\n}}")
@@ -124,6 +153,12 @@ fn concat_mismatch() {
             "let b: u8 = 300 + s",
             (2, 17, "300"),
             Some("let b: u8 = \"{300}{s}\""),
+        ),
+        // An interpolated literal joins as a plain one does.
+        (
+            "print(\"a{s}\" + n)",
+            (2, 20, "n"),
+            Some("print(\"a{s}{n}\")"),
         ),
         // A literal in parentheses is wrapped whole, as any other operand is.
         (
