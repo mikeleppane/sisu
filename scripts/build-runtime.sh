@@ -7,7 +7,8 @@
 #   scripts/build-runtime.sh
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+# Not git rev-parse: cargo-mutants runs this in a copy of the tree without .git.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 if [[ -z ${SISU_COVERAGE_TARGET_DIR:-} ]]; then
 	cargo build --quiet -p sisu-runtime
 else
