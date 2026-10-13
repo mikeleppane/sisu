@@ -628,22 +628,6 @@ fn block_ending_in_never() {
 
 #[test]
 fn break_in_header() {
-    for (src, pos) in [
-        ("fn main() {\n    while { break } { }\n}", (2, 13)),
-        (
-            "fn main() {\n    while true {\n        for x in { continue\n [1] } { }\n    }\n}",
-            (3, 20),
-        ),
-        ("fn main() {\n    while let x = { break } { }\n}", (2, 21)),
-        ("fn main() {\n    for x in { break\n [1] } { }\n}", (2, 16)),
-        ("fn main() {\n    while { continue\n true } { }\n}", (2, 13)),
-    ] {
-        codes(src, &[(Code::JumpInLoopHeader, pos)]);
-    }
-}
-
-#[test]
-fn break_in_header_points_at_the_loop() {
     // Each row: source, the keyword's position and text, the loop keyword's position and text.
     for (src, jump, lp) in [
         (
@@ -652,9 +636,24 @@ fn break_in_header_points_at_the_loop() {
             (2, 5, "while"),
         ),
         (
+            "fn main() {\n    while { continue\n true } { }\n}",
+            (2, 13, "continue"),
+            (2, 5, "while"),
+        ),
+        (
             "fn main() {\n    while let x = { break } { }\n}",
             (2, 21, "break"),
             (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    while let x = { continue } { }\n}",
+            (2, 21, "continue"),
+            (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    for x in { break\n [1] } { }\n}",
+            (2, 16, "break"),
+            (2, 5, "for"),
         ),
         (
             "fn main() {\n    for x in { continue\n [1] } { }\n}",
