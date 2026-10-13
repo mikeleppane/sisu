@@ -1,0 +1,4 @@
+fn main() {
+    const limit = 100
+    print(limit)
+}

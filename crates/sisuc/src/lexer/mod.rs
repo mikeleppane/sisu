@@ -35,6 +35,7 @@ pub(crate) enum TokenKind {
     Break,
     Continue,
     Class,
+    Const,
     NoneKw,
     Is,
     SelfKw,
@@ -106,6 +107,7 @@ impl TokenKind {
             TokenKind::Break => "Break",
             TokenKind::Continue => "Continue",
             TokenKind::Class => "Class",
+            TokenKind::Const => "Const",
             TokenKind::NoneKw => "NoneKw",
             TokenKind::Is => "Is",
             TokenKind::SelfKw => "SelfKw",
@@ -173,6 +175,7 @@ impl TokenKind {
             TokenKind::Break => "break",
             TokenKind::Continue => "continue",
             TokenKind::Class => "class",
+            TokenKind::Const => "const",
             TokenKind::NoneKw => "None",
             TokenKind::Is => "is",
             TokenKind::SelfKw => "self",
@@ -651,6 +654,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "break" => TokenKind::Break,
         "continue" => TokenKind::Continue,
         "class" => TokenKind::Class,
+        "const" => TokenKind::Const,
         "None" => TokenKind::NoneKw,
         "is" => TokenKind::Is,
         "self" => TokenKind::SelfKw,
@@ -719,7 +723,7 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
 
 /// After a stray `c`, skips the rest of a string if `c` is a `"`: to the closing `"` on this line,
 /// so a `)` inside the string survives, or else to the line end. Whether the skipped text holds
-/// the word `fn` or `class`, so that it may have swallowed an item.
+/// the word `fn`, `class` or `const`, so that it may have swallowed an item.
 fn skip_string(c: char, chars: &mut Chars) -> bool {
     if c != '"' {
         return false;
@@ -730,7 +734,7 @@ fn skip_string(c: char, chars: &mut Chars) -> bool {
     }
     chars.next_if(|&(_, n)| n == '"');
     text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .any(|word| word == "fn" || word == "class")
+        .any(|word| matches!(word, "fn" | "class" | "const"))
 }
 
 fn unexpected(c: char, at: usize) -> Diagnostic {
@@ -830,10 +834,12 @@ mod tests {
 
     #[test]
     fn all_keywords() {
-        use TokenKind::{Else, Eof, False, Fn, If, Let, Mut, Return, True, Var, While};
+        use TokenKind::{Const, Else, Eof, False, Fn, If, Let, Mut, Return, True, Var, While};
         assert_eq!(
-            kinds("fn let mut var if else while return true false"),
-            [Fn, Let, Mut, Var, If, Else, While, Return, True, False, Eof]
+            kinds("fn let mut var const if else while return true false"),
+            [
+                Fn, Let, Mut, Var, Const, If, Else, While, Return, True, False, Eof
+            ]
         );
     }
 

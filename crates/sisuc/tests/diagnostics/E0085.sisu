@@ -1,0 +1,5 @@
+const PRIMES: [i64] = [2, 3, 5]
+
+fn main() {
+    print(1)
+}

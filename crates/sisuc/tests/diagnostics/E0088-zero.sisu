@@ -1,0 +1,5 @@
+const RATIO = 10 / 0
+
+fn main() {
+    print(RATIO)
+}

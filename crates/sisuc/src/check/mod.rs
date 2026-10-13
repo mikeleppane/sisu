@@ -2,6 +2,7 @@
 //! checks, and records every error instead of stopping at the first.
 
 mod array;
+mod constant;
 mod expr;
 mod place;
 mod stmt;
@@ -13,6 +14,7 @@ use crate::diagnostic::{
     Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, Severity, Span, suggestion,
 };
 use crate::tir::{self, Type};
+use constant::ConstInfo;
 
 /// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
 /// still known (an `if` with one failed branch takes the other's), else it is the poison
@@ -66,9 +68,9 @@ struct Signature {
     ret: Option<Type>,
 }
 
-/// What a function, class or method name stands for: the first intact item of that name, or a
-/// broken one, which holds a syntax error. A broken name wins over an intact one, and every use of
-/// it is poisoned without a diagnostic: its item's error is reported already.
+/// What a function, class, constant or method name stands for: the first intact item of that
+/// name, or a broken one, which holds a syntax error. A broken name wins over an intact one, and
+/// every use of it is poisoned without a diagnostic: its item's error is reported already.
 #[derive(Clone, Copy)]
 enum Declared<T> {
     Known(T),
@@ -134,6 +136,8 @@ struct Checker {
     classes: Vec<ClassInfo>,
     /// The first class of each name, and every broken one.
     class_ids: HashMap<String, Declared<tir::ClassId>>,
+    /// The first constant of each name, and every broken one.
+    constants: HashMap<String, Declared<ConstInfo>>,
     diagnostics: Vec<Diagnostic>,
     // The rest is per body.
     scopes: Vec<HashMap<String, Binding>>,
@@ -160,6 +164,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         signatures: Vec::new(),
         classes: Vec::new(),
         class_ids: HashMap::new(),
+        constants: HashMap::new(),
         diagnostics: Vec::new(),
         scopes: Vec::new(),
         locals: Vec::new(),
@@ -172,6 +177,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
     };
     checker.collect_names(program);
     let declared = checker.collect_signatures(program);
+    checker.fold_constants(program);
     checker.never_constructed();
     checker.check_main(&declared);
     // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
@@ -243,12 +249,14 @@ impl Checker {
         self.diagnostics.push(kind.into());
     }
 
-    /// Pass 1: gives every class a `ClassId` and records the first function and class of each
-    /// name, so that types and calls can name any of them. Classes and functions share a
+    /// Pass 1: gives every class a `ClassId` and records the first function, class and constant
+    /// of each name, so that types, calls and uses can name any of them. They share a
     /// namespace. `FuncId`s run in source order, a class's methods at its place.
     fn collect_names(&mut self, program: &ast::Program) {
         let mut first = HashMap::new();
         let mut next_function = 0;
+        // Source order among the constants.
+        let mut order = 0;
         for item in &program.items {
             match item {
                 ast::Item::Class(class) => {
@@ -282,6 +290,17 @@ impl Checker {
                     }
                     next_function += 1;
                 }
+                ast::Item::Const(c) => {
+                    if !self.built_in(&c.name)
+                        && self.first_callable(&mut first, Definition::Constant, &c.name)
+                    {
+                        self.constants.insert(
+                            c.name.name.clone(),
+                            Declared::Known(ConstInfo::new(c.name.span, order)),
+                        );
+                    }
+                    order += 1;
+                }
             }
         }
         for broken in &program.broken {
@@ -293,20 +312,26 @@ impl Checker {
                 ast::BrokenKind::Class => {
                     self.class_ids.insert(name.clone(), Declared::Broken);
                 }
+                ast::BrokenKind::Constant => {
+                    self.constants.insert(name.clone(), Declared::Broken);
+                }
             }
-            // Functions and classes share a namespace, so an intact item of the other kind and
-            // this name is poisoned too.
+            // Functions, classes and constants share a namespace, so an intact item of another
+            // kind and this name is poisoned too.
             if let Some(class) = self.class_ids.get_mut(name) {
                 *class = Declared::Broken;
             }
             if let Some(function) = self.function_ids.get_mut(name) {
                 *function = Declared::Broken;
             }
+            if let Some(constant) = self.constants.get_mut(name) {
+                *constant = Declared::Broken;
+            }
         }
     }
 
-    /// Whether `name` is a built-in type's, which no class or function may take; reports it
-    /// when it is.
+    /// Whether `name` is a built-in type's, which no class, function or constant may take;
+    /// reports it when it is.
     fn built_in(&mut self, name: &ast::Ident) -> bool {
         let found = built_in_type(&name.name).is_some();
         if found {
@@ -318,7 +343,7 @@ impl Checker {
         found
     }
 
-    /// Whether `name` is the first function or class of its name; reports it when not.
+    /// Whether `name` is the first function, class or constant of its name; reports it when not.
     fn first_callable(
         &mut self,
         first: &mut HashMap<String, (Span, Definition)>,
@@ -370,6 +395,7 @@ impl Checker {
                     continue;
                 }
                 ast::Item::Class(class) => class,
+                ast::Item::Const(_) => continue,
             };
             let id = tir::ClassId(next_class);
             next_class += 1;

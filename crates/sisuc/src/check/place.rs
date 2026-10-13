@@ -1,7 +1,7 @@
 //! Assignment: places, which root may be written, the temps of compound operators, and spills.
 
 use super::expr::{literal_type, local, operator};
-use super::{BindingKind, Checker, Poisoned, UNKNOWN, block_expr, type_of};
+use super::{BindingKind, Checker, Declared, Poisoned, UNKNOWN, block_expr, type_of};
 use crate::ast;
 use crate::diagnostic::{DiagnosticKind, Immutable, Span};
 use crate::tir::{self, ExprKind, Type};
@@ -130,13 +130,36 @@ impl Checker {
         Ok(tir::Stmt::Expr(block_expr(lets, None, Type::Unit, span)))
     }
 
+    /// The constant `name` as the root of a place that `span` assigns, reported, if `name` names
+    /// one. The value is still checked against the constant's type. A broken constant poisons
+    /// the assignment without a diagnostic.
+    fn constant_place(&mut self, span: Span, name: &str, element: bool) -> Option<CheckedPlace> {
+        let Declared::Known(constant) = self.constants.get(name)? else {
+            return Some(CheckedPlace::failed());
+        };
+        let (declared, ty) = (constant.span, constant.ty.clone());
+        self.report(DiagnosticKind::AssignToImmutable {
+            name: name.to_string(),
+            at: span,
+            element,
+            cause: Immutable::Constant { declared },
+        });
+        Some(CheckedPlace {
+            path: None,
+            ty,
+            writable: false,
+        })
+    }
+
     /// The place `target` names, which `span` assigns. `element` when it is the base of an
     /// index, so the write replaces an element of it.
     fn place(&mut self, span: Span, target: &ast::Expr, element: bool) -> CheckedPlace {
         match &target.kind {
             ast::ExprKind::Name(name) => {
                 let Some(b) = self.lookup(name) else {
-                    if self.function_ids.contains_key(name) {
+                    if let Some(place) = self.constant_place(span, name, element) {
+                        return place;
+                    } else if self.function_ids.contains_key(name) {
                         self.report(DiagnosticKind::AssignToFunction {
                             name: name.clone(),
                             at: target.span,

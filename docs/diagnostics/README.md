@@ -92,6 +92,11 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0081](E0081.md) | error | block that stands alone as a statement |
 | [E0082](E0082.md) | error | `break` or `continue` in a loop header |
 | [E0083](E0083.md) | error | word reserved for a later version |
+| [E0084](E0084.md) | error | `const` inside a function |
+| [E0085](E0085.md) | error | constant of a type that cannot be folded |
+| [E0086](E0086.md) | error | constant value not known at compile time |
+| [E0087](E0087.md) | error | constant that uses itself or a constant below it |
+| [E0088](E0088.md) | error | constant whose value would panic |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 

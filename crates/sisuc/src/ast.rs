@@ -13,7 +13,7 @@ pub(crate) struct Program {
     pub(crate) comments: Vec<usize>,
 }
 
-/// A function or class that holds a syntax error, so only its name survives.
+/// A function, class or constant that holds a syntax error, so only its name survives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Broken {
     pub(crate) name: Ident,
@@ -24,12 +24,22 @@ pub(crate) struct Broken {
 pub(crate) enum BrokenKind {
     Function,
     Class,
+    Constant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Item {
     Function(Function),
     Class(Class),
+    Const(Const),
+}
+
+/// `const name: ty = value`, at the top level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Const {
+    pub(crate) name: Ident,
+    pub(crate) ty: Option<TypeExpr>,
+    pub(crate) value: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,6 +362,13 @@ impl fmt::Display for Program {
             match item {
                 Item::Function(function) => write!(f, "{function}")?,
                 Item::Class(class) => write!(f, "{class}")?,
+                Item::Const(c) => {
+                    write!(f, "(const {}", c.name.name)?;
+                    if let Some(ty) = &c.ty {
+                        write!(f, " {ty}")?;
+                    }
+                    write!(f, " {})", c.value)?;
+                }
             }
         }
         Ok(())

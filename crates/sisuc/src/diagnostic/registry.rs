@@ -123,6 +123,11 @@ codes! {
     BlockAsStatement = "E0081",
     JumpInLoopHeader = "E0082",
     ReservedWord = "E0083",
+    ConstInFunction = "E0084",
+    ConstantType = "E0085",
+    ConstantNotKnown = "E0086",
+    ConstantOrder = "E0087",
+    ConstantPanics = "E0088",
 }
 
 impl Code {
@@ -461,6 +466,42 @@ pub(crate) enum DiagnosticKind {
     },
     /// The word `word` at `at`, which a later version of Sisu gives a meaning.
     ReservedWord { word: &'static str, at: Span },
+    /// The `const` at `at`, which starts a statement.
+    ConstInFunction { at: Span },
+    /// The type at `at` of a constant, which is none a constant can have.
+    ConstantType { at: Span },
+    /// The part at `at` of a constant's value, which is not known at compile time.
+    ConstantNotKnown { at: Span },
+    /// The use at `at`, in the value of the constant `user`, of the constant `name` declared at
+    /// `declared`: `itself` when `name` is `user`, else `name` is declared below `user`.
+    ConstantOrder {
+        name: String,
+        user: String,
+        at: Span,
+        declared: Span,
+        itself: bool,
+    },
+    /// The operation at `at` in a constant's value, which would `panic` at run time.
+    ConstantPanics { panic: Panic, at: Span },
+}
+
+/// A run-time panic that folding a constant meets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Panic {
+    Overflow,
+    DivisionByZero,
+    NotU8,
+}
+
+impl Panic {
+    /// The run-time panic's message.
+    fn message(self) -> &'static str {
+        match self {
+            Panic::Overflow => "integer overflow",
+            Panic::DivisionByZero => "division by zero",
+            Panic::NotU8 => "value does not fit in `u8`",
+        }
+    }
 }
 
 /// A literal that takes its type from its position.
@@ -495,6 +536,7 @@ pub(crate) enum Definition {
     Method,
     Binding,
     Type,
+    Constant,
 }
 
 impl Definition {
@@ -506,6 +548,7 @@ impl Definition {
             Definition::Method => "method",
             Definition::Binding => "binding",
             Definition::Type => "type",
+            Definition::Constant => "constant",
         }
     }
 }
@@ -575,6 +618,10 @@ pub(crate) enum Immutable {
     },
     /// A field declared without `mut`.
     Field {
+        declared: Span,
+    },
+    /// A top-level constant.
+    Constant {
         declared: Span,
     },
 }
@@ -667,6 +714,11 @@ impl DiagnosticKind {
             DiagnosticKind::BlockAsStatement { .. } => Code::BlockAsStatement,
             DiagnosticKind::JumpInLoopHeader { .. } => Code::JumpInLoopHeader,
             DiagnosticKind::ReservedWord { .. } => Code::ReservedWord,
+            DiagnosticKind::ConstInFunction { .. } => Code::ConstInFunction,
+            DiagnosticKind::ConstantType { .. } => Code::ConstantType,
+            DiagnosticKind::ConstantNotKnown { .. } => Code::ConstantNotKnown,
+            DiagnosticKind::ConstantOrder { .. } => Code::ConstantOrder,
+            DiagnosticKind::ConstantPanics { .. } => Code::ConstantPanics,
         }
     }
 }
@@ -716,6 +768,12 @@ impl From<DiagnosticKind> for Diagnostic {
                     Immutable::Field { declared } => d
                         .with_secondary(declared, "declared without `mut` here")
                         .with_fix(insert_mut("mark the field `mut`", declared)),
+                    Immutable::Constant { declared } => if element {
+                        d
+                    } else {
+                        d.with_label("cannot assign")
+                    }
+                    .with_secondary(declared, "declared with `const` here"),
                 }
             }
             DiagnosticKind::UnreachableCode { at } => {
@@ -1376,6 +1434,39 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 format!("`{word}` is reserved for a later version of Sisu"),
             ),
+            DiagnosticKind::ConstInFunction { at } => {
+                Diagnostic::coded(code, at, "`const` is declared at the top level").with_fix(Fix {
+                    message: "use `let`".to_string(),
+                    certain: true,
+                    edits: vec![Edit {
+                        span: at,
+                        replacement: "let".to_string(),
+                    }],
+                })
+            }
+            DiagnosticKind::ConstantType { at } => {
+                Diagnostic::coded(code, at, "a constant is `i64`, `u8` or `bool`")
+            }
+            DiagnosticKind::ConstantNotKnown { at } => {
+                Diagnostic::coded(code, at, "a constant's value must be known at compile time")
+                    .with_help("use literals, operators and earlier constants")
+            }
+            DiagnosticKind::ConstantOrder {
+                name,
+                user,
+                at,
+                declared,
+                itself,
+            } => if itself {
+                Diagnostic::coded(code, at, format!("`{name}` cannot use itself"))
+            } else {
+                Diagnostic::coded(code, at, format!("`{name}` is declared below `{user}`"))
+                    .with_help(format!("move `{name}` above `{user}`"))
+            }
+            .with_secondary(declared, "declared here"),
+            DiagnosticKind::ConstantPanics { panic, at } => {
+                Diagnostic::coded(code, at, panic.message())
+            }
         }
     }
 }

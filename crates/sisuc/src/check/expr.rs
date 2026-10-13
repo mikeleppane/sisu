@@ -74,11 +74,11 @@ impl Checker {
                 }) => node(tir::ExprKind::Local(*local), ty.clone()),
                 // `Error`: its diagnostic was recorded where it was bound.
                 Some(_) => Err(Poisoned::error()),
-                None => {
+                None => self.constant_use(name, e.span).unwrap_or_else(|| {
                     let d = self.not_found(name, e.span);
                     self.diagnostics.push(d);
                     Err(Poisoned::error())
-                }
+                }),
             },
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
             ExprKind::SelfValue => {

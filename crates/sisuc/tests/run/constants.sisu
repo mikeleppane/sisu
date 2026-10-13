@@ -1,0 +1,29 @@
+const L = 100
+const AREA = L * L
+const Q = -7 / 2
+const R = -7 % 2
+const M: u8 = 0xF0
+const SUM = M + 15
+const CHAIN = 1 < L < AREA
+const B = 255
+const BYTE = u8(B)
+
+fn main() {
+    let l = 100
+    print(AREA) // 10000
+    print(l * l) // 10000
+    let seven = 7
+    print(Q) // -3
+    print(-seven / 2) // -3
+    print(R) // -1
+    print(-seven % 2) // -1
+    let m: u8 = 0xF0
+    print(SUM) // 255
+    print(m + 15) // 255
+    let area = l * l
+    print(CHAIN) // true
+    print(1 < l < area) // true
+    let b = 255
+    print(BYTE) // 255
+    print(u8(b)) // 255
+}

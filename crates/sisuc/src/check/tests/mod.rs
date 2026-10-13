@@ -5,6 +5,7 @@ use crate::diagnostic::{Code, Fix};
 use crate::parser::parse_ok;
 
 mod arrays;
+mod constants;
 mod for_loops;
 mod patterns;
 mod places;

@@ -220,20 +220,63 @@ fn main() {
         assert_eq!(codes(src), [(Code::Expected, (2, 7))]);
     }
 
+    /// A broken constant is declared, so its uses are poisoned; it poisons a function of the same
+    /// name, and a broken function poisons a constant of the same name.
+    #[test]
+    fn broken_constant_poisons_its_uses() {
+        for (src, at) in [
+            (
+                "const A = 1 2\nfn main() {\n    let b: bool = A\n    A = 2\n}\n",
+                (1, 13),
+            ),
+            (
+                "const A = 1 2\nfn A() {}\nfn main() {\n    A(1)\n}\n",
+                (1, 13),
+            ),
+            (
+                "fn A(x) {}\nconst A = 1\nfn main() {\n    let b: bool = A\n    A = 2\n}\n",
+                (1, 7),
+            ),
+        ] {
+            assert_eq!(codes(src), [(Code::Expected, at)], "{src}");
+        }
+        // A line that starts with `const` ends the unnamed item before it.
+        let src = "def f()\nconst A = 1 2\nfn main() {}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (1, 1)), (Code::Expected, (2, 13))]
+        );
+    }
+
+    /// The fix of a `const` statement leaves a program that passes the whole front end.
+    #[test]
+    fn const_statement_fix_passes_the_front_end() {
+        let src = "fn main() {\n    const n = 1\n    print(n)\n}\n";
+        let ds = front_end(src).1;
+        let [d] = ds.as_slice() else {
+            panic!("expected one diagnostic, got {ds:?}");
+        };
+        assert_eq!(d.code(), Code::ConstInFunction);
+        assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+        let fixed = apply_fix(src, d);
+        assert!(front_end(&fixed).1.is_empty(), "{fixed}");
+    }
+
     #[test]
     fn unnamed_item_stops_the_checker() {
         let src = "def total() {}\nfn main() {\n    let b: bool = 1\n}\n";
         assert_eq!(codes(src), [(Code::Expected, (1, 1))]);
     }
 
-    /// Skipped text outside every item that holds `fn` or `class` may have swallowed an item, so
-    /// no name lookup can be trusted.
+    /// Skipped text outside every item that holds `fn`, `class` or `const` may have swallowed an
+    /// item, so no name lookup can be trusted.
     #[test]
     fn swallowed_item_stops_the_checker() {
         for src in [
             "\"fn helper() {}\nfn main() {\n    helper()\n}\n",
             "\"class Helper {}\nfn helper() -> Helper {\n    return Helper()\n}\nfn main() {}\n",
             "\"fn main() {}\n",
+            "\"const A = 1\nfn main() {\n    print(A)\n}\n",
         ] {
             assert_eq!(codes(src), [(Code::UnexpectedCharacter, (1, 1))], "{src}");
         }

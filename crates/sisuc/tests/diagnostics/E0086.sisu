@@ -1,0 +1,9 @@
+fn limit() -> i64 {
+    100
+}
+
+const LIMIT = limit()
+
+fn main() {
+    print(LIMIT)
+}

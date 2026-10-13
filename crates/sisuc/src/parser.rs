@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::ast::{
-    Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Expr, ExprKind, FieldDecl,
+    Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Expr, ExprKind, FieldDecl,
     ForSource, Function, Ident, Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind,
     UnaryOp,
 };
@@ -244,7 +244,8 @@ impl Parser<'_> {
         }
     }
 
-    /// An `ident` that names a function, class, field or parameter, where `_` is an error.
+    /// An `ident` that names a function, class, constant, field or parameter, where `_` is an
+    /// error.
     fn name(&mut self, what: &str) -> Result<Ident, Diagnostic> {
         if self.at(&TokenKind::Underscore) {
             return Err(DiagnosticKind::UnderscoreName {
@@ -355,7 +356,10 @@ impl Parser<'_> {
                 TokenKind::Class => self
                     .class(end)
                     .map(|(class, errors)| (Item::Class(class), errors)),
-                _ => self.checked(end, |p| Err(p.expected("`fn` or `class`"))),
+                TokenKind::Const => {
+                    self.checked(end, |p| Ok((Item::Const(p.constant(end)?), Vec::new())))
+                }
+                _ => self.checked(end, |p| Err(p.expected("`fn`, `class` or `const`"))),
             };
             match parsed {
                 Ok((item, errors)) => {
@@ -399,13 +403,14 @@ impl Parser<'_> {
         }
     }
 
-    /// The name and kind of the item that starts at `start`, when its header is intact: `fn` or
-    /// `class`, then a name, with no lexer diagnostic before the token after the name. `fn to$tal`
-    /// lexes as `fn to tal`, so its name is not `to`.
+    /// The name and kind of the item that starts at `start`, when its header is intact: `fn`,
+    /// `class` or `const`, then a name, with no lexer diagnostic before the token after the name.
+    /// `fn to$tal` lexes as `fn to tal`, so its name is not `to`.
     fn header(&self, start: usize) -> Option<Broken> {
         let kind = match self.tokens[start].kind {
             TokenKind::Fn => BrokenKind::Function,
             TokenKind::Class => BrokenKind::Class,
+            TokenKind::Const => BrokenKind::Constant,
             _ => return None,
         };
         // Neither a keyword nor a name is `Eof`, so the two tokens after the keyword exist.
@@ -427,8 +432,10 @@ impl Parser<'_> {
 
     /// The end, exclusive, of the item or member that starts at `start`: past the `}` that
     /// brings the depth back to where it started, or at a line break at that depth, which comes
-    /// before any `{`. A closer below that depth (a class's `}`) or `Eof` ends it first.
+    /// before any `{`. A closer below that depth (a class's `}`) or `Eof` ends it first. A
+    /// constant is one line, as a statement is, so a `}` in its value does not end it.
     fn item_end(&self, start: usize) -> usize {
+        let line = self.tokens[start].kind == TokenKind::Const;
         let mut depth = 0usize;
         for (i, token) in self.tokens.iter().enumerate().skip(start) {
             match token.kind {
@@ -438,7 +445,7 @@ impl Parser<'_> {
                         return i;
                     }
                     depth -= 1;
-                    if depth == 0 && token.kind == TokenKind::RBrace {
+                    if depth == 0 && token.kind == TokenKind::RBrace && !line {
                         return i + 1;
                     }
                 }
@@ -451,7 +458,7 @@ impl Parser<'_> {
     }
 
     /// The end, exclusive, of the unnamed item that starts at `start`: the next line whose first
-    /// token is `fn` or `class` outside brackets, or `Eof`.
+    /// token is `fn`, `class` or `const` outside brackets, or `Eof`.
     // shortcut: a line break after a token that cannot end a statement (`:`) leaves no `Newline`,
     // so a `fn` after one is not found; the item only runs longer, and the checker is off anyway.
     fn next_line_item(&self, start: usize) -> usize {
@@ -460,7 +467,7 @@ impl Parser<'_> {
             match token.kind {
                 TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
                 TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
-                TokenKind::Fn | TokenKind::Class
+                TokenKind::Fn | TokenKind::Class | TokenKind::Const
                     if i > start && depth == 0 && self.tokens[i - 1].kind == TokenKind::Newline =>
                 {
                     return i;
@@ -669,6 +676,23 @@ impl Parser<'_> {
         }
     }
 
+    /// `const name: T = value`, which ends the item at `end`.
+    fn constant(&mut self, end: usize) -> Result<Const, Diagnostic> {
+        self.bump();
+        let name = self.name("a constant name")?;
+        let ty = match self.eat(&TokenKind::Colon) {
+            Some(_) => Some(self.parse_type()?),
+            None => None,
+        };
+        self.depth = 0;
+        self.expect(&TokenKind::Eq)?;
+        let value = self.expr()?;
+        if self.pos != end {
+            return Err(self.end_of_line());
+        }
+        Ok(Const { name, ty, value })
+    }
+
     /// `method` is true inside a class body, where `self` may be the first parameter.
     fn function(&mut self, method: bool) -> Result<Function, Diagnostic> {
         let fn_token = self.expect(&TokenKind::Fn)?;
@@ -776,6 +800,7 @@ impl Parser<'_> {
         let mut reach = base;
         let kind = match self.peek().kind {
             TokenKind::Let => self.let_stmt()?,
+            TokenKind::Const => return Err(self.local_const()),
             TokenKind::While => {
                 self.bump();
                 if let Some((name, value)) = self.child(base, &mut reach, Self::let_binding)? {
@@ -934,6 +959,20 @@ impl Parser<'_> {
             ty,
             init,
         })
+    }
+
+    /// The error of a `const` statement. It is reported only once the statement parses as a `let`
+    /// and ends the line, so that its fix leaves a `let` that parses; before that, the first
+    /// error in it is reported.
+    fn local_const(&mut self) -> Diagnostic {
+        let at = self.peek().span;
+        if let Err(error) = self.let_stmt() {
+            return error;
+        }
+        if !self.at(&TokenKind::Newline) && !self.at(&TokenKind::RBrace) {
+            return self.end_of_line();
+        }
+        DiagnosticKind::ConstInFunction { at }.into()
     }
 
     /// An expression statement, or an assignment when an assignment operator follows.
@@ -1937,6 +1976,53 @@ mod tests {
             ),
         ] {
             assert_eq!(parse_err(src), (code, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn const_items() {
+        for (src, want) in [
+            ("const A = 1", "(const A 1)"),
+            ("const B: u8 = 240", "(const B u8 240)"),
+            // A constant is one line, so a `}` in its value does not end it.
+            (
+                "const C = if true { 1 } else { 2 }",
+                "(const C (if true (block 1) (block 2)))",
+            ),
+        ] {
+            assert_eq!(program(src), want, "{src}");
+        }
+        for (src, code, line, col) in [
+            ("fn f() { const C = 1 }", Code::ConstInFunction, 1, 10),
+            (
+                "fn f() {\n    const C: u8 = 1\n}",
+                Code::ConstInFunction,
+                2,
+                5,
+            ),
+            ("const _ = 1", Code::UnderscoreName, 1, 7),
+            ("const A = 1 2", Code::Expected, 1, 13),
+            ("const A 1", Code::Expected, 1, 9),
+            ("class C {\n    const A = 1\n}", Code::Expected, 2, 5),
+            // A `const` statement that does not parse as a `let`, or does not end its line,
+            // reports that error first, so the fix to `let` is offered only when it parses.
+            ("fn f() { const C }", Code::Expected, 1, 18),
+            ("fn f() { const C = 1 2 }", Code::Expected, 1, 22),
+        ] {
+            assert_eq!(parse_err(src), (code, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn const_statement_fix_leaves_a_let_that_parses() {
+        for (src, want) in [
+            ("fn f() { const C = 1 }", "fn f() { let C = 1 }"),
+            ("fn f() { const mut C = 1 }", "fn f() { let mut C = 1 }"),
+            ("fn f() { const _: u8 = 1 }", "fn f() { let _: u8 = 1 }"),
+        ] {
+            let fixed = fixed(src);
+            assert_eq!(fixed, want);
+            assert!(parsed(&fixed).diagnostics.is_empty(), "{fixed}");
         }
     }
 

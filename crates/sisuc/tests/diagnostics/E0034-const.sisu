@@ -1,0 +1,6 @@
+const LIMIT = 100
+const LIMIT = 200
+
+fn main() {
+    print(LIMIT)
+}

@@ -1,0 +1,5 @@
+const LIMIT = 100
+
+fn main() {
+    LIMIT[0] = 1
+}
