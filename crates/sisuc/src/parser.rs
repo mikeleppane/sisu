@@ -1891,6 +1891,13 @@ mod tests {
             ("class C {\n    mut _: i64\n}", Code::UnderscoreName, 2, 9),
             ("fn f(_: i64) {}", Code::UnderscoreName, 1, 6),
             ("fn f(a: i64, _: i64) {}", Code::UnderscoreName, 1, 14),
+            ("fn main() {\n    if let _ = e {}\n}", Code::Expected, 2, 12),
+            (
+                "fn main() {\n    while let _ = e {}\n}",
+                Code::Expected,
+                2,
+                15,
+            ),
         ] {
             assert_eq!(parse_err(src), (code, line, col), "{src}");
         }
