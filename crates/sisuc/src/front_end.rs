@@ -103,7 +103,7 @@ fn main() {
         );
     }
 
-    /// Until Task 11 checks strings, the string checks as an `i64`, so `main` checks on.
+    /// The string is reported where an `i64` is wanted, and `main` checks on.
     #[test]
     fn spec_sample_with_quote() {
         let src = SAMPLE.replace(
@@ -115,6 +115,7 @@ fn main() {
             [
                 (Code::MethodAsFunction, (3, 17)),
                 (Code::AssignToImmutable, (4, 9)),
+                (Code::Mismatch, (11, 18)),
                 (Code::FunctionNotFound, (12, 11))
             ]
         );

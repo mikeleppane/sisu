@@ -1,12 +1,145 @@
-//! Conversions between the scalar types: `i64(x)`, `u8(x)` and `char(x)`.
+//! `string`: `+` that joins two, a chain of comparisons over them, `len()`, and the guess to
+//! interpolate a value that `+` meets beside one. Conversions between the scalar types:
+//! `i64(x)`, `u8(x)` and `char(x)`.
 
-use super::expr::{path, typed};
-use super::{Checked, Checker, Poisoned, type_of};
-use crate::ast::{self, ExprKind};
-use crate::diagnostic::{DiagnosticKind, Span};
+use super::array::pair;
+use super::expr::{local, no_member, path, typed};
+use super::{Checked, Checker, Poisoned, block_expr, type_of};
+use crate::ast::{self, CompareOp, ExprKind};
+use crate::diagnostic::{Definition, Diagnostic, DiagnosticKind, MismatchFix, Operand, Span};
 use crate::tir::{self, Type};
 
 impl Checker {
+    /// `l + r` over two `string`s, which `mismatched` says were reported against.
+    pub(super) fn concat(
+        &mut self,
+        span: Span,
+        l: Checked,
+        r: Checked,
+        mismatched: bool,
+    ) -> Checked {
+        let (Ok(l), Ok(r)) = (l, r) else {
+            return Err(Poisoned::of((!mismatched).then_some(Type::String)));
+        };
+        Ok(self.spilled(span, Type::String, vec![l, r], |operands| {
+            let (lhs, rhs) = pair(operands);
+            tir::ExprKind::Concat { lhs, rhs }
+        }))
+    }
+
+    /// The operand `e` of the `+` over `operands`, of type `got`, which is not the `string` the
+    /// other operand makes it. A value that interpolation prints gets the guess to interpolate
+    /// it, unless the `+` is a `compound` assignment's or a constant's.
+    pub(super) fn concat_mismatch(
+        &self,
+        e: &ast::Expr,
+        got: &Type,
+        operands: &[&ast::Expr],
+        compound: bool,
+    ) -> Diagnostic {
+        let printed = matches!(
+            got,
+            Type::I64 | Type::U8 | Type::Bool | Type::Char | Type::String
+        );
+        let [lhs, rhs] = operands else {
+            unreachable!("`+` should have two operands");
+        };
+        if compound || self.in_constant || !printed {
+            return self.mismatch(e.span, Some(e), &Type::String, got);
+        }
+        // shortcut: a parenthesized literal's span takes in its parentheses, which the edit
+        // that drops its quote then cuts; upgrade once the AST keeps a literal's own span.
+        let operand = |e: &ast::Expr| Operand {
+            span: e.span,
+            literal: matches!(e.kind, ExprKind::Str(_) | ExprKind::Interpolate(_)),
+        };
+        DiagnosticKind::Mismatch {
+            want: vec![self.type_name(&Type::String)],
+            got: self.type_name(got),
+            at: e.span,
+            fix: Some(MismatchFix::Interpolate {
+                lhs: operand(lhs),
+                rhs: operand(rhs),
+            }),
+        }
+        .into()
+    }
+
+    /// A chain over the `string`s `operands`, which codegen compares two at a time. Two make
+    /// one `Compare`; more bind each operand once, in nested blocks that stop at the first pair
+    /// that fails. `a < b < c` is
+    /// `(block (let #0 a) (let #1 b) (&& (< #0 #1) (block (let #2 c) (< #1 #2))))`.
+    pub(super) fn string_chain(
+        &mut self,
+        span: Span,
+        operands: Vec<tir::Expr>,
+        ops: &[CompareOp],
+    ) -> tir::Expr {
+        if let [op] = ops {
+            return self.spilled(span, Type::Bool, operands, |operands| {
+                tir::ExprKind::Compare {
+                    operands,
+                    ops: vec![*op],
+                }
+            });
+        }
+        let mut lets = Vec::new();
+        let reads: Vec<_> = operands
+            .into_iter()
+            .map(|init| {
+                let read = (self.fresh(Type::String), init.span);
+                lets.push(tir::Stmt::Let {
+                    local: read.0,
+                    init,
+                });
+                read
+            })
+            .collect();
+        let read = |i: usize| local(reads[i].0, Type::String, reads[i].1);
+        let pair = |i: usize| tir::Expr {
+            kind: tir::ExprKind::Compare {
+                operands: vec![read(i), read(i + 1)],
+                ops: vec![ops[i]],
+            },
+            ty: Type::Bool,
+            span,
+        };
+        // From the innermost block out: each binds the right operand of the pair it tests.
+        let mut rest = pair(ops.len() - 1);
+        for i in (1..ops.len()).rev() {
+            let bind = lets.pop().expect("each operand should have its `let`");
+            let inner = block_expr(vec![bind], Some(rest), Type::Bool, span);
+            rest = and(pair(i - 1), inner, span);
+        }
+        block_expr(lets, Some(rest), Type::Bool, span)
+    }
+
+    /// `receiver.method(args)` on a `string`, whose one method is `len()`.
+    pub(super) fn string_method(
+        &mut self,
+        span: Span,
+        receiver: Checked,
+        method: &ast::Ident,
+        args: &[ast::Arg],
+    ) -> Checked {
+        if method.name != "len" {
+            let owner = self.type_name(&Type::String);
+            let d = no_member(Definition::Method, owner, method, ["len"]);
+            return self.rejected(d, args);
+        }
+        if !args.is_empty() {
+            let d = DiagnosticKind::ArgumentCount {
+                name: method.name.clone(),
+                want: 0,
+                found: args.len(),
+                at: span,
+            };
+            return self.rejected(d.into(), args);
+        }
+        let kind = receiver.ok().map(|r| tir::ExprKind::Len(Box::new(r)));
+        typed(span, Type::I64, false, kind)
+    }
+
     /// `to(arg)`: `i64(x)` takes a `u8` or a `char`; `u8(x)` and `char(x)` take an `i64`. Its
     /// argument expects no type, so a literal one is an `i64`.
     pub(super) fn convert(&mut self, span: Span, to: Type, args: &[ast::Arg]) -> Checked {
@@ -55,7 +188,7 @@ impl Checker {
                     want: from.iter().map(|ty| self.type_name(ty)).collect(),
                     got: self.type_name(ty),
                     at: arg.value.span,
-                    convert: None,
+                    fix: None,
                 }
                 .into(),
             },
@@ -108,5 +241,18 @@ fn single_term(e: &ast::Expr) -> bool {
             else_block,
             ..
         } => e.span.end != else_block.as_ref().unwrap_or(then_block).span.end,
+    }
+}
+
+/// `lhs && rhs`, at `span`.
+fn and(lhs: tir::Expr, rhs: tir::Expr, span: Span) -> tir::Expr {
+    tir::Expr {
+        kind: tir::ExprKind::Binary {
+            op: tir::BinaryOp::And,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        },
+        ty: Type::Bool,
+        span,
     }
 }

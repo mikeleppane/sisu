@@ -6,7 +6,7 @@
 //! the set of locals live after the current point. It must match codegen exactly:
 //! - `Call`, `New` and `ArrayLit` evaluate their arguments left to right; `Index` evaluates
 //!   base then index; `Contains` base then value; `ArrayFill` value then length; `Equal`,
-//!   `Is` and arithmetic lhs then rhs.
+//!   `Is`, `Concat` and arithmetic lhs then rhs.
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
@@ -105,6 +105,7 @@ impl Walk {
             ExprKind::Int(_)
             | ExprKind::Bool(_)
             | ExprKind::Char(_)
+            | ExprKind::Str(_)
             | ExprKind::None
             | ExprKind::Local(_)
             | ExprKind::Move(_) => {}
@@ -131,6 +132,7 @@ impl Walk {
                 self.expr(lhs);
             }
             ExprKind::Binary { lhs, rhs, .. }
+            | ExprKind::Concat { lhs, rhs }
             | ExprKind::Equal { lhs, rhs, .. }
             | ExprKind::Is { lhs, rhs }
             | ExprKind::ArrayFill {
@@ -330,6 +332,16 @@ mod tests {
             "fn f(xs: [[i64]]) -> bool { xs.contains(xs[0]) }",
             "f",
             &["(contains xs#0 (index (move xs#0) 0))"],
+        );
+    }
+
+    /// `Concat` evaluates its left operand, then its right: only the right one's read may move.
+    #[test]
+    fn concat_lhs_then_rhs() {
+        has(
+            "fn f(s: string) -> string { s + s }",
+            "f",
+            &["(concat s#0 (move s#0))"],
         );
     }
 

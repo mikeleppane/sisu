@@ -273,6 +273,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Char => Some(self.context.i32_type().into()),
             Type::Unit | Type::Never => None,
+            Type::String => panic!("`string` lands in Task 12"),
             // An object or an array is a pointer to its block.
             Type::Class(_) | Type::Array(_) => {
                 Some(self.context.ptr_type(AddressSpace::default()).into())
@@ -694,6 +695,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
             ExprKind::Char(c) => self.context.i32_type().const_int(u64::from(*c), false),
+            ExprKind::Str(_) => panic!("`Str` lands in Task 12"),
+            ExprKind::Concat { .. } => panic!("`Concat` lands in Task 12"),
             ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {
                 return Some(self.array_fill(&e.ty, value, len).into());

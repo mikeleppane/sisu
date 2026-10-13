@@ -19,10 +19,11 @@ pub(super) enum Helper {
     Unique,
 }
 
-/// The type whose helpers a counted `ty` uses: a class or an array, with any `?` removed.
+/// The type whose helpers a counted `ty` uses: a `string`, a class or an array, with any `?`
+/// removed.
 fn counted_core(ty: &Type) -> Option<&Type> {
     match ty {
-        Type::Class(_) | Type::Array(_) => Some(ty),
+        Type::String | Type::Class(_) | Type::Array(_) => Some(ty),
         Type::Optional(payload) => counted_core(payload),
         _ => None,
     }

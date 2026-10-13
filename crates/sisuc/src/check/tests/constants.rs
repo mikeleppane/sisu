@@ -278,6 +278,29 @@ fn const_char() {
     ));
 }
 
+/// A `string` constant folds `+` and chains as run time does, and each use is its literal.
+#[test]
+fn const_string() {
+    contains(
+        "const G = \"good\" + \"bye\"\nconst S: string = \"x\"\nconst L = \"a\" < \"b\" < \"c\"\nconst K = \"b\" < \"a\" < \"c\"\nfn main() {\n    let n = 1\n    print(G)\n    print(G)\n    print(S)\n    print(L)\n    print(K)\n}",
+        // A chain's locals stay with the constant: `main`'s first local is still 0.
+        &[
+            "(let n#0 1) (print \"goodbye\") (print \"goodbye\") (print \"x\") (print true) (print false)",
+        ],
+    );
+    rows(&[
+        (
+            "const G = \"a\"\nconst N = G.len()",
+            &[(Code::ConstantNotKnown, (2, 11))],
+        ),
+        ("const P = \"a\" + 1", &[(Code::Mismatch, (1, 17))]),
+    ]);
+    // Interpolation is not known at compile time, so it is not offered.
+    let src = with_main("const P = \"a\" + 1");
+    let d = diagnostic(&src, Code::Mismatch, (1, 17, "1"), &[]);
+    assert_eq!(fixes(&src, &d), []);
+}
+
 /// Constants share the namespace of functions and classes.
 #[test]
 fn name_errors() {

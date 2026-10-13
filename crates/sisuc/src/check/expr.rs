@@ -63,9 +63,10 @@ impl Checker {
             ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
             ExprKind::Char(c) => node(tir::ExprKind::Char(*c), Type::Char),
-            // shortcut: a string types as the `i64` 0, so that explanations and certain fixes
-            // that hold one check clean; Task 11 checks `Str` and Task 14 `Interpolate`.
-            ExprKind::Str(_) | ExprKind::Interpolate(_) => node(tir::ExprKind::Int(0), Type::I64),
+            ExprKind::Str(s) => node(tir::ExprKind::Str(s.clone()), Type::String),
+            // shortcut: an interpolation types as the `i64` 0, so that explanations and certain
+            // fixes that hold one check clean; Task 14 checks it.
+            ExprKind::Interpolate(_) => node(tir::ExprKind::Int(0), Type::I64),
             ExprKind::ArrayLit(elements) => self.array_lit(e.span, elements, expected),
             ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
             ExprKind::Index { base, index } => self.index(e.span, base, index),
@@ -180,20 +181,25 @@ impl Checker {
         Ok(self.against(operand, checked, Some(&Type::I64)))
     }
 
-    /// A comparison chain: every operand is of one integer type.
+    /// A comparison chain: every operand is of one integer type, or every one a `string`.
     fn compare(&mut self, span: Span, operands: &[ast::Expr], ops: &[CompareOp]) -> Checked {
         let operands: Vec<_> = operands.iter().collect();
-        let (checked, _, mismatched) = self.integers(&operands, None, false);
+        let (checked, ty, mismatched) = self.integers(&operands, None, Operator::Compare);
         let operands = checked.into_iter().collect::<Result<Vec<_>, _>>().ok();
-        typed(
-            span,
-            Type::Bool,
-            mismatched,
-            operands.map(|operands| tir::ExprKind::Compare {
-                operands,
-                ops: ops.to_vec(),
-            }),
-        )
+        match operands {
+            Some(operands) if ty == Some(Type::String) => {
+                Ok(self.string_chain(span, operands, ops))
+            }
+            operands => typed(
+                span,
+                Type::Bool,
+                mismatched,
+                operands.map(|operands| tir::ExprKind::Compare {
+                    operands,
+                    ops: ops.to_vec(),
+                }),
+            ),
+        }
     }
 
     /// An expression whose value is used: not `unit` or `never`.
@@ -282,7 +288,12 @@ impl Checker {
             let lhs = self.operand(lhs, Some(&want));
             return self.arithmetic(span, tir_op, want, lhs, rhs);
         }
-        let (checked, ty, mismatched) = self.integers(&[lhs, rhs], expected, true);
+        let operator = if tir_op == tir::BinaryOp::Add {
+            Operator::Plus { compound }
+        } else {
+            Operator::Arithmetic
+        };
+        let (checked, ty, mismatched) = self.integers(&[lhs, rhs], expected, operator);
         let chars: Vec<Span> = [lhs, rhs]
             .iter()
             .zip(&checked)
@@ -298,6 +309,9 @@ impl Checker {
         let [l, r]: [Checked; 2] = checked
             .try_into()
             .unwrap_or_else(|_| panic!("`integers` should return one result per operand"));
+        if ty == Some(Type::String) {
+            return self.concat(span, l, r, mismatched);
+        }
         let kind = l.ok().zip(r.ok()).map(|(l, r)| tir::ExprKind::Binary {
             op: tir_op,
             lhs: Box::new(l),
@@ -319,19 +333,26 @@ impl Checker {
     /// caller reports the operator, so what the operator's type finds wrong with the other
     /// operands is dropped, in either order. In a comparison, a `char` after a number reports
     /// that number, as a `char` before one reports the number.
+    ///
+    /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
+    /// drives from either side: an operand of another type is reported against `string`, with
+    /// the guess to interpolate, the one before a `string` included.
     fn integers(
         &mut self,
         operands: &[&ast::Expr],
         expected: Option<&Type>,
-        arithmetic: bool,
+        operator: Operator,
     ) -> (Vec<Checked>, Option<Type>, bool) {
+        let arithmetic = operator != Operator::Compare;
+        let compound = operator == (Operator::Plus { compound: true });
         let mut first = None;
-        let ty = if literal_type(expected) == Type::U8 {
+        let mut ty = if literal_type(expected) == Type::U8 {
             Some(Type::U8)
         } else if let Some(k) = operands.iter().position(|e| rank(e) == 0) {
             let checked = self.value(operands[k], None);
             let ty = type_of(&checked).map(|ty| match payload(ty) {
                 Type::Char if !arithmetic => Type::Char,
+                Type::String if operator != Operator::Arithmetic => Type::String,
                 _ => literal_type(Some(ty)),
             });
             first = Some((k, checked));
@@ -355,7 +376,29 @@ impl Checker {
                 deferred.extend(self.diagnostics.drain(start..));
             }
             let char_value = type_of(&value) == Some(&Type::Char);
-            let (operand, m) = if arithmetic && char_value {
+            let got = type_of(&value).cloned();
+            let joins = matches!(operator, Operator::Plus { .. });
+            let (operand, m) = if let Some(got) = got
+                .as_ref()
+                .filter(|got| joins && want == Some(Type::String) && **got != Type::String)
+            {
+                deferred.push(self.concat_mismatch(e, got, operands, compound));
+                (Err(Poisoned::error()), true)
+            } else if let Some(k) = leader.filter(|_| {
+                joins
+                    && !compound
+                    && got == Some(Type::String)
+                    && want.as_ref().is_some_and(|want| *want != Type::String)
+            }) {
+                // A `string` after another type in `+`: the other is the one reported.
+                if let Some(other) = type_of(&checked[k]).cloned() {
+                    let d = self.concat_mismatch(operands[k], &other, operands, false);
+                    self.diagnostics.push(d);
+                }
+                checked[k] = Err(Poisoned::error());
+                (want, ty) = (None, Some(Type::String));
+                (Err(Poisoned::error()), true)
+            } else if arithmetic && char_value {
                 (Err(Poisoned::typed(Type::Char)), false)
             } else if let Some(k) = leader
                 .filter(|_| char_value && !arithmetic && matches!(want, Some(Type::I64 | Type::U8)))
@@ -481,7 +524,7 @@ impl Checker {
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
             // Once an operand is `Error`, the later one is not held to `is`.
             let Some(ty) = type_of(checked) else { break };
-            if matches!(payload(ty), Type::Array(_)) || !ty.is_counted() {
+            if matches!(payload(ty), Type::Array(_) | Type::String) || !ty.is_counted() {
                 let kind = DiagnosticKind::IsNeedsObjects {
                     found: self.type_name(ty),
                     at: side.span,
@@ -635,7 +678,7 @@ impl Checker {
                     want: vec![self.type_name(ty)],
                     got: "None".to_string(),
                     at: span,
-                    convert: None,
+                    fix: None,
                 },
                 true,
             ),
@@ -941,9 +984,13 @@ impl Checker {
     ) -> Checked {
         // The arguments are not part of an assignment target's chain; `expr` restores the flag.
         let target = std::mem::take(&mut self.in_target);
-        if let Some(ty @ Type::Array(_)) = type_of(&receiver) {
-            let ty = ty.clone();
-            return self.array_method(span, receiver, &ty, method, args);
+        match type_of(&receiver) {
+            Some(ty @ Type::Array(_)) => {
+                let ty = ty.clone();
+                return self.array_method(span, receiver, &ty, method, args);
+            }
+            Some(Type::String) => return self.string_method(span, receiver, method, args),
+            _ => {}
         }
         let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method, target) else {
             self.labels(args);
@@ -1218,6 +1265,17 @@ impl Checker {
             let _ = self.expr(&arg.value, Some(&UNKNOWN));
         }
     }
+}
+
+/// The operator whose operands `integers` checks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Operator {
+    /// A comparison chain.
+    Compare,
+    /// `+`, which also joins `string`s; `compound` for a compound assignment's.
+    Plus { compound: bool },
+    /// `- * / %`.
+    Arithmetic,
 }
 
 /// The operator and the type it takes, for all but `==` and `!=`.

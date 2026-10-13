@@ -1,4 +1,4 @@
-error[E0085]: a constant is `i64`, `u8`, `bool` or `char`
+error[E0085]: a constant is `i64`, `u8`, `bool`, `char` or `string`
  --> E0085.sisu:1:15
   |
 1 | const PRIMES: [i64] = [2, 3, 5]

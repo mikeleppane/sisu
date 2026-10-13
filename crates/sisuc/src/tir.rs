@@ -22,12 +22,13 @@ pub(crate) enum Type {
     U8,
     Bool,
     Char,
+    String,
     Unit,
     Never,
     Class(ClassId),
     /// `[T]`.
     Array(Box<Type>),
-    /// Holds `I64`, `U8`, `Bool`, `Char`, `Class` or `Array`.
+    /// Holds `I64`, `U8`, `Bool`, `Char`, `String`, `Class` or `Array`.
     Optional(Box<Type>),
 }
 
@@ -122,6 +123,8 @@ pub(crate) enum ExprKind {
     Bool(bool),
     /// A `char` literal.
     Char(char),
+    /// A string literal, decoded.
+    Str(String),
     None,
     Local(LocalId),
     /// A read of a counted local that takes its reference; only `last_use` makes one.
@@ -174,6 +177,11 @@ pub(crate) enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// `lhs + rhs` on `string`s.
+    Concat {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     Compare {
         operands: Vec<Expr>,
         ops: Vec<CompareOp>,
@@ -211,7 +219,7 @@ impl Type {
     /// Whether a value of this type is an owned reference, which codegen counts.
     pub(crate) fn is_counted(&self) -> bool {
         match self {
-            Type::Class(_) | Type::Array(_) => true,
+            Type::String | Type::Class(_) | Type::Array(_) => true,
             Type::Optional(payload) => payload.is_counted(),
             _ => false,
         }
@@ -225,6 +233,7 @@ impl Expr {
             ExprKind::Int(_)
             | ExprKind::Bool(_)
             | ExprKind::Char(_)
+            | ExprKind::Str(_)
             | ExprKind::None
             | ExprKind::Local(_)
             | ExprKind::Move(_) => false,
@@ -243,6 +252,7 @@ impl Expr {
             | ExprKind::Print(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
             ExprKind::Binary { lhs, rhs, .. }
+            | ExprKind::Concat { lhs, rhs }
             | ExprKind::Equal { lhs, rhs, .. }
             | ExprKind::Is { lhs, rhs }
             | ExprKind::ArrayFill {
@@ -311,6 +321,7 @@ impl fmt::Display for Type {
             Type::U8 => "u8",
             Type::Bool => "bool",
             Type::Char => "char",
+            Type::String => "string",
             Type::Unit => "unit",
             Type::Never => "never",
             // A class's name lives in the program: `Program::type_name` prints it.
@@ -393,6 +404,7 @@ impl Printer<'_> {
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::Char(c) => write!(f, "{c:?}"),
+            ExprKind::Str(s) => write!(f, "{s:?}"),
             ExprKind::None => f.write_str("None"),
             ExprKind::Local(id) => self.local(f, *id),
             ExprKind::Move(id) => {
@@ -426,6 +438,7 @@ impl Printer<'_> {
             ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
+            ExprKind::Concat { lhs, rhs } => self.binary(f, "concat", lhs, rhs),
             ExprKind::Compare { operands, ops } => {
                 // `(< a b <= c)`: the first operator leads, the rest sit between operands.
                 write!(f, "({} ", ops[0])?;
@@ -870,6 +883,35 @@ mod tests {
         assert_eq!(
             program.to_string(),
             "(fn f ((c#0 char)) unit (block (print 'ä') (print (i64 c#0)) (print (char 228))))"
+        );
+    }
+
+    #[test]
+    fn prints_strings() {
+        // fn f(s: string) { print("a\"\n" + s) }
+        let lit = expr(ExprKind::Str("a\"\n".into()), Type::String);
+        let s = expr(ExprKind::Local(LocalId(0)), Type::String);
+        let concat = ExprKind::Concat {
+            lhs: Box::new(lit),
+            rhs: Box::new(s),
+        };
+        let print = expr(
+            ExprKind::Print(Box::new(expr(concat, Type::String))),
+            Type::Unit,
+        );
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0)],
+                ret: Type::Unit,
+                locals: vec![param("s", Type::String)],
+                body: block(vec![Stmt::Expr(print)]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            r#"(fn f ((s#0 string)) unit (block (print (concat "a\"\n" s#0))))"#
         );
     }
 

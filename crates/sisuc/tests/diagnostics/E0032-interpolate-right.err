@@ -1,0 +1,14 @@
+error[E0032]: expected `string`, found `i64`
+ --> E0032-interpolate-right.sisu:3:11
+  |
+3 |     print(n + " items")
+  |           ^
+  |
+help: use interpolation
+  |
+3 -     print(n + " items")
+3 +     print("{n} items")
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

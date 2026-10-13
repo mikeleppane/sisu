@@ -11,6 +11,7 @@ mod for_loops;
 mod patterns;
 mod places;
 mod shadowing;
+mod strings;
 mod u8;
 
 fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {

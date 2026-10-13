@@ -274,13 +274,13 @@ pub(crate) enum DiagnosticKind {
         want: String,
         at: Span,
     },
-    /// A value of type `got`, at `at`, where one of the types `want` is expected; `convert` is
-    /// the conversion that would fit.
+    /// A value of type `got`, at `at`, where one of the types `want` is expected; `fix` is the
+    /// rewrite that would fit.
     Mismatch {
         want: Vec<String>,
         got: String,
         at: Span,
-        convert: Option<Conversion>,
+        fix: Option<MismatchFix>,
     },
     /// The binding `name`, at `at`, which no scope holds.
     BindingNotFound {
@@ -623,6 +623,25 @@ pub(crate) struct Conversion {
     pub(crate) to: &'static str,
     pub(crate) through: Option<&'static str>,
     pub(crate) operand: Span,
+}
+
+/// A rewrite that would give a mismatched value the type expected.
+#[derive(Clone, Copy)]
+pub(crate) enum MismatchFix {
+    Convert(Conversion),
+    /// A `string` `+` a value that is not one, as one interpolated literal of both operands.
+    Interpolate {
+        lhs: Operand,
+        rhs: Operand,
+    },
+}
+
+/// An operand of a `+` that interpolation joins: where it is written, and whether it is a
+/// string literal, which loses its quote on the joined side instead of being wrapped.
+#[derive(Clone, Copy)]
+pub(crate) struct Operand {
+    pub(crate) span: Span,
+    pub(crate) literal: bool,
 }
 
 /// Arithmetic done on `char`s by converting each to `i64` and the result back: `operands` is the
@@ -1106,7 +1125,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 suggestion,
             } => similar(
                 Diagnostic::coded(code, at, format!("cannot find type `{name}`")).with_help(
-                    "the types are `i64`, `u8`, `bool`, `char`, classes and arrays such as `[i64]`",
+                    "the types are `i64`, `u8`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
                 ),
                 at,
                 suggestion,
@@ -1120,7 +1139,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 want,
                 got,
                 at,
-                convert,
+                fix,
             } => {
                 let want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
                 let d = Diagnostic::coded(
@@ -1128,12 +1147,12 @@ impl From<DiagnosticKind> for Diagnostic {
                     at,
                     format!("expected {}, found `{got}`", want.join(" or ")),
                 );
-                match convert {
-                    Some(Conversion {
+                match fix {
+                    Some(MismatchFix::Convert(Conversion {
                         to,
                         through,
                         operand,
-                    }) => d.with_fix(Fix {
+                    })) => d.with_fix(Fix {
                         message: format!("if the types are right, convert it with `{to}(...)`"),
                         certain: false,
                         edits: vec![
@@ -1149,6 +1168,44 @@ impl From<DiagnosticKind> for Diagnostic {
                             },
                         ],
                     }),
+                    Some(MismatchFix::Interpolate { lhs, rhs }) => {
+                        // The text between the operands goes, with a literal's quote beside it;
+                        // any other operand is wrapped in braces, and the outer ones get quotes.
+                        let (start, close) = if lhs.literal {
+                            (lhs.span.end - 1, "")
+                        } else {
+                            (lhs.span.end, "}")
+                        };
+                        let (end, open) = if rhs.literal {
+                            (rhs.span.start + 1, "")
+                        } else {
+                            (rhs.span.start, "{")
+                        };
+                        let mut edits = vec![Edit {
+                            span: Span::new(start, end),
+                            replacement: format!("{close}{open}"),
+                        }];
+                        if !lhs.literal {
+                            edits.insert(
+                                0,
+                                Edit {
+                                    span: Span::new(lhs.span.start, lhs.span.start),
+                                    replacement: "\"{".to_string(),
+                                },
+                            );
+                        }
+                        if !rhs.literal {
+                            edits.push(Edit {
+                                span: Span::new(rhs.span.end, rhs.span.end),
+                                replacement: "}\"".to_string(),
+                            });
+                        }
+                        d.with_fix(Fix {
+                            message: "use interpolation".to_string(),
+                            certain: false,
+                            edits,
+                        })
+                    }
                     None => d,
                 }
             }
@@ -1367,7 +1424,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 format!("`{name}` is a field of `{owner}`, not a method"),
             ),
             DiagnosticKind::PrintArgument { at, class } => {
-                let takes = "`print` takes one `i64`, `u8`, `bool` or `char`";
+                let takes = "`print` takes one `i64`, `u8`, `bool`, `char` or `string`";
                 match class {
                     Some(class) => Diagnostic::coded(code, at, format!("cannot print `{class}`"))
                         .with_help(takes),
@@ -1555,7 +1612,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 })
             }
             DiagnosticKind::ConstantType { at } => {
-                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `bool` or `char`")
+                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `bool`, `char` or `string`")
             }
             DiagnosticKind::ConstantNotKnown { at } => {
                 Diagnostic::coded(code, at, "a constant's value must be known at compile time")

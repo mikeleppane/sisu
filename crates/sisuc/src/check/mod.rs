@@ -12,7 +12,8 @@ use std::collections::HashMap;
 
 use crate::ast;
 use crate::diagnostic::{
-    Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, Severity, Span, suggestion,
+    Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, MismatchFix, Severity, Span,
+    suggestion,
 };
 use crate::tir::{self, Type};
 use constant::ConstInfo;
@@ -156,6 +157,8 @@ struct Checker {
     in_target: bool,
     /// Where each comment starts.
     comments: Vec<usize>,
+    /// Whether a constant's value is being checked, where interpolation is not known.
+    in_constant: bool,
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
@@ -175,6 +178,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         invalid_jump: false,
         in_target: false,
         comments: program.comments.clone(),
+        in_constant: false,
     };
     checker.collect_names(program);
     let declared = checker.collect_signatures(program);
@@ -537,7 +541,8 @@ impl Checker {
                     Type::Class(id)
                 } else {
                     let span = Span::new(ty.span.start, ty.span.start + name.len());
-                    let types = ["i64", "u8", "bool", "char"].map(|ty| (ty, Definition::Type));
+                    let types =
+                        ["i64", "u8", "bool", "char", "string"].map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
                     self.report(DiagnosticKind::UnknownType {
                         name: name.clone(),
@@ -683,17 +688,19 @@ impl Checker {
             want: vec![self.type_name(want)],
             got: self.type_name(got),
             at: span,
-            convert: to
+            fix: to
                 .zip(source.filter(|e| {
                     !matches!(
                         e.kind,
                         ast::ExprKind::If { .. } | ast::ExprKind::IfLet { .. }
                     )
                 }))
-                .map(|(to, e)| Conversion {
-                    to,
-                    through,
-                    operand: e.span,
+                .map(|(to, e)| {
+                    MismatchFix::Convert(Conversion {
+                        to,
+                        through,
+                        operand: e.span,
+                    })
                 }),
         }
         .into()
@@ -707,6 +714,7 @@ fn built_in_type(name: &str) -> Option<Type> {
         "u8" => Some(Type::U8),
         "bool" => Some(Type::Bool),
         "char" => Some(Type::Char),
+        "string" => Some(Type::String),
         _ => None,
     }
 }

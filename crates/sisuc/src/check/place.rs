@@ -71,7 +71,7 @@ impl Checker {
     /// `x op= e` is `x = x op e`. On any other place, each of its operands is bound to a fresh
     /// local first, in source order, so it runs once: `p[e] op= v` is
     /// `Block { let t = e; Assign { p[t], p[t] op v } }`. The root binding is never copied.
-    /// `op` takes `u8`s when the place holds a `u8`, else `i64`s.
+    /// `op` takes `u8`s when the place holds a `u8`, else `i64`s; `+=` on a `string` joins.
     pub(super) fn compound_assign(
         &mut self,
         span: Span,
@@ -149,10 +149,15 @@ impl Checker {
         };
         let read = match &path {
             Some((root, temps)) => Ok(self.read(build(*root, reads(temps)), target.span)),
-            None => Err(Poisoned::typed(ty)),
+            None => Err(Poisoned::typed(ty.clone())),
         };
-        let read = self.against(target, read, Some(&want));
-        let value = self.arithmetic(span, op, want, read, value);
+        let value = if ty == Type::String && op == tir::BinaryOp::Add {
+            let (value, mismatched) = self.operand(value, Some(&ty));
+            self.concat(span, read, value, mismatched)
+        } else {
+            let read = self.against(target, read, Some(&want));
+            self.arithmetic(span, op, want, read, value)
+        };
         let (Some((root, temps)), Ok(value), true) = (path, value, place.writable) else {
             return Err(unit());
         };
