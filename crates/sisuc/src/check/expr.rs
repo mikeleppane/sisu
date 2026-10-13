@@ -335,8 +335,9 @@ impl Checker {
     /// that number, as a `char` before one reports the number.
     ///
     /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
-    /// drives from either side: an operand of another type is reported against `string`, with
-    /// the guess to interpolate, the one before a `string` included.
+    /// drives from either side, an expected `u8` notwithstanding: an operand of another type is
+    /// reported against `string`, with the guess to interpolate, the one before a `string`
+    /// included, in place of what its own type was found to lack.
     fn integers(
         &mut self,
         operands: &[&ast::Expr],
@@ -366,6 +367,8 @@ impl Checker {
         // The diagnostics of the operator's type: mismatches, and a literal's, which that type
         // types. They wait until a `char` operand is ruled out.
         let mut deferred = Vec::new();
+        // The type of the operand checked last, as it was found, before it was held to `want`.
+        let mut before = None;
         for (i, e) in operands.iter().enumerate() {
             let start = self.diagnostics.len();
             let value = match first.take_if(|(k, _)| *k == i) {
@@ -384,20 +387,22 @@ impl Checker {
             {
                 deferred.push(self.concat_mismatch(e, got, operands, compound));
                 (Err(Poisoned::error()), true)
-            } else if let Some(k) = leader.filter(|_| {
-                joins
-                    && !compound
-                    && got == Some(Type::String)
-                    && want.as_ref().is_some_and(|want| *want != Type::String)
-            }) {
-                // A `string` after another type in `+`: the other is the one reported.
-                if let Some(other) = type_of(&checked[k]).cloned() {
-                    let d = self.concat_mismatch(operands[k], &other, operands, false);
+            } else if joins && !compound && got == Some(Type::String) && ty != Some(Type::String) {
+                // A `string` in `+` makes it a join, whatever the operand before it, if any, was
+                // held to: that operand is reported against `string` instead.
+                ty = Some(Type::String);
+                if let Some(other) = before.take() {
+                    // All that is deferred is that operand's, the first of two.
+                    deferred.clear();
+                    let d = self.concat_mismatch(operands[0], &other, operands, false);
                     self.diagnostics.push(d);
+                    checked[0] = Err(Poisoned::error());
+                    want = None;
+                    (Err(Poisoned::error()), true)
+                } else {
+                    want = Some(Type::String);
+                    (value, false)
                 }
-                checked[k] = Err(Poisoned::error());
-                (want, ty) = (None, Some(Type::String));
-                (Err(Poisoned::error()), true)
             } else if arithmetic && char_value {
                 (Err(Poisoned::typed(Type::Char)), false)
             } else if let Some(k) = leader
@@ -422,6 +427,7 @@ impl Checker {
             }
             mismatched |= m;
             checked.push(operand);
+            before = got;
         }
         // The operator is rejected whatever stands beside the `char`.
         if !(arithmetic && checked.iter().any(|c| type_of(c) == Some(&Type::Char))) {

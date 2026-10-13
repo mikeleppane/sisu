@@ -157,6 +157,8 @@ struct Checker {
     in_target: bool,
     /// Where each comment starts.
     comments: Vec<usize>,
+    /// Where each string literal starts, in order.
+    quotes: Vec<usize>,
     /// Whether a constant's value is being checked, where interpolation is not known.
     in_constant: bool,
 }
@@ -178,6 +180,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         invalid_jump: false,
         in_target: false,
         comments: program.comments.clone(),
+        quotes: program.quotes.clone(),
         in_constant: false,
     };
     checker.collect_names(program);

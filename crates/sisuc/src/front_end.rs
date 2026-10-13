@@ -103,20 +103,20 @@ fn main() {
         );
     }
 
-    /// The string is reported where an `i64` is wanted, and `main` checks on.
+    /// An unclosed string breaks `main`, so the lexer's error stands for it and `totl` goes
+    /// unreported.
     #[test]
     fn spec_sample_with_quote() {
         let src = SAMPLE.replace(
             "let xs = [1, 2, 3]\n",
-            "let xs = [1, 2, 3]\n    let n: i64 = \"three\"\n",
+            "let xs = [1, 2, 3]\n    let n: i64 = \"three\n",
         );
         assert_eq!(
             codes(&src),
             [
                 (Code::MethodAsFunction, (3, 17)),
                 (Code::AssignToImmutable, (4, 9)),
-                (Code::Mismatch, (11, 18)),
-                (Code::FunctionNotFound, (12, 11))
+                (Code::LiteralNotClosed, (11, 18))
             ]
         );
     }

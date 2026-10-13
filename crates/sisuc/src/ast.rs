@@ -11,6 +11,9 @@ pub(crate) struct Program {
     pub(crate) broken: Vec<Broken>,
     /// Where each comment starts, so that a fix does not delete one as if it were certain.
     pub(crate) comments: Vec<usize>,
+    /// Where each string literal starts, at its opening quote, so that a fix can tell one from
+    /// a literal in parentheses, whose span starts at the `(`.
+    pub(crate) quotes: Vec<usize>,
 }
 
 /// A function, class or constant that holds a syntax error, so only its name survives.
@@ -696,6 +699,7 @@ mod tests {
             items: vec![Item::Function(is_prime), Item::Function(second)],
             broken: Vec::new(),
             comments: Vec::new(),
+            quotes: Vec::new(),
         };
         assert_eq!(
             program.to_string(),

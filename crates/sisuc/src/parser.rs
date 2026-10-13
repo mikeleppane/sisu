@@ -389,6 +389,12 @@ impl Parser<'_> {
                 items,
                 broken,
                 comments: self.comments.to_vec(),
+                quotes: self
+                    .tokens
+                    .iter()
+                    .filter(|t| matches!(t.kind, TokenKind::Str(_) | TokenKind::StrHead(_)))
+                    .map(|t| t.span.start)
+                    .collect(),
             },
             diagnostics,
             checkable,

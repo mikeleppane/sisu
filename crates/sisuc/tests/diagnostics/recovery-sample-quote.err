@@ -24,22 +24,13 @@ help: declare it with `let mut`
 2 |     let mut sum = 0
   |         +++
 
-error[E0032]: expected `i64`, found `string`
+error[E0093]: string literal is not closed
   --> recovery-sample-quote.sisu:11:18
    |
-11 |     let n: i64 = "three"
-   |                  ^^^^^^^
+11 |     let n: i64 = "three
+   |                  ^
+   |
+   = help: write `\n` for a line break
 
-error[E0052]: cannot find function `totl`
-  --> recovery-sample-quote.sisu:12:11
-   |
-12 |     print(totl(xs))
-   |           ^^^^
-   |
-help: a function with a similar name exists: `total`
-   |
-12 |     print(total(xs))
-   |              +
-
-sisuc: 4 errors
-sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0032, E0052, E0070
+sisuc: 3 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0070, E0093

@@ -40,9 +40,23 @@ fn concat_spills() {
     );
 }
 
+/// A comparison of two `string`s whose right operand exits binds the left one first.
+#[test]
+fn compare_spills() {
+    contains(
+        "fn f(c: bool, a: string, b: string) -> bool {\n    a < (if c { return false } else { b })\n}\nfn main() {}",
+        &["(block (let #3 a#1) (let #4 (if c#0", "(< #3 #4)"],
+    );
+}
+
+/// `src` with a class `P` after it, on lines that come after `body`'s.
+fn with_class(src: &str) -> String {
+    format!("{src}\nclass P {{}}")
+}
+
 #[test]
 fn concat_mismatch() {
-    let params = "s: string, c: char, n: i64, xs: [i64]";
+    let params = "s: string, c: char, n: i64, xs: [i64], p: P";
     // The operand reported, and the statement the guess makes of line 2, if there is one.
     let rows = [
         ("print(s + c)", (2, 15, "c"), Some("print(\"{s}{c}\")")),
@@ -60,19 +74,51 @@ fn concat_mismatch() {
             Some("print(\"{n} items\")"),
         ),
         ("print(s + xs)", (2, 15, "xs"), None),
+        // A `string` after an operand that is no number still drives.
+        (
+            "print(true + s)",
+            (2, 11, "true"),
+            Some("print(\"{true}{s}\")"),
+        ),
+        ("print(xs + s)", (2, 11, "xs"), None),
+        ("print(p + s)", (2, 11, "p"), None),
+        // So does one under an expected `u8`, in either place.
+        (
+            "let b: u8 = true + s",
+            (2, 17, "true"),
+            Some("let b: u8 = \"{true}{s}\""),
+        ),
+        (
+            "let b: u8 = s + n",
+            (2, 21, "n"),
+            Some("let b: u8 = \"{s}{n}\""),
+        ),
+        // A literal in parentheses is wrapped whole, as any other operand is.
+        (
+            "print((\"a\") + n)",
+            (2, 19, "n"),
+            Some("print(\"{(\"a\")}{n}\")"),
+        ),
+        (
+            "print(n + (\"a\"))",
+            (2, 11, "n"),
+            Some("print(\"{n}{(\"a\")}\")"),
+        ),
+        // The guess would delete the comment between the operands.
+        ("print(s + // why\n        n)", (3, 9, "n"), None),
         // A compound assignment is a statement, which a rewrite would break.
         ("let mut t = s\n    t += n", (3, 10, "n"), None),
         ("print(s - s)", (2, 11, "s"), None),
     ];
     for (statement, pos, fixed) in rows {
-        let src = body(params, statement);
+        let src = with_class(&body(params, statement));
         let d = diagnostic(&src, Code::Mismatch, pos, &[]);
         let found = fixes(&src, &d);
         match fixed {
             Some(fixed) => {
                 assert_eq!(found.len(), 1, "{src}");
                 assert!(!found[0].0, "{src}: the fix is a guess");
-                assert_eq!(applied(&src, &d), body(params, fixed));
+                assert_eq!(applied(&src, &d), with_class(&body(params, fixed)));
             }
             None => assert_eq!(found, [], "{src}"),
         }
@@ -118,7 +164,7 @@ fn compound_on_string_field() {
     let class = "class P {\n    mut name: string\n}\nfn f(p: P) {\n";
     contains(
         &with_main(&format!("{class}    p.name += \"x\"\n}}")),
-        &["(= (. #1 name) (concat (. #1 name) \"x\"))"],
+        &["(= (. #", " name) (concat (. #", " name) \"x\"))"],
     );
     codes(
         &with_main(&format!("{class}    p.name -= \"x\"\n}}")),
@@ -146,6 +192,10 @@ fn string_methods() {
             .collect();
         assert_eq!(fixes(&src, &d), expected);
     }
+    codes(
+        "fn main() {\n    print(\"a\".len(1))\n}",
+        &[(Code::ArgumentCount, (2, 11))],
+    );
 }
 
 #[test]

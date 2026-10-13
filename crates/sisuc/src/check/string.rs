@@ -29,7 +29,8 @@ impl Checker {
 
     /// The operand `e` of the `+` over `operands`, of type `got`, which is not the `string` the
     /// other operand makes it. A value that interpolation prints gets the guess to interpolate
-    /// it, unless the `+` is a `compound` assignment's or a constant's.
+    /// it, unless the `+` is a `compound` assignment's or a constant's, or a comment between
+    /// the operands would go with the text the guess removes.
     pub(super) fn concat_mismatch(
         &self,
         e: &ast::Expr,
@@ -44,14 +45,16 @@ impl Checker {
         let [lhs, rhs] = operands else {
             unreachable!("`+` should have two operands");
         };
-        if compound || self.in_constant || !printed {
+        let between = lhs.span.end..rhs.span.start;
+        let commented = self.comments.iter().any(|c| between.contains(c));
+        if compound || self.in_constant || !printed || commented {
             return self.mismatch(e.span, Some(e), &Type::String, got);
         }
-        // shortcut: a parenthesized literal's span takes in its parentheses, which the edit
-        // that drops its quote then cuts; upgrade once the AST keeps a literal's own span.
+        // A literal in parentheses starts at its `(`, and is wrapped whole like any other value.
         let operand = |e: &ast::Expr| Operand {
             span: e.span,
-            literal: matches!(e.kind, ExprKind::Str(_) | ExprKind::Interpolate(_)),
+            literal: matches!(e.kind, ExprKind::Str(_) | ExprKind::Interpolate(_))
+                && self.quotes.binary_search(&e.span.start).is_ok(),
         };
         DiagnosticKind::Mismatch {
             want: vec![self.type_name(&Type::String)],
