@@ -175,8 +175,13 @@ pub(crate) enum DiagnosticKind {
     DigitSeparator { at: Span },
     /// An integer literal at `at` that does not fit `i64`.
     IntegerTooLarge { at: Span },
-    /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`).
-    BasePrefixUpperCase { prefix: char, at: Span },
+    /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`). `certain` is
+    /// false when the lower case literal may still be rejected, as a bare 2^63 is.
+    BasePrefixUpperCase {
+        prefix: char,
+        certain: bool,
+        at: Span,
+    },
     /// The base prefix at `at` (`0` and `prefix`) with no digits after it.
     BasePrefixWithoutDigits { prefix: char, at: Span },
     /// The `digit`, at `at`, in a literal of base `radix` (2, 8 or 16), which is not a digit there.
@@ -743,10 +748,14 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::IntegerTooLarge { at } => {
                 Diagnostic::coded(code, at, "integer literal is too large for `i64`")
             }
-            DiagnosticKind::BasePrefixUpperCase { prefix, at } => {
+            DiagnosticKind::BasePrefixUpperCase {
+                prefix,
+                certain,
+                at,
+            } => {
                 Diagnostic::coded(code, at, "base prefixes are lower case").with_fix(Fix {
                     message: "write the prefix in lower case".to_string(),
-                    certain: true,
+                    certain,
                     edits: vec![Edit {
                         span: Span::new(at.end - 1, at.end),
                         replacement: prefix.to_ascii_lowercase().to_string(),

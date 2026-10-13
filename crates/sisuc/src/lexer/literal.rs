@@ -63,10 +63,17 @@ pub(super) fn number(
         .ok()
         .filter(|&n| n <= MIN_MAGNITUDE)
         .ok_or_else(|| literal_too_large(whole))?;
-    // Reported last, so that its fix leaves a literal that lexes.
+    // Reported last, so that its fix leaves a literal that lexes. A bare 2^63 still fails to
+    // parse; only a `-` before it makes it valid, which the lexer cannot see.
     if let Some((_, p)) = prefix.filter(|(_, p)| p.is_ascii_uppercase()) {
         let at = Span::new(start, start + 2);
-        return Err(DiagnosticKind::BasePrefixUpperCase { prefix: p, at }.into());
+        let certain = value != MIN_MAGNITUDE;
+        return Err(DiagnosticKind::BasePrefixUpperCase {
+            prefix: p,
+            certain,
+            at,
+        }
+        .into());
     }
     Ok(TokenKind::Int {
         value,

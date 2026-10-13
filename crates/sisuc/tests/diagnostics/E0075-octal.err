@@ -1,0 +1,14 @@
+error[E0075]: base prefixes are lower case
+ --> E0075-octal.sisu:2:13
+  |
+2 |     let n = 0O17
+  |             ^^
+  |
+help: write the prefix in lower case
+  |
+2 -     let n = 0O17
+2 +     let n = 0o17
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0075

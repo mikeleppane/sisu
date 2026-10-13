@@ -1071,6 +1071,24 @@ mod tests {
         }
     }
 
+    /// A bare 2^63 does not parse, so lower-casing its prefix is a guess; after a `-` it is right.
+    #[test]
+    fn upper_case_prefix_fix_at_min_magnitude_is_a_guess() {
+        use crate::front_end::front_end;
+        let literal = "0X8000_0000_0000_0000";
+        let d = only(literal);
+        assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
+        for (sign, parses) in [("", false), ("-", true)] {
+            let src = format!("fn main() {{ {sign}{literal} }}");
+            let fixed = apply_fix(&src, &only(&src));
+            let clean = front_end(&fixed).1.is_empty();
+            assert_eq!(clean, parses, "{fixed}");
+        }
+        // One below it is certain: the fixed literal parses anywhere.
+        let d = only("0X7FFF_FFFF_FFFF_FFFF");
+        assert!(fix_edits(&d).is_some_and(|(certain, _)| certain));
+    }
+
     /// A prefix letter after the `0` with a gap is an identifier, not a base.
     #[test]
     fn base_prefix_needs_no_gap() {
