@@ -276,11 +276,13 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A value of type `got`, at `at`, where one of the types `want` is expected; `fix` is the
-    /// rewrite that would fit.
+    /// rewrite that would fit. `other` is the `string` operand of the `+` that expects a
+    /// `string` of it, if that is what does.
     Mismatch {
         want: Vec<String>,
         got: String,
         at: Span,
+        other: Option<Span>,
         fix: Option<MismatchFix>,
     },
     /// The binding `name`, at `at`, which no scope holds.
@@ -1163,14 +1165,18 @@ impl From<DiagnosticKind> for Diagnostic {
                 want,
                 got,
                 at,
+                other,
                 fix,
             } => {
                 let want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
-                let d = Diagnostic::coded(
+                let mut d = Diagnostic::coded(
                     code,
                     at,
                     format!("expected {}, found `{got}`", want.join(" or ")),
                 );
+                if let Some(other) = other {
+                    d = d.with_secondary(other, "`+` joins this `string`");
+                }
                 match fix {
                     Some(MismatchFix::Convert(Conversion {
                         to,

@@ -2,7 +2,9 @@ error[E0032]: expected `string`, found `i64`
  --> E0032-interpolate.sisu:3:23
   |
 3 |     print("count: " + n)
-  |                       ^
+  |           ---------   ^
+  |           |
+  |           `+` joins this `string`
   |
 help: use interpolation
   |

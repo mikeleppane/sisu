@@ -954,6 +954,11 @@ fn block_after_return_is_never() {
 #[test]
 fn neg_needs_i64() {
     codes("fn main() { print(-true) }", &[(Code::Mismatch, (1, 20))]);
+    // An unknown name is reported once: the minus adds nothing beside it.
+    codes(
+        "fn main() { print(-nope) }",
+        &[(Code::BindingNotFound, (1, 20))],
+    );
 }
 
 #[test]

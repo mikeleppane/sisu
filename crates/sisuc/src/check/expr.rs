@@ -69,20 +69,7 @@ impl Checker {
             ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
             ExprKind::Index { base, index } => self.index(e.span, base, index),
             ExprKind::NoneLit => self.none(e.span, expected),
-            ExprKind::Name(name) => match self.lookup(name) {
-                Some(Binding {
-                    local,
-                    ty: Some(ty),
-                    ..
-                }) => node(tir::ExprKind::Local(*local), ty.clone()),
-                // `Error`: its diagnostic was recorded where it was bound.
-                Some(_) => Err(Poisoned::error()),
-                None => self.constant_use(name, e.span).unwrap_or_else(|| {
-                    let d = self.not_found(name, e.span);
-                    self.diagnostics.push(d);
-                    Err(Poisoned::error())
-                }),
-            },
+            ExprKind::Name(name) => self.name(e.span, name),
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
             ExprKind::SelfValue => {
                 let Some(class) = self.self_class else {
@@ -122,9 +109,12 @@ impl Checker {
                     }),
                 )
             }
-            ExprKind::Binary { op, lhs, rhs } => {
-                self.binary(e.span, *op, lhs, rhs, expected, false)
-            }
+            ExprKind::Binary {
+                op,
+                op_span,
+                lhs,
+                rhs,
+            } => self.binary(e.span, (*op, *op_span), lhs, rhs, expected, false),
             ExprKind::Compare { operands, ops } => self.compare(e.span, operands, ops),
             ExprKind::If {
                 cond,
@@ -151,6 +141,28 @@ impl Checker {
                     ty,
                     span: e.span,
                 }
+            }),
+        }
+    }
+
+    /// A read of `name`: a local, a constant, or an unknown name, which is reported.
+    fn name(&mut self, span: Span, name: &str) -> Checked {
+        match self.lookup(name) {
+            Some(Binding {
+                local,
+                ty: Some(ty),
+                ..
+            }) => Ok(tir::Expr {
+                kind: tir::ExprKind::Local(*local),
+                ty: ty.clone(),
+                span,
+            }),
+            // `Error`: its diagnostic was recorded where it was bound.
+            Some(_) => Err(Poisoned::error()),
+            None => self.constant_use(name, span).unwrap_or_else(|| {
+                let d = self.not_found(name, span);
+                self.diagnostics.push(d);
+                Err(Poisoned::error())
             }),
         }
     }
@@ -269,11 +281,12 @@ impl Checker {
     /// Once an operand is `Error`, the other is checked against `Error` too: with that
     /// operand's type unknown, the operator may be the mistake. So `x + true` draws no
     /// diagnostic when `x` is `Error`, and `true && 1` draws one. A `compound` operator stands
-    /// for a compound assignment, a statement that a rewrite of the operator would break.
+    /// for a compound assignment, a statement that a rewrite of the operator would break. `op`
+    /// comes with its token's span, where arithmetic on a `char` is reported.
     pub(super) fn binary(
         &mut self,
         span: Span,
-        op: ast::BinaryOp,
+        (op, op_span): (ast::BinaryOp, Span),
         lhs: &ast::Expr,
         rhs: &ast::Expr,
         expected: Option<&Type>,
@@ -284,7 +297,7 @@ impl Checker {
         };
         if want == Type::Bool {
             let lhs = self.operand(lhs, Some(&want));
-            return self.arithmetic(span, tir_op, want, lhs, rhs);
+            return self.arithmetic(span, (tir_op, op_span), want, lhs, rhs);
         }
         let operator = if tir_op == tir::BinaryOp::Add {
             Operator::Plus { compound }
@@ -298,10 +311,13 @@ impl Checker {
             .filter(|(_, c)| type_of(c) == Some(&Type::Char))
             .map(|(e, _)| e.span)
             .collect();
-        if let Some(&at) = chars.first() {
+        if !chars.is_empty() {
             let operands = lhs.span.to(rhs.span);
             let convert = (!compound).then_some(CharArithmetic { operands, chars });
-            self.report(DiagnosticKind::ArithmeticOnChar { at, convert });
+            self.report(DiagnosticKind::ArithmeticOnChar {
+                at: op_span,
+                convert,
+            });
             return Err(Poisoned::error());
         }
         let [l, r]: [Checked; 2] = checked
@@ -399,6 +415,8 @@ impl Checker {
         let mut deferred = Vec::new();
         // The type of the operand checked last, as it was found, before it was held to `want`.
         let mut before = None;
+        // Whether a concrete operand was `Error` as found, which its own diagnostic reported.
+        let mut failed = false;
         for (i, e) in operands.iter().enumerate() {
             let start = self.diagnostics.len();
             let value = match first.take_if(|(k, _)| *k == i) {
@@ -458,21 +476,29 @@ impl Checker {
                 want = None;
             }
             mismatched |= m;
+            failed |= got.is_none() && rank(e) == 0;
             checked.push(operand);
             before = got;
         }
-        // The operator is rejected whatever stands beside the `char`.
+        // The operator is rejected whatever stands beside the `char`, unless that is an `Error`:
+        // then the operator may be the mistake, as for any other type, and the sum is `Error`.
         if !(arithmetic && checked.iter().any(|c| type_of(c) == Some(&Type::Char))) {
             self.diagnostics.append(&mut deferred);
+        } else if failed {
+            for c in &mut checked {
+                *c = Err(Poisoned::error());
+            }
+            ty = None;
         }
         (checked, ty, mismatched)
     }
 
-    /// `lhs op rhs`, its `lhs` already checked against `want`, the type `op` takes.
+    /// `lhs op rhs`, its `lhs` already checked against `want`, the type `op` takes; `op` comes
+    /// with its token's span.
     pub(super) fn arithmetic(
         &mut self,
         span: Span,
-        op: tir::BinaryOp,
+        (op, op_span): (tir::BinaryOp, Span),
         want: Type,
         (l, l_mismatched): (Checked, bool),
         rhs: &ast::Expr,
@@ -482,7 +508,7 @@ impl Checker {
         // Only a compound assignment's number gets here with a `char` to its right.
         if want != Type::Bool && type_of(&checked) == Some(&Type::Char) {
             self.report(DiagnosticKind::ArithmeticOnChar {
-                at: rhs.span,
+                at: op_span,
                 convert: None,
             });
             return Err(Poisoned::error());
@@ -716,6 +742,7 @@ impl Checker {
                     want: vec![self.type_name(ty)],
                     got: "None".to_string(),
                     at: span,
+                    other: None,
                     fix: None,
                 },
                 true,
@@ -1340,7 +1367,7 @@ pub(super) fn int_literal(e: &ast::Expr) -> bool {
             op: UnaryOp::Neg,
             operand,
         } => int_literal(operand),
-        ExprKind::Binary { op, lhs, rhs } => {
+        ExprKind::Binary { op, lhs, rhs, .. } => {
             operator(*op).is_some_and(|(_, ty)| ty == Type::I64)
                 && int_literal(lhs)
                 && int_literal(rhs)

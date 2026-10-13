@@ -156,8 +156,10 @@ pub(crate) enum StmtKind {
     },
     /// `target op= value`; the checker lowers a name to `target = target op value`, and a
     /// field `a.f` to `Block { let t = a; Assign { t.f, t.f op value } }`.
+    /// `op_span` is the `op=` token's.
     CompoundAssign {
         op: BinaryOp,
+        op_span: Span,
         target: Expr,
         value: Expr,
     },
@@ -220,8 +222,10 @@ pub(crate) enum ExprKind {
         op: UnaryOp,
         operand: Box<Expr>,
     },
+    /// `op_span` is the operator token's.
     Binary {
         op: BinaryOp,
+        op_span: Span,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
@@ -473,7 +477,9 @@ impl fmt::Display for Stmt {
             StmtKind::Break => f.write_str("(break)"),
             StmtKind::Continue => f.write_str("(continue)"),
             StmtKind::Assign { target, value } => write!(f, "(= {target} {value})"),
-            StmtKind::CompoundAssign { op, target, value } => {
+            StmtKind::CompoundAssign {
+                op, target, value, ..
+            } => {
                 write!(f, "({op}= {target} {value})")
             }
             StmtKind::Expr(e) => write!(f, "{e}"),
@@ -520,7 +526,7 @@ impl fmt::Display for Expr {
                 f.write_str(")")
             }
             ExprKind::Unary { op, operand } => write!(f, "({op} {operand})"),
-            ExprKind::Binary { op, lhs, rhs } => write!(f, "({op} {lhs} {rhs})"),
+            ExprKind::Binary { op, lhs, rhs, .. } => write!(f, "({op} {lhs} {rhs})"),
             ExprKind::Coalesce { lhs, rhs } => write!(f, "(?? {lhs} {rhs})"),
             ExprKind::Is { lhs, rhs } => write!(f, "(is {lhs} {rhs})"),
             ExprKind::Compare { operands, ops } => {
@@ -678,6 +684,7 @@ mod tests {
                     target: name("d"),
                     value: expr(ExprKind::Binary {
                         op: BinaryOp::Add,
+                        op_span: sp(),
                         lhs: Box::new(name("d")),
                         rhs: Box::new(int(1)),
                     }),

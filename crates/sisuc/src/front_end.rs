@@ -42,6 +42,33 @@ pub(crate) fn front_end(source: &str) -> (Option<tir::Program>, Vec<Diagnostic>)
     (program, diagnostics)
 }
 
+/// `diagnostics` without each fix that leaves `source` lexing or parsing worse than it does:
+/// whatever the rule behind a fix, a fix that is shown never breaks the syntax.
+pub(crate) fn sound_fixes(source: &str, diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
+    let before = syntax_errors(source);
+    let mut sound = diagnostics.to_vec();
+    for d in &mut sound {
+        d.retain_fixes(|fix| syntax_errors(&fix.apply(source)) <= before);
+    }
+    sound
+}
+
+/// How badly `source` fails to lex or to parse: a lexer error, which stops the parser, is worse
+/// than any number of parser errors.
+fn syntax_errors(source: &str) -> (bool, usize) {
+    match lexer::lex(source) {
+        Err(_) => (true, 0),
+        Ok(lexed) => {
+            let parsed = parser::parse(lexed);
+            let errors = parsed.diagnostics.iter();
+            (
+                false,
+                errors.filter(|d| d.severity() == Severity::Error).count(),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +82,40 @@ mod tests {
             .iter()
             .map(|d| (d.code(), line_col(src, d.span().start)))
             .collect()
+    }
+
+    /// Whether each fix of `d` is kept by `sound_fixes` over `src`.
+    fn kept(src: &str, d: &Diagnostic) -> Vec<bool> {
+        let sound = sound_fixes(src, std::slice::from_ref(d));
+        let kept = sound[0].fixes();
+        d.fixes().iter().map(|f| kept.contains(f)).collect()
+    }
+
+    /// A fix that leaves the source lexing and parsing is shown; one that breaks either is not,
+    /// whatever its diagnostic. A fix of a syntax error is held only to not making things worse.
+    #[test]
+    fn a_fix_that_breaks_the_syntax_is_dropped() {
+        let src = "fn f(s: string, n: i64) {\n    print(s + n)\n}\nfn main() {}\n";
+        let [d] = <[Diagnostic; 1]>::try_from(front_end(src).1).expect("one diagnostic");
+        assert_eq!(kept(src, &d), [true]);
+        // A `\\` before the `(` of `print(` does not lex.
+        let at = Span::new(35, 36);
+        assert_eq!(&src[at.start..at.end], "(");
+        assert_eq!(
+            kept(src, &DiagnosticKind::BraceInString { at }.into()),
+            [false]
+        );
+        // Two lexer errors: the fix of the first leaves the second, which is no worse.
+        let src = "fn main() {\n    print(\"}\")\n    print(\"}\")\n}\n";
+        let [d] = <[Diagnostic; 1]>::try_from(front_end(src).1).expect("one diagnostic");
+        assert_eq!(kept(src, &d), [true]);
+        // Two parser errors: likewise.
+        let src = "fn main() {\n    let mut _ = 1\n}\nfn g() {\n    let mut _ = 2\n}\n";
+        let ds = front_end(src).1;
+        assert_eq!(ds.len(), 2, "{ds:?}");
+        for d in &ds {
+            assert_eq!(kept(src, d), [true]);
+        }
     }
 
     /// The spec's `a.sisu`.

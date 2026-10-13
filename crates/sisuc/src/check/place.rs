@@ -71,11 +71,12 @@ impl Checker {
     /// `x op= e` is `x = x op e`. On any other place, each of its operands is bound to a fresh
     /// local first, in source order, so it runs once: `p[e] op= v` is
     /// `Block { let t = e; Assign { p[t], p[t] op v } }`. The root binding is never copied.
-    /// `op` takes `u8`s when the place holds a `u8`, else `i64`s; `+=` on a `string` joins.
+    /// `op` takes `u8`s when the place holds a `u8`, else `i64`s; `+=` on a `string` joins. `op`
+    /// comes with its token's span.
     pub(super) fn compound_assign(
         &mut self,
         span: Span,
-        op: ast::BinaryOp,
+        (op, op_span): (ast::BinaryOp, Span),
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
@@ -88,7 +89,7 @@ impl Checker {
             // A `char` has no arithmetic, and a rewrite of the statement would break the
             // assignment: `target` stands for the value, which `assign` accepts.
             if self.lookup(name).is_some_and(|b| b.ty == Some(Type::Char)) {
-                self.char_compound(target, value);
+                self.char_compound(op_span, value);
                 return self.assign(span, target, target);
             }
             // `assign` of `target op value`, whose `op` spans the statement.
@@ -96,7 +97,7 @@ impl Checker {
             let want = place.ty.as_ref();
             let checked = self.binary(
                 span,
-                op,
+                (op, op_span),
                 target,
                 value,
                 Some(want.unwrap_or(&UNKNOWN)),
@@ -105,6 +106,7 @@ impl Checker {
             let expanded = ast::Expr {
                 kind: ast::ExprKind::Binary {
                     op,
+                    op_span,
                     lhs: Box::new(target.clone()),
                     rhs: Box::new(value.clone()),
                 },
@@ -120,7 +122,7 @@ impl Checker {
             return Err(unit());
         };
         if ty == Type::Char {
-            self.char_compound(target, value);
+            self.char_compound(op_span, value);
             return Err(unit());
         }
         let (op, _) = operator(op).expect(
@@ -152,11 +154,22 @@ impl Checker {
             None => Err(Poisoned::typed(ty.clone())),
         };
         let value = if ty == Type::String && op == tir::BinaryOp::Add {
-            let (value, mismatched) = self.operand(value, Some(&ty));
+            let checked = self.value(value, Some(&ty));
+            let got = type_of(&checked).filter(|got| **got != ty).cloned();
+            let (value, mismatched) = match got {
+                // As in `binary`: the place is the `string` that the value is joined to.
+                // A rejected expected type leaves no type, so `got` is the value's own.
+                Some(got) => {
+                    let d = self.concat_mismatch(value, &got, &[target, value], true);
+                    self.diagnostics.push(d);
+                    (Err(Poisoned::error()), true)
+                }
+                _ => self.settled(value, checked, Some(&ty)),
+            };
             self.concat(span, read, value, mismatched)
         } else {
             let read = self.against(target, read, Some(&want));
-            self.arithmetic(span, op, want, read, value)
+            self.arithmetic(span, (op, op_span), want, read, value)
         };
         let (Some((root, temps)), Ok(value), true) = (path, value, place.writable) else {
             return Err(unit());
@@ -166,11 +179,11 @@ impl Checker {
         Ok(tir::Stmt::Expr(block_expr(lets, None, Type::Unit, span)))
     }
 
-    /// Reports the compound assignment to the `char` place `target`, with no fix, and checks
-    /// `value` for its own mistakes.
-    fn char_compound(&mut self, target: &ast::Expr, value: &ast::Expr) {
+    /// Reports the compound assignment, at its operator `op_span`, to a `char` place, with no
+    /// fix, and checks `value` for its own mistakes.
+    fn char_compound(&mut self, op_span: Span, value: &ast::Expr) {
         self.report(DiagnosticKind::ArithmeticOnChar {
-            at: target.span,
+            at: op_span,
             convert: None,
         });
         // Only its diagnostics matter.

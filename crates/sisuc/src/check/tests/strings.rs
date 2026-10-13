@@ -99,90 +99,24 @@ fn cannot_interpolate() {
 
 /// `src` with a class `P` and a function `g` after it, on lines that come after `body`'s.
 fn with_items(src: &str) -> String {
-    format!("{src}\nclass P {{}}\nfn g(x: i64) -> i64 {{\n    x\n}}")
+    format!("{src}\nclass P {{\n    mut name: string\n}}\nfn g(x: i64) -> i64 {{\n    x\n}}")
 }
 
-#[test]
-fn concat_mismatch() {
+/// A `string` joined to a `print`ed value that is not one: in each row, the statement on line 2,
+/// the operand reported, the other operand's secondary label, and the statement the guess makes
+/// of line 2, if there is one.
+type ConcatRow<'a> = (
+    &'a str,
+    (usize, usize, &'a str),
+    &'a [(usize, usize)],
+    Option<&'a str>,
+);
+
+fn concat_rows(rows: &[ConcatRow]) {
     let params = "s: string, c: char, n: i64, xs: [i64], p: P";
-    // The operand reported, and the statement the guess makes of line 2, if there is one.
-    let rows = [
-        ("print(s + c)", (2, 15, "c"), Some("print(\"{s}{c}\")")),
-        ("print(1 + s)", (2, 11, "1"), Some("print(\"{1}{s}\")")),
-        // A `char` before a `string` is joined, not arithmetic.
-        ("print(c + s)", (2, 11, "c"), Some("print(\"{c}{s}\")")),
-        (
-            "print(\"count: \" + n)",
-            (2, 23, "n"),
-            Some("print(\"count: {n}\")"),
-        ),
-        (
-            "print(n + \" items\")",
-            (2, 11, "n"),
-            Some("print(\"{n} items\")"),
-        ),
-        ("print(s + xs)", (2, 15, "xs"), None),
-        // A `string` after an operand that is no number still drives.
-        (
-            "print(true + s)",
-            (2, 11, "true"),
-            Some("print(\"{true}{s}\")"),
-        ),
-        ("print(xs + s)", (2, 11, "xs"), None),
-        ("print(p + s)", (2, 11, "p"), None),
-        // So does one under an expected `u8`, in either place.
-        (
-            "let b: u8 = true + s",
-            (2, 17, "true"),
-            Some("let b: u8 = \"{true}{s}\""),
-        ),
-        (
-            "let b: u8 = s + n",
-            (2, 21, "n"),
-            Some("let b: u8 = \"{s}{n}\""),
-        ),
-        // A `string` decides the join before an expected `u8` reaches the other operand.
-        (
-            "let b: u8 = (1 + n) + s",
-            (2, 17, "(1 + n)"),
-            Some("let b: u8 = \"{(1 + n)}{s}\""),
-        ),
-        ("let b: u8 = [] + s", (2, 17, "[]"), None),
-        ("let b: u8 = None + s", (2, 17, "None"), None),
-        (
-            "let b: u8 = 300 + s",
-            (2, 17, "300"),
-            Some("let b: u8 = \"{300}{s}\""),
-        ),
-        // An interpolated literal joins as a plain one does.
-        (
-            "print(\"a{s}\" + n)",
-            (2, 20, "n"),
-            Some("print(\"a{s}{n}\")"),
-        ),
-        // A literal in parentheses is wrapped whole, as any other operand is.
-        (
-            "print((\"a\") + n)",
-            (2, 19, "n"),
-            Some("print(\"{(\"a\")}{n}\")"),
-        ),
-        (
-            "print(n + (\"a\"))",
-            (2, 11, "n"),
-            Some("print(\"{n}{(\"a\")}\")"),
-        ),
-        // The guess would delete the comment between the operands.
-        ("print(s + // why\n        n)", (3, 9, "n"), None),
-        // Wrapped, an operand that spans lines would break the literal.
-        ("print(g(1\n    ) + s)", (2, 11, "g(1\n    )"), None),
-        ("print(s + (n // c\n    ))", (2, 15, "(n // c\n    )"), None),
-        // A compound assignment is a statement, which a rewrite would break.
-        ("let mut t = s\n    t += n", (3, 10, "n"), None),
-        ("print(s - s)", (2, 11, "s"), None),
-    ];
-    for (statement, pos, fixed) in rows {
+    for &(statement, pos, other, fixed) in rows {
         let src = with_items(&body(params, statement));
-        let d = diagnostic(&src, Code::Mismatch, pos, &[]);
+        let d = diagnostic(&src, Code::Mismatch, pos, other);
         let found = fixes(&src, &d);
         match fixed {
             Some(fixed) => {
@@ -193,6 +127,142 @@ fn concat_mismatch() {
             None => assert_eq!(found, [], "{src}"),
         }
     }
+}
+
+#[test]
+fn concat_mismatch() {
+    concat_rows(&[
+        (
+            "print(s + c)",
+            (2, 15, "c"),
+            &[(2, 11)],
+            Some("print(\"{s}{c}\")"),
+        ),
+        (
+            "print(1 + s)",
+            (2, 11, "1"),
+            &[(2, 15)],
+            Some("print(\"{1}{s}\")"),
+        ),
+        // A `char` before a `string` is joined, not arithmetic.
+        (
+            "print(c + s)",
+            (2, 11, "c"),
+            &[(2, 15)],
+            Some("print(\"{c}{s}\")"),
+        ),
+        (
+            "print(\"count: \" + n)",
+            (2, 23, "n"),
+            &[(2, 11)],
+            Some("print(\"count: {n}\")"),
+        ),
+        (
+            "print(n + \" items\")",
+            (2, 11, "n"),
+            &[(2, 15)],
+            Some("print(\"{n} items\")"),
+        ),
+        ("print(s + xs)", (2, 15, "xs"), &[(2, 11)], None),
+        // A `string` after an operand that is no number still drives.
+        (
+            "print(true + s)",
+            (2, 11, "true"),
+            &[(2, 18)],
+            Some("print(\"{true}{s}\")"),
+        ),
+        ("print(xs + s)", (2, 11, "xs"), &[(2, 16)], None),
+        ("print(p + s)", (2, 11, "p"), &[(2, 15)], None),
+        // So does one under an expected `u8`, in either place.
+        (
+            "let b: u8 = true + s",
+            (2, 17, "true"),
+            &[(2, 24)],
+            Some("let b: u8 = \"{true}{s}\""),
+        ),
+        (
+            "let b: u8 = s + n",
+            (2, 21, "n"),
+            &[(2, 17)],
+            Some("let b: u8 = \"{s}{n}\""),
+        ),
+        // A `string` decides the join before an expected `u8` reaches the other operand.
+        (
+            "let b: u8 = (1 + n) + s",
+            (2, 17, "(1 + n)"),
+            &[(2, 27)],
+            Some("let b: u8 = \"{(1 + n)}{s}\""),
+        ),
+        // A `[]` or a `None` has no type of its own: it is the literal that cannot be a
+        // `string`, with no other operand to point at.
+        ("let b: u8 = [] + s", (2, 17, "[]"), &[], None),
+        ("let b: u8 = None + s", (2, 17, "None"), &[], None),
+        (
+            "let b: u8 = 300 + s",
+            (2, 17, "300"),
+            &[(2, 23)],
+            Some("let b: u8 = \"{300}{s}\""),
+        ),
+    ]);
+}
+
+/// Literals, comments, line breaks and statements around the operands decide the guess.
+#[test]
+fn concat_mismatch_layout() {
+    concat_rows(&[
+        // An interpolated literal joins as a plain one does.
+        (
+            "print(\"a{s}\" + n)",
+            (2, 20, "n"),
+            &[(2, 11)],
+            Some("print(\"a{s}{n}\")"),
+        ),
+        // A literal in parentheses is wrapped whole, as any other operand is.
+        (
+            "print((\"a\") + n)",
+            (2, 19, "n"),
+            &[(2, 11)],
+            Some("print(\"{(\"a\")}{n}\")"),
+        ),
+        (
+            "print(n + (\"a\"))",
+            (2, 11, "n"),
+            &[(2, 15)],
+            Some("print(\"{n}{(\"a\")}\")"),
+        ),
+        // The guess would delete the comment between the operands.
+        (
+            "print(s + // why\n        n)",
+            (3, 9, "n"),
+            &[(2, 11)],
+            None,
+        ),
+        // A line break between the operands goes with the text the guess removes.
+        (
+            "print(s +\n        n)",
+            (3, 9, "n"),
+            &[(2, 11)],
+            Some("print(\"{s}{n}\")"),
+        ),
+        // Wrapped, an operand that spans lines would break the literal.
+        (
+            "print(g(1\n    ) + s)",
+            (2, 11, "g(1\n    )"),
+            &[(3, 9)],
+            None,
+        ),
+        (
+            "print(s + (n // c\n    ))",
+            (2, 15, "(n // c\n    )"),
+            &[(2, 11)],
+            None,
+        ),
+        // A compound assignment is a statement, which a rewrite would break; its place, a local
+        // or a field, is the `string`.
+        ("let mut t = s\n    t += n", (3, 10, "n"), &[(3, 5)], None),
+        ("p.name += n", (2, 15, "n"), &[(2, 5)], None),
+        ("print(s - s)", (2, 11, "s"), &[], None),
+    ]);
 }
 
 /// A join under a `u8` is checked again with no expected type, and a join inside it only once
@@ -212,14 +282,18 @@ fn nested_joins_check_in_quadratic_time() {
     assert!(ds.iter().all(|d| d.code() == Code::Mismatch), "{ds:?}");
 }
 
-/// A join with an unknown operand after its `string` is still a `string`; one after an unknown
-/// operand, or with a mismatched operand, is `Error`, so its uses report nothing more.
+/// A join with an unknown or a mismatched operand, in either place, is `Error`, so neither an
+/// expected type, a `char` beside it nor its uses report anything more: the operand may have
+/// been meant as a number.
 #[test]
 fn failed_concat_type() {
-    let params = "s: string, xs: [i64], n: i64";
+    let params = "s: string, xs: [i64], n: i64, c: char";
     for (statement, expected) in [
         ("let b: u8 = nope + s", (Code::BindingNotFound, (2, 17))),
+        ("let b: u8 = s + nope", (Code::BindingNotFound, (2, 21))),
         ("let b: u8 = ((1 + n) + s) + s", (Code::Mismatch, (2, 18))),
+        ("print(s + 1 + c)", (Code::Mismatch, (2, 15))),
+        ("print(s + nope + c)", (Code::BindingNotFound, (2, 15))),
     ] {
         codes(&body(params, statement), &[expected]);
     }
@@ -227,13 +301,27 @@ fn failed_concat_type() {
         &with_main(&format!(
             "fn f({params}) {{\n    let t = s + nope\n    print(t - 1)\n}}"
         )),
-        &[(Code::BindingNotFound, (2, 17)), (Code::Mismatch, (3, 11))],
+        &[(Code::BindingNotFound, (2, 17))],
     );
     codes(
         &with_main(&format!(
             "fn f({params}) {{\n    let t = s + xs\n    print(t - 1)\n}}"
         )),
         &[(Code::Mismatch, (2, 17))],
+    );
+    // An operand that failed but kept its type, `string`, leaves the join a `string`, so a
+    // `char` beside it is still reported.
+    codes(
+        &body(params, "print(s + \"{xs}\" + c)"),
+        &[
+            (Code::CannotInterpolate, (2, 17)),
+            (Code::Mismatch, (2, 24)),
+        ],
+    );
+    // A value appended to a field that already failed is not the join's mistake.
+    codes(
+        &with_items(&body("p: P", "p.name += -true")),
+        &[(Code::Mismatch, (2, 16))],
     );
 }
 

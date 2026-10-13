@@ -257,7 +257,7 @@ fn const_char() {
     );
     // No arithmetic, even in a constant: the guess wraps the constant as it does a local.
     let src = with_main("const C = 'ä'\nconst D = C + 1");
-    let d = diagnostic(&src, Code::ArithmeticOnChar, (2, 11, "C"), &[]);
+    let d = diagnostic(&src, Code::ArithmeticOnChar, (2, 13, "+"), &[]);
     assert_eq!(
         applied(&src, &d),
         with_main("const C = 'ä'\nconst D = char(i64(C) + 1)")
@@ -297,7 +297,7 @@ fn const_string() {
     ]);
     // Interpolation is not known at compile time, so it is not offered.
     let src = with_main("const P = \"a\" + 1");
-    let d = diagnostic(&src, Code::Mismatch, (1, 17, "1"), &[]);
+    let d = diagnostic(&src, Code::Mismatch, (1, 17, "1"), &[(1, 11)]);
     assert_eq!(fixes(&src, &d), []);
 }
 

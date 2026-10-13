@@ -31,6 +31,7 @@ impl Checker {
                         want: vec![self.type_name(ty)],
                         got: "[]".to_string(),
                         at: span,
+                        other: None,
                         fix: None,
                     },
                     true,

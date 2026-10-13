@@ -3,6 +3,8 @@
 //! Conversions: `i64(x)`, `u8(x)` and `char(x)` between the scalar types, and `string(cs)` from
 //! a `[char]`.
 
+use std::fmt::Write;
+
 use super::array::pair;
 use super::expr::{local, no_member, path, typed};
 use super::{Checked, Checker, Poisoned, block_expr, payload, type_of};
@@ -21,8 +23,11 @@ impl Checker {
         r: Checked,
         mismatched: bool,
     ) -> Checked {
+        // A join with an `Error` operand is `Error`: that operand may have been meant as a
+        // number, and a `char` or an expected type beside the join would report it again.
+        let known = !mismatched && type_of(&l).is_some() && type_of(&r).is_some();
         let (Ok(l), Ok(r)) = (l, r) else {
-            return Err(Poisoned::of((!mismatched).then_some(Type::String)));
+            return Err(Poisoned::of(known.then_some(Type::String)));
         };
         Ok(self.spilled(span, Type::String, vec![l, r], |operands| {
             let (lhs, rhs) = pair(operands);
@@ -69,7 +74,7 @@ impl Checker {
     }
 
     /// The operand `e` of the `+` over `operands`, of type `got`, which is not the `string` the
-    /// other operand makes it. A value that interpolation prints gets the guess to interpolate
+    /// other operand makes it; that operand gets a secondary label. A value that interpolation prints gets the guess to interpolate
     /// it, unless the `+` is a `compound` assignment's or a constant's, a comment between the
     /// operands would go with the text the guess removes, or an operand spans a line break,
     /// which a string literal cannot hold.
@@ -94,20 +99,24 @@ impl Checker {
             let next = self.breaks.partition_point(|&b| b < e.span.start);
             self.breaks.get(next).is_some_and(|&b| b < e.span.end)
         });
-        if compound || self.in_constant || !printed || commented || lines {
-            return self.mismatch(e.span, Some(e), &Type::String, got);
-        }
         // A literal in parentheses starts at its `(`, and is wrapped whole like any other value.
         let operand = |e: &ast::Expr| Operand {
             span: e.span,
             literal: matches!(e.kind, ExprKind::Str(_) | ExprKind::Interpolate(_))
                 && self.quotes.binary_search(&e.span.start).is_ok(),
         };
+        let guess = !(compound || self.in_constant || !printed || commented || lines);
+        let other = if e.span == lhs.span {
+            rhs.span
+        } else {
+            lhs.span
+        };
         DiagnosticKind::Mismatch {
             want: vec![self.type_name(&Type::String)],
             got: self.type_name(got),
             at: e.span,
-            fix: Some(MismatchFix::Interpolate {
+            other: Some(other),
+            fix: guess.then(|| MismatchFix::Interpolate {
                 lhs: operand(lhs),
                 rhs: operand(rhs),
             }),
@@ -250,6 +259,7 @@ impl Checker {
                     want: from.iter().map(|ty| self.type_name(ty)).collect(),
                     got: self.type_name(ty),
                     at: arg.value.span,
+                    other: None,
                     fix: None,
                 }
                 .into(),
@@ -296,6 +306,7 @@ impl Checker {
             want: vec![self.type_name(want)],
             got: self.type_name(got),
             at: arg.span,
+            other: None,
             fix: Some(MismatchFix::InterpolateCall {
                 call,
                 arg: arg.span,
@@ -305,12 +316,26 @@ impl Checker {
     }
 }
 
-/// A string literal as written, for the message: no other literal is named.
+/// A string literal, for the message, in Sisu's escapes: no other literal is named.
 fn literal(e: &ast::Expr) -> Option<String> {
-    match &e.kind {
-        ExprKind::Str(text) => Some(format!("{text:?}")),
-        _ => None,
+    let ExprKind::Str(text) = &e.kind else {
+        return None;
+    };
+    let mut quoted = String::from('"');
+    for c in text.chars() {
+        match c {
+            '\\' | '"' | '{' | '}' => quoted.extend(['\\', c]),
+            '\n' => quoted.push_str("\\n"),
+            '\t' => quoted.push_str("\\t"),
+            '\r' => quoted.push_str("\\r"),
+            '\0' => quoted.push_str("\\0"),
+            c if c.is_control() => write!(quoted, "\\u{{{:X}}}", u32::from(c))
+                .expect("writing to a `String` should never fail"),
+            c => quoted.push(c),
+        }
     }
+    quoted.push('"');
+    Some(quoted)
 }
 
 /// Whether `e` is one term as written: a name, a literal, a call, a field or index read, or an
@@ -362,5 +387,37 @@ fn and(lhs: tir::Expr, rhs: tir::Expr, span: Span) -> tir::Expr {
         },
         ty: Type::Bool,
         span,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::{TokenKind, lex};
+
+    /// The name of a literal is Sisu that lexes back to the literal's text.
+    #[test]
+    fn literal_names_lex_back() {
+        for text in [
+            "hi!",
+            "{}",
+            "\\\"",
+            "a\nb\tc\rd\0e",
+            "\u{7}\u{1B}\u{7F}\u{85}",
+            "é😀",
+        ] {
+            let e = ast::Expr {
+                kind: ExprKind::Str(text.to_string()),
+                span: Span::new(0, 0),
+            };
+            let name = literal(&e).expect("a string literal has a name");
+            let lexed = lex(&name).expect("the name should lex");
+            assert_eq!(
+                lexed.tokens[0].kind,
+                TokenKind::Str(text.to_string()),
+                "{name}"
+            );
+            assert!(lexed.diagnostics.is_empty(), "{name}");
+        }
     }
 }

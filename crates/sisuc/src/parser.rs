@@ -1002,12 +1002,17 @@ impl Parser<'_> {
         if goes_through_safe_access(&target) {
             return Err(DiagnosticKind::AssignThroughSafeAccess { at: target.span }.into());
         }
-        self.bump();
+        let op_span = self.bump().span;
         let value = self.child(base, &mut reach, Self::expr)?;
         self.depth = reach;
         Ok(match op {
             None => StmtKind::Assign { target, value },
-            Some(op) => StmtKind::CompoundAssign { op, target, value },
+            Some(op) => StmtKind::CompoundAssign {
+                op,
+                op_span,
+                target,
+                value,
+            },
         })
     }
 
@@ -1056,7 +1061,7 @@ impl Parser<'_> {
                 // The operator is the parent of everything parsed so far: one level more.
                 let wrapped = self.depth + 1;
                 self.reach(wrapped)?;
-                self.bump();
+                let op_span = self.bump().span;
                 self.depth = base + 1;
                 // `??` is right-associative: its right side starts at its own level.
                 let rhs = self.binary(if matches!(op, Infix::Coalesce) {
@@ -1072,6 +1077,7 @@ impl Parser<'_> {
                     kind: match op {
                         Infix::Binary(op) => ExprKind::Binary {
                             op,
+                            op_span,
                             lhs: lhs_box,
                             rhs: rhs_box,
                         },

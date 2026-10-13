@@ -52,7 +52,7 @@ fn char_arithmetic() {
     let rows = [
         (
             "fn f(c: char) {\n    print(c + 1)\n}",
-            (2, 11, "c"),
+            (2, 13, "+"),
             Some(vec![
                 edit(2, 11, "char(i64("),
                 edit(2, 12, ")"),
@@ -61,7 +61,7 @@ fn char_arithmetic() {
         ),
         (
             "fn f(c: char) {\n    print(1 + c)\n}",
-            (2, 15, "c"),
+            (2, 13, "+"),
             Some(vec![
                 edit(2, 11, "char("),
                 edit(2, 15, "i64("),
@@ -70,7 +70,7 @@ fn char_arithmetic() {
         ),
         (
             "fn f(c: char) {\n    print(c * c)\n}",
-            (2, 11, "c"),
+            (2, 13, "*"),
             Some(vec![
                 edit(2, 11, "char(i64("),
                 edit(2, 12, ")"),
@@ -81,55 +81,57 @@ fn char_arithmetic() {
         // A compound assignment is a statement, which a rewrite would break.
         (
             "fn f(c: char) {\n    let mut d = c\n    d += 1\n}",
-            (3, 5, "d"),
+            (3, 7, "+="),
             None,
         ),
         (
             "class P {\n    mut c: char\n}\nfn f(p: P) {\n    p.c -= 1\n}",
-            (5, 5, "p.c"),
+            (5, 9, "-="),
             None,
         ),
-        // A `char` on the right of a number's compound assignment is the one reported, in
-        // each place the number can be: a local, a field and an element.
+        // A `char` on the right of a number's compound assignment is reported at the operator,
+        // in each place the number can be: a local, a field and an element.
         (
             "fn f(c: char) {\n    let mut n = 1\n    n += c\n}",
-            (3, 10, "c"),
+            (3, 7, "+="),
             None,
         ),
         (
             "class P {\n    mut n: i64\n}\nfn f(p: P, c: char) {\n    p.n += c\n}",
-            (5, 12, "c"),
+            (5, 9, "+="),
             None,
         ),
         (
             "fn f(c: char) {\n    let mut a = [1]\n    a[0] += c\n}",
-            (3, 13, "c"),
+            (3, 10, "+="),
             None,
         ),
-        // The `char` on the left is reported first, whatever stands on the right.
+        // A `char` place is reported once, whatever stands on the right.
         (
             "fn f(c: char) {\n    let mut d = c\n    d += c\n}",
-            (3, 5, "d"),
+            (3, 7, "+="),
             None,
         ),
         (
             "fn f(c: char) {\n    let mut a = [c]\n    a[0] *= 2\n}",
-            (3, 5, "a[0]"),
+            (3, 10, "*="),
+            None,
+        ),
+        // A place nested through a field and an element.
+        (
+            "class P {\n    mut cs: [char]\n}\nfn f(p: P) {\n    p.cs[0] += 1\n}",
+            (5, 13, "+="),
             None,
         ),
         // A compound assignment nested in the value leaves the outer one a statement still.
         (
             "fn f(c: char) {\n    let mut n = 1\n    let mut m = 1\n    n += {\n        m += 1\n        c\n    }\n}",
-            (4, 10, "{\n        m += 1\n        c\n    }"),
+            (4, 7, "+="),
             None,
         ),
         (
             "fn f(c: char) {\n    let mut n = 1\n    let mut m = 1\n    n += if true {\n        m += 1\n        c\n    } else {\n        c\n    }\n}",
-            (
-                4,
-                10,
-                "if true {\n        m += 1\n        c\n    } else {\n        c\n    }",
-            ),
+            (4, 7, "+="),
             None,
         ),
     ];
@@ -173,8 +175,8 @@ fn char_compound_inside_arithmetic() {
     assert_eq!(
         found,
         [
-            (Code::ArithmeticOnChar, (3, 11), vec![false]),
-            (Code::ArithmeticOnChar, (4, 14), vec![]),
+            (Code::ArithmeticOnChar, (3, 13), vec![false]),
+            (Code::ArithmeticOnChar, (4, 11), vec![]),
         ]
     );
 }
@@ -185,12 +187,12 @@ fn char_arithmetic_fix_types() {
     for (src, at, fixed) in [
         (
             "fn f(c: char) {\n    let d = c + 1\n}",
-            (2, 13, "c"),
+            (2, 15, "+"),
             "fn f(c: char) {\n    let d = char(i64(c) + 1)\n}",
         ),
         (
             "fn f(c: char, n: i64) {\n    let d: char = n - c\n}",
-            (2, 23, "c"),
+            (2, 21, "-"),
             "fn f(c: char, n: i64) {\n    let d: char = char(n - i64(c))\n}",
         ),
     ] {
@@ -203,10 +205,11 @@ fn char_arithmetic_fix_types() {
 
 #[test]
 fn char_arithmetic_reports_once() {
-    // A longer expression reports its first `char` operand, and nothing above it.
+    // A longer expression reports the operator of its first `char` operand, and nothing above
+    // it.
     codes(
         &with_main("fn f(c: char) {\n    print(c + 1 + 2)\n}"),
-        &[(Code::ArithmeticOnChar, (2, 11))],
+        &[(Code::ArithmeticOnChar, (2, 13))],
     );
     // A `u8` or an `i64` beside the `char` is not reported as well, on either side.
     codes(
@@ -214,11 +217,11 @@ fn char_arithmetic_reports_once() {
             "fn f(c: char, b: u8, n: i64) {\n    print(b + c)\n    print(n * c)\n    print(c + b)\n    print(c - n)\n    print(b + c + b)\n}",
         ),
         &[
-            (Code::ArithmeticOnChar, (2, 15)),
-            (Code::ArithmeticOnChar, (3, 15)),
-            (Code::ArithmeticOnChar, (4, 11)),
-            (Code::ArithmeticOnChar, (5, 11)),
-            (Code::ArithmeticOnChar, (6, 15)),
+            (Code::ArithmeticOnChar, (2, 13)),
+            (Code::ArithmeticOnChar, (3, 13)),
+            (Code::ArithmeticOnChar, (4, 13)),
+            (Code::ArithmeticOnChar, (5, 13)),
+            (Code::ArithmeticOnChar, (6, 13)),
         ],
     );
     // Nor is a `bool` or a `None`, on either side, nor a literal that a `u8` context types.
@@ -227,22 +230,22 @@ fn char_arithmetic_reports_once() {
             "fn f(c: char) {\n    print(true + c)\n    print(c + true)\n    print(None + c)\n    print(c + None)\n    let y: u8 = None + c\n    let z: u8 = 300 + c\n}",
         ),
         &[
-            (Code::ArithmeticOnChar, (2, 18)),
-            (Code::ArithmeticOnChar, (3, 11)),
-            (Code::ArithmeticOnChar, (4, 18)),
-            (Code::ArithmeticOnChar, (5, 11)),
-            (Code::ArithmeticOnChar, (6, 24)),
-            (Code::ArithmeticOnChar, (7, 23)),
+            (Code::ArithmeticOnChar, (2, 16)),
+            (Code::ArithmeticOnChar, (3, 13)),
+            (Code::ArithmeticOnChar, (4, 16)),
+            (Code::ArithmeticOnChar, (5, 13)),
+            (Code::ArithmeticOnChar, (6, 22)),
+            (Code::ArithmeticOnChar, (7, 21)),
         ],
     );
-    // An error of the other operand stays: an unknown name is its own mistake.
+    // An unknown name is its own mistake, and the only one reported: beside an `Error` the
+    // operator may be the mistake, as for any other type.
     codes(
-        &with_main("fn f(c: char) {\n    print(c + z)\n    print(z + c)\n}"),
+        &with_main("fn f(c: char) {\n    print(c + z)\n    print(z + c)\n    print([z] + c)\n}"),
         &[
-            (Code::ArithmeticOnChar, (2, 11)),
             (Code::BindingNotFound, (2, 15)),
             (Code::BindingNotFound, (3, 11)),
-            (Code::ArithmeticOnChar, (3, 15)),
+            (Code::BindingNotFound, (4, 12)),
         ],
     );
 }
@@ -467,8 +470,8 @@ fn char_copy_compound_assignment() {
     codes(
         &with_main("fn f(c: char) {\n    let d = c\n    d += 1\n}"),
         &[
-            (Code::ArithmeticOnChar, (3, 5)),
             (Code::AssignToImmutable, (3, 5)),
+            (Code::ArithmeticOnChar, (3, 7)),
         ],
     );
 }

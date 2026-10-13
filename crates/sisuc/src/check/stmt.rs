@@ -166,9 +166,12 @@ impl Checker {
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
             StmtKind::Assign { target, value } => self.assign(stmt.span, target, value),
-            StmtKind::CompoundAssign { op, target, value } => {
-                self.compound_assign(stmt.span, *op, target, value)
-            }
+            StmtKind::CompoundAssign {
+                op,
+                op_span,
+                target,
+                value,
+            } => self.compound_assign(stmt.span, (*op, *op_span), target, value),
             StmtKind::Expr(e) => self.expr(e, expected).map(tir::Stmt::Expr),
         }
     }
