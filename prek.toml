@@ -65,6 +65,14 @@ language = "system"
 entry = "python3 .agents/skills/update-docs/scripts/check_links.py"
 files = '\.md$'
 
+[[repos.hooks]]
+id = "python-tests"
+name = "script unit tests"
+language = "system"
+entry = "python3 -m unittest discover -s scripts -p 'test_*.py'"
+files = '^scripts/.*\.py$'
+pass_filenames = false
+
 # Preinstalled on GitHub's Ubuntu runners.
 [[repos.hooks]]
 id = "shellcheck"
