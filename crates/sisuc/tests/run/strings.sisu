@@ -6,6 +6,16 @@ fn abc() -> string {
     s
 }
 
+fn left() -> string {
+    print("left")
+    "l"
+}
+
+fn right() -> string {
+    print("right")
+    "r"
+}
+
 fn main() {
     // `b` shares the block, so `a + "x"` copies it.
     let mut a = "a" + "b"
@@ -48,4 +58,25 @@ fn main() {
         print(t)                     // tux
     }
     print(t)                         // tu
+
+    // Growth takes the longer of double the capacity and the needed length. `"a" + ""` has
+    // capacity 1, so appending 4 bytes needs 5, not 2.
+    let mut w = "a" + ""
+    w += "bcde"
+    print(w)                         // abcde
+    print(w.len())                   // 5
+
+    // `"a" + "b"` has capacity 2, so appending 10 bytes needs 12, not 4.
+    print("a" + "b" + "0123456789")   // ab0123456789
+    print(("a" + "b" + "0123456789").len()) // 12
+
+    // The left operand runs before the right one.
+    print(left() + right())          // left, right, lr
+
+    // `s` is a heap block with another holder, so `s + s` copies it, and both holders survive.
+    let s = "a" + "b"
+    let h = s
+    let d = s + s
+    print(d)                         // abab
+    print(h)                         // ab
 }
