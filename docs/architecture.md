@@ -50,8 +50,9 @@ every item has a name.
 **Checker** (`check/`, `tir.rs`). Resolves every name, types every expression
 and lowers sugar: `while`, `while let` and `for` become loops, `?.` and `??`
 become `if let`, and `x += 1` becomes `x = x + 1`. A `+=` on a string field
-or element, or an assignment that adds to its own place, becomes an `Append`.
-It folds each top-level
+or element, or an assignment that adds to its own field or element place,
+becomes an `Append`. A local keeps `Assign` with `Concat` and appends in place
+through `concat`'s count-1 path. It folds each top-level
 `const` to a literal and replaces every use of its name with that literal. It
 reports every error in one run: an expression that already failed gets the
 poison type, so one mistake produces one diagnostic. A program with no errors comes out as the typed tree,

@@ -50,6 +50,9 @@ These are adopted. Together they give Sisu a working imperative core.
   `string(cs)` builds a `string` from a `[char]`; each call builds a new value
 - copy-on-write arrays: `let b = a` shares until one of them is written, and a
   counted local's last read moves it instead of copying
+- `let _ = e` and `for _ in ...`, which drop a value without a name; shadowing in
+  the same scope; `0x`, `0b` and `0o` integer literals; block expressions such as
+  `let a = { ... }`; and top-level `const`
 - error messages in the style of `rustc`, pointing at the code, each with a
   stable code that `sisuc --explain` describes, a JSON form, and fixes where
   the checker can offer one
@@ -115,8 +118,8 @@ These came out of the milestone 2 design and are now part of its spec:
   field or an array element. `s = s + t` and `names[i] = names[i] + t` append
   alike, and a prepend (`"x" + s`) always copies. There is no builder type:
   `+=` on a string held once is the builder.
-- Interpolation, `"n = {n}"`, is the only way to build text from other types.
-  `string + char` and `string + i64` are errors that point to it.
+- Interpolation, `"n = {n}"`, is the only way to build text from numbers, `bool`
+  and `char`. `string + char` and `string + i64` are errors that point to it.
 - `let mut` replaces `var` (ADR 0011); `let _` and `for _` drop a value
   without a name; same-scope shadowing is allowed; `0x`, `0b` and `0o`
   literals; block expressions; top-level `const`; and a list of reserved

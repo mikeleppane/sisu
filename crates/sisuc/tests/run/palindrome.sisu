@@ -1,5 +1,6 @@
 // Reverses text by code point: `chars()`, a swap loop and `string(cs)`. A string is a palindrome
 // when its reverse equals it. `ämmä` is one because the swap works on chars, not bytes.
+// o2-calls: main check 5
 fn reverse(s: string) -> string {
     let mut cs = s.chars()
     let mut i = 0
