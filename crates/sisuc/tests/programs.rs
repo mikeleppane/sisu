@@ -302,13 +302,8 @@ fn panic_cases() {
             "-1",
             "index -1 out of bounds for length 5",
         ),
-        // The inner index is checked at its own level, after the outer one.
-        (
-            "write_bounds",
-            "fn main() {\n    let mut grid = [[false, false, false]]\n    grid[0][9] = true\n}\n"
-                .to_string(),
-            "3:13: index 9 out of bounds for length 3".to_string(),
-        ),
+        write_bounds_case(),
+        append_bounds_case(),
         (
             "length_negative",
             "fn main() {\n    let n = -1\n    let xs = [0; n]\n    print(xs.len())\n}\n"
@@ -338,6 +333,29 @@ fn panic_cases() {
             );
         }
     }
+}
+
+/// A `panic_cases` row for `grid[0][9] = true`: the inner index is checked at its own level,
+/// after the outer one.
+fn write_bounds_case() -> (&'static str, String, String) {
+    (
+        "write_bounds",
+        "fn main() {\n    let mut grid = [[false, false, false]]\n    grid[0][9] = true\n}\n"
+            .to_string(),
+        "3:13: index 9 out of bounds for length 3".to_string(),
+    )
+}
+
+/// A `panic_cases` row for `names[i] += say()` with `i` past the end: the append reads the
+/// element's slot, bounds-checked, before `say()` runs. `say` would print, so the empty stdout
+/// `panic_cases` expects shows the panic comes first.
+fn append_bounds_case() -> (&'static str, String, String) {
+    (
+        "append_bounds",
+        "fn say() -> string {\n    print(\"said\")\n    \"x\"\n}\nfn main() {\n    let mut names = [\"a\", \"b\"]\n    let i = 3\n    names[i] += say()\n}\n"
+            .to_string(),
+        "8:11: index 3 out of bounds for length 2".to_string(),
+    )
 }
 
 /// A `panic_cases` row whose panic is at `print(<expr>)` on line 3, column 11.

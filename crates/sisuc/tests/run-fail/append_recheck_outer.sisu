@@ -1,0 +1,16 @@
+class B {
+    mut grid: [[string]]
+}
+
+fn shrink(b: B) -> string {
+    print("shrunk")
+    b.grid = []
+    "x"
+}
+
+// The value empties `b.grid` after the first bounds checks, so the append checks each level
+// again, and the outer index 0 is the one that no longer fits.
+fn main() {
+    let b = B(grid: [["a", "b"]])
+    b.grid[0][1] += shrink(b)
+}

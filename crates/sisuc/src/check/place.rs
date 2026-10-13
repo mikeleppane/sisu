@@ -321,6 +321,8 @@ impl Checker {
             .pop()
             .expect("`spill` should return one operand per input");
         let place = build(root, operands);
+        // `!rhs.exits()` is defence: `concat` already spills an rhs that can exit, so this never
+        // sees one (`places::does_not_recognise`'s `(if c { return } ...)` row covers the spill).
         let append = !matches!(place, tir::Place::Local(_))
             && matches!(&value.kind, ExprKind::Concat { lhs, rhs }
                 if !rhs.exits() && same_place(&place, lhs));

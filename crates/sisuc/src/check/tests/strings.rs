@@ -252,7 +252,8 @@ fn string_comparison_mismatch() {
     }
 }
 
-/// `+=` on a string field appends: see `places::recognises_appends`.
+/// `-=` on a string field is a mismatch: `-` takes numbers, so nothing here reaches the append
+/// recognition that `places::recognises_appends` covers for `+=`.
 #[test]
 fn minus_assign_on_string_field() {
     codes(

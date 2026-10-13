@@ -513,8 +513,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         })
     }
 
-    /// Walks `place`'s indexes as `assign_index` does (bounds check, then `unique` per level)
-    /// and returns the final slot and its type.
+    /// Walks `place`'s indexes from `root_slot` (bounds check, then `unique`, per level) and
+    /// returns the final slot and its type.
     pub(super) fn element_slot(
         &mut self,
         root_slot: PointerValue<'ctx>,

@@ -100,27 +100,28 @@ const P: &str = "class P {\n    mut name: string\n}\n";
 #[test]
 fn recognises_appends() {
     let printed = lowered(&format!(
-        "{P}fn f(p: P, i: i64) {{\n    let mut names = [\"a\"]\n    p.name += \"x\"\n    p.name = p.name + \"x\"\n    names[i] += \"x\"\n    names[0] = names[0] + \"x\"\n}}\nfn main() {{}}"
+        "{P}fn k() -> i64 {{ 0 }}\nfn f(p: P, i: i64, t: string) {{\n    let mut names = [\"a\"]\n    p.name += \"x\"\n    p.name = p.name + \"x\"\n    names[i] += \"x\"\n    names[0] = names[0] + \"x\"\n    names[k()] += t\n}}\nfn main() {{}}"
     ));
     assert!(
         printed.contains(
-            "(block (let mut names#2 (array \"a\")) (block (let #3 p#0) (append (. #3 name) \"x\")) (append (. p#0 name) \"x\") (block (let #4 i#1) (append (index names#2 #4) \"x\")) (append (index names#2 0) \"x\"))"
+            "(block (let mut names#3 (array \"a\")) (block (let #4 p#0) (append (. #4 name) \"x\")) (append (. p#0 name) \"x\") (block (let #5 i#1) (append (index names#3 #5) \"x\")) (append (index names#3 0) \"x\") (block (let #6 (call k)) (append (index names#3 #6) t#2)))"
         ),
         "{printed}"
     );
 }
 
-/// A `+` that reads another place, reads it through an index that is not a local or a literal,
+/// A `+` that reads another place, reads it through a different literal index or an index that
+/// is not a local or a literal,
 /// prepends, or has a right operand that can exit stays an assignment of a `concat`.
 #[test]
 fn does_not_recognise() {
     let printed = lowered(&format!(
-        "{P}fn f() -> i64 {{ 0 }}\nfn g(p: P, q: P, c: bool) {{\n    let mut names = [\"a\"]\n    p.name = q.name + \"x\"\n    names[f()] = names[f()] + \"x\"\n    p.name = \"x\" + p.name\n    p.name += (if c {{ return }} else {{ \"x\" }})\n}}\nfn main() {{}}"
+        "{P}fn f() -> i64 {{ 0 }}\nfn g(p: P, q: P, c: bool) {{\n    let mut names = [\"a\"]\n    p.name = q.name + \"x\"\n    names[0] = names[1] + \"x\"\n    names[f()] = names[f()] + \"x\"\n    p.name = \"x\" + p.name\n    p.name += (if c {{ return }} else {{ \"x\" }})\n}}\nfn main() {{}}"
     ));
     assert!(!printed.contains("(append"), "{printed}");
     assert!(
         printed.contains(
-            "(= (. p#0 name) (concat (. q#1 name) \"x\")) (= (index names#3 (call f)) (concat (index names#3 (call f)) \"x\")) (= (. p#0 name) (concat \"x\" (. p#0 name))) (block (let #4 p#0) (block (let #7 #4) (let #8 (block (let #5 (. #4 name)) (let #6 (if c#2 (block (return)) (block \"x\"))) (concat #5 #6))) (= (. #7 name) #8)))"
+            "(= (. p#0 name) (concat (. q#1 name) \"x\")) (= (index names#3 0) (concat (index names#3 1) \"x\")) (= (index names#3 (call f)) (concat (index names#3 (call f)) \"x\")) (= (. p#0 name) (concat \"x\" (. p#0 name))) (block (let #4 p#0) (block (let #7 #4) (let #8 (block (let #5 (. #4 name)) (let #6 (if c#2 (block (return)) (block \"x\"))) (concat #5 #6))) (= (. #7 name) #8)))"
         ),
         "{printed}"
     );

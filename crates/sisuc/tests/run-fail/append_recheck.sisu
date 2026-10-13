@@ -1,0 +1,15 @@
+class B {
+    mut tags: [string]
+}
+
+fn shrink(b: B) -> string {
+    print("shrunk")
+    b.tags = ["a"]
+    "x"
+}
+
+// The value shrinks `b.tags` after the first bounds check, so the append checks the index again.
+fn main() {
+    let b = B(tags: ["a", "b"])
+    b.tags[1] += shrink(b)
+}
