@@ -22,7 +22,6 @@ cargo llvm-cov clean --workspace
 # line breaks its exact stderr check.
 cargo llvm-cov nextest --workspace --locked --no-report \
 	-E 'not (package(sisu-runtime) & test(=tests::print_panics_when_standard_output_cannot_be_duplicated))'
-false # drill A
 
 out=target/llvm-cov
 mkdir -p "$out"
