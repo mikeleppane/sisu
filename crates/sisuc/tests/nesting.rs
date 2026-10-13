@@ -197,7 +197,11 @@ fn errors_past_the_limit(name: &str, program: fn(usize) -> Generated, limit: usi
     let stderr = String::from_utf8_lossy(&out.stderr);
     let (line, col) = line_col(&source, fail);
     let mut lines = stderr.lines();
-    assert_eq!(lines.next(), Some("error: nesting is too deep"), "{name}");
+    assert_eq!(
+        lines.next(),
+        Some("error[E0071]: nesting is too deep"),
+        "{name}"
+    );
     assert_eq!(
         lines.next().map(str::trim_start),
         Some(format!("--> {name}.sisu:{line}:{col}").as_str()),
@@ -207,7 +211,7 @@ fn errors_past_the_limit(name: &str, program: fn(usize) -> Generated, limit: usi
         stderr.contains("= help: the limit is 256 levels"),
         "{stderr}"
     );
-    assert_eq!(stderr.matches("error:").count(), 1, "one error: {name}");
+    assert_eq!(stderr.matches("error[").count(), 1, "one error: {name}");
 }
 
 macro_rules! construct {
@@ -268,10 +272,10 @@ fn assert_too_deep(name: &str, source: &str) {
         assert_eq!(out.status.code(), Some(1), "{name} {args:?}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.starts_with("error: nesting is too deep\n"),
+            stderr.starts_with("error[E0071]: nesting is too deep\n"),
             "{name} {args:?}: {stderr}"
         );
-        assert_eq!(stderr.matches("error:").count(), 1, "{name} {args:?}");
+        assert_eq!(stderr.matches("error[").count(), 1, "{name} {args:?}");
     }
 }
 
@@ -414,7 +418,7 @@ fn an_operand_of_a_wrapping_node_counts_the_wrapping_node() {
                 "{name} with {k} links: {stderr}"
             );
             assert_eq!(
-                stderr.starts_with("error: nesting is too deep"),
+                stderr.starts_with("error[E0071]: nesting is too deep"),
                 !parses,
                 "{name}"
             );

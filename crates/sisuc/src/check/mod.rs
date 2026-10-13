@@ -9,7 +9,9 @@ mod stmt;
 use std::collections::HashMap;
 
 use crate::ast;
-use crate::diagnostic::{Diagnostic, Severity, Span};
+use crate::diagnostic::{
+    Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, Severity, Span, suggestion,
+};
 use crate::tir::{self, Type};
 
 /// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
@@ -64,16 +66,27 @@ struct Signature {
     ret: Option<Type>,
 }
 
+/// What a function, class or method name stands for: the first intact item of that name, or a
+/// broken one, which holds a syntax error. A broken name wins over an intact one, and every use of
+/// it is poisoned without a diagnostic: its item's error is reported already.
+#[derive(Clone, Copy)]
+enum Declared<T> {
+    Known(T),
+    Broken,
+}
+
 struct ClassInfo {
     name: ast::Ident,
     /// The first field of each name, in declaration order.
     fields: Vec<FieldInfo>,
-    /// The first method of each name.
-    methods: HashMap<String, tir::FuncId>,
+    /// The first method of each name, and every broken one.
+    methods: HashMap<String, Declared<tir::FuncId>>,
 }
 
 struct FieldInfo {
     name: ast::Ident,
+    /// Where the field's type is written.
+    ty_span: Span,
     /// `None` is `Error`.
     ty: Option<Type>,
     mutable: bool,
@@ -94,18 +107,21 @@ struct Binding {
     ty: Option<Type>,
     kind: BindingKind,
     span: Span,
+    /// The `mut` of a `let mut`; `Some` only when `kind` is `Var`, which a redeclared name is
+    /// with or without one.
+    keyword: Option<Span>,
     reassigned: bool,
 }
 
 struct Checker {
-    /// The first function of each name.
-    function_ids: HashMap<String, tir::FuncId>,
+    /// The first function of each name, and every broken one.
+    function_ids: HashMap<String, Declared<tir::FuncId>>,
     /// Indexed by `FuncId`, so a duplicate function has a signature of its own.
     signatures: Vec<Signature>,
     /// Indexed by `ClassId`, so a duplicate class has fields and methods of its own.
     classes: Vec<ClassInfo>,
-    /// The first class of each name.
-    class_ids: HashMap<String, tir::ClassId>,
+    /// The first class of each name, and every broken one.
+    class_ids: HashMap<String, Declared<tir::ClassId>>,
     diagnostics: Vec<Diagnostic>,
     // The rest is per body.
     scopes: Vec<HashMap<String, Binding>>,
@@ -116,6 +132,13 @@ struct Checker {
     self_class: Option<tir::ClassId>,
     /// Loops open around the code being checked; a `while` condition counts as inside.
     loop_depth: usize,
+    /// Set by a `break` or `continue` outside a loop; `scoped_block` reads it per statement.
+    invalid_jump: bool,
+    /// Whether the expression being checked is a link of an assigned field's base chain (field
+    /// bases, method receivers, indexed bases), where a `?.` cannot stand.
+    in_target: bool,
+    /// Where each comment starts.
+    comments: Vec<usize>,
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
@@ -131,6 +154,9 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         ret: None,
         self_class: None,
         loop_depth: 0,
+        invalid_jump: false,
+        in_target: false,
+        comments: program.comments.clone(),
     };
     checker.collect_names(program);
     let declared = checker.collect_signatures(program);
@@ -144,17 +170,22 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         .collect();
     let classes = checker.classes.iter().map(lower_class).collect();
     let mut diagnostics = checker.diagnostics;
-    diagnostics.sort_by_key(|d| d.span.start);
-    let failed = diagnostics.iter().any(|d| d.severity == Severity::Error);
+    diagnostics.sort_by_key(|d| d.span().start);
+    let failed = diagnostics.iter().any(|d| d.severity() == Severity::Error);
+    let broken = !program.broken.is_empty()
+        || program.items.iter().any(
+            |item| matches!(item, ast::Item::Class(class) if !class.broken_methods.is_empty()),
+        );
     let program = functions
         .into_iter()
         .collect::<Option<_>>()
         .zip(classes)
         .filter(|_| !failed)
         .map(|(functions, classes)| tir::Program { classes, functions });
+    // A use of a broken item poisons without a diagnostic of its own.
     debug_assert!(
-        program.is_some() || failed,
-        "a missing program implies an error diagnostic"
+        program.is_some() || failed || broken,
+        "a missing program implies an error diagnostic or a broken item or method"
     );
     (program, diagnostics)
 }
@@ -195,6 +226,11 @@ fn block_type(checked: &CheckedBlock) -> Option<&Type> {
 }
 
 impl Checker {
+    /// Records a coded diagnostic.
+    fn report(&mut self, kind: DiagnosticKind) {
+        self.diagnostics.push(kind.into());
+    }
+
     /// Pass 1: gives every class a `ClassId` and records the first function and class of each
     /// name, so that types and calls can name any of them. Classes and functions share a
     /// namespace. `FuncId`s run in source order, a class's methods at its place.
@@ -212,9 +248,10 @@ impl Checker {
                     });
                     let name = &class.name;
                     if !self.built_in(name)
-                        && self.first_definition(&mut first, "class", None, name)
+                        && self.first_callable(&mut first, Definition::Class, name)
                     {
-                        self.class_ids.insert(name.name.clone(), id);
+                        self.class_ids
+                            .insert(name.name.clone(), Declared::Known(id));
                     }
                     next_function += class
                         .members
@@ -224,47 +261,81 @@ impl Checker {
                 }
                 ast::Item::Function(f) => {
                     if !self.built_in(&f.name)
-                        && self.first_definition(&mut first, "function", None, &f.name)
+                        && self.first_callable(&mut first, Definition::Function, &f.name)
                     {
-                        self.function_ids
-                            .insert(f.name.name.clone(), tir::FuncId(next_function));
+                        self.function_ids.insert(
+                            f.name.name.clone(),
+                            Declared::Known(tir::FuncId(next_function)),
+                        );
                     }
                     next_function += 1;
                 }
             }
         }
+        for broken in &program.broken {
+            let name = &broken.name.name;
+            match broken.kind {
+                ast::BrokenKind::Function => {
+                    self.function_ids.insert(name.clone(), Declared::Broken);
+                }
+                ast::BrokenKind::Class => {
+                    self.class_ids.insert(name.clone(), Declared::Broken);
+                }
+            }
+            // Functions and classes share a namespace, so an intact item of the other kind and
+            // this name is poisoned too.
+            if let Some(class) = self.class_ids.get_mut(name) {
+                *class = Declared::Broken;
+            }
+            if let Some(function) = self.function_ids.get_mut(name) {
+                *function = Declared::Broken;
+            }
+        }
     }
 
-    /// Whether `name` is a built-in type's or function's, which no class or function may take;
-    /// reports it when it is.
+    /// Whether `name` is a built-in type's, which no class or function may take; reports it
+    /// when it is.
     fn built_in(&mut self, name: &ast::Ident) -> bool {
-        let what = if built_in_type(&name.name).is_some() {
-            "type"
-        } else if name.name == "print" {
-            "function"
-        } else {
+        let found = built_in_type(&name.name).is_some();
+        if found {
+            self.report(DiagnosticKind::BuiltInTypeName {
+                name: name.name.clone(),
+                at: name.span,
+            });
+        }
+        found
+    }
+
+    /// Whether `name` is the first function or class of its name; reports it when not.
+    fn first_callable(
+        &mut self,
+        first: &mut HashMap<String, (Span, Definition)>,
+        kind: Definition,
+        name: &ast::Ident,
+    ) -> bool {
+        if name.name == "print" {
+            self.report(defined_twice(kind, name, Earlier::BuiltIn));
             return false;
-        };
-        self.diagnostics.push(Diagnostic::error(
-            name.span,
-            format!("`{}` is a built-in {what}", name.name),
-        ));
-        true
+        }
+        self.first_definition(first, kind, None, name)
     }
 
     /// Whether `name` is the first of its name in `first`, which it joins with its `kind`;
     /// reports it when not. `owner` is the class whose members `first` holds.
     fn first_definition(
         &mut self,
-        first: &mut HashMap<String, (Span, &'static str)>,
-        kind: &'static str,
+        first: &mut HashMap<String, (Span, Definition)>,
+        kind: Definition,
         owner: Option<&str>,
         name: &ast::Ident,
     ) -> bool {
         if let Some(&(span, first_kind)) = first.get(&name.name) {
-            self.diagnostics.push(
-                duplicate(first_kind, kind, owner, name).secondary(span, "first defined here"),
-            );
+            let first = Earlier::At {
+                span,
+                kind: first_kind,
+                owner: owner.map(str::to_string),
+            };
+            self.report(defined_twice(kind, name, first));
             return false;
         }
         first.insert(name.name.clone(), (name.span, kind));
@@ -297,12 +368,13 @@ impl Checker {
                         let ty = self.resolve(&field.ty);
                         if self.first_definition(
                             &mut first,
-                            "field",
+                            Definition::Field,
                             Some(&class.name.name),
                             &field.name,
                         ) {
                             self.classes[id.0].fields.push(FieldInfo {
                                 name: field.name.clone(),
+                                ty_span: field.ty.span,
                                 ty,
                                 mutable: field.mutable,
                             });
@@ -312,18 +384,23 @@ impl Checker {
                         let func = tir::FuncId(self.signatures.len());
                         if self.first_definition(
                             &mut first,
-                            "method",
+                            Definition::Method,
                             Some(&class.name.name),
                             &method.name,
                         ) {
                             self.classes[id.0]
                                 .methods
-                                .insert(method.name.name.clone(), func);
+                                .insert(method.name.name.clone(), Declared::Known(func));
                         }
                         self.signature(method, format!("{}.{}", class.name.name, method.name.name));
                         declared.push((method, Some(id)));
                     }
                 }
+            }
+            for method in &class.broken_methods {
+                self.classes[id.0]
+                    .methods
+                    .insert(method.name.clone(), Declared::Broken);
             }
         }
         declared
@@ -343,6 +420,7 @@ impl Checker {
     /// at its first field into the component: no first object of such a class can exist.
     fn never_constructed(&mut self) {
         let reach: Vec<Vec<bool>> = (0..self.classes.len()).map(|c| self.reachable(c)).collect();
+        let mut reports = Vec::new();
         for (c, class) in self.classes.iter().enumerate() {
             let in_cycle = |d: usize| reach[c][d] && reach[d][c];
             if !in_cycle(c) || (0..c).any(in_cycle) {
@@ -358,17 +436,16 @@ impl Checker {
                 .expect(
                     "a class on a reference cycle should have a field that leads into the cycle",
                 );
-            let target = &self.classes[target.0].name.name;
-            self.diagnostics.push(
-                Diagnostic::error(
-                    field.name.span,
-                    format!(
-                        "`{}` can never be constructed: field `{}` needs a `{target}`",
-                        class.name.name, field.name.name
-                    ),
-                )
-                .help(format!("make it optional: `{target}?`")),
-            );
+            reports.push(DiagnosticKind::NeverConstructed {
+                class: class.name.name.clone(),
+                field: field.name.name.clone(),
+                target: self.classes[target.0].name.name.clone(),
+                at: field.name.span,
+                ty: field.ty_span,
+            });
+        }
+        for report in reports {
+            self.report(report);
         }
     }
 
@@ -389,19 +466,19 @@ impl Checker {
         seen
     }
 
-    /// Reports a missing `main`, or one with parameters or a return type.
+    /// Reports a missing `main`, or one with parameters or a return type. A `main` rejected as
+    /// defined twice is not missing: its error is reported already.
     fn check_main(&mut self, declared: &[(&ast::Function, Option<tir::ClassId>)]) {
         match self.function_ids.get("main") {
-            None => self
-                .diagnostics
-                .push(Diagnostic::error(Span::new(0, 0), "no `main` function")),
-            Some(id) => {
+            None if declared
+                .iter()
+                .any(|(f, class)| class.is_none() && f.name.name == "main") => {}
+            None => self.report(DiagnosticKind::NoMain),
+            Some(Declared::Broken) => {}
+            Some(Declared::Known(id)) => {
                 let main = declared[id.0].0;
                 if !main.params.is_empty() || main.ret.is_some() {
-                    self.diagnostics.push(Diagnostic::error(
-                        main.name.span,
-                        "`main` takes no parameters and returns no value",
-                    ));
+                    self.report(DiagnosticKind::MainSignature { at: main.name.span });
                 }
             }
         }
@@ -412,17 +489,22 @@ impl Checker {
         let named = match &ty.kind {
             ast::TypeKind::Array(element) => Type::Array(Box::new(self.resolve(element)?)),
             ast::TypeKind::Name(name) => {
-                if let Some(named) = built_in_type(name) {
+                // A broken name poisons every use, a built-in type's too.
+                if let Some(Declared::Broken) = self.class_ids.get(name) {
+                    return None;
+                } else if let Some(named) = built_in_type(name) {
                     named
-                } else if let Some(&id) = self.class_ids.get(name) {
+                } else if let Some(&Declared::Known(id)) = self.class_ids.get(name) {
                     Type::Class(id)
                 } else {
                     let span = Span::new(ty.span.start, ty.span.start + name.len());
-                    self.diagnostics.push(
-                        Diagnostic::error(span, format!("unknown type `{name}`")).help(
-                            "the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`",
-                        ),
-                    );
+                    let types = ["i64", "u8", "bool"].map(|ty| (ty, Definition::Type));
+                    let classes = self.class_names();
+                    self.report(DiagnosticKind::UnknownType {
+                        name: name.clone(),
+                        at: span,
+                        suggestion: suggestion(name, types.into_iter().chain(classes)),
+                    });
                     return None;
                 }
             }
@@ -463,7 +545,7 @@ impl Checker {
                 f.params
                     .iter()
                     .zip(param_types)
-                    .map(|(p, ty)| self.declare(&p.name, ty, BindingKind::Param)),
+                    .map(|(p, ty)| self.declare(&p.name, ty, BindingKind::Param, None)),
             )
             .collect();
         // A `unit` function discards its body's value, so it expects none.
@@ -486,14 +568,12 @@ impl Checker {
             {
                 let d = if *got == Type::Unit {
                     let end = f.body.span.end;
-                    Diagnostic::error(
-                        Span::new(end - 1, end),
-                        format!(
-                            "function `{}` must return {}, but its body has no value",
-                            f.name.name,
-                            self.show(want)
-                        ),
-                    )
+                    DiagnosticKind::BodyHasNoValue {
+                        function: f.name.name.clone(),
+                        want: self.type_name(want),
+                        at: Span::new(end - 1, end),
+                    }
+                    .into()
                 } else {
                     self.mismatch(value_span(&f.body), tail(&f.body), want, got)
                 };
@@ -510,9 +590,26 @@ impl Checker {
         })
     }
 
-    /// A type as messages quote it: "`i64`", "`Tree`", "`Tree?`".
-    fn show(&self, ty: &Type) -> String {
-        format!("`{}`", self.type_name(ty))
+    /// The classes, as candidates for a name.
+    fn class_names(&self) -> impl Iterator<Item = (&str, Definition)> {
+        self.class_ids
+            .keys()
+            .map(|class| (class.as_str(), Definition::Class))
+    }
+
+    /// "cannot find binding `name`", offering the closest binding of any open scope.
+    fn not_found(&self, name: &str, span: Span) -> Diagnostic {
+        let bindings = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.keys())
+            .map(|binding| (binding.as_str(), Definition::Binding));
+        DiagnosticKind::BindingNotFound {
+            name: name.to_string(),
+            at: span,
+            suggestion: suggestion(name, bindings),
+        }
+        .into()
     }
 
     fn type_name(&self, ty: &Type) -> String {
@@ -525,7 +622,8 @@ impl Checker {
     }
 
     /// "expected `want`, found `got`" at `span`, where `source` is the expression found, when
-    /// known. Between `u8` and `i64` it says how to convert `source`.
+    /// known. Between `u8` and `i64` it offers to convert `source`, unless that is an `if`: an
+    /// `else if` is one, and `else u8(if ...)` does not parse.
     fn mismatch(
         &self,
         span: Span,
@@ -533,20 +631,28 @@ impl Checker {
         want: &Type,
         got: &Type,
     ) -> Diagnostic {
-        let d = Diagnostic::error(
-            span,
-            format!("expected {}, found {}", self.show(want), self.show(got)),
-        );
         let to = match (payload(want), got) {
-            (Type::U8, Type::I64) => "u8",
-            (Type::I64, Type::U8) => "i64",
-            _ => return d,
+            (Type::U8, Type::I64) => Some("u8"),
+            (Type::I64, Type::U8) => Some("i64"),
+            _ => None,
         };
-        let operand = source.and_then(expr::path);
-        d.help(format!(
-            "convert it: `{to}({})`",
-            operand.as_deref().unwrap_or("...")
-        ))
+        DiagnosticKind::Mismatch {
+            want: self.type_name(want),
+            got: self.type_name(got),
+            at: span,
+            convert: to
+                .zip(source.filter(|e| {
+                    !matches!(
+                        e.kind,
+                        ast::ExprKind::If { .. } | ast::ExprKind::IfLet { .. }
+                    )
+                }))
+                .map(|(to, e)| Conversion {
+                    to,
+                    operand: e.span,
+                }),
+        }
+        .into()
     }
 }
 
@@ -630,21 +736,14 @@ fn wrap_block(block: &mut CheckedBlock, ty: &Type) {
     }
 }
 
-fn not_found(name: &str, span: Span) -> Diagnostic {
-    Diagnostic::error(span, format!("cannot find `{name}` in this scope"))
-}
-
-/// `name` taken again. `kind` is the second declaration's and `first` the first's: "function",
-/// "class", "field" or "method". `owner` is the class of a field or method.
-fn duplicate(first: &str, kind: &str, owner: Option<&str>, name: &ast::Ident) -> Diagnostic {
-    let name_text = &name.name;
-    let message = if first == kind {
-        format!("{kind} `{name_text}` is defined twice")
-    } else {
-        let owner = owner.map_or_else(String::new, |class| format!(" of `{class}`"));
-        format!("`{name_text}` is already a {first}{owner}")
-    };
-    Diagnostic::error(name.span, message)
+/// `kind` is the second definition's; `first` is the earlier one.
+fn defined_twice(kind: Definition, name: &ast::Ident, first: Earlier) -> DiagnosticKind {
+    DiagnosticKind::DefinedTwice {
+        kind,
+        name: name.name.clone(),
+        at: name.span,
+        first,
+    }
 }
 
 #[cfg(test)]

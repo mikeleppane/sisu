@@ -1,0 +1,10 @@
+error[E0016]: a field takes no `let`
+ --> E0016-mut.sisu:2:5
+  |
+2 |     let mut n = 0
+  |     ^^^
+  |
+  = help: drop the `let`: `mut name: Type`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0016

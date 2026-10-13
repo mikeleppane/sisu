@@ -1,0 +1,10 @@
+error[E0013]: there is no `var` in Sisu
+ --> E0013-field.sisu:2:5
+  |
+2 |     var n: i64
+  |     ^^^
+  |
+  = help: a field that can change is marked `mut`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0013

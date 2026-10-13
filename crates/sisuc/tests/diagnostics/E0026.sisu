@@ -1,0 +1,7 @@
+class u8 {
+    n: i64
+}
+
+fn main() {
+    print(1)
+}

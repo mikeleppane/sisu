@@ -119,159 +119,141 @@ fn operands_spill_before_an_exit() {
 
 #[test]
 fn empty_array_cannot_be_inferred() {
-    expect_error(
+    diagnostic(
         "fn main() { let xs = [] }",
-        "cannot infer the type of `[]`",
+        Code::CannotInfer,
         (1, 22, "[]"),
-        None,
         &[],
-        Some("write the type: `let xs: [i64] = []`"),
     );
 }
 
 #[test]
 fn only_the_first_none_cannot_be_inferred() {
-    errors(
+    codes(
         "fn main() { let x = [None, None] }",
-        &[("cannot infer the type of `None`", (1, 22))],
+        &[(Code::CannotInfer, (1, 22))],
     );
 }
 
 #[test]
 fn empty_array_where_no_array_is_expected() {
-    errors(
+    codes(
         "fn main() { let x: i64 = [] }",
-        &[("expected `i64`, found `[]`", (1, 26))],
+        &[(Code::Mismatch, (1, 26))],
     );
 }
 
 #[test]
 fn element_does_not_fit() {
-    errors(
+    codes(
         "fn main() { let a = [1, true] }",
-        &[("expected `i64`, found `bool`", (1, 25))],
+        &[(Code::Mismatch, (1, 25))],
     );
-    errors(
+    codes(
         "fn main() { print([1] == [true]) }",
-        &[("expected `i64`, found `bool`", (1, 27))],
+        &[(Code::Mismatch, (1, 27))],
     );
 }
 
 #[test]
 fn array_of_t_is_not_array_of_optional_t() {
-    errors(
+    codes(
         &with_node("fn f(a: [Node]) { let b: [Node?] = a }"),
-        &[("expected `[Node?]`, found `[Node]`", (4, 36))],
+        &[(Code::Mismatch, (4, 36))],
     );
 }
 
 #[test]
 fn fill_with_one_object() {
-    let help = Some("start from `[None; n]` with type `[Node?]` and fill it in a loop");
-    let message = "every element would be the same `Node` object";
-    expect_error(
+    diagnostic(
         &format!("{NODE}fn main() {{ let a = [Node(v: 1); 3] }}"),
-        message,
+        Code::SameObject,
         (4, 22, "Node(v: 1)"),
-        None,
         &[],
-        help,
     );
-    expect_error(
+    diagnostic(
         &with_node("fn f(m: Node?) { let a = [m; 3] }"),
-        message,
+        Code::SameObject,
         (4, 27, "m"),
-        None,
         &[],
-        help,
     );
 }
 
 #[test]
 fn fill_applies_the_class_rule_before_the_element_type() {
-    errors(
+    codes(
         &with_node("fn f(n: Node) { let a: [i64] = [n; 3] }"),
-        &[
-            ("every element would be the same `Node` object", (4, 33)),
-            ("expected `i64`, found `Node`", (4, 33)),
-        ],
+        &[(Code::SameObject, (4, 33)), (Code::Mismatch, (4, 33))],
     );
 }
 
 #[test]
 fn fill_length_is_i64() {
-    errors(
+    codes(
         "fn main() { let a = [0; true] }",
-        &[("expected `i64`, found `bool`", (1, 25))],
+        &[(Code::Mismatch, (1, 25))],
     );
 }
 
 #[test]
 fn index_is_i64() {
-    errors(
+    codes(
         "fn f(b: u8, xs: [i64]) { print(xs[b]) }\nfn main() {}",
-        &[("expected `i64`, found `u8`", (1, 35))],
+        &[(Code::Mismatch, (1, 35))],
     );
 }
 
 #[test]
 fn index_an_optional_array() {
-    expect_error(
+    let d = diagnostic(
         "fn f(m: [i64]?) { print(m[0]) }\nfn main() {}",
-        "`m` may be `None`",
+        Code::MayBeNone,
         (1, 25, "m"),
-        None,
         &[],
-        Some("unwrap it with `if let`"),
     );
+    assert!(d.fixes().is_empty(), "{d:?}");
 }
 
 #[test]
 fn index_a_non_array() {
-    expect_error(
+    diagnostic(
         "fn f(n: i64) { print(n[0]) }\nfn main() {}",
-        "cannot index `i64`",
+        Code::CannotIndex,
         (1, 22, "n"),
-        None,
         &[],
-        Some("only arrays can be indexed"),
     );
-    errors(
+    codes(
         &with_node("fn f(m: Node?) { print(m[0]) }"),
-        &[("cannot index `Node?`", (4, 24))],
+        &[(Code::CannotIndex, (4, 24))],
     );
 }
 
 #[test]
 fn unknown_members() {
-    errors(
+    codes(
         "fn f(xs: [i64]) { xs.push(1) }\nfn main() {}",
-        &[("`[i64]` has no method `push`", (1, 22))],
+        &[(Code::NoMember, (1, 22))],
     );
-    errors(
+    codes(
         "fn f(xs: [i64]) { print(xs.foo) }\nfn main() {}",
-        &[("`[i64]` has no field `foo`", (1, 28))],
+        &[(Code::NoMember, (1, 28))],
     );
 }
 
 #[test]
 fn len_takes_no_arguments() {
-    errors(
+    codes(
         "fn f(xs: [i64]) { print(xs.len(1)) }\nfn main() {}",
-        &[("`len` takes 0 arguments, found 1", (1, 25))],
+        &[(Code::ArgumentCount, (1, 25))],
     );
 }
 
 #[test]
 fn len_is_not_a_field() {
-    expect_error(
-        "fn f(xs: [i64]) { print(xs.len) }\nfn main() {}",
-        "`len` is a method of `[i64]`, not a field",
-        (1, 28, "len"),
-        None,
-        &[],
-        Some("call it: `len()`"),
-    );
+    let src = "fn f(xs: [i64]) { print(xs.len) }\nfn main() {}";
+    let d = diagnostic(src, Code::MethodNotField, (1, 28, "len"), &[]);
+    assert_eq!(fixes(src, &d), [(true, vec![(1, 31, "", "()".to_owned())])]);
+    fix_removes_its_code(src, &d);
 }
 
 #[test]
@@ -302,17 +284,17 @@ fn contains_spills_for_an_exit_in_its_value() {
 
 #[test]
 fn sum_needs_an_i64_array() {
-    errors(
+    codes(
         "fn f(xs: [bool]) { print(xs.sum()) }\nfn main() {}",
-        &[("`sum` needs an `[i64]`, found `[bool]`", (1, 29))],
+        &[(Code::SumNeedsI64, (1, 29))],
     );
 }
 
 #[test]
 fn contains_argument_is_an_element() {
-    errors(
+    codes(
         "fn f(xs: [i64]) { print(xs.contains(true)) }\nfn main() {}",
-        &[("expected `i64`, found `bool`", (1, 37))],
+        &[(Code::Mismatch, (1, 37))],
     );
 }
 
@@ -320,101 +302,89 @@ fn contains_argument_is_an_element() {
 /// adds no error. A poisoned receiver with a good argument still has type `bool`.
 #[test]
 fn contains_poison() {
-    errors(
+    codes(
         "fn f(xs: [i64]) {\n    let b = xs.contains(true)\n    print(b + 1)\n}\nfn main() {}",
-        &[("expected `i64`, found `bool`", (2, 25))],
+        &[(Code::Mismatch, (2, 25))],
     );
-    errors(
+    codes(
         "fn f(xs: [i64]) {\n    let b = xs.contains(v: 1)\n    print(b + 1)\n}\nfn main() {}",
-        &[("labels on arguments come in milestone 10", (2, 25))],
+        &[(Code::LabeledArgument, (2, 25))],
     );
-    errors(
+    codes(
         "fn f(g: [[i64]]) {\n    let b = g[nope].contains(1)\n    print(b + 1)\n}\nfn main() {}",
-        &[
-            ("cannot find `nope` in this scope", (2, 15)),
-            ("expected `i64`, found `bool`", (3, 11)),
-        ],
+        &[(Code::BindingNotFound, (2, 15)), (Code::Mismatch, (3, 11))],
     );
 }
 
 #[test]
 fn method_argument_counts() {
-    errors(
+    codes(
         "fn f(xs: [i64]) { print(xs.sum(1)) }\nfn main() {}",
-        &[("`sum` takes 0 arguments, found 1", (1, 25))],
+        &[(Code::ArgumentCount, (1, 25))],
     );
-    errors(
+    codes(
         "fn f(xs: [i64]) { print(xs.contains()) }\nfn main() {}",
-        &[("`contains` takes 1 argument, found 0", (1, 25))],
+        &[(Code::ArgumentCount, (1, 25))],
     );
 }
 
 #[test]
 fn len_of_an_optional_array() {
-    expect_error(
-        "fn f(m: [i64]?) { print(m.len()) }\nfn main() {}",
-        "`m` may be `None`",
-        (1, 25, "m"),
-        None,
-        &[],
-        Some("use `?.`, or unwrap it with `if let`"),
+    let src = "fn f(m: [i64]?) { print(m.len()) }\nfn main() {}";
+    let d = diagnostic(src, Code::MayBeNone, (1, 25, "m"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(false, vec![(1, 26, ".", "?.".to_owned())])]
     );
+    applied(src, &d);
 }
 
 #[test]
 fn is_on_arrays() {
-    expect_error(
+    diagnostic(
         "fn f(a: [i64], b: [i64]) { print(a is b) }\nfn main() {}",
-        "`is` compares class objects; arrays are values",
+        Code::IsNeedsObjects,
         (1, 34, "a"),
-        None,
         &[],
-        Some("use `==`"),
     );
-    expect_error(
+    diagnostic(
         "fn f(a: [i64]?, b: [i64]) { print(a is b) }\nfn main() {}",
-        "`is` compares class objects; arrays are values",
+        Code::IsNeedsObjects,
         (1, 35, "a"),
-        None,
         &[],
-        Some("use `==`"),
     );
 }
 
 #[test]
 fn print_an_array() {
-    expect_error(
+    diagnostic(
         "fn f(xs: [i64]) { print(xs) }\nfn main() {}",
-        "cannot print `[i64]`",
+        Code::PrintArray,
         (1, 25, "xs"),
-        None,
         &[],
-        Some("print each element in a `for` loop"),
     );
-    expect_error(
+    diagnostic(
         "fn f(m: [i64]?) { print(m) }\nfn main() {}",
-        "cannot print `[i64]?`",
+        Code::PrintArray,
         (1, 25, "m"),
-        None,
         &[],
-        Some("print each element in a `for` loop"),
     );
 }
 
 #[test]
 fn unknown_element_type() {
-    errors(
+    codes(
         "fn f(xs: [Nope]) {}\nfn main() {}",
-        &[("unknown type `Nope`", (1, 11))],
+        &[(Code::UnknownType, (1, 11))],
     );
 }
 
 #[test]
 fn unknown_expected_type_is_reported_once() {
     for init in ["[]", "[None]", "[None; 2]"] {
-        errors(
+        codes(
             &format!("fn main() {{ let a: Nope = {init} }}"),
-            &[("unknown type `Nope`", (1, 20))],
+            &[(Code::UnknownType, (1, 20))],
         );
     }
 }
@@ -427,38 +397,356 @@ fn unknown_name_poisons() {
         ("[nope, None]", 14),
         ("[nope; 3]", 14),
     ] {
-        errors(
+        codes(
             &format!("fn main() {{\n    let x = {init}\n    print(x + true)\n}}"),
-            &[("cannot find `nope` in this scope", (2, col))],
+            &[(Code::BindingNotFound, (2, col))],
         );
     }
 }
 
 #[test]
 fn own_error_poisons() {
-    for (src, message, pos) in [
+    for (src, code, pos) in [
         (
             "fn main() {\n    let x = [1, []]\n    print(x + true)\n}".to_owned(),
-            "expected `i64?`, found `[]`",
+            Code::Mismatch,
             (2, 17),
         ),
         (
             format!("{NODE}fn main() {{\n    let x = [Node(v: 1); 3]\n    print(x + true)\n}}"),
-            "every element would be the same `Node` object",
+            Code::SameObject,
             (5, 14),
         ),
         (
             "fn f(xs: [i64], b: u8) {\n    let x = xs[b]\n    print(x + true)\n}\nfn main() {}"
                 .to_owned(),
-            "expected `i64`, found `u8`",
+            Code::Mismatch,
             (2, 16),
         ),
         (
             "fn main() {\n    let x: [i64] = [true]\n    print(x + true)\n}".to_owned(),
-            "expected `i64`, found `bool`",
+            Code::Mismatch,
             (2, 21),
         ),
     ] {
-        errors(&src, &[(message, pos)]);
+        codes(&src, &[(code, pos)]);
+    }
+}
+
+/// The one diagnostic of `src`, the idiom at `pos`: whether its one fix is certain, and `src`
+/// with it applied. A certain fix leaves a program that checks clean.
+fn idiom(src: &str, pos: (usize, usize, &str)) -> (bool, String) {
+    let d = diagnostic(src, Code::MethodAsFunction, pos, &[]);
+    let [fix] = d.fixes() else {
+        panic!("one fix: {d:?}")
+    };
+    let certain = fix.certain();
+    let result = applied(src, &d);
+    if certain {
+        clean(&result);
+    }
+    (certain, result)
+}
+
+#[test]
+fn len_as_function_is_the_idiom() {
+    assert_eq!(
+        idiom(
+            "fn f(xs: [i64]) -> i64 { len(xs) }\nfn main() {}",
+            (1, 26, "len")
+        ),
+        (
+            true,
+            "fn f(xs: [i64]) -> i64 { xs.len() }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+#[test]
+fn contains_as_function_is_the_idiom() {
+    assert_eq!(
+        idiom(
+            "fn f(xs: [i64]) -> bool { contains(xs, 2) }\nfn main() {}",
+            (1, 27, "contains")
+        ),
+        (
+            true,
+            "fn f(xs: [i64]) -> bool { xs.contains(2) }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+#[test]
+fn sum_as_function_on_u8_is_not() {
+    codes(
+        "fn f(bs: [u8]) -> i64 { sum(bs) }\nfn main() {}",
+        &[(Code::FunctionNotFound, (1, 25))],
+    );
+}
+
+#[test]
+fn idiom_wraps_an_operator_receiver() {
+    assert_eq!(
+        idiom(
+            "fn f(a: [i64]?, b: [i64]) -> i64 { len(a ?? b) }\nfn main() {}",
+            (1, 36, "len")
+        ),
+        (
+            true,
+            "fn f(a: [i64]?, b: [i64]) -> i64 { (a ?? b).len() }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+/// A parenthesised receiver keeps its parentheses, so the wrap may leave redundant ones; the
+/// fix is still certain and the result checks clean.
+#[test]
+fn idiom_keeps_a_parenthesised_operator_receiver() {
+    let (certain, _) = idiom(
+        "fn f(m: [i64]?) -> i64 { len((m ?? [1])) }\nfn main() {}",
+        (1, 26, "len"),
+    );
+    assert!(certain);
+}
+
+/// The receivers that take `.len()` as written; a parenthesised one keeps its parentheses.
+#[test]
+fn idiom_leaves_postfix_receivers_unwrapped() {
+    let pre = "class Box {\n    xs: [i64]\n\n    fn all(self) -> [i64] {\n        self.xs\n    }\n}\nfn make() -> [i64] { [1] }\nfn f(b: Box, g: [[i64]], m: [i64]?) {\n    print(";
+    for (arg, receiver) in [
+        ("b.xs", "b.xs"),
+        ("make()", "make()"),
+        ("b.all()", "b.all()"),
+        ("g[0]", "g[0]"),
+        ("[1, 2]", "[1, 2]"),
+        ("[0; 3]", "[0; 3]"),
+        ("(g[0])", "(g[0])"),
+    ] {
+        let src = format!("{pre}len({arg}))\n}}\nfn main() {{}}");
+        let (certain, result) = idiom(&src, (10, 11, "len"));
+        assert!(certain, "{arg}");
+        assert_eq!(
+            result,
+            format!("{pre}{receiver}.len())\n}}\nfn main() {{}}"),
+            "{arg}"
+        );
+    }
+}
+
+/// An array whose own check failed is not known to be one, so the call falls back to "cannot
+/// find function"; an argument whose check failed makes the fix a guess.
+#[test]
+fn poisoned_operands_and_the_idiom() {
+    codes(
+        "fn f(x: i64) -> [i64] { [x] }\nfn main() {\n    print(len(f(nope)))\n}",
+        &[
+            (Code::FunctionNotFound, (3, 11)),
+            (Code::BindingNotFound, (3, 17)),
+        ],
+    );
+    let src = "fn id(x: i64) -> i64 { x }\nfn main() {\n    print(contains([1], id(nope)))\n}";
+    codes(
+        src,
+        &[
+            (Code::MethodAsFunction, (3, 11)),
+            (Code::BindingNotFound, (3, 28)),
+        ],
+    );
+    assert!(!diags(src)[0].fixes()[0].certain());
+}
+
+/// The rewrite would delete a comment between the name and the array, or after the array.
+#[test]
+fn idiom_over_a_comment_is_uncertain() {
+    for (src, pos) in [
+        (
+            "fn f(xs: [i64]) -> i64 {\n    len( // the list\n        xs)\n}\nfn main() {}",
+            (2, 5, "len"),
+        ),
+        (
+            "fn f(xs: [i64]) -> bool {\n    contains(xs, // the value\n        2)\n}\nfn main() {}",
+            (2, 5, "contains"),
+        ),
+    ] {
+        assert!(!idiom(src, pos).0, "{src}");
+    }
+    // Without the comment, the same multi-line call stays certain.
+    let src = "fn f(xs: [i64]) -> i64 {\n    len(\n        xs)\n}\nfn main() {}";
+    assert!(idiom(src, (2, 5, "len")).0);
+}
+
+#[test]
+fn wrong_arity_is_uncertain() {
+    assert_eq!(
+        idiom(
+            "fn f(xs: [i64]) -> i64 { len(xs, 1) }\nfn main() {}",
+            (1, 26, "len")
+        ),
+        (
+            false,
+            "fn f(xs: [i64]) -> i64 { xs.len(1) }\nfn main() {}".to_owned()
+        )
+    );
+    assert_eq!(
+        idiom(
+            "fn f(xs: [i64]) -> bool { contains(xs) }\nfn main() {}",
+            (1, 27, "contains")
+        ),
+        (
+            false,
+            "fn f(xs: [i64]) -> bool { xs.contains() }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+#[test]
+fn wrong_type_is_uncertain() {
+    assert_eq!(
+        idiom(
+            "fn f(xs: [i64]) -> bool { contains(xs, true) }\nfn main() {}",
+            (1, 27, "contains")
+        ),
+        (
+            false,
+            "fn f(xs: [i64]) -> bool { xs.contains(true) }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+#[test]
+fn literal_on_u8_array_is_certain() {
+    assert_eq!(
+        idiom(
+            "fn f(bs: [u8]) -> bool { contains(bs, 1) }\nfn main() {}",
+            (1, 26, "contains")
+        ),
+        (
+            true,
+            "fn f(bs: [u8]) -> bool { bs.contains(1) }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+#[test]
+fn u8_argument_is_certain_and_i64_is_not() {
+    for (param, col, certain) in [("n: i64", 34, false), ("n: u8", 33, true)] {
+        let src = format!("fn f(bs: [u8], {param}) -> bool {{ contains(bs, n) }}\nfn main() {{}}");
+        assert_eq!(idiom(&src, (1, col, "contains")).0, certain, "{param}");
+    }
+}
+
+#[test]
+fn literal_out_of_u8_range_is_uncertain() {
+    assert_eq!(
+        idiom(
+            "fn f(bs: [u8]) -> bool { contains(bs, 256) }\nfn main() {}",
+            (1, 26, "contains")
+        ),
+        (
+            false,
+            "fn f(bs: [u8]) -> bool { bs.contains(256) }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+#[test]
+fn sum_as_function_is_the_idiom() {
+    assert_eq!(
+        idiom(
+            "fn f(xs: [i64]) -> i64 { sum(xs) }\nfn main() {}",
+            (1, 26, "sum")
+        ),
+        (
+            true,
+            "fn f(xs: [i64]) -> i64 { xs.sum() }\nfn main() {}".to_owned()
+        )
+    );
+}
+
+#[test]
+fn no_argument_is_not_the_idiom() {
+    codes("fn main() { len() }", &[(Code::FunctionNotFound, (1, 13))]);
+}
+
+#[test]
+fn non_array_argument_is_not_found() {
+    codes(
+        "fn f(n: i64) -> i64 { len(n) }\nfn main() {}",
+        &[(Code::FunctionNotFound, (1, 23))],
+    );
+}
+
+#[test]
+fn poisoned_argument_is_not_found() {
+    codes(
+        "fn main() {\n    print(len(nope))\n}",
+        &[
+            (Code::FunctionNotFound, (2, 11)),
+            (Code::BindingNotFound, (2, 15)),
+        ],
+    );
+}
+
+#[test]
+fn declared_len_is_called() {
+    clean("fn len(xs: [i64]) -> i64 { 0 }\nfn f(xs: [i64]) -> i64 { len(xs) }\nfn main() {}");
+}
+
+#[test]
+fn labeled_argument_is_not_the_idiom() {
+    codes(
+        "fn f(a: [i64]) -> i64 { len(xs: a) }\nfn main() {}",
+        &[(Code::FunctionNotFound, (1, 25))],
+    );
+}
+
+/// Every argument of an idiom call, or of the call it falls back to, is checked exactly once: the
+/// complete ordered list of diagnostics.
+#[test]
+fn each_argument_is_checked_once() {
+    let class_len =
+        "class len {\n    xs: [i64]\n}\nfn f(xs: [i64]) {\n    len(xs)\n}\nfn main() {}";
+    for (src, expected) in [
+        (
+            "fn f(g: [[i64]]) -> i64 { len(g[nope], bad) }\nfn main() {}",
+            vec![
+                (Code::FunctionNotFound, (1, 27)),
+                (Code::BindingNotFound, (1, 33)),
+                (Code::BindingNotFound, (1, 40)),
+            ],
+        ),
+        (
+            "fn f(xs: [i64]) -> bool { contains(xs, missing, other) }\nfn main() {}",
+            vec![
+                (Code::MethodAsFunction, (1, 27)),
+                (Code::BindingNotFound, (1, 40)),
+                (Code::BindingNotFound, (1, 49)),
+            ],
+        ),
+        (
+            "fn f(n: i64) -> i64 { len(n, missing) }\nfn main() {}",
+            vec![
+                (Code::FunctionNotFound, (1, 23)),
+                (Code::BindingNotFound, (1, 30)),
+            ],
+        ),
+        (
+            "fn f() -> i64 { len(nope, missing) }\nfn main() {}",
+            vec![
+                (Code::FunctionNotFound, (1, 17)),
+                (Code::BindingNotFound, (1, 21)),
+                (Code::BindingNotFound, (1, 27)),
+            ],
+        ),
+        (
+            "fn f(xs: [i64]) -> bool { contains(xs, v: missing) }\nfn main() {}",
+            vec![
+                (Code::FunctionNotFound, (1, 27)),
+                (Code::BindingNotFound, (1, 43)),
+            ],
+        ),
+        (class_len, vec![(Code::ArgumentNeedsLabel, (5, 9))]),
+    ] {
+        codes(src, &expected);
     }
 }

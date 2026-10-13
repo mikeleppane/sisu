@@ -1,0 +1,13 @@
+error[E0006]: `else` must be on the same line as the closing `}`
+ --> E0006-brackets.sisu:4:5
+  |
+4 |     else { 0 })
+  |     ^^^^
+  |
+help: if this `else` belongs to the `if` above, move it after the `}`
+  |
+3 |     print(if n > 2 { 1 } else { 0 })
+  |                         +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0006

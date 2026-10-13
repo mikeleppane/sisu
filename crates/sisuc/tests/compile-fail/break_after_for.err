@@ -1,6 +1,0 @@
-error: `break` outside a loop
- --> break_after_for.sisu:5:5
-  |
-5 |     break
-  |     ^^^^^
-

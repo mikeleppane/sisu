@@ -1,0 +1,5 @@
+fn main() {
+    let total = 1
+    let total = 2
+    print(total)
+}

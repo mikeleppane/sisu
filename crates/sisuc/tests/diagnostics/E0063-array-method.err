@@ -1,0 +1,14 @@
+error[E0063]: `[i64]` has no method `lenn`
+ --> E0063-array-method.sisu:3:14
+  |
+3 |     print(xs.lenn())
+  |              ^^^^
+  |
+help: a method with a similar name exists: `len`
+  |
+3 -     print(xs.lenn())
+3 +     print(xs.len())
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0063

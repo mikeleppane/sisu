@@ -1,0 +1,8 @@
+class Bucket {
+    value: i64
+}
+
+fn main() {
+    let b = Bukcet(value: 1)
+    nope(missing)
+}

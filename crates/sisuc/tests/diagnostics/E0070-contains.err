@@ -1,0 +1,14 @@
+error[E0070]: `contains` is a method of arrays, not a function
+ --> E0070-contains.sisu:3:11
+  |
+3 |     print(contains(xs, 2))
+  |           ^^^^^^^^
+  |
+help: call `contains` as a method
+  |
+3 -     print(contains(xs, 2))
+3 +     print(xs.contains(2))
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0070

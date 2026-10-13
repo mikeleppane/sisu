@@ -1,6 +1,0 @@
-error: cannot find `missing` in this scope
- --> unknown_name.sisu:2:11
-  |
-2 |     print(missing)
-  |           ^^^^^^^
-

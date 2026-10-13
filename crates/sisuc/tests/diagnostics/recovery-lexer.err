@@ -1,0 +1,14 @@
+error[E0010]: unexpected character `$`
+ --> recovery-lexer.sisu:4:16
+  |
+4 |         t += x $ 1
+  |                ^
+
+error[E0010]: unexpected character `#`
+  --> recovery-lexer.sisu:10:25
+   |
+10 |     print(total([1, 2]) # 2)
+   |                         ^
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0010

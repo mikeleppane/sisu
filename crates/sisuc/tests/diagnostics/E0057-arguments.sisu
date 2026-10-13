@@ -1,0 +1,12 @@
+class Square {
+    side: i64
+
+    fn scaled(self, by: i64) -> i64 {
+        self.side * by
+    }
+}
+
+fn main() {
+    let s = Square(side: 2)
+    print(s.scaled)
+}

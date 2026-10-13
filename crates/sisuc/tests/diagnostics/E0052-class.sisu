@@ -1,0 +1,8 @@
+class Tree {
+    value: i64
+}
+
+fn main() {
+    let t = Trea(value: 1)
+    print(t.value)
+}

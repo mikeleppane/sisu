@@ -1,0 +1,5 @@
+fn main() {
+    let b: u8 = 5
+    let n = -b
+    print(n)
+}

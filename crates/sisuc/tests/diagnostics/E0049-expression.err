@@ -1,0 +1,14 @@
+error[E0049]: this value is not optional
+ --> E0049-expression.sisu:6:13
+  |
+6 |     let x = Point(x: 1)?.x
+  |             ^^^^^^^^^^^
+  |
+help: replace `?.` with `.`
+  |
+6 -     let x = Point(x: 1)?.x
+6 +     let x = Point(x: 1).x
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0049

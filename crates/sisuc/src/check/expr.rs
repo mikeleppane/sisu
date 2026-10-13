@@ -1,11 +1,13 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
 use super::{
-    Binding, Checked, CheckedBlock, Checker, Poisoned, UNKNOWN, block_expr, block_type,
-    built_in_type, not_found, optional_of, payload, tail, type_of, value_span, wrap, wrap_block,
+    Binding, Checked, CheckedBlock, Checker, Declared, Poisoned, UNKNOWN, block_expr, block_type,
+    built_in_type, optional_of, payload, tail, type_of, value_span, wrap, wrap_block,
 };
 use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{
+    Definition, Diagnostic, DiagnosticKind, Literal, Span, Unwrap, suggestion,
+};
 use crate::tir::{self, Type};
 
 impl Checker {
@@ -13,6 +15,20 @@ impl Checker {
     /// `None`, a `[]` and an integer literal, and flows into `if` and `if let` branches, a
     /// block's value, array elements, arithmetic and unary `-`; it never wraps.
     pub(super) fn expr(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
+        // An assignment target's chain runs only through field bases, method receivers and
+        // indexed bases; any other expression inside it is an ordinary read.
+        let outer = self.in_target;
+        self.in_target &= matches!(
+            e.kind,
+            ExprKind::Field { .. } | ExprKind::MethodCall { .. } | ExprKind::Index { .. }
+        );
+        let checked = self.expr_kind(e, expected);
+        self.in_target = outer;
+        checked
+    }
+
+    /// `expr` for each kind of expression.
+    fn expr_kind(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let node = |kind, ty| {
             Ok(tir::Expr {
                 kind,
@@ -23,8 +39,14 @@ impl Checker {
         match &e.kind {
             ExprKind::Int(n) => {
                 let ty = literal_type(expected);
-                if let Some(message) = u8_literal_error(*n).filter(|_| ty == Type::U8) {
-                    self.diagnostics.push(Diagnostic::error(e.span, message));
+                if ty == Type::U8 && !(0..=i64::from(u8::MAX)).contains(n) {
+                    let at = e.span;
+                    // Only `-9223372036854775808` parses to a negative literal.
+                    self.diagnostics.push(if *n < 0 {
+                        DiagnosticKind::NegatedU8 { at }.into()
+                    } else {
+                        DiagnosticKind::IntegerDoesNotFit { value: *n, at }.into()
+                    });
                     return Err(Poisoned::typed(ty));
                 }
                 node(tir::ExprKind::Int(*n), ty)
@@ -43,23 +65,22 @@ impl Checker {
                 // `Error`: its diagnostic was recorded where it was bound.
                 Some(_) => Err(Poisoned::error()),
                 None => {
-                    self.diagnostics.push(not_found(name, e.span));
+                    let d = self.not_found(name, e.span);
+                    self.diagnostics.push(d);
                     Err(Poisoned::error())
                 }
             },
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
             ExprKind::SelfValue => {
                 let Some(class) = self.self_class else {
-                    self.diagnostics.push(Diagnostic::error(
-                        e.span,
-                        "`self` is only available in a method",
-                    ));
+                    self.diagnostics
+                        .push(DiagnosticKind::SelfOutsideMethod { at: e.span }.into());
                     return Err(Poisoned::error());
                 };
                 node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
             }
             ExprKind::Field { base, name, safe } => {
-                self.member(e.span, *safe, base, |c, checked| {
+                self.member(e.span, *safe, base, name, |c, checked| {
                     c.field(e.span, checked, base, name)
                 })
             }
@@ -68,7 +89,7 @@ impl Checker {
                 method,
                 args,
                 safe,
-            } => self.member(e.span, *safe, receiver, |c, checked| {
+            } => self.member(e.span, *safe, receiver, method, |c, checked| {
                 c.method_call(e.span, checked, receiver, method, args)
             }),
             ExprKind::Coalesce { lhs, rhs } => self.coalesce(e.span, lhs, rhs),
@@ -129,7 +150,7 @@ impl Checker {
                 self.diagnostics.truncate(before);
             }
             self.diagnostics
-                .push(Diagnostic::error(span, "`u8` cannot be negative"));
+                .push(DiagnosticKind::NegatedU8 { at: span }.into());
             return Err(Poisoned::error());
         }
         Ok(self.against(operand, checked, Some(&Type::I64)))
@@ -154,12 +175,13 @@ impl Checker {
     /// An expression whose value is used: not `unit` or `never`.
     pub(super) fn value(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let checked = self.expr(e, expected);
-        let d = match type_of(&checked) {
-            Some(Type::Unit) => no_value(e.span),
-            Some(Type::Never) => never_value(e.span),
+        let never = match type_of(&checked) {
+            Some(Type::Unit) => false,
+            Some(Type::Never) => true,
             _ => return checked,
         };
-        self.diagnostics.push(d);
+        self.diagnostics
+            .push(DiagnosticKind::NoValue { at: e.span, never }.into());
         Err(Poisoned::error())
     }
 
@@ -310,8 +332,9 @@ impl Checker {
             && let Some(ty) = type_of(&checked)
             && !matches!(ty, Type::Optional(_))
         {
-            let message = format!("{} is not optional, so it is never `None`", quoted(first));
-            self.diagnostics.push(Diagnostic::error(span, message));
+            let value = path(first);
+            self.diagnostics
+                .push(DiagnosticKind::NeverNone { value, at: span }.into());
             return Err(Poisoned::error());
         }
         if let (Some(want), Some(got)) = (type_of(&checked), type_of(&other))
@@ -340,31 +363,26 @@ impl Checker {
     fn is(&mut self, span: Span, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         if none_literal(lhs) || none_literal(rhs) {
             let other = if none_literal(lhs) { rhs } else { lhs };
+            // It goes before the diagnostics of `other`, which the help waits for.
             let at = self.diagnostics.len();
-            self.diagnostics
-                .push(Diagnostic::error(span, "use `==` to test for `None`"));
             let checked = self.value(other, Some(&UNKNOWN));
             // `== None` compiles only beside an optional, or a side whose type is unknown.
             let optional = type_of(&checked).is_none_or(|ty| matches!(ty, Type::Optional(_)));
-            if optional && let Some(path) = path(other) {
-                self.diagnostics[at].help = Some(format!("`{path} == None`"));
-            }
+            let tested = path(other).filter(|_| optional);
+            let d = DiagnosticKind::IsTestsNone { tested, at: span }.into();
+            self.diagnostics.insert(at, d);
             return Err(Poisoned::error());
         }
         let (l, r) = (self.value(lhs, None), self.value(rhs, None));
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
             // Once an operand is `Error`, the later one is not held to `is`.
             let Some(ty) = type_of(checked) else { break };
-            if matches!(payload(ty), Type::Array(_)) {
-                let message = "`is` compares class objects; arrays are values";
-                self.diagnostics
-                    .push(Diagnostic::error(side.span, message).help("use `==`"));
-                return Err(Poisoned::error());
-            }
-            if !ty.is_counted() {
-                let message = format!("`is` needs objects; found {}", self.show(ty));
-                self.diagnostics
-                    .push(Diagnostic::error(side.span, message).help("use `==` to compare values"));
+            if matches!(payload(ty), Type::Array(_)) || !ty.is_counted() {
+                let kind = DiagnosticKind::IsNeedsObjects {
+                    found: self.type_name(ty),
+                    at: side.span,
+                };
+                self.diagnostics.push(kind.into());
                 return Err(Poisoned::error());
             }
         }
@@ -387,9 +405,12 @@ impl Checker {
                 } else if fits(&rt, &lt) {
                     (l.map(|e| wrap(e, &rt)), r)
                 } else {
-                    let message =
-                        format!("cannot compare {} with {}", self.show(&lt), self.show(&rt));
-                    self.diagnostics.push(Diagnostic::error(span, message));
+                    let kind = DiagnosticKind::CannotCompare {
+                        left: self.type_name(&lt),
+                        right: self.type_name(&rt),
+                        at: span,
+                    };
+                    self.diagnostics.push(kind.into());
                     return Err(Poisoned::error());
                 }
             }
@@ -412,10 +433,8 @@ impl Checker {
         let scrutinee = self.value(lhs, None);
         let Some(Type::Optional(payload)) = type_of(&scrutinee) else {
             if type_of(&scrutinee).is_some() {
-                self.diagnostics.push(Diagnostic::error(
-                    lhs.span,
-                    "the left side of `??` is not optional",
-                ));
+                self.diagnostics
+                    .push(DiagnosticKind::CoalesceNotOptional { at: lhs.span }.into());
             }
             // Only its own diagnostics matter.
             let _ = self.value(rhs, Some(&UNKNOWN));
@@ -445,12 +464,14 @@ impl Checker {
     /// `receiver.member`, which `member` checks on the checked receiver. With `safe`, it is
     /// `receiver?.member`, and `member` checks it on a fresh local bound to the receiver's
     /// value. Its type `U` makes the result a `U?`, or `unit` for a method with no value. A
-    /// receiver that is not optional is reported, and the member still checked on it.
+    /// receiver that is not optional is reported, and the member still checked on it. `name` is
+    /// the member's name.
     fn member(
         &mut self,
         span: Span,
         safe: bool,
         receiver: &ast::Expr,
+        name: &ast::Ident,
         member: impl FnOnce(&mut Self, Checked) -> Checked,
     ) -> Checked {
         let scrutinee = self.value(receiver, None);
@@ -459,9 +480,12 @@ impl Checker {
         }
         let Some(Type::Optional(payload)) = type_of(&scrutinee) else {
             if type_of(&scrutinee).is_some() {
-                let message = format!("{} is not optional", quoted(receiver));
-                self.diagnostics
-                    .push(Diagnostic::error(receiver.span, message).help("use `.`"));
+                let kind = DiagnosticKind::SafeAccessNotOptional {
+                    value: path(receiver),
+                    at: receiver.span,
+                    access: Span::new(receiver.span.end, name.span.start),
+                };
+                self.diagnostics.push(kind.into());
             }
             // Only its own diagnostics matter.
             let _ = member(self, Err(Poisoned::of(type_of(&scrutinee).cloned())));
@@ -493,7 +517,7 @@ impl Checker {
 
     /// A `None`, of the optional type `expected`.
     fn none(&mut self, span: Span, expected: Option<&Type>) -> Checked {
-        let (d, mismatch) = match expected {
+        let (kind, mismatch) = match expected {
             Some(ty @ Type::Optional(_)) => {
                 return Ok(tir::Expr {
                     kind: tir::ExprKind::None,
@@ -503,21 +527,28 @@ impl Checker {
             }
             Some(Type::Never) => return Err(Poisoned::error()),
             Some(ty) => (
-                Diagnostic::error(span, format!("expected {}, found `None`", self.show(ty))),
+                DiagnosticKind::Mismatch {
+                    want: self.type_name(ty),
+                    got: "None".to_string(),
+                    at: span,
+                    convert: None,
+                },
                 true,
             ),
             None => (
-                Diagnostic::error(span, "cannot infer the type of `None`")
-                    .help("write the type: `let x: Tree? = None`"),
+                DiagnosticKind::CannotInfer {
+                    literal: Literal::None,
+                    at: span,
+                },
                 false,
             ),
         };
-        self.diagnostics.push(d);
+        self.diagnostics.push(kind.into());
         Err(Poisoned { ty: None, mismatch })
     }
 
     /// Without an `else`, `unit`. With one, the branches joined (see `branches`). A condition
-    /// that is not `bool` makes the `if` `Error`.
+    /// that is not `bool` makes the `if` `Error`, or `Never` when its branches are.
     fn if_expr(
         &mut self,
         span: Span,
@@ -530,8 +561,9 @@ impl Checker {
         let (then, other, ty) = self.branches(then_block, else_block, expected, |c, expected| {
             c.block(then_block, expected)
         });
-        // A failed join keeps its own `mismatch`.
+        // A failed join keeps its own `mismatch`, and branches that never end keep `Never`.
         let ty = match ty {
+            Ok(Type::Never) if mismatched => Err(Poisoned::typed(Type::Never)),
             Ok(_) if mismatched => Err(Poisoned::error()),
             ty => ty,
         };
@@ -550,7 +582,7 @@ impl Checker {
     }
 
     /// `if let name = value { ... }`, typed as `if`; `name` is in scope in the first block.
-    /// A `value` that is not optional makes it `Error`.
+    /// A `value` that is not optional makes it `Error`, or `Never` when its branches are.
     fn if_let(
         &mut self,
         span: Span,
@@ -560,7 +592,7 @@ impl Checker {
         else_block: Option<&ast::Block>,
         expected: Option<&Type>,
     ) -> Checked {
-        let (scrutinee, bound, mismatched) = self.unwrapped("if let", value);
+        let (scrutinee, bound, mismatched) = self.unwrapped(Unwrap::IfLet, value);
         let mut bind = None;
         let (then, other, ty) = self.branches(then_block, else_block, expected, |c, expected| {
             let (local, block) = c.unwrapping_block("if let", name, bound, then_block, expected);
@@ -568,8 +600,9 @@ impl Checker {
             block
         });
         let bind = bind.expect("`branches` should check the first block, which sets `bind`");
-        // A failed join keeps its own `mismatch`.
+        // A failed join keeps its own `mismatch`, and branches that never end keep `Never`.
         let ty = match ty {
+            Ok(Type::Never) if mismatched => Err(Poisoned::typed(Type::Never)),
             Ok(_) if mismatched => Err(Poisoned::error()),
             ty => ty,
         };
@@ -588,11 +621,11 @@ impl Checker {
         }
     }
 
-    /// The optional `value` that `keyword` (`if let` or `while let`) unwraps, the type it binds
-    /// (`None` is `Error`), and whether `value` was reported for not being optional.
+    /// The optional `value` that `keyword` unwraps, the type it binds (`None` is `Error`), and
+    /// whether `value` was reported for not being optional.
     pub(super) fn unwrapped(
         &mut self,
-        keyword: &str,
+        keyword: Unwrap,
         value: &ast::Expr,
     ) -> (Checked, Option<Type>, bool) {
         let scrutinee = self.value(value, None);
@@ -602,11 +635,12 @@ impl Checker {
                 (scrutinee, bound, false)
             }
             Some(ty) => {
-                let d = Diagnostic::error(
-                    value.span,
-                    format!("`{keyword}` needs an optional; this is {}", self.show(ty)),
-                );
-                self.diagnostics.push(d);
+                let kind = DiagnosticKind::UnwrapNeedsOptional {
+                    keyword,
+                    found: self.type_name(ty),
+                    at: value.span,
+                };
+                self.diagnostics.push(kind.into());
                 (Err(Poisoned::error()), None, true)
             }
             None => (scrutinee, None, false),
@@ -659,8 +693,16 @@ impl Checker {
             (Some(t), Some(o)) => {
                 let d = match expected.filter(|w| **w != UNKNOWN) {
                     // A branch with no value is that mistake, not a type mismatch.
-                    _ if t == Type::Unit => no_value(value_span(then_block)),
-                    _ if o == Type::Unit => no_value(value_span(else_block)),
+                    _ if t == Type::Unit => DiagnosticKind::NoValue {
+                        at: value_span(then_block),
+                        never: false,
+                    }
+                    .into(),
+                    _ if o == Type::Unit => DiagnosticKind::NoValue {
+                        at: value_span(else_block),
+                        never: false,
+                    }
+                    .into(),
                     Some(w) if fits(w, &t) => {
                         self.mismatch(value_span(else_block), tail(else_block), w, &o)
                     }
@@ -679,25 +721,105 @@ impl Checker {
     }
 
     fn call(&mut self, span: Span, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
+        let declared = (
+            self.class_ids.get(&callee.name).copied(),
+            self.function_ids.get(&callee.name).copied(),
+        );
+        // A broken name poisons every use, a built-in's too. The item's own error is reported;
+        // its arguments may hold more.
+        if let (Some(Declared::Broken), _) | (_, Some(Declared::Broken)) = declared {
+            self.stray(args);
+            return Err(Poisoned::error());
+        }
         if callee.name == "print" {
             return self.print(span, args);
         }
         if let Some(to @ (Type::I64 | Type::U8)) = built_in_type(&callee.name) {
             return self.convert(span, to, args);
         }
-        if let Some(&class) = self.class_ids.get(&callee.name) {
-            return self.construct(span, class, args);
+        match declared {
+            (Some(Declared::Known(class)), _) => self.construct(span, class, args),
+            (_, Some(Declared::Known(func))) => self.invoke(span, func, None, args),
+            _ => self.unknown_call(callee, args),
         }
-        let Some(&func) = self.function_ids.get(&callee.name) else {
-            self.diagnostics.push(Diagnostic::error(
-                callee.span,
-                format!("cannot find function or class `{}`", callee.name),
-            ));
-            // No `labels`: the name may be a misspelled class, whose labels are correct.
-            self.stray(args);
-            return Err(Poisoned::error());
+    }
+
+    /// A call of `callee`, which names nothing callable. `len(xs)`, `sum(xs)` and
+    /// `contains(xs, v)`, where `xs` is an array with that method, point to the method.
+    fn unknown_call(&mut self, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
+        let name = callee.name.as_str();
+        let idiom = matches!(name, "len" | "sum" | "contains")
+            && args.iter().all(|arg| arg.label.is_none());
+        let rest = match args.split_first() {
+            Some((first, rest)) if idiom => {
+                let receiver = self.expr(&first.value, Some(&UNKNOWN));
+                // A poisoned array is not known to be one.
+                if let Ok(tir::Expr {
+                    ty: Type::Array(element),
+                    ..
+                }) = &receiver
+                    && (name != "sum" || **element == Type::I64)
+                {
+                    let element = (**element).clone();
+                    let next = rest.first().map(|arg| arg.value.span);
+                    // The rewrite deletes the text before the array and between it and `next`,
+                    // so a comment there makes it a guess.
+                    let deleted = [
+                        callee.span.start..first.value.span.start,
+                        first.value.span.end..next.map_or(first.value.span.end, |n| n.start),
+                    ];
+                    let certain = self.idiom_arguments(name, &element, rest)
+                        && !self
+                            .comments
+                            .iter()
+                            .any(|c| deleted.iter().any(|d| d.contains(c)));
+                    self.report(DiagnosticKind::MethodAsFunction {
+                        name: callee.name.clone(),
+                        at: callee.span,
+                        receiver: first.value.span,
+                        next,
+                        wrap: !postfix(&first.value),
+                        certain,
+                    });
+                    return Err(Poisoned::error());
+                }
+                rest
+            }
+            _ => args,
         };
-        self.invoke(span, func, None, args)
+        let functions = self
+            .function_ids
+            .keys()
+            .map(String::as_str)
+            .chain(["print", "i64", "u8"])
+            .map(|function| (function, Definition::Function));
+        self.report(DiagnosticKind::FunctionNotFound {
+            name: callee.name.clone(),
+            at: callee.span,
+            suggestion: suggestion(&callee.name, functions.chain(self.class_names())),
+        });
+        // No `labels`: the name may have meant a class, whose constructor takes them.
+        self.stray(rest);
+        Err(Poisoned::error())
+    }
+
+    /// Checks the arguments after the array of an idiom call of the method `name` on an array of
+    /// `element`, each once. Whether the method takes them: `contains` one of type `element`, or
+    /// an integer literal that fits it, that checked cleanly, and `len` and `sum` none.
+    fn idiom_arguments(&mut self, name: &str, element: &Type, rest: &[ast::Arg]) -> bool {
+        let [value] = rest else {
+            self.stray(rest);
+            return rest.is_empty() && name != "contains";
+        };
+        let checked = self.expr(&value.value, Some(&UNKNOWN));
+        name == "contains"
+            && checked.is_ok_and(|checked| {
+                checked.ty == *element
+                    || matches!(
+                        (&value.value.kind, element),
+                        (ExprKind::Int(n), Type::U8) if u8::try_from(*n).is_ok()
+                    )
+            })
     }
 
     /// `receiver.method(args)`, `receiver` checked from `receiver_expr`.
@@ -709,11 +831,13 @@ impl Checker {
         method: &ast::Ident,
         args: &[ast::Arg],
     ) -> Checked {
+        // The arguments are not part of an assignment target's chain; `expr` restores the flag.
+        let target = std::mem::take(&mut self.in_target);
         if let Some(ty @ Type::Array(_)) = type_of(&receiver) {
             let ty = ty.clone();
             return self.array_method(span, receiver, &ty, method, args);
         }
-        let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method) else {
+        let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method, target) else {
             self.labels(args);
             self.stray(args);
             return Err(Poisoned::error());
@@ -733,15 +857,12 @@ impl Checker {
         let sig = &self.signatures[func.0];
         let (name, params, ret) = (sig.name.clone(), sig.params.clone(), sig.ret.clone());
         if params.len() != args.len() {
-            let plural = if params.len() == 1 { "" } else { "s" };
-            self.diagnostics.push(Diagnostic::error(
-                span,
-                format!(
-                    "`{name}` takes {} argument{plural}, found {}",
-                    params.len(),
-                    args.len()
-                ),
-            ));
+            self.report(DiagnosticKind::ArgumentCount {
+                name,
+                want: params.len(),
+                found: args.len(),
+                at: span,
+            });
             self.stray(args);
             return Err(Poisoned::error());
         }
@@ -764,18 +885,24 @@ impl Checker {
     fn convert(&mut self, span: Span, to: Type, args: &[ast::Arg]) -> Checked {
         let labeled = self.labels(args);
         let [arg] = args else {
-            let message = format!("`{to}` takes 1 argument, found {}", args.len());
-            self.diagnostics.push(Diagnostic::error(span, message));
+            self.report(DiagnosticKind::ArgumentCount {
+                name: to.to_string(),
+                want: 1,
+                found: args.len(),
+                at: span,
+            });
             self.stray(args);
             return Err(Poisoned::error());
         };
         let from = if to == Type::U8 { Type::I64 } else { Type::U8 };
         let checked = self.value(&arg.value, None);
         let d = match type_of(&checked) {
-            Some(ty) if *ty == to => Diagnostic::error(
-                arg.value.span,
-                format!("{} is already {}", quoted(&arg.value), self.show(&to)),
-            ),
+            Some(ty) if *ty == to => DiagnosticKind::AlreadyConverted {
+                value: path(&arg.value),
+                ty: self.type_name(&to),
+                at: arg.value.span,
+            }
+            .into(),
             Some(ty) if *ty != from => self.mismatch(arg.value.span, Some(&arg.value), &from, ty),
             _ => {
                 let kind = checked
@@ -813,10 +940,7 @@ impl Checker {
     pub(super) fn labels(&mut self, args: &[ast::Arg]) -> bool {
         let mut labeled = false;
         for label in args.iter().filter_map(|a| a.label.as_ref()) {
-            self.diagnostics.push(Diagnostic::error(
-                label.span,
-                "labels on arguments come in milestone 10",
-            ));
+            self.report(DiagnosticKind::LabeledArgument { at: label.span });
             labeled = true;
         }
         labeled
@@ -832,12 +956,11 @@ impl Checker {
             .iter()
             .map(|f| (f.name.name.clone(), f.ty.clone()))
             .collect();
-        let names: Vec<_> = fields.iter().map(|(f, _)| format!("`{f}`")).collect();
-        let order = format!("name the fields in declaration order: {}", names.join(", "));
+        let names: Vec<_> = fields.iter().map(|(f, _)| f.clone()).collect();
         let mut failed = false;
         let mut checked = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
-            if !failed && let Some(d) = misplaced(&name, &fields, &order, i, arg) {
+            if !failed && let Some(d) = misplaced(&name, &names, i, arg) {
                 self.diagnostics.push(d);
                 failed = true;
             }
@@ -849,9 +972,12 @@ impl Checker {
                 checked.push(arg);
             }
         }
-        if !failed && let Some((missing, _)) = fields.get(args.len()) {
-            self.diagnostics
-                .push(Diagnostic::error(span, format!("missing field `{missing}`")).help(order));
+        if !failed && let Some(missing) = names.get(args.len()) {
+            self.report(DiagnosticKind::MissingField {
+                field: missing.clone(),
+                fields: names,
+                at: span,
+            });
             failed = true;
         }
         let ty = Type::Class(class);
@@ -871,7 +997,7 @@ impl Checker {
         receiver: &ast::Expr,
         name: &ast::Ident,
     ) -> Checked {
-        let Some((class, index)) = self.find_field(type_of(&base), receiver, name) else {
+        let Some((class, index)) = self.find_field(type_of(&base), receiver, name, false) else {
             return Err(Poisoned::error());
         };
         let ty = self.classes[class.0].fields[index].ty.clone();
@@ -889,83 +1015,97 @@ impl Checker {
     }
 
     /// The class and index of field `name` of `receiver`, a value of type `base`. `None` when
-    /// there is none, reported unless `base` is `Error`.
+    /// there is none, reported unless `base` is `Error`. `target` when the field is assigned,
+    /// where neither `()` nor `?.` can follow the access.
     pub(super) fn find_field(
         &mut self,
         base: Option<&Type>,
         receiver: &ast::Expr,
         name: &ast::Ident,
+        target: bool,
     ) -> Option<(tir::ClassId, usize)> {
         let ty = base?;
+        let method = |owner, certain: bool| DiagnosticKind::MethodNotField {
+            name: name.name.clone(),
+            owner,
+            at: name.span,
+            call: (!target).then_some(certain),
+        };
         let d = match ty {
             Type::Class(class) => {
                 let info = &self.classes[class.0];
                 if let Some(index) = info.fields.iter().position(|f| f.name.name == name.name) {
                     return Some((*class, index));
                 }
-                if info.methods.contains_key(&name.name) {
-                    Diagnostic::error(
-                        name.span,
-                        format!(
-                            "`{}` is a method of {}, not a field",
-                            name.name,
-                            self.show(ty)
-                        ),
-                    )
-                    .help(format!("call it: `{}()`", name.name))
-                } else {
-                    no_member("field", &self.show(ty), name)
+                match info.methods.get(&name.name) {
+                    Some(Declared::Known(func)) => {
+                        let no_arguments = self.signatures[func.0].params.is_empty();
+                        method(self.type_name(ty), no_arguments).into()
+                    }
+                    // Its own error is reported, and what it held is unknown.
+                    Some(Declared::Broken) => return None,
+                    None => {
+                        let fields = info.fields.iter().map(|f| f.name.name.as_str());
+                        no_member(Definition::Field, self.type_name(ty), name, fields)
+                    }
                 }
             }
-            Type::Array(_) if name.name == "len" => Diagnostic::error(
-                name.span,
-                format!("`len` is a method of {}, not a field", self.show(ty)),
-            )
-            .help("call it: `len()`"),
-            Type::Optional(_) => may_be_none(receiver),
-            _ => no_member("field", &self.show(ty), name),
+            Type::Array(_) if name.name == "len" => method(self.type_name(ty), true).into(),
+            Type::Optional(_) => may_be_none(receiver, name, !target && !self.in_target),
+            _ => no_member(Definition::Field, self.type_name(ty), name, []),
         };
         self.diagnostics.push(d);
         None
     }
 
     /// The method `name` of `receiver`, a value of type `ty`. `None` when there is none,
-    /// reported unless `ty` is `Error`.
+    /// reported unless `ty` is `Error`. `target` when the call is in an assignment target's
+    /// chain, where `?.` cannot follow the receiver.
     fn find_method(
         &mut self,
         ty: Option<&Type>,
         receiver: &ast::Expr,
         name: &ast::Ident,
+        target: bool,
     ) -> Option<tir::FuncId> {
         let ty = ty?;
         let d = match ty {
             Type::Class(class) => {
                 let info = &self.classes[class.0];
-                if let Some(&func) = info.methods.get(&name.name) {
-                    return Some(func);
+                match info.methods.get(&name.name) {
+                    Some(&Declared::Known(func)) => return Some(func),
+                    // Its own error is reported; the caller checks the arguments.
+                    Some(Declared::Broken) => return None,
+                    None => {}
                 }
                 if info.fields.iter().any(|f| f.name.name == name.name) {
-                    Diagnostic::error(
-                        name.span,
-                        format!(
-                            "`{}` is a field of {}, not a method",
-                            name.name,
-                            self.show(ty)
-                        ),
-                    )
+                    DiagnosticKind::FieldNotMethod {
+                        name: name.name.clone(),
+                        owner: self.type_name(ty),
+                        at: name.span,
+                    }
+                    .into()
                 } else {
-                    no_member("method", &self.show(ty), name)
+                    let methods = info.methods.keys().map(String::as_str);
+                    no_member(Definition::Method, self.type_name(ty), name, methods)
                 }
             }
-            Type::Optional(_) => may_be_none(receiver),
-            _ => no_member("method", &self.show(ty), name),
+            Type::Optional(_) => may_be_none(receiver, name, !target),
+            _ => no_member(Definition::Method, self.type_name(ty), name, []),
         };
         self.diagnostics.push(d);
         None
     }
 
     fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
-        let wrong = || Diagnostic::error(span, "`print` takes one `i64`, `u8` or `bool`");
+        // Not `value()`: a `unit` argument needs this code, not "expression has no value".
+        let wrong = || {
+            DiagnosticKind::PrintArgument {
+                at: span,
+                class: None,
+            }
+            .into()
+        };
         let labeled = self.labels(args);
         let [arg] = args else {
             self.diagnostics.push(wrong());
@@ -974,16 +1114,19 @@ impl Checker {
         };
         let checked = self.expr(&arg.value, None);
         let error = match type_of(&checked) {
-            Some(ty) if matches!(payload(ty), Type::Array(_)) => {
-                Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
-                    .help("print each element in a `for` loop")
+            Some(ty) if matches!(payload(ty), Type::Array(_)) => DiagnosticKind::PrintArray {
+                ty: self.type_name(ty),
+                optional: matches!(ty, Type::Optional(_)),
+                at: arg.value.span,
             }
-            Some(ty @ Type::Class(_)) => {
-                Diagnostic::error(arg.value.span, format!("cannot print {}", self.show(ty)))
+            .into(),
+            Some(ty @ Type::Class(_)) => DiagnosticKind::PrintArgument {
+                at: arg.value.span,
+                class: Some(self.type_name(ty)),
             }
-            Some(Type::Optional(_)) => wrong(),
-            Some(Type::Unit) => no_value(arg.value.span),
-            Some(Type::Never) => never_value(arg.value.span),
+            .into(),
+            Some(Type::Unit | Type::Optional(_)) => wrong(),
+            Some(Type::Never) => DiagnosticKind::PrintNever { at: arg.value.span }.into(),
             _ => {
                 let kind = checked
                     .ok()
@@ -1003,17 +1146,6 @@ impl Checker {
             let _ = self.expr(&arg.value, Some(&UNKNOWN));
         }
     }
-}
-
-/// An expression of no type used where a value is needed.
-fn no_value(span: Span) -> Diagnostic {
-    Diagnostic::error(span, "expression has no value")
-}
-
-/// A `never` expression used as a value: it leaves before it makes one.
-fn never_value(span: Span) -> Diagnostic {
-    Diagnostic::error(span, "this expression never produces a value")
-        .help("every path through it returns, breaks or continues")
 }
 
 /// The operator and the type it takes, for all but `==` and `!=`.
@@ -1044,15 +1176,6 @@ pub(super) fn int_literal(e: &ast::Expr) -> bool {
                 && int_literal(rhs)
         }
         _ => false,
-    }
-}
-
-/// Why the literal `n` is not a `u8`. Only `-9223372036854775808` parses to a negative literal.
-fn u8_literal_error(n: i64) -> Option<String> {
-    match n {
-        ..0 => Some("`u8` cannot be negative".to_string()),
-        0..=255 => None,
-        _ => Some(format!("`{n}` does not fit in `u8`")),
     }
 }
 
@@ -1136,15 +1259,15 @@ fn after_branch(ty: Option<&Type>) -> Option<Type> {
     }
 }
 
-/// "`node` may be `None`", at the optional `receiver` of a `.`.
-fn may_be_none(receiver: &ast::Expr) -> Diagnostic {
-    Diagnostic::error(receiver.span, format!("{} may be `None`", quoted(receiver)))
-        .help("use `?.`, or unwrap it with `if let`")
-}
-
-/// `e` as messages quote it: its path in backticks, or "this value".
-pub(super) fn quoted(e: &ast::Expr) -> String {
-    path(e).map_or_else(|| "this value".to_owned(), |p| format!("`{p}`"))
+/// "`node` may be `None`", at the optional `receiver` of a `.` before `name`. With `fix`, a
+/// `?.` may take the `.`'s place.
+fn may_be_none(receiver: &ast::Expr, name: &ast::Ident, fix: bool) -> Diagnostic {
+    DiagnosticKind::MayBeNone {
+        value: path(receiver),
+        at: receiver.span,
+        access: fix.then(|| Span::new(receiver.span.end, name.span.start)),
+    }
+    .into()
 }
 
 /// A name, `self`, or a chain of `.` and `?.` fields over one, as written.
@@ -1159,49 +1282,79 @@ pub(super) fn path(e: &ast::Expr) -> Option<String> {
     }
 }
 
-/// "`P` has no field `z`": `owner` is the type as `show` quotes it.
-pub(super) fn no_member(kind: &str, owner: &str, name: &ast::Ident) -> Diagnostic {
-    Diagnostic::error(name.span, format!("{owner} has no {kind} `{}`", name.name))
+/// Whether `expr` takes a `.method()` as written, without parentheses around it.
+fn postfix(expr: &ast::Expr) -> bool {
+    matches!(
+        expr.kind,
+        ExprKind::Name(_)
+            | ExprKind::SelfValue
+            | ExprKind::Field { .. }
+            | ExprKind::Call { .. }
+            | ExprKind::MethodCall { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::ArrayLit(_)
+            | ExprKind::ArrayFill { .. }
+    )
 }
 
-/// The mistake in argument `i` of a constructor of `class`, if any: `order` is the help
-/// that lists the fields.
-fn misplaced(
-    class: &str,
-    fields: &[(String, Option<Type>)],
-    order: &str,
-    i: usize,
-    arg: &ast::Arg,
-) -> Option<Diagnostic> {
-    let Some((field, _)) = fields.get(i) else {
+/// "`P` has no field `z`": `owner` is the type's name, and `members` are its members of `kind`.
+pub(super) fn no_member<'a>(
+    kind: Definition,
+    owner: String,
+    name: &ast::Ident,
+    members: impl IntoIterator<Item = &'a str>,
+) -> Diagnostic {
+    DiagnosticKind::NoMember {
+        owner,
+        kind,
+        name: name.name.clone(),
+        at: name.span,
+        suggestion: suggestion(&name.name, members.into_iter().map(|member| (member, kind))),
+    }
+    .into()
+}
+
+/// The mistake in argument `i` of a constructor of `class`, whose fields are `fields`, if any.
+fn misplaced(class: &str, fields: &[String], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
+    let Some(field) = fields.get(i) else {
         let start = arg.label.as_ref().map_or(arg.value.span, |l| l.span).start;
-        let plural = if fields.len() == 1 { "" } else { "s" };
-        return Some(Diagnostic::error(
-            Span::new(start, arg.value.span.end),
-            format!(
-                "too many arguments: `{class}` has {} field{plural}",
-                fields.len()
-            ),
-        ));
+        return Some(
+            DiagnosticKind::TooManyArguments {
+                class: class.to_string(),
+                fields: fields.len(),
+                at: Span::new(start, arg.value.span.end),
+            }
+            .into(),
+        );
     };
     let Some(label) = &arg.label else {
         return Some(
-            Diagnostic::error(arg.value.span, "this argument needs a label")
-                .help(format!("label it with its field: `{field}: ...`")),
+            DiagnosticKind::ArgumentNeedsLabel {
+                field: field.clone(),
+                at: arg.value.span,
+            }
+            .into(),
         );
     };
     if label.name == *field {
         None
-    } else if fields.iter().any(|(f, _)| *f == label.name) {
+    } else if fields.contains(&label.name) {
         Some(
-            Diagnostic::error(
-                label.span,
-                format!("expected field `{field}` here, found `{}`", label.name),
-            )
-            .help(order),
+            DiagnosticKind::FieldOutOfOrder {
+                field: field.clone(),
+                found: label.name.clone(),
+                fields: fields.to_vec(),
+                at: label.span,
+            }
+            .into(),
         )
     } else {
-        Some(no_member("field", &format!("`{class}`"), label))
+        Some(no_member(
+            Definition::Field,
+            class.to_string(),
+            label,
+            fields.iter().map(String::as_str),
+        ))
     }
 }
 

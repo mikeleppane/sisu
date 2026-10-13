@@ -1,6 +1,6 @@
 # Coding standards
 
-Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enforce the mechanical rules (`[workspace.lints]` in `Cargo.toml`). This file holds the judgement calls that no check can make. Report a broken rule as a finding, with file:line.
+Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enforce the mechanical rules (`[workspace.lints]` in `Cargo.toml`). This file holds the judgement calls that no check can make. Report a broken rule as a finding, with file:line. On a branch-wide diff, read the code first, without the blessed fixture output (`git diff <base> -- . ':!*.err' ':!*.json'`), then the `.err` and `.json` files of the codes it changes.
 
 ## Reviewing
 
@@ -13,7 +13,7 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 ## Tests
 
 - **A test proves its name.** It must fail when the contract it names breaks. For example, a test that byte offsets are not character offsets needs non-ASCII input. A test that a line break inside `( )` inserts no `Newline` needs the break after a token that could end a statement.
-- **The spec's messages have tests.** Every diagnostic message the spec names has a test that asserts its text and its `line:col`. Every layout rule in "Statements end at newlines" has a case outside `( )` and a case inside.
+- **Every diagnostic code has a fixture.** It is `crates/sisuc/tests/diagnostics/<CODE>.sisu`, and its `.err` and `.json` pin its text and `line:col`. Unit tests assert codes and positions, never wording; the `test-wording` prek hook rejects a test that reads a message, a label or help text. Every layout rule in "Statements end at newlines" has a case outside `( )` and a case inside.
 - **IR tests check the contract, not LLVM's naming.** Match opcodes, predicates, intrinsic names and block-name prefixes. Value names such as `%0` or `%cmp` change when unrelated code changes. Prove runtime behaviour end to end with a case in `crates/sisuc/tests/run`.
 - **Plan-pinned tests keep their expected values.** When behaviour grows, add a new case.
 - **Every surviving mutant is a finding.** Run `cargo mutants` on the diff (see `AGENTS.md`). Each survivor needs a test that kills it, or a note in the report on why it is equivalent.
@@ -24,7 +24,7 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 
 ## Staging work across tasks
 
-- **No reachable crash lands in a stage.** A feature that a later task implements is rejected by the checker until then, never left to a codegen panic. The diagnostic names the task that removes it.
+- **No reachable crash lands in a stage.** A feature that a later task implements is rejected by the checker until then, never left to a codegen panic. An existing code reports the feature until it lands.
 - **A stage's later arms panic by name.** Inside one stage, when a task adds a syntax or `tir` node that a later task of the same stage handles, the later code's match arm is `panic!("<node> lands in Task N")`, and Task N removes it. The stage's last task leaves none behind.
 - **A restriction on a type sits where the type is made.** Put it in the constructor every path goes through (as `optional_of` does), not where an annotation is read.
 
@@ -36,7 +36,9 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 
 ## Diagnostics
 
-- **One rule, one message.** A rule reports the same wording wherever it fires: lexer or parser, inside or outside brackets.
+- **One rule, one code.** A rule reports the same code wherever it fires: lexer or parser, inside or outside brackets.
+- **Wording lives in the registry.** No call site writes diagnostic text.
+- **A recovery or fix change is probed for cascades.** Fixing only the first error must leave every other diagnostic in place ([ADR 0013](docs/adr/0013-diagnostics-have-stable-codes.md)). Probe skipped text inside, before and after an item; a broken item header; a redeclared name; and a failed condition before a branch that returns. `each_certain_fix_removes_exactly_its_diagnostic` checks the fixtures; the reviewer probes the inputs no fixture covers.
 - **The primary span covers the offending code.** For "end of line" and "end of file", it is an empty span at that point. `Diagnostic::render` asserts in debug builds that every span sits on character boundaries and does not end with a line break.
 
 ## Files the compiler writes

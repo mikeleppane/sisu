@@ -1,0 +1,15 @@
+error[E0018]: a class method takes `self`, not `mut self`
+ --> E0018-typed.sisu:4:13
+  |
+4 |     fn bump(mut self: i64) {
+  |             ^^^
+  |
+  = help: an object is shared: `self` can already write every `mut` field
+help: try removing the `mut`; the receiver may need another change
+  |
+4 -     fn bump(mut self: i64) {
+4 +     fn bump(self: i64) {
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0018

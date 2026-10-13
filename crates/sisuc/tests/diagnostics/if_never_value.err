@@ -1,0 +1,8 @@
+error[E0043]: expression has no value
+ --> if_never_value.sisu:2:13
+  |
+2 |     let z = if true { return } else { return }
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ never finishes
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0043

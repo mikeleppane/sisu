@@ -1,0 +1,8 @@
+error[E0053]: `u8` takes 1 argument, found 2
+ --> E0053-conversion.sisu:2:11
+  |
+2 |     print(u8(1, 2))
+  |           ^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0053

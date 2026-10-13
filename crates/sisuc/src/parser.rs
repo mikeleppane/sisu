@@ -1,20 +1,66 @@
 //! The parser: tokens to the syntax tree.
 
-use crate::ast::{
-    Arg, BinaryOp, Block, Class, CompareOp, Expr, ExprKind, FieldDecl, ForSource, Function, Ident,
-    Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind, UnaryOp,
-};
-use crate::diagnostic::{Diagnostic, Span};
-use crate::lexer::{MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
+use std::ops::Range;
 
-/// Parses `tokens`, which must end with `Eof`. Stops at the first error.
-pub(crate) fn parse(tokens: &[Token]) -> Result<Program, Diagnostic> {
-    Parser {
+use crate::ast::{
+    Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Expr, ExprKind, FieldDecl,
+    ForSource, Function, Ident, Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind,
+    UnaryOp,
+};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Join, LetField, SemicolonPlace, Span};
+use crate::lexer::{Lexed, MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
+
+/// What the parser makes of a lexed source.
+#[derive(Debug)]
+pub(crate) struct Parsed {
+    /// The intact items, and the names of the broken ones.
+    pub(crate) program: Program,
+    /// One error per broken item, and each lexer diagnostic outside every item, by position.
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    /// Whether every item is named, so that no use of a lost item can read as "cannot find".
+    pub(crate) checkable: bool,
+}
+
+/// Parses `lexed`, whose tokens end with `Eof` and whose brackets balance. An item with a
+/// syntax error, its own or the lexer's, is broken: it reports its earliest error, and the
+/// parser resumes after it.
+pub(crate) fn parse(lexed: Lexed) -> Parsed {
+    let Lexed {
         tokens,
+        diagnostics,
+        comments,
+        swallowed,
+    } = lexed;
+    Parser {
+        tokens: &tokens,
         pos: 0,
         depth: 0,
+        lexer: &diagnostics,
+        comments: &comments,
+        swallowed: &swallowed,
     }
     .program()
+}
+
+/// The program of `source`, which must lex and parse without a diagnostic.
+#[cfg(test)]
+pub(crate) fn parse_ok(source: &str) -> Program {
+    let parsed = parse(crate::lexer::lex(source).expect("the source should lex"));
+    assert!(
+        parsed.diagnostics.is_empty() && parsed.checkable,
+        "{source}: {:?}",
+        parsed.diagnostics
+    );
+    parsed.program
+}
+
+/// The earlier of `a` and `b`; `a` on a tie.
+fn earlier(a: Diagnostic, b: Diagnostic) -> Diagnostic {
+    if b.span().start < a.span().start {
+        b
+    } else {
+        a
+    }
 }
 
 /// How deep the syntax tree may nest. Every later stage walks the tree recursively, and so does
@@ -74,6 +120,12 @@ struct Parser<'a> {
     /// or a `.` does in a chain, adds a level to that height, so no way of building a tree gets
     /// past `MAX_DEPTH`. An error ends the parse.
     depth: usize,
+    /// The lexer's diagnostics, in source order.
+    lexer: &'a [Diagnostic],
+    /// Where each comment starts.
+    comments: &'a [usize],
+    /// Where each skip that may have swallowed an item starts.
+    swallowed: &'a [usize],
 }
 
 impl Parser<'_> {
@@ -103,8 +155,11 @@ impl Parser<'_> {
     fn reach(&mut self, depth: usize) -> Result<(), Diagnostic> {
         self.depth = depth;
         if depth > MAX_DEPTH {
-            return Err(Diagnostic::error(self.peek().span, "nesting is too deep")
-                .help(format!("the limit is {MAX_DEPTH} levels")));
+            return Err(DiagnosticKind::NestingTooDeep {
+                at: self.peek().span,
+                limit: MAX_DEPTH,
+            }
+            .into());
         }
         Ok(())
     }
@@ -133,31 +188,41 @@ impl Parser<'_> {
         while self.eat(&TokenKind::Newline).is_some() {}
     }
 
-    /// What must follow a statement or a class member: a line break or the closing `}`.
+    /// What must follow a statement or a class member: a line break or the closing `}`. A `;`
+    /// here ends a complete statement, so it can be removed or the next one moved.
     fn end_of_line(&self) -> Diagnostic {
+        if self.at(&TokenKind::Semicolon) {
+            // `;` is not `Eof`, so the token after it exists.
+            let place = match self.tokens[self.pos + 1].kind {
+                TokenKind::Newline | TokenKind::RBrace | TokenKind::Eof => SemicolonPlace::EndsLine,
+                TokenKind::Semicolon => SemicolonPlace::Repeated,
+                _ => SemicolonPlace::MidLine,
+            };
+            return DiagnosticKind::Semicolon {
+                at: self.peek().span,
+                place,
+            }
+            .into();
+        }
         self.expected("end of line")
     }
 
     /// "expected <what>, found <the next token>", pointing at the next token.
-    /// A stray `;` or `var` always gets its one message, wherever it appears.
+    /// A stray `var` always gets its own diagnostic, wherever it appears.
     fn expected(&self, what: &str) -> Diagnostic {
         let found = self.peek();
         match found.kind {
-            TokenKind::Semicolon => {
-                return Diagnostic::error(
-                    found.span,
-                    "Sisu has no `;`: statements end at the end of the line",
-                );
-            }
-            TokenKind::Var => {
-                return Diagnostic::error(found.span, "Sisu has no `var`").help("use `let mut`");
-            }
-            _ => {}
+            TokenKind::Var => DiagnosticKind::Var {
+                at: found.span,
+                field: false,
+            },
+            _ => DiagnosticKind::Expected {
+                what: what.to_string(),
+                found: found.kind.describe(),
+                at: found.span,
+            },
         }
-        Diagnostic::error(
-            found.span,
-            format!("expected {what}, found {}", found.kind.describe()),
-        )
+        .into()
     }
 
     fn expect(&mut self, kind: &TokenKind) -> Result<Token, Diagnostic> {
@@ -201,11 +266,11 @@ impl Parser<'_> {
                 optional: false,
                 span,
             };
-            return Err(Diagnostic::error(
-                start.to(self.peek().span),
-                format!("`{base}??` is not a type"),
-            )
-            .help("optionals do not nest"));
+            return Err(DiagnosticKind::OptionalNests {
+                ty: base.to_string(),
+                at: start.to(self.peek().span),
+            }
+            .into());
         }
         Ok(TypeExpr {
             kind,
@@ -214,45 +279,301 @@ impl Parser<'_> {
         })
     }
 
-    fn program(&mut self) -> Result<Program, Diagnostic> {
+    fn program(&mut self) -> Parsed {
         let mut items = Vec::new();
+        let mut broken = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut checkable = true;
+        // Where the items lie; each reports the lexer diagnostics inside it itself.
+        let mut covered = Vec::new();
         self.skip_newlines();
         while !self.at(&TokenKind::Eof) {
-            items.push(match self.peek().kind {
-                TokenKind::Fn => Item::Function(self.function(false)?),
-                TokenKind::Class => Item::Class(self.class()?),
-                _ => return Err(self.expected("`fn` or `class`")),
-            });
             self.depth = 0;
+            let start = self.pos;
+            let tokens = self.tokens;
+            let previous = tokens[..start].last();
+            // A `;` after an item's `}` ends its line, as one does in a block.
+            if self.at(&TokenKind::Semicolon)
+                && previous.is_some_and(|t| t.kind == TokenKind::RBrace)
+                && tokens[start + 1].kind == TokenKind::Newline
+            {
+                diagnostics.push(self.end_of_line());
+                self.bump();
+                self.skip_newlines();
+                continue;
+            }
+            let header = self.header(start);
+            // An item without a name would be lost, so the checker does not run; it runs on to
+            // the next item, so that a foreign function and its body make one error.
+            let end = if header.is_some() {
+                self.item_end(start)
+            } else {
+                self.next_line_item(start)
+            };
+            debug_assert!(
+                end > start,
+                "an item should hold a token, or the loop would not end"
+            );
+            // An unnamed item starts where its line does, so text skipped before its first
+            // token is its own.
+            let line = previous.map_or(0, |t| t.span.end);
+            let mut bytes = self.bytes(start, end);
+            if header.is_none() {
+                bytes.start = line;
+            }
+            covered.push(bytes);
+            let parsed = match self.peek().kind {
+                TokenKind::Fn => self.checked(end, |p| {
+                    Ok((Item::Function(p.function(false)?), Vec::new()))
+                }),
+                TokenKind::Class => self
+                    .class(end)
+                    .map(|(class, errors)| (Item::Class(class), errors)),
+                _ => self.checked(end, |p| Err(p.expected("`fn` or `class`"))),
+            };
+            match parsed {
+                Ok((item, errors)) => {
+                    debug_assert!(header.is_some(), "an unnamed item should hold an error");
+                    items.push(item);
+                    diagnostics.extend(errors);
+                }
+                Err(error) => {
+                    if let Some(header) = header {
+                        diagnostics.push(error);
+                        broken.push(header);
+                    } else {
+                        let skipped = self.lexer_in(line..error.span().start).next().cloned();
+                        diagnostics.push(skipped.unwrap_or(error));
+                        checkable = false;
+                    }
+                }
+            }
             self.skip_newlines();
         }
-        Ok(Program { items })
+        let outside = |at: &usize| !covered.iter().any(|r| r.contains(at));
+        diagnostics.extend(
+            self.lexer
+                .iter()
+                .filter(|d| outside(&d.span().start))
+                .cloned(),
+        );
+        // Skipped text outside every item may have held one, so a name lookup cannot be trusted.
+        if self.swallowed.iter().any(outside) {
+            checkable = false;
+        }
+        diagnostics.sort_by_key(|d| d.span().start);
+        Parsed {
+            program: Program {
+                items,
+                broken,
+                comments: self.comments.to_vec(),
+            },
+            diagnostics,
+            checkable,
+        }
     }
 
-    fn class(&mut self) -> Result<Class, Diagnostic> {
+    /// The name and kind of the item that starts at `start`, when its header is intact: `fn` or
+    /// `class`, then a name, with no lexer diagnostic before the token after the name. `fn to$tal`
+    /// lexes as `fn to tal`, so its name is not `to`.
+    fn header(&self, start: usize) -> Option<Broken> {
+        let kind = match self.tokens[start].kind {
+            TokenKind::Fn => BrokenKind::Function,
+            TokenKind::Class => BrokenKind::Class,
+            _ => return None,
+        };
+        // Neither a keyword nor a name is `Eof`, so the two tokens after the keyword exist.
+        let TokenKind::Ident(name) = &self.tokens[start + 1].kind else {
+            return None;
+        };
+        let header = self.tokens[start].span.start..self.tokens[start + 2].span.start;
+        if self.lexer_in(header).next().is_some() {
+            return None;
+        }
+        Some(Broken {
+            name: Ident {
+                name: name.clone(),
+                span: self.tokens[start + 1].span,
+            },
+            kind,
+        })
+    }
+
+    /// The end, exclusive, of the item or member that starts at `start`: past the `}` that
+    /// brings the depth back to where it started, or at a line break at that depth, which comes
+    /// before any `{`. A closer below that depth (a class's `}`) or `Eof` ends it first.
+    fn item_end(&self, start: usize) -> usize {
+        let mut depth = 0usize;
+        for (i, token) in self.tokens.iter().enumerate().skip(start) {
+            match token.kind {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    if depth == 0 {
+                        return i;
+                    }
+                    depth -= 1;
+                    if depth == 0 && token.kind == TokenKind::RBrace {
+                        return i + 1;
+                    }
+                }
+                TokenKind::Newline if depth == 0 => return i,
+                TokenKind::Eof => return i,
+                _ => {}
+            }
+        }
+        unreachable!("the tokens should end with `Eof`")
+    }
+
+    /// The end, exclusive, of the unnamed item that starts at `start`: the next line whose first
+    /// token is `fn` or `class` outside brackets, or `Eof`.
+    // shortcut: a line break after a token that cannot end a statement (`:`) leaves no `Newline`,
+    // so a `fn` after one is not found; the item only runs longer, and the checker is off anyway.
+    fn next_line_item(&self, start: usize) -> usize {
+        let mut depth = 0usize;
+        for (i, token) in self.tokens.iter().enumerate().skip(start) {
+            match token.kind {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
+                TokenKind::Fn | TokenKind::Class
+                    if i > start && depth == 0 && self.tokens[i - 1].kind == TokenKind::Newline =>
+                {
+                    return i;
+                }
+                TokenKind::Eof => return i,
+                _ => {}
+            }
+        }
+        unreachable!("the tokens should end with `Eof`")
+    }
+
+    /// The bytes of the item from `start` to `end`, exclusive. An item that ends past its own `}`,
+    /// or past the line break before the next item, ends there. Any other runs up to the token
+    /// that ends it (a line break, a closer or `Eof`), so that text skipped before it lies in the
+    /// item.
+    fn bytes(&self, start: usize, end: usize) -> Range<usize> {
+        let last = &self.tokens[end - 1];
+        let stop = match (&last.kind, &self.tokens[end].kind) {
+            (TokenKind::RBrace, _) => last.span.end,
+            // `Eof` sits just after the last code, before any skipped text.
+            (_, TokenKind::Eof) => usize::MAX,
+            _ => self.tokens[end].span.start,
+        };
+        self.tokens[start].span.start..stop
+    }
+
+    /// The lexer diagnostics that start in `bytes`, in order.
+    fn lexer_in(&self, bytes: Range<usize>) -> impl Iterator<Item = &Diagnostic> {
+        self.lexer
+            .iter()
+            .filter(move |d| bytes.contains(&d.span().start))
+    }
+
+    /// Parses with `parse` the item or member that starts here and runs to `end`. Its error is
+    /// the earlier of its first lexer diagnostic and its parse error, which a skip may have
+    /// caused. After an error, the parser resumes at `end`.
+    fn checked<T>(
+        &mut self,
+        end: usize,
+        parse: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        let bytes = self.bytes(self.pos, end);
+        let parsed = parse(self);
+        let lexed = self.lexer_in(bytes).next().cloned();
+        let error = match (parsed, lexed) {
+            (Ok(parsed), None) => return Ok(parsed),
+            (Ok(_), Some(lexed)) => lexed,
+            (Err(error), None) => error,
+            (Err(error), Some(lexed)) => earlier(lexed, error),
+        };
+        self.pos = end;
+        Err(error)
+    }
+
+    /// The class that starts here and runs to `end`, and the error of each broken method. A
+    /// method whose error follows its name is broken alone and leaves the class; any other error
+    /// breaks the whole class, whose one error is then the earliest in it.
+    fn class(&mut self, end: usize) -> Result<(Class, Vec<Diagnostic>), Diagnostic> {
+        let bytes = self.bytes(self.pos, end);
+        let mut errors = Vec::new();
+        let mut methods = Vec::new();
+        let parsed = self.class_body(&mut errors, &mut methods);
+        let outside = self
+            .lexer_in(bytes)
+            .find(|d| {
+                !methods
+                    .iter()
+                    .any(|m: &Range<usize>| m.contains(&d.span().start))
+            })
+            .cloned();
+        match (parsed, outside) {
+            (Ok(class), None) => Ok((class, errors)),
+            (parsed, outside) => {
+                self.pos = end;
+                let error = errors
+                    .into_iter()
+                    .chain(outside)
+                    .chain(parsed.err())
+                    .reduce(earlier)
+                    .expect("a broken class should hold an error");
+                Err(error)
+            }
+        }
+    }
+
+    /// The class itself, adding each broken method's error to `errors` and its bytes to
+    /// `methods`.
+    fn class_body(
+        &mut self,
+        errors: &mut Vec<Diagnostic>,
+        methods: &mut Vec<Range<usize>>,
+    ) -> Result<Class, Diagnostic> {
         self.expect(&TokenKind::Class)?;
         let name = self.ident("a class name")?;
         self.expect(&TokenKind::LBrace)?;
         let mut members = Vec::new();
+        let mut broken_methods = Vec::new();
         self.skip_newlines();
         while !self.at(&TokenKind::RBrace) {
-            let member = self.member()?;
             self.depth = 0;
-            if matches!(member, Member::Field(_)) && self.at(&TokenKind::Comma) {
-                return Err(Diagnostic::error(
-                    self.peek().span,
-                    "a field ends at the end of the line",
-                )
-                .help("put each field on its own line"));
-            }
-            members.push(member);
-            if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
-                return Err(self.end_of_line());
+            let start = self.pos;
+            let end = self.item_end(start);
+            match self.checked(end, Self::member_line) {
+                Ok(member) => members.push(member),
+                Err(error) => match self.header(start) {
+                    Some(Broken {
+                        name,
+                        kind: BrokenKind::Function,
+                    }) => {
+                        methods.push(self.bytes(start, end));
+                        broken_methods.push(name);
+                        errors.push(error);
+                    }
+                    _ => return Err(error),
+                },
             }
             self.skip_newlines();
         }
         self.bump();
-        Ok(Class { name, members })
+        Ok(Class {
+            name,
+            members,
+            broken_methods,
+        })
+    }
+
+    /// A class member, and the end of its line.
+    fn member_line(&mut self) -> Result<Member, Diagnostic> {
+        let member = self.member()?;
+        if matches!(member, Member::Field(_)) && self.at(&TokenKind::Comma) {
+            return Err(DiagnosticKind::FieldComma {
+                at: self.peek().span,
+            }
+            .into());
+        }
+        if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
+            return Err(self.end_of_line());
+        }
+        Ok(member)
     }
 
     fn member(&mut self) -> Result<Member, Diagnostic> {
@@ -267,26 +588,23 @@ impl Parser<'_> {
                     ty: self.parse_type()?,
                 }))
             }
-            TokenKind::Let => {
-                let help = match self.field_after_keyword() {
-                    (true, field) => format!("drop the `let`: `mut {field}`"),
-                    (false, field) => format!("write it bare: `{field}`"),
-                };
-                Err(Diagnostic::error(self.peek().span, "a field takes no `let`").help(help))
+            TokenKind::Let => Err(DiagnosticKind::FieldLet {
+                at: self.peek().span,
+                rest: self.field_after_let(),
             }
-            TokenKind::Var => {
-                let (_, field) = self.field_after_keyword();
-                Err(Diagnostic::error(self.peek().span, "Sisu has no `var`")
-                    .help(format!("mark the field `mut`: `mut {field}`")))
+            .into()),
+            TokenKind::Var => Err(DiagnosticKind::Var {
+                at: self.peek().span,
+                field: true,
             }
+            .into()),
             TokenKind::Fn => {
                 let method = self.function(true)?;
                 if method.self_param.is_none() {
-                    return Err(Diagnostic::error(
-                        method.name.span,
-                        "a method needs `self` as its first parameter",
-                    )
-                    .help("static methods are not supported yet"));
+                    return Err(DiagnosticKind::MethodNeedsSelf {
+                        at: method.name.span,
+                    }
+                    .into());
                 }
                 Ok(Member::Method(method))
             }
@@ -294,14 +612,16 @@ impl Parser<'_> {
         }
     }
 
-    /// The field after the `let` or `var` at the next token, for a help line: whether `mut`
-    /// follows the keyword, and the field as `name: Type`, or that placeholder when no field
-    /// follows.
-    fn field_after_keyword(&self) -> (bool, String) {
+    /// What follows the `let` at the next token: a field that ends the line, or anything else,
+    /// shown as `name: Type` or, when no field follows, that placeholder.
+    fn field_after_let(&self) -> LetField {
         let mut rest = Parser {
             tokens: self.tokens,
             pos: self.pos + 1,
             depth: self.depth,
+            lexer: self.lexer,
+            comments: self.comments,
+            swallowed: self.swallowed,
         };
         let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
@@ -309,8 +629,18 @@ impl Parser<'_> {
             rest.expect(&TokenKind::Colon)?;
             Ok(format!("{}: {}", name.name, rest.parse_type()?))
         };
-        let field = field().unwrap_or_else(|_| "name: Type".to_string());
-        (mutable, field)
+        match field() {
+            Ok(_) if matches!(rest.peek().kind, TokenKind::Newline | TokenKind::RBrace) => {
+                LetField::Whole {
+                    remove: Span::new(self.peek().span.start, self.tokens[self.pos + 1].span.start),
+                }
+            }
+            Ok(field) => LetField::Other { mutable, field },
+            Err(_) => LetField::Other {
+                mutable,
+                field: "name: Type".to_string(),
+            },
+        }
     }
 
     /// `method` is true inside a class body, where `self` may be the first parameter.
@@ -327,35 +657,34 @@ impl Parser<'_> {
                     // `mut` is never `Eof`, so the token after it exists.
                     match &self.tokens[self.pos + 1].kind {
                         TokenKind::SelfKw if receiver => {
-                            return Err(Diagnostic::error(
-                                self.peek().span,
-                                "a class method takes `self`, not `mut self`",
-                            )
-                            .help(
-                                "an object is shared: `self` can already write every `mut` field",
-                            ));
+                            // `self` is not `Eof`, so the token after it exists.
+                            let after = &self.tokens[self.pos + 2].kind;
+                            return Err(DiagnosticKind::MutSelf {
+                                keyword: self.peek().span,
+                                receiver: self.tokens[self.pos + 1].span,
+                                certain: matches!(after, TokenKind::Comma | TokenKind::RParen),
+                            }
+                            .into());
                         }
                         TokenKind::SelfKw => {
                             self.bump();
                         }
                         TokenKind::Ident(name) => {
-                            return Err(Diagnostic::error(
-                                self.peek().span,
-                                "a parameter cannot be `mut`",
-                            )
-                            .help(format!(
-                                "copy it into a variable: `let mut {name} = {name}`"
-                            )));
+                            return Err(DiagnosticKind::MutParameter {
+                                name: name.clone(),
+                                at: self.peek().span,
+                            }
+                            .into());
                         }
                         _ => {}
                     }
                 }
                 if self.at(&TokenKind::SelfKw) {
                     if !receiver {
-                        return Err(Diagnostic::error(
-                            self.peek().span,
-                            "`self` is only the first parameter of a method",
-                        ));
+                        return Err(DiagnosticKind::SelfNotFirst {
+                            at: self.peek().span,
+                        }
+                        .into());
                     }
                     self_param = Some(self.bump().span);
                     if self.eat(&TokenKind::Comma).is_none() {
@@ -398,6 +727,9 @@ impl Parser<'_> {
         let mut stmts = Vec::new();
         self.skip_newlines();
         while !self.at(&TokenKind::RBrace) {
+            if self.at(&TokenKind::Else) {
+                return Err(self.else_on_new_line(stmts.last()));
+            }
             stmts.push(self.child(base, &mut reach, Self::stmt)?);
             if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
                 return Err(self.end_of_line());
@@ -436,7 +768,7 @@ impl Parser<'_> {
             }
             TokenKind::For => {
                 self.bump();
-                let name = self.ident("a variable name")?;
+                let name = self.ident("a binding name")?;
                 self.expect(&TokenKind::In)?;
                 // A range is only valid here, so the header reads its two sides itself, counted
                 // like `expr` does.
@@ -461,7 +793,10 @@ impl Parser<'_> {
             }
             TokenKind::Return => {
                 self.bump();
-                if self.at(&TokenKind::Newline) || self.at(&TokenKind::RBrace) {
+                if self.at(&TokenKind::Newline)
+                    || self.at(&TokenKind::RBrace)
+                    || self.at(&TokenKind::Semicolon)
+                {
                     StmtKind::Return(None)
                 } else {
                     StmtKind::Return(Some(self.child(base, &mut reach, Self::expr)?))
@@ -475,12 +810,6 @@ impl Parser<'_> {
                 self.bump();
                 StmtKind::Continue
             }
-            TokenKind::Else => {
-                return Err(Diagnostic::error(
-                    start,
-                    "`else` must be on the same line as the closing `}`",
-                ));
-            }
             _ => self.expr_or_assign()?,
         };
         // `let_stmt` and `expr_or_assign` leave their own height in `self.depth`.
@@ -489,6 +818,47 @@ impl Parser<'_> {
             kind,
             span: start.to(self.last_span()),
         })
+    }
+
+    /// The `else` that starts a line, after `previous`, the statement before it. The `else` can
+    /// move up to the `if` it follows when that has none, and a block or an `if` follows it.
+    fn else_on_new_line(&self, previous: Option<&Stmt>) -> Diagnostic {
+        let at = self.peek().span;
+        let lacks_else = previous.is_some_and(|stmt| {
+            matches!(
+                &stmt.kind,
+                StmtKind::Expr(Expr {
+                    kind: ExprKind::If {
+                        else_block: None,
+                        ..
+                    } | ExprKind::IfLet {
+                        else_block: None,
+                        ..
+                    },
+                    ..
+                })
+            )
+        });
+        let takes_block = matches!(
+            self.tokens[self.pos + 1].kind,
+            TokenKind::LBrace | TokenKind::If
+        );
+        // `lacks_else` means the statement ends with the `}` just before the `else` and any
+        // line breaks. The join deletes the gap, so a comment in it makes the join a guess.
+        let gap = self.last_code_end()..at.start;
+        let join = (lacks_else && takes_block).then(|| Join {
+            gap: Span::new(gap.start, gap.end),
+            certain: !self.comments.iter().any(|c| gap.contains(c)),
+        });
+        DiagnosticKind::ElseOnNewLine { at, join }.into()
+    }
+
+    /// Where the code before the next token ends: the `}` of the statement before it.
+    fn last_code_end(&self) -> usize {
+        self.tokens[..self.pos]
+            .iter()
+            .rfind(|t| t.kind != TokenKind::Newline)
+            .map_or(0, |t| t.span.end)
     }
 
     /// The span of the token just consumed.
@@ -501,7 +871,7 @@ impl Parser<'_> {
         if self.eat(&TokenKind::Let).is_none() {
             return Ok(None);
         }
-        let name = self.ident("a variable name")?;
+        let name = self.ident("a binding name")?;
         self.expect(&TokenKind::Eq)?;
         Ok(Some((name, self.expr()?)))
     }
@@ -510,8 +880,8 @@ impl Parser<'_> {
         let base = self.depth;
         let mut reach = base;
         self.bump();
-        let mutable = self.eat(&TokenKind::Mut).is_some();
-        let name = self.ident("a variable name")?;
+        let mutable = self.eat(&TokenKind::Mut).map(|t| t.span);
+        let name = self.ident("a binding name")?;
         let ty = match self.eat(&TokenKind::Colon) {
             Some(_) => Some(self.child(base, &mut reach, Self::parse_type)?),
             None => None,
@@ -542,18 +912,13 @@ impl Parser<'_> {
             _ => return Ok(StmtKind::Expr(target)),
         };
         if matches!(target.kind, ExprKind::SelfValue) {
-            return Err(Diagnostic::error(target.span, "cannot assign to `self`")
-                .help("an object is shared: `self` can already write every `mut` field"));
+            return Err(DiagnosticKind::AssignToSelf { at: target.span }.into());
         }
         if !is_place(&target) {
-            return Err(Diagnostic::error(
-                target.span,
-                "cannot assign to this expression",
-            ));
+            return Err(DiagnosticKind::AssignToExpression { at: target.span }.into());
         }
         if goes_through_safe_access(&target) {
-            return Err(Diagnostic::error(target.span, "cannot assign through `?.`")
-                .help("unwrap it with `if let`"));
+            return Err(DiagnosticKind::AssignThroughSafeAccess { at: target.span }.into());
         }
         self.bump();
         let value = self.child(base, &mut reach, Self::expr)?;
@@ -568,10 +933,10 @@ impl Parser<'_> {
         self.descend()?;
         let e = self.binary(1)?;
         if self.at(&TokenKind::DotDot) {
-            return Err(Diagnostic::error(
-                self.peek().span,
-                "ranges are only allowed in `for`",
-            ));
+            return Err(DiagnosticKind::RangeOutsideFor {
+                at: self.peek().span,
+            }
+            .into());
         }
         Ok(e)
     }
@@ -625,14 +990,16 @@ impl Parser<'_> {
                     },
                 };
                 // Level 3 is non-associative: a second `==`/`!=`/`is` is an error, not a chain.
-                if level == 3 {
-                    let message = match self.peek().kind {
-                        TokenKind::Is => "`is` does not chain",
-                        TokenKind::EqEq | TokenKind::NotEq => "`==` and `!=` do not chain",
-                        _ => continue,
-                    };
-                    return Err(Diagnostic::error(self.peek().span, message)
-                        .help("join the comparisons with `&&`"));
+                if level == 3
+                    && matches!(
+                        self.peek().kind,
+                        TokenKind::Is | TokenKind::EqEq | TokenKind::NotEq
+                    )
+                {
+                    return Err(DiagnosticKind::EqualityChain {
+                        at: self.peek().span,
+                    }
+                    .into());
                 }
             } else {
                 return Ok(lhs);
@@ -653,10 +1020,10 @@ impl Parser<'_> {
                 .first()
                 .is_some_and(|first| first.is_less() != op.is_less())
             {
-                return Err(Diagnostic::error(
-                    self.peek().span,
-                    "a comparison chain must go in one direction",
-                ));
+                return Err(DiagnosticKind::ComparisonDirection {
+                    at: self.peek().span,
+                }
+                .into());
             }
             self.bump();
             ops.push(op);
@@ -977,20 +1344,17 @@ enum Head {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{LineIndex, line_col};
+    use crate::diagnostic::explanations::{apply_fix, fix_edits};
+    use crate::diagnostic::{Code, line_col};
     use crate::lexer::lex;
 
-    fn parsed(src: &str) -> Program {
-        parse(&lex(src).expect("source lexes")).expect("source parses")
-    }
-
     fn program(src: &str) -> String {
-        parsed(src).to_string()
+        parse_ok(src).to_string()
     }
 
     /// The first item, which must be a function.
     fn first_fn(src: &str) -> Function {
-        match parsed(src).items.into_iter().next() {
+        match parse_ok(src).items.into_iter().next() {
             Some(Item::Function(f)) => f,
             other => panic!("expected a function, found {other:?}"),
         }
@@ -1000,14 +1364,35 @@ mod tests {
         first_fn(src).body.to_string()
     }
 
-    fn parse_diagnostic(src: &str) -> Diagnostic {
-        parse(&lex(src).expect("source lexes")).expect_err("source does not parse")
+    /// The parse of `src`, which must lex without a bracket error.
+    fn parsed(src: &str) -> Parsed {
+        parse(lex(src).expect("source lexes"))
     }
 
-    fn parse_err(src: &str) -> (String, usize, usize) {
+    /// The one diagnostic `src` reports.
+    fn parse_diagnostic(src: &str) -> Diagnostic {
+        let parsed = parsed(src);
+        let [d] = parsed.diagnostics.as_slice() else {
+            panic!(
+                "{src}: expected one diagnostic, got {:?}",
+                parsed.diagnostics
+            );
+        };
+        d.clone()
+    }
+
+    fn parse_err(src: &str) -> (Code, usize, usize) {
         let d = parse_diagnostic(src);
-        let (line, col) = line_col(src, d.span.start);
-        (d.message, line, col)
+        let (line, col) = line_col(src, d.span().start);
+        (d.code(), line, col)
+    }
+
+    /// `src` with the one fix of its parse error applied, which must be certain.
+    fn fixed(src: &str) -> String {
+        let d = parse_diagnostic(src);
+        let (certain, _) = fix_edits(&d).expect("the error has a fix");
+        assert!(certain, "{src}");
+        apply_fix(src, &d)
     }
 
     #[test]
@@ -1026,37 +1411,20 @@ mod tests {
         );
     }
 
-    /// Each "expected X" message, with the `line:col` of the token found instead. The first four
-    /// name a place in the grammar, so a call site that passes the wrong `what` to `ident` or
-    /// `expected` changes the text. The last three name the token itself, so they pin its row in
-    /// `TokenKind::describe`.
+    /// Each "expected X" error at the token found instead. The first four name a place in the
+    /// grammar and the last three the token itself; the `E0011-expected-*` fixtures pin each text.
     #[test]
-    fn expectation_messages_name_what_was_expected() {
-        for (src, message, line, col) in [
-            ("class {}", "expected a class name, found `{`", 1, 7),
-            (
-                "class A {\n    mut 1: i64\n}",
-                "expected a field name, found `1`",
-                2,
-                9,
-            ),
-            ("fn f(a: ) {}", "expected a type, found `)`", 1, 9),
-            (
-                "fn main() {\n    print([1].0)\n}",
-                "expected a field or method name, found `0`",
-                2,
-                15,
-            ),
-            ("fn f(a) {}", "expected `:`, found `)`", 1, 7),
-            (
-                "fn main() {\n    for i 0..3 {\n    }\n}",
-                "expected `in`, found `0`",
-                2,
-                11,
-            ),
-            ("fn f {}", "expected `(`, found `{`", 1, 6),
+    fn expectation_errors_sit_on_the_token_found() {
+        for (src, line, col) in [
+            ("class {}", 1, 7),
+            ("class A {\n    mut 1: i64\n}", 2, 9),
+            ("fn f(a: ) {}", 1, 9),
+            ("fn main() {\n    print([1].0)\n}", 2, 15),
+            ("fn f(a) {}", 1, 7),
+            ("fn main() {\n    for i 0..3 {\n    }\n}", 2, 11),
+            ("fn f {}", 1, 6),
         ] {
-            assert_eq!(parse_err(src), (message.to_owned(), line, col), "{src}");
+            assert_eq!(parse_err(src), (Code::Expected, line, col), "{src}");
         }
     }
 
@@ -1082,7 +1450,6 @@ mod tests {
     /// Anywhere else 2^63 is the one "too large" error, at the literal. The lexer rejects larger.
     #[test]
     fn min_magnitude_elsewhere_is_too_large() {
-        let message = "integer literal is too large for `i64`".to_string();
         for (src, col) in [
             ("fn main() { 9223372036854775808 }", 13),
             ("fn main() { -(9223372036854775808) }", 15),
@@ -1092,7 +1459,7 @@ mod tests {
             ("fn main() { -9223372036854775808?.x }", 14),
             ("fn main() { -9223372036854775808[0] }", 14),
         ] {
-            assert_eq!(parse_err(src), (message.clone(), 1, col), "{src}");
+            assert_eq!(parse_err(src), (Code::IntegerTooLarge, 1, col), "{src}");
         }
     }
 
@@ -1155,46 +1522,99 @@ mod tests {
     }
 
     #[test]
-    fn else_on_new_line() {
-        assert_eq!(
-            parse_err("fn main() {\n    if a {\n    }\n    else {\n    }\n}"),
+    fn else_on_new_line_fix() {
+        // After an `if` or `if let` without `else`, the gap after the `}` becomes one space.
+        for (src, position, gap) in [
             (
-                "`else` must be on the same line as the closing `}`".to_string(),
-                4,
-                5
-            )
+                "fn main() {\n    if a {\n    }\n    else {\n    }\n}",
+                (4, 5),
+                (28, 33),
+            ),
+            (
+                "fn main() {\n    if let n = x {\n    }\n    else {\n    }\n}",
+                (4, 5),
+                (36, 41),
+            ),
+            (
+                "fn main() {\n    if a {}\n    else if b {}\n}",
+                (3, 5),
+                (23, 28),
+            ),
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::ElseOnNewLine, "{src}");
+            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(
+                fix_edits(&d),
+                Some((true, vec![(gap.0, gap.1, " ".to_string())])),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn certain_else_fix_removes_the_error() {
+        let src = "fn main() {\n    if let n = x {\n        print(n)\n    }\n    else if b {\n        print(2)\n    }\n}\n";
+        let result = fixed(src);
+        assert_eq!(
+            result,
+            "fn main() {\n    if let n = x {\n        print(n)\n    } else if b {\n        print(2)\n    }\n}\n"
         );
+        parse_ok(&result);
+    }
+
+    #[test]
+    fn else_on_new_line_is_a_guess_over_a_comment() {
+        // The join would delete the comment.
+        let src = "fn main() {\n    if a {\n    } // done\n    else {\n    }\n}";
+        let d = parse_diagnostic(src);
+        assert_eq!(
+            (d.code(), line_col(src, d.span().start)),
+            (Code::ElseOnNewLine, (4, 5))
+        );
+        assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
+    }
+
+    #[test]
+    fn else_on_new_line_has_no_fix_after_anything_else() {
+        for src in [
+            // A loop's `}` cannot take an `else`.
+            "fn main() {\n    while a {\n    }\n    else {\n    }\n}",
+            // The `if` already has its `else`.
+            "fn main() {\n    if a {\n    } else {\n    }\n    else {\n    }\n}",
+            "fn main() {\n    if a {\n    } else if b {\n    }\n    else {\n    }\n}",
+            // Nothing before it.
+            "fn main() {\n    else {\n    }\n}",
+            "fn main() {\n    print(1)\n    else {\n    }\n}",
+            // The `else` has no block to open.
+            "fn main() {\n    if a {\n    }\n    else b\n}",
+            // Only an `if` statement can take it: not a `let`, nor the `if` inside one.
+            "fn main() {\n    let x = 1\n    else {\n    }\n}",
+            "fn main() {\n    let x = if a { 1 }\n    else { 2 }\n}",
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::ElseOnNewLine, "{src}");
+            assert_eq!(fix_edits(&d), None, "{src}");
+        }
     }
 
     #[test]
     fn two_statements_on_one_line() {
         assert_eq!(
             parse_err("fn main() { let x = 1 2 }"),
-            ("expected end of line, found `2`".to_string(), 1, 23)
+            (Code::Expected, 1, 23)
         );
     }
 
     #[test]
     fn unexpected_eof() {
         let src = "fn\n";
-        assert_eq!(
-            parse_err(src),
-            (
-                "expected a function name, found end of file".to_string(),
-                1,
-                3
-            )
-        );
-        let rendered = parse_diagnostic(src).render("a.sisu", src, &LineIndex::new(src));
-        assert!(rendered.contains("--> a.sisu:1:3"), "{rendered}");
+        assert_eq!(parse_err(src), (Code::Expected, 1, 3));
     }
 
     #[test]
     fn top_level_statement() {
-        assert_eq!(
-            parse_err("let x = 1"),
-            ("expected `fn` or `class`, found `let`".to_string(), 1, 1)
-        );
+        assert_eq!(parse_err("let x = 1"), (Code::Expected, 1, 1));
     }
 
     /// Parses `fn main() { <src> }` and prints the first statement.
@@ -1202,26 +1622,25 @@ mod tests {
         first_fn(&format!("fn main() {{ {src} }}")).body.stmts[0].to_string()
     }
 
-    /// Error message, line and column for `fn main() { <src> }`; the columns start at 13.
-    fn expr_err(src: &str) -> (String, usize, usize) {
+    /// Error code, line and column for `fn main() { <src> }`; the columns start at 13.
+    fn expr_err(src: &str) -> (Code, usize, usize) {
         parse_err(&format!("fn main() {{ {src} }}"))
     }
 
     #[test]
-    fn new_tokens_are_quoted_in_errors() {
+    fn new_tokens_are_errors_where_they_do_not_belong() {
         // `self` is an expression now, so its row hits a different error.
-        let rows = [
-            ("class", "class", "an expression"),
-            ("is", "is", "an expression"),
-            ("let self = 1", "self", "a variable name"),
-            ("let None = 1", "None", "a variable name"),
-            (".", ".", "an expression"),
-            ("?", "?", "an expression"),
-            ("?.", "?.", "an expression"),
-            ("??", "??", "an expression"),
-        ];
-        for (src, tok, what) in rows {
-            assert_eq!(expr_err(src).0, format!("expected {what}, found `{tok}`"));
+        for src in [
+            "class",
+            "is",
+            "let self = 1",
+            "let None = 1",
+            ".",
+            "?",
+            "?.",
+            "??",
+        ] {
+            assert_eq!(expr_err(src).0, Code::Expected, "{src}");
         }
     }
 
@@ -1298,64 +1717,39 @@ mod tests {
 
     #[test]
     fn opposite_comparison_directions() {
-        assert_eq!(
-            expr_err("a < b > c"),
-            (
-                "a comparison chain must go in one direction".to_string(),
-                1,
-                19
-            )
-        );
+        assert_eq!(expr_err("a < b > c"), (Code::ComparisonDirection, 1, 19));
     }
 
     #[test]
     fn mixed_chain_directions_report_at_the_second_operator() {
-        assert_eq!(
-            expr_err("a > b <= c"),
-            (
-                "a comparison chain must go in one direction".to_string(),
-                1,
-                19
-            )
-        );
+        assert_eq!(expr_err("a > b <= c"), (Code::ComparisonDirection, 1, 19));
     }
 
     #[test]
     fn mixed_equality_operators_do_not_chain() {
-        assert_eq!(
-            expr_err("a == b != c"),
-            ("`==` and `!=` do not chain".to_string(), 1, 20)
-        );
+        assert_eq!(expr_err("a == b != c"), (Code::EqualityChain, 1, 20));
     }
 
     #[test]
     fn equality_does_not_chain() {
-        let src = "fn main() { a == b == c }";
-        let d = parse_diagnostic(src);
-        assert_eq!(d.message, "`==` and `!=` do not chain");
-        assert_eq!(d.help.as_deref(), Some("join the comparisons with `&&`"));
-        assert_eq!(line_col(src, d.span.start), (1, 20));
+        assert_eq!(
+            parse_err("fn main() { a == b == c }"),
+            (Code::EqualityChain, 1, 20)
+        );
     }
 
     #[test]
     fn is_does_not_chain() {
-        let src = "fn main() { print(a is b is c) }";
-        let d = parse_diagnostic(src);
-        assert_eq!(d.message, "`is` does not chain");
-        assert_eq!(d.help.as_deref(), Some("join the comparisons with `&&`"));
-        assert_eq!(line_col(src, d.span.start), (1, 26));
+        assert_eq!(
+            parse_err("fn main() { print(a is b is c) }"),
+            (Code::EqualityChain, 1, 26)
+        );
     }
 
     #[test]
     fn mixed_is_and_equality_do_not_chain() {
-        assert_eq!(
-            expr_err("a is b == c"),
-            ("`==` and `!=` do not chain".to_string(), 1, 20)
-        );
-        assert_eq!(
-            expr_err("a == b is c"),
-            ("`is` does not chain".to_string(), 1, 20)
-        );
+        assert_eq!(expr_err("a is b == c"), (Code::EqualityChain, 1, 20));
+        assert_eq!(expr_err("a == b is c"), (Code::EqualityChain, 1, 20));
     }
 
     #[test]
@@ -1371,10 +1765,11 @@ mod tests {
             "xs?.a[0] = 1",
         ] {
             let full = format!("fn main() {{ {src} }}");
-            let d = parse_diagnostic(&full);
-            assert_eq!(d.message, "cannot assign through `?.`", "{src}");
-            assert_eq!(d.help.as_deref(), Some("unwrap it with `if let`"), "{src}");
-            assert_eq!(line_col(&full, d.span.start), (1, 13), "{src}");
+            assert_eq!(
+                parse_err(&full),
+                (Code::AssignThroughSafeAccess, 1, 13),
+                "{src}"
+            );
         }
     }
 
@@ -1382,26 +1777,16 @@ mod tests {
     fn cannot_assign_to_self() {
         for src in ["self = 1", "self += 1"] {
             let full = format!("fn main() {{ {src} }}");
-            let d = parse_diagnostic(&full);
-            assert_eq!(d.message, "cannot assign to `self`", "{src}");
-            assert_eq!(
-                d.help.as_deref(),
-                Some("an object is shared: `self` can already write every `mut` field"),
-                "{src}"
-            );
-            assert_eq!(line_col(&full, d.span.start), (1, 13), "{src}");
-            assert_eq!(d.span.end - d.span.start, 4, "{src}");
+            assert_eq!(parse_err(&full), (Code::AssignToSelf, 1, 13), "{src}");
+            let span = parse_diagnostic(&full).span();
+            assert_eq!(span.end - span.start, 4, "{src}");
         }
     }
 
     #[test]
     fn cannot_assign_to_expression() {
         for src in ["1 + 2 = 3", "f()[0] = 1"] {
-            assert_eq!(
-                expr_err(src),
-                ("cannot assign to this expression".to_string(), 1, 13),
-                "{src}"
-            );
+            assert_eq!(expr_err(src), (Code::AssignToExpression, 1, 13), "{src}");
         }
     }
 
@@ -1409,22 +1794,7 @@ mod tests {
     fn missing_initializer_at_end_of_line() {
         assert_eq!(
             parse_err("fn main() {\n    let x = 1\n    let y\n}"),
-            ("expected `=`, found end of line".to_string(), 3, 10)
-        );
-    }
-
-    #[test]
-    fn end_of_line_renders_one_caret() {
-        let src = "fn main() {\n    let y\n}";
-        let expected = "\
-error: expected `=`, found end of line
- --> a.sisu:2:10
-  |
-2 |     let y
-  |          ^";
-        assert_eq!(
-            parse_diagnostic(src).render("a.sisu", src, &LineIndex::new(src)),
-            expected
+            (Code::Expected, 3, 10)
         );
     }
 
@@ -1432,7 +1802,7 @@ error: expected `=`, found end of line
     fn crlf_end_of_line_column_matches_lf() {
         assert_eq!(
             parse_err("fn main() {\r\n    let y\r\n}\r\n"),
-            ("expected `=`, found end of line".to_string(), 2, 10)
+            (Code::Expected, 2, 10)
         );
     }
 
@@ -1469,25 +1839,17 @@ error: expected `=`, found end of line
 
     #[test]
     fn method_without_self() {
-        let src = "class A {\n    fn f() {}\n}";
-        let d = parse_diagnostic(src);
-        assert_eq!(d.message, "a method needs `self` as its first parameter");
         assert_eq!(
-            d.help.as_deref(),
-            Some("static methods are not supported yet")
+            parse_err("class A {\n    fn f() {}\n}"),
+            (Code::MethodNeedsSelf, 2, 8)
         );
-        assert_eq!(line_col(src, d.span.start), (2, 8));
     }
 
     #[test]
     fn self_not_first() {
         assert_eq!(
             parse_err("class A {\n    fn f(x: i64, self) {}\n}"),
-            (
-                "`self` is only the first parameter of a method".to_string(),
-                2,
-                18
-            )
+            (Code::SelfNotFirst, 2, 18)
         );
     }
 
@@ -1495,55 +1857,35 @@ error: expected `=`, found end of line
     fn self_repeated() {
         assert_eq!(
             parse_err("class A {\n    fn f(self, self) {}\n}"),
-            (
-                "`self` is only the first parameter of a method".to_string(),
-                2,
-                16
-            )
+            (Code::SelfNotFirst, 2, 16)
         );
     }
 
     #[test]
     fn self_outside_class() {
-        assert_eq!(
-            parse_err("fn f(self) {}"),
-            (
-                "`self` is only the first parameter of a method".to_string(),
-                1,
-                6
-            )
-        );
+        assert_eq!(parse_err("fn f(self) {}"), (Code::SelfNotFirst, 1, 6));
     }
 
     #[test]
     fn call_of_a_call() {
-        assert_eq!(
-            expr_err("f()()"),
-            ("expected end of line, found `(`".to_string(), 1, 16)
-        );
+        assert_eq!(expr_err("f()()"), (Code::Expected, 1, 16));
     }
 
     #[test]
     fn assign_to_method_call() {
-        assert_eq!(
-            expr_err("t.m() = 1"),
-            ("cannot assign to this expression".to_string(), 1, 13)
-        );
+        assert_eq!(expr_err("t.m() = 1"), (Code::AssignToExpression, 1, 13));
     }
 
     #[test]
     fn bad_class_member() {
-        assert_eq!(
-            parse_err("class A { 1 }"),
-            ("expected a field or `fn`, found `1`".to_string(), 1, 11)
-        );
+        assert_eq!(parse_err("class A { 1 }"), (Code::Expected, 1, 11));
     }
 
     #[test]
     fn class_members_need_a_line_break() {
         assert_eq!(
             parse_err("class A { x: i64 y: i64 }"),
-            ("expected end of line, found `y`".to_string(), 1, 18)
+            (Code::Expected, 1, 18)
         );
     }
 
@@ -1593,17 +1935,13 @@ error: expected `=`, found end of line
     #[test]
     fn let_pattern_needs_a_name() {
         let rows = [
-            ("if let 1 = x {}", "expected a variable name, found `1`", 20),
-            (
-                "while let 1 = x {}",
-                "expected a variable name, found `1`",
-                23,
-            ),
-            ("if let n x {}", "expected `=`, found `x`", 22),
-            ("if let = n {}", "expected a variable name, found `=`", 20),
+            ("if let 1 = x {}", 20),
+            ("while let 1 = x {}", 23),
+            ("if let n x {}", 22),
+            ("if let = n {}", 20),
         ];
-        for (src, message, col) in rows {
-            assert_eq!(expr_err(src), (message.to_owned(), 1, col), "{src}");
+        for (src, col) in rows {
+            assert_eq!(expr_err(src), (Code::Expected, 1, col), "{src}");
         }
     }
 
@@ -1620,10 +1958,9 @@ error: expected `=`, found end of line
         ];
         for (src, span, position) in rows {
             let d = parse_diagnostic(src);
-            assert_eq!(d.message, "`Tree??` is not a type", "{src}");
-            assert_eq!(d.help.as_deref(), Some("optionals do not nest"), "{src}");
-            assert_eq!(d.span, span, "{src}");
-            assert_eq!(line_col(src, d.span.start), position, "{src}");
+            assert_eq!(d.code(), Code::OptionalNests, "{src}");
+            assert_eq!(d.span(), span, "{src}");
+            assert_eq!(line_col(src, d.span().start), position, "{src}");
         }
     }
 
@@ -1691,25 +2028,17 @@ error: expected `=`, found end of line
 
     #[test]
     fn syntax_errors_for_arrays_and_for() {
-        const M: &str = "Sisu has no `;`: statements end at the end of the line";
         let rows = [
-            (
-                "let x = 1; 2",
-                "Sisu has no `;`: statements end at the end of the line",
-                22,
-            ),
-            ("let r = 0..3", "ranges are only allowed in `for`", 22),
-            ("f(0..3)", "ranges are only allowed in `for`", 16),
-            ("for i in 0..1..2 {}", "expected `{`, found `..`", 26),
-            ("[1; 2, 3]", "expected `]`, found `,`", 18),
-            ("[1; 2; 3]", M, 18),
-            ("f(1; 2)", M, 16),
-            ("(1; 2)", M, 15),
-            (";", M, 13),
-            ("a[]", "expected an expression, found `]`", 15),
+            ("let x = 1; 2", Code::Semicolon, 22),
+            ("let r = 0..3", Code::RangeOutsideFor, 22),
+            ("f(0..3)", Code::RangeOutsideFor, 16),
+            ("for i in 0..1..2 {}", Code::Expected, 26),
+            ("[1; 2, 3]", Code::Expected, 18),
+            ("(1; 2)", Code::Expected, 15),
+            ("a[]", Code::Expected, 15),
         ];
-        for (src, message, col) in rows {
-            assert_eq!(expr_err(src), (message.to_owned(), 1, col), "{src}");
+        for (src, code, col) in rows {
+            assert_eq!(expr_err(src), (code, 1, col), "{src}");
         }
     }
 
@@ -1717,51 +2046,130 @@ error: expected `=`, found end of line
     fn stray_semicolon_in_a_class_body() {
         assert_eq!(
             parse_err("class A {\n    x: i64; y: i64\n}"),
-            (
-                "Sisu has no `;`: statements end at the end of the line".to_owned(),
-                2,
-                11
-            )
+            (Code::Semicolon, 2, 11)
         );
     }
 
     #[test]
+    fn semicolon_fix() {
+        for (src, position, at) in [
+            ("fn main() {\n    let x = 1;\n}", (2, 14), 25),
+            ("fn main() { let x = 1; }", (1, 22), 21),
+            (
+                "fn main() {\n    print(1); // done\n    print(2)\n}",
+                (2, 13),
+                24,
+            ),
+            ("class A {\n    x: i64;\n}", (2, 11), 20),
+            // `return;` has no value.
+            ("fn main() { return; }", (1, 19), 18),
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::Semicolon, "{src}");
+            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(
+                fix_edits(&d),
+                Some((true, vec![(at, at + 1, String::new())])),
+                "{src}"
+            );
+            assert!(d.help().is_none(), "{src}");
+        }
+    }
+
+    #[test]
+    fn certain_semicolon_fix_removes_the_error() {
+        let src = "fn main() {\n    let x = 1;\n    let y = x + 1; // two\n    print(y);\n}\n";
+        // One `;` at a time: the parser reports one error per item, and these `;`s share `main`.
+        let once = fixed(src);
+        assert_eq!(
+            once,
+            "fn main() {\n    let x = 1\n    let y = x + 1; // two\n    print(y);\n}\n"
+        );
+        let twice = fixed(&once);
+        let thrice = fixed(&twice);
+        assert_eq!(
+            thrice,
+            "fn main() {\n    let x = 1\n    let y = x + 1 // two\n    print(y)\n}\n"
+        );
+        parse_ok(&thrice);
+    }
+
+    #[test]
+    fn semicolon_mid_line_is_a_help() {
+        // A complete statement, then more code on the line: advice, no edit.
+        for src in [
+            "fn main() { let x = 1; let y = 2 }",
+            "class A {\n    x: i64; y: i64\n}",
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::Semicolon, "{src}");
+            assert!(d.help().is_some(), "{src}");
+            assert_eq!(fix_edits(&d), None, "{src}");
+        }
+    }
+
+    #[test]
+    fn doubled_semicolon_has_neither() {
+        // Moving the next statement does not help: another `;` follows.
+        let src = "fn main() { let x = 1;; }";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.code(), Code::Semicolon);
+        assert_eq!(line_col(src, d.span().start), (1, 22));
+        assert!(d.help().is_none());
+        assert_eq!(fix_edits(&d), None);
+    }
+
+    #[test]
+    fn semicolon_elsewhere_is_an_expected_error() {
+        // Not after a complete statement: the parser wanted something else there.
+        for (src, col) in [
+            ("fn f();", 7),
+            ("fn main() { let x = ; }", 21),
+            ("fn main() { [1; 2; 3] }", 18),
+            ("fn main() { f(1; 2) }", 16),
+            ("fn main() { ; }", 13),
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::Expected, "{src}");
+            assert_eq!(line_col(src, d.span().start), (1, col), "{src}");
+            assert!(d.help().is_none(), "{src}");
+            assert_eq!(fix_edits(&d), None, "{src}");
+        }
+    }
+
+    #[test]
     fn optional_array_types_do_not_nest() {
-        let src = "fn f(x: [Node]??) {}";
-        let d = parse_diagnostic(src);
-        assert_eq!(d.message, "`[Node]??` is not a type");
-        assert_eq!(d.help.as_deref(), Some("optionals do not nest"));
-        assert_eq!(line_col(src, d.span.start), (1, 9));
-    }
-
-    /// The message, help and `line:col` of the parse error in `src`.
-    fn parse_help(src: &str) -> (String, Option<String>, usize, usize) {
-        let d = parse_diagnostic(src);
-        let (line, col) = line_col(src, d.span.start);
-        (d.message, d.help, line, col)
-    }
-
-    fn no_var(line: usize, col: usize) -> (String, Option<String>, usize, usize) {
-        (
-            "Sisu has no `var`".to_owned(),
-            Some("use `let mut`".to_owned()),
-            line,
-            col,
-        )
+        assert_eq!(
+            parse_err("fn f(x: [Node]??) {}"),
+            (Code::OptionalNests, 1, 9)
+        );
     }
 
     #[test]
     fn var_is_reserved_everywhere() {
-        assert_eq!(parse_help("fn main() {\n    var x = 1\n}"), no_var(2, 5));
-        assert_eq!(parse_help("fn var() {}"), no_var(1, 4));
-        assert_eq!(parse_help("fn main() { let var = 1 }"), no_var(1, 17));
+        let var = Code::Var;
+        assert_eq!(parse_err("fn main() {\n    var x = 1\n}"), (var, 2, 5));
+        assert_eq!(parse_err("fn var() {}"), (var, 1, 4));
+        assert_eq!(parse_err("fn main() { let var = 1 }"), (var, 1, 17));
+        assert_eq!(parse_err("class P {\n    var hp: i64\n}"), (var, 2, 5));
+    }
+
+    #[test]
+    fn var_has_a_help_and_no_fix() {
+        // The binding and the field each name their own idiom.
+        let binding = parse_diagnostic("fn main() {\n    var x = 1\n}");
+        let field = parse_diagnostic("class P {\n    var hp: i64\n}");
+        for d in [&binding, &field] {
+            assert!(d.help().is_some());
+            assert_eq!(fix_edits(d), None);
+        }
     }
 
     #[test]
     fn mut_is_a_keyword() {
         assert_eq!(
             parse_err("fn main() { let mut = 1 }"),
-            ("expected a variable name, found `=`".to_owned(), 1, 21)
+            (Code::Expected, 1, 21)
         );
     }
 
@@ -1774,106 +2182,193 @@ error: expected `=`, found end of line
     }
 
     #[test]
-    fn var_field() {
-        assert_eq!(
-            parse_help("class P {\n    var hp: i64\n}"),
-            (
-                "Sisu has no `var`".to_owned(),
-                Some("mark the field `mut`: `mut hp: i64`".to_owned()),
-                2,
-                5
-            )
-        );
+    fn field_let_fix() {
+        // The rest of the line is a field: `let ` goes, up to the next token.
+        for (src, position, edit) in [
+            ("class P {\n    let hp: [Tree?]\n}", (2, 5), (14, 18)),
+            ("class P {\n    let mut hp: i64\n}", (2, 5), (14, 18)),
+            ("class P { let hp: i64 }", (1, 11), (10, 14)),
+            ("class P {\n    let   hp: i64 // note\n}", (2, 5), (14, 20)),
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::FieldLet, "{src}");
+            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(
+                fix_edits(&d),
+                Some((true, vec![(edit.0, edit.1, String::new())])),
+                "{src}"
+            );
+            assert!(d.help().is_none(), "{src}");
+        }
     }
 
     #[test]
-    fn let_field() {
-        assert_eq!(
-            parse_help("class P {\n    let hp: [Tree?]\n}"),
-            (
-                "a field takes no `let`".to_owned(),
-                Some("write it bare: `hp: [Tree?]`".to_owned()),
-                2,
-                5
-            )
-        );
-        // `let mut` keeps the `mut`.
-        assert_eq!(
-            parse_help("class P {\n    let mut hp: i64\n}").1.as_deref(),
-            Some("drop the `let`: `mut hp: i64`")
-        );
-        // With no field after the keyword, the help shows its shape.
-        assert_eq!(
-            parse_help("class P {\n    let hp = 1\n}").1.as_deref(),
-            Some("write it bare: `name: Type`")
-        );
+    fn certain_field_let_fix_removes_the_error() {
+        let src = "class P {\n    let mut hp: i64\n    name: [i64]\n}\n";
+        let result = fixed(src);
+        assert_eq!(result, "class P {\n    mut hp: i64\n    name: [i64]\n}\n");
+        parse_ok(&result);
+    }
+
+    #[test]
+    fn let_field_with_anything_else_is_a_help() {
+        for (src, position) in [
+            // Not a field, with and without `mut`.
+            ("class P {\n    let hp = 1\n}", (2, 5)),
+            ("class C { let mut n = 0 }", (1, 11)),
+            ("class P {\n    let\n}", (2, 5)),
+            // A field, but the line goes on.
+            ("class P {\n    let hp: i64, y: i64\n}", (2, 5)),
+            ("class P {\n    let hp: i64 y\n}", (2, 5)),
+            ("class P {\n    let mut hp: i64 y\n}", (2, 5)),
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::FieldLet, "{src}");
+            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert!(d.help().is_some(), "{src}");
+            assert_eq!(fix_edits(&d), None, "{src}");
+        }
     }
 
     #[test]
     fn comma_after_a_field() {
-        assert_eq!(
-            parse_help("class P {\n    x: i64, y: i64\n}"),
-            (
-                "a field ends at the end of the line".to_owned(),
-                Some("put each field on its own line".to_owned()),
-                2,
-                11
-            )
-        );
+        let src = "class P {\n    x: i64, y: i64\n}";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.code(), Code::FieldComma);
+        assert_eq!(line_col(src, d.span().start), (2, 11));
+        assert!(d.help().is_some());
+        assert_eq!(fix_edits(&d), None);
     }
 
     #[test]
     fn comma_after_a_method_is_not_a_field_comma() {
         assert_eq!(
             parse_err("class C {\n fn f(self) {},\n}"),
-            ("expected end of line, found `,`".to_owned(), 2, 15)
+            (Code::Expected, 2, 15)
         );
     }
 
     #[test]
-    fn mut_self_on_a_class_method() {
-        assert_eq!(
-            parse_help("class C {\n    fn f(mut self) {}\n}"),
+    fn mut_self_fix() {
+        // Certain only when `self` ends the parameter: `mut self: i64` stays broken without `mut`.
+        for (src, edit, certain) in [
+            ("class C {\n    fn f(mut self) {}\n}", (19, 23), true),
             (
-                "a class method takes `self`, not `mut self`".to_owned(),
-                Some("an object is shared: `self` can already write every `mut` field".to_owned()),
-                2,
-                10
-            )
+                "class C {\n    fn f(mut   self, n: i64) {}\n}",
+                (19, 25),
+                true,
+            ),
+            ("class C {\n    fn f(mut self: i64) {}\n}", (19, 23), false),
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::MutSelf, "{src}");
+            assert_eq!(line_col(src, d.span().start), (2, 10), "{src}");
+            assert_eq!(
+                fix_edits(&d),
+                Some((certain, vec![(edit.0, edit.1, String::new())])),
+                "{src}"
+            );
+            assert!(d.help().is_some(), "{src}");
+        }
+    }
+
+    #[test]
+    fn certain_mut_self_fix_removes_the_error() {
+        let src = "class C {\n    mut n: i64\n    fn add(mut self, by: i64) { self.n += by }\n}\n";
+        let result = fixed(src);
+        assert_eq!(
+            result,
+            "class C {\n    mut n: i64\n    fn add(self, by: i64) { self.n += by }\n}\n"
         );
+        parse_ok(&result);
     }
 
     #[test]
     fn mut_self_outside_the_receiver_position() {
-        let message = "`self` is only the first parameter of a method";
+        assert_eq!(parse_err("fn f(mut self) {}"), (Code::SelfNotFirst, 1, 10));
         assert_eq!(
-            parse_help("fn f(mut self) {}"),
-            (message.to_owned(), None, 1, 10)
-        );
-        assert_eq!(
-            parse_help("class C {\n    fn f(self, n: i64, mut self) {}\n}"),
-            (message.to_owned(), None, 2, 28)
+            parse_err("class C {\n    fn f(self, n: i64, mut self) {}\n}"),
+            (Code::SelfNotFirst, 2, 28)
         );
     }
 
     #[test]
     fn mut_parameter() {
-        assert_eq!(
-            parse_help("fn f(a: i64, mut n: i64) {}"),
-            (
-                "a parameter cannot be `mut`".to_owned(),
-                Some("copy it into a variable: `let mut n = n`".to_owned()),
-                1,
-                14
-            )
-        );
+        let src = "fn f(a: i64, mut n: i64) {}";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.code(), Code::MutParameter);
+        assert_eq!(line_col(src, d.span().start), (1, 14));
+        // Removing the `mut` would make the body assign to a parameter.
+        assert!(d.help().is_some());
+        assert_eq!(fix_edits(&d), None);
     }
 
     #[test]
     fn mut_before_neither_self_nor_a_name() {
+        assert_eq!(parse_err("fn f(mut 1) {}"), (Code::Expected, 1, 6));
+    }
+
+    #[test]
+    fn broken_items_keep_their_names() {
+        let src = "fn f() {\n    let = 1\n}\nclass C {\n    x i64\n}\nclass D {\n    fn m(self) {\n        let = 1\n    }\n}\n";
+        let parsed = parsed(src);
+        assert!(parsed.checkable);
+        assert_eq!(parsed.diagnostics.len(), 3, "{:?}", parsed.diagnostics);
+        let ident = |name: &str, start| Ident {
+            name: name.to_string(),
+            span: Span::new(start, start + 1),
+        };
         assert_eq!(
-            parse_err("fn f(mut 1) {}"),
-            ("expected a parameter name, found `mut`".to_owned(), 1, 6)
+            parsed.program.broken,
+            [
+                Broken {
+                    name: ident("f", 3),
+                    kind: BrokenKind::Function
+                },
+                Broken {
+                    name: ident("C", 29),
+                    kind: BrokenKind::Class
+                }
+            ]
+        );
+        match parsed.program.items.as_slice() {
+            [Item::Class(d)] => {
+                assert_eq!(d.members, []);
+                assert_eq!(d.broken_methods, [ident("m", 62)]);
+            }
+            items => panic!("expected class D alone, found {items:?}"),
+        }
+    }
+
+    #[test]
+    fn earliest_error_in_an_item_wins() {
+        // The parse error comes first here.
+        assert_eq!(
+            parse_err("fn main() {\n    let = 1 $\n}\n"),
+            (Code::Expected, 2, 9)
+        );
+        // On a tie, the lexer's error wins: it may have caused the parse error.
+        assert_eq!(
+            parse_err("fn main() {\n    let 99999999999999999999 = 1\n}\n"),
+            (Code::IntegerTooLarge, 2, 9)
+        );
+    }
+
+    #[test]
+    fn lexer_error_outside_every_item_stays() {
+        let parsed = parsed("fn f() {} $\nfn main() {}\n");
+        let codes: Vec<_> = parsed.diagnostics.iter().map(Diagnostic::code).collect();
+        assert_eq!(codes, [Code::UnexpectedCharacter]);
+        assert!(parsed.checkable);
+        assert_eq!(parsed.program.broken, []);
+        assert_eq!(parsed.program.items.len(), 2);
+    }
+
+    #[test]
+    fn item_cut_off_by_end_of_file() {
+        assert_eq!(
+            parse_err("fn main() {}\nfn f() ->"),
+            (Code::Expected, 2, 10)
         );
     }
 }

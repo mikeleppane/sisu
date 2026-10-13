@@ -1,0 +1,8 @@
+class Node {
+    value: i64
+    next: Node
+}
+
+fn main() {
+    print(1)
+}

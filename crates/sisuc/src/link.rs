@@ -6,17 +6,21 @@ use std::process::Command;
 
 pub(crate) fn link(object: &Path, output: &Path) -> Result<(), String> {
     let runtime = runtime_library()?;
-    let status = Command::new("cc")
+    // `output`, not `status`: cc's messages go into the tool error, so stderr stays one format.
+    let out = Command::new("cc")
         .arg(object)
         .arg(&runtime)
         .arg("-o")
         .arg(output)
-        .status()
+        .output()
         .map_err(|e| format!("cannot run cc: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("cc failed: {status}"))
+    if out.status.success() {
+        return Ok(());
+    }
+    let message = format!("cc failed: {}", out.status);
+    match String::from_utf8_lossy(&out.stderr).trim() {
+        "" => Err(message),
+        detail => Err(format!("{message}\n{detail}")),
     }
 }
 

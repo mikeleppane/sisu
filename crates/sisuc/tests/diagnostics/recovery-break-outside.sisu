@@ -1,0 +1,8 @@
+fn f() -> i64 {
+    break
+    print(1)
+}
+
+fn main() {
+    print(f())
+}

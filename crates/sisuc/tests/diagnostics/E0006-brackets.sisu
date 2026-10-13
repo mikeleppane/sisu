@@ -1,0 +1,5 @@
+fn main() {
+    let n = 3
+    print(if n > 2 { 1 }
+    else { 0 })
+}

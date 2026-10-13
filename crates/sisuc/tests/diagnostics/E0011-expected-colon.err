@@ -1,0 +1,14 @@
+error[E0028]: no `main` function
+ --> E0011-expected-colon.sisu:1:1
+  |
+1 | fn f(a) {}
+  | ^
+
+error[E0011]: expected `:`, found `)`
+ --> E0011-expected-colon.sisu:1:7
+  |
+1 | fn f(a) {}
+  |       ^
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011, E0028

@@ -1,0 +1,10 @@
+error[E0062]: `xs` may be `None`
+ --> E0062-index.sisu:2:5
+  |
+2 |     xs[0]
+  |     ^^
+  |
+  = help: unwrap it with `if let`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0062

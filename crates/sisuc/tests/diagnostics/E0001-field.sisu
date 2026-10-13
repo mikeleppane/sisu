@@ -1,0 +1,9 @@
+class Counter {
+    count: i64
+}
+
+fn main() {
+    let c = Counter(count: 0)
+    c.count = 1
+    print(c.count)
+}

@@ -1,0 +1,29 @@
+error[E0001]: cannot assign to `n`
+ --> E0001-twice.sisu:3:5
+  |
+2 |     let n = 0
+  |         - declared with `let` here
+3 |     n = 1
+  |     ^^^^^ cannot assign twice
+  |
+help: declare it with `let mut`
+  |
+2 |     let mut n = 0
+  |         +++
+
+error[E0001]: cannot assign to `n`
+ --> E0001-twice.sisu:4:5
+  |
+2 |     let n = 0
+  |         - declared with `let` here
+3 |     n = 1
+4 |     n = 2
+  |     ^^^^^ cannot assign twice
+  |
+help: declare it with `let mut`
+  |
+2 |     let mut n = 0
+  |         +++
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001

@@ -1,0 +1,8 @@
+error[E0029]: `main` takes no parameters and returns no value
+ --> E0029.sisu:1:4
+  |
+1 | fn main(n: i64) {
+  |    ^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0029

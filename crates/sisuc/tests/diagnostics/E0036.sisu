@@ -1,0 +1,7 @@
+fn five() -> i64 {
+    return
+}
+
+fn main() {
+    print(five())
+}

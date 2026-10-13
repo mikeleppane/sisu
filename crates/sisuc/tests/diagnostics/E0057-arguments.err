@@ -1,0 +1,13 @@
+error[E0057]: `scaled` is a method of `Square`, not a field
+  --> E0057-arguments.sisu:11:13
+   |
+11 |     print(s.scaled)
+   |             ^^^^^^
+   |
+help: if you meant to call `scaled`, add `()`; it also needs its arguments
+   |
+11 |     print(s.scaled())
+   |                   ++
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0057

@@ -1,0 +1,7 @@
+fn main() {
+    let mut total = 0
+    totl += 1
+    let mut later = 0
+    print(total)
+    print(later)
+}

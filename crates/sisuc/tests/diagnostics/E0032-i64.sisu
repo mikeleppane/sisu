@@ -1,0 +1,8 @@
+fn show(n: i64) {
+    print(n)
+}
+
+fn main() {
+    let b: u8 = 5
+    show(b)
+}

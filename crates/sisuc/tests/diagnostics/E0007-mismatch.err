@@ -1,0 +1,10 @@
+error[E0007]: unexpected `)`
+ --> E0007-mismatch.sisu:2:13
+  |
+1 | fn main() {
+  |           - `{` opened here
+2 |     print(1))
+  |             ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0007

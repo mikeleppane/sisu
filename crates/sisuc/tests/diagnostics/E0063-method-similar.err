@@ -1,0 +1,13 @@
+error[E0063]: `Point` has no method `nrm`
+  --> E0063-method-similar.sisu:11:13
+   |
+11 |     print(p.nrm())
+   |             ^^^
+   |
+help: a method with a similar name exists: `norm`
+   |
+11 |     print(p.norm())
+   |              +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0063

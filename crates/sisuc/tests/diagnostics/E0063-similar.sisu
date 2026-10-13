@@ -1,0 +1,9 @@
+class Point {
+    depth: i64
+    height: i64
+}
+
+fn main() {
+    let p = Point(depth: 1, height: 2)
+    print(p.dept)
+}

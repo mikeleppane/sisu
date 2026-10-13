@@ -1,0 +1,8 @@
+error[E0011]: expected a class name, found `{`
+ --> E0011-expected-class-name.sisu:1:7
+  |
+1 | class {}
+  |       ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011

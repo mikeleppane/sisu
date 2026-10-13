@@ -1,0 +1,7 @@
+fn first(xs: [i64]?) -> i64 {
+    xs[0]
+}
+
+fn main() {
+    print(first([1]))
+}

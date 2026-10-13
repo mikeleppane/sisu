@@ -2,11 +2,6 @@
 
 use super::*;
 
-/// The help of each diagnostic of `src`, in order.
-fn helps(src: &str) -> Vec<Option<String>> {
-    diags(src).into_iter().map(|d| d.help).collect()
-}
-
 #[test]
 fn literal_from_each_source() {
     contains("fn main() { let x: u8 = 200 }", &["200u8"]);
@@ -85,101 +80,238 @@ fn conversions() {
 
 #[test]
 fn literal_does_not_fit() {
-    let message = "`300` does not fit in `u8`";
-    errors("fn main() { let x: u8 = 300 }", &[(message, (1, 25))]);
-    errors(
+    codes(
+        "fn main() { let x: u8 = 300 }",
+        &[(Code::IntegerDoesNotFit, (1, 25))],
+    );
+    codes(
         "fn f(b: u8) { print(b + 300) }\nfn main() {}",
-        &[(message, (1, 25))],
+        &[(Code::IntegerDoesNotFit, (1, 25))],
     );
 }
 
 #[test]
 fn u8_cannot_be_negative() {
-    let message = "`u8` cannot be negative";
-    errors("fn main() { let x: u8 = -1 }", &[(message, (1, 25))]);
-    // One diagnostic: the literal's size is not reported as well.
-    errors("fn main() { let x: u8 = -300 }", &[(message, (1, 25))]);
-    // The smallest `i64` is one literal that is negative, not a `u8` that does not fit.
-    errors(
-        "fn main() { let x: u8 = -9223372036854775808 }",
-        &[(message, (1, 25))],
+    codes(
+        "fn main() { let x: u8 = -1 }",
+        &[(Code::NegatedU8, (1, 25))],
     );
-    errors(
+    // One diagnostic: the literal's size is not reported as well.
+    codes(
+        "fn main() { let x: u8 = -300 }",
+        &[(Code::NegatedU8, (1, 25))],
+    );
+    // The smallest `i64` is one literal that is negative, not a `u8` that does not fit.
+    codes(
+        "fn main() { let x: u8 = -9223372036854775808 }",
+        &[(Code::NegatedU8, (1, 25))],
+    );
+    codes(
         "fn f(b: u8) { print(-b) }\nfn main() {}",
-        &[(message, (1, 21))],
+        &[(Code::NegatedU8, (1, 21))],
     );
 }
 
 #[test]
 fn no_mixing() {
     let src = "fn f(b: u8, x: i64) {\n    print(b + x)\n    print(x + b)\n    print(b == x)\n    print(b < x)\n}\nfn main() {}";
-    let (to_u8, to_i64) = ("expected `u8`, found `i64`", "expected `i64`, found `u8`");
-    errors(
+    codes(
         src,
         &[
-            (to_u8, (2, 15)),
-            (to_i64, (3, 15)),
-            (to_u8, (4, 16)),
-            (to_u8, (5, 15)),
+            (Code::Mismatch, (2, 15)),
+            (Code::Mismatch, (3, 15)),
+            (Code::Mismatch, (4, 16)),
+            (Code::Mismatch, (5, 15)),
         ],
-    );
-    let (u8_x, i64_b) = ("convert it: `u8(x)`", "convert it: `i64(b)`");
-    assert_eq!(
-        helps(src),
-        [u8_x, i64_b, u8_x, u8_x].map(|h| Some(h.to_owned()))
     );
 }
 
 #[test]
-fn help_without_path() {
-    expect_error(
-        "fn n() -> i64 { 1 }\nfn f(b: u8) { print(b + n()) }\nfn main() {}",
-        "expected `u8`, found `i64`",
-        (2, 25, "n()"),
-        None,
-        &[],
-        Some("convert it: `u8(...)`"),
+fn mismatch_fix_wraps_in_a_conversion() {
+    let src = "fn f(n: i64) {\n    let b: u8 = n\n}\nfn main() {}";
+    let d = diagnostic(src, Code::Mismatch, (2, 17, "n"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(
+            false,
+            vec![(2, 17, "", "u8(".to_owned()), (2, 18, "", ")".to_owned())]
+        )]
     );
+}
+
+/// Each row: the program, the expression found, and its conversion. The rows cover each
+/// `mismatch` call that can offer one: an expected type, a comparison, `??`, a branch with
+/// none expected, an array element.
+#[test]
+fn mismatch_fix_converts_the_expression_found() {
+    let rows = [
+        // `u8` found where `i64` is wanted: an argument, a return value, a field.
+        (
+            "fn g(n: i64) {}\nfn f(b: u8) {\n    g(b)\n}\nfn main() {}",
+            "b",
+            "i64",
+        ),
+        (
+            "fn f(b: u8) -> i64 {\n    return b\n}\nfn main() {}",
+            "b",
+            "i64",
+        ),
+        (
+            "class P {\n    v: i64\n}\nfn f(b: u8) -> P {\n    P(v: b)\n}\nfn main() {}",
+            "b",
+            "i64",
+        ),
+        // An optional `u8` wants the conversion to `u8`.
+        (
+            "fn f(n: i64) {\n    let b: u8? = n\n}\nfn main() {}",
+            "n",
+            "u8",
+        ),
+        // A longer expression is wrapped whole.
+        (
+            "fn n() -> i64 { 1 }\nfn f(b: u8) {\n    print(b + n())\n}\nfn main() {}",
+            "n()",
+            "u8",
+        ),
+        // Offsets are bytes, and an earlier line holds a multibyte char.
+        (
+            "// ä\nfn f(n: i64) {\n    let b: u8 = n\n}\nfn main() {}",
+            "n",
+            "u8",
+        ),
+        // A branch with a type expected, a range bound.
+        (
+            "fn f(c: bool, x: i64) -> u8 {\n    if c { x } else { 1 }\n}\nfn main() {}",
+            "x",
+            "u8",
+        ),
+        (
+            "fn f(b: u8) {\n    for i in 0..b {}\n}\nfn main() {}",
+            "b",
+            "i64",
+        ),
+        // No type is expected: the second operand, the right of `??`, the second branch, the
+        // second element.
+        (
+            "fn f(b: u8, n: i64) {\n    print(b == n)\n}\nfn main() {}",
+            "n",
+            "u8",
+        ),
+        (
+            "fn f(o: u8?, n: i64) {\n    print(o ?? n)\n}\nfn main() {}",
+            "n",
+            "u8",
+        ),
+        (
+            "fn f(c: bool, b: u8, n: i64) {\n    let x = if c { b } else { n }\n}\nfn main() {}",
+            "n",
+            "u8",
+        ),
+        (
+            "fn f(b: u8, n: i64) {\n    let xs = [b, n]\n}\nfn main() {}",
+            "n",
+            "u8",
+        ),
+    ];
+    for (src, found, to) in rows {
+        let ds = diags(src);
+        let [d] = ds.as_slice() else {
+            panic!("{src}: {ds:?}")
+        };
+        assert_eq!(d.code(), Code::Mismatch, "{src}");
+        let [fix] = d.fixes() else {
+            panic!("{src}: one fix")
+        };
+        assert!(!fix.certain(), "{src}");
+        let [open, close] = fix.edits() else {
+            panic!("{src}: {:?}", fix.edits())
+        };
+        assert_eq!(open.replacement(), format!("{to}("), "{src}");
+        assert_eq!(close.replacement(), ")", "{src}");
+        assert!(open.span().start == open.span().end, "{src}");
+        assert!(close.span().start == close.span().end, "{src}");
+        assert_eq!(&src[open.span().start..close.span().start], found, "{src}");
+        // The conversion is what the types need.
+        clean(&applied(src, d));
+    }
+}
+
+#[test]
+fn mismatch_has_no_fix_between_other_types() {
+    for (src, pos) in [
+        ("fn main() { let b: bool = 1 }", (1, 27, "1")),
+        (
+            "fn f(n: i64) {\n    let b: bool = n\n}\nfn main() {}",
+            (2, 19, "n"),
+        ),
+        (
+            "fn f(b: bool) {\n    let n: u8 = b\n}\nfn main() {}",
+            (2, 17, "b"),
+        ),
+    ] {
+        let d = diagnostic(src, Code::Mismatch, pos, &[]);
+        assert!(d.fixes().is_empty(), "{src}: {:?}", d.fixes());
+    }
+}
+
+/// An `else if` or `else if let` is no expression to wrap: `else u8(if ...)` would not parse.
+#[test]
+fn mismatch_has_no_fix_for_an_else_if() {
+    for (src, found) in [
+        (
+            "fn f(c: bool, d: bool, b: u8) -> i64 {\n    if c { 1 } else if d { b } else { b }\n}\nfn main() {}",
+            "if d { b } else { b }",
+        ),
+        (
+            "fn f(c: bool, d: u8?, b: u8) -> i64 {\n    if c { 1 } else if let x = d { b } else { b }\n}\nfn main() {}",
+            "if let x = d { b } else { b }",
+        ),
+    ] {
+        let d = diagnostic(src, Code::Mismatch, (2, 21, found), &[]);
+        assert!(d.fixes().is_empty(), "{src}: {:?}", d.fixes());
+    }
 }
 
 #[test]
 fn already_that_type() {
-    errors(
+    codes(
         "fn f(x: i64, b: u8) {\n    print(i64(x))\n    print(u8(b))\n    print(i64(5))\n}\nfn main() {}",
         &[
-            ("`x` is already `i64`", (2, 15)),
-            ("`b` is already `u8`", (3, 14)),
-            ("this value is already `i64`", (4, 15)),
+            (Code::AlreadyConverted, (2, 15)),
+            (Code::AlreadyConverted, (3, 14)),
+            (Code::AlreadyConverted, (4, 15)),
         ],
     );
 }
 
 #[test]
 fn conversion_argument_type() {
-    errors(
+    codes(
         "fn main() { print(u8(true)) }",
-        &[("expected `i64`, found `bool`", (1, 22))],
+        &[(Code::Mismatch, (1, 22))],
     );
 }
 
 #[test]
 fn conversion_arity() {
-    errors(
+    codes(
         "fn main() { print(u8(1, 2)) }",
-        &[("`u8` takes 1 argument, found 2", (1, 19))],
+        &[(Code::ArgumentCount, (1, 19))],
     );
 }
 
 #[test]
 fn built_in_names() {
-    for (src, name, col) in [
-        ("fn u8() {}", "u8", 4),
-        ("fn i64() {}", "i64", 4),
-        ("fn bool() {}", "bool", 4),
-        ("class u8 {}", "u8", 7),
+    for (src, col) in [
+        ("fn u8() {}", 4),
+        ("fn i64() {}", 4),
+        ("fn bool() {}", 4),
+        ("class u8 {}", 7),
     ] {
-        let message = format!("`{name}` is a built-in type");
-        errors(&format!("{src}\nfn main() {{}}"), &[(&message, (1, col))]);
+        codes(
+            &format!("{src}\nfn main() {{}}"),
+            &[(Code::BuiltInTypeName, (1, col))],
+        );
     }
 }
 

@@ -1,0 +1,178 @@
+# Diagnostic codes
+
+Every diagnostic that `sisuc` reports about the source has a stable code:
+`E0001`, `E0002`, ... for errors and `W0001`, `W0002`, ... for warnings
+([ADR 0013](../adr/0013-diagnostics-have-stable-codes.md)). Each code has an
+explanation in this directory, which `sisuc --explain <code>` prints as it
+stands. The code may be in any case. Links in an explanation are relative to
+`docs/diagnostics/`.
+
+| Code | Severity | Title |
+| --- | --- | --- |
+| [E0001](E0001.md) | error | assignment to something that cannot change |
+| [E0002](E0002.md) | error | line that starts with a binary `-` |
+| [E0003](E0003.md) | error | bracket that is never closed |
+| [E0004](E0004.md) | error | `{` on a line of its own |
+| [E0005](E0005.md) | error | `[` that starts a line inside brackets |
+| [E0006](E0006.md) | error | `else` on a line of its own |
+| [E0007](E0007.md) | error | closing bracket that does not match |
+| [E0008](E0008.md) | error | `_` outside digits |
+| [E0009](E0009.md) | error | integer literal too large for `i64` |
+| [E0010](E0010.md) | error | character that Sisu does not use |
+| [E0011](E0011.md) | error | token where something else belongs |
+| [E0012](E0012.md) | error | `;` at the end of a statement |
+| [E0013](E0013.md) | error | `var` instead of `let mut` |
+| [E0014](E0014.md) | error | optional of an optional |
+| [E0015](E0015.md) | error | field list on one line |
+| [E0016](E0016.md) | error | `let` in front of a field |
+| [E0017](E0017.md) | error | method without `self` |
+| [E0018](E0018.md) | error | `mut self` on a class method |
+| [E0019](E0019.md) | error | `mut` parameter |
+| [E0020](E0020.md) | error | `self` that is not the first parameter |
+| [E0021](E0021.md) | error | assignment to something that is not a place |
+| [E0022](E0022.md) | error | assignment through `?.` |
+| [E0023](E0023.md) | error | range outside `for` |
+| [E0024](E0024.md) | error | chained `==`, `!=` or `is` |
+| [E0025](E0025.md) | error | comparison chain that turns around |
+| [E0026](E0026.md) | error | class or function named like a built-in type |
+| [E0027](E0027.md) | error | class that can never be constructed |
+| [E0028](E0028.md) | error | program without `main` |
+| [E0029](E0029.md) | error | `main` with parameters or a return type |
+| [E0030](E0030.md) | error | type that does not exist |
+| [E0031](E0031.md) | error | function body without the value it returns |
+| [E0032](E0032.md) | error | value of the wrong type |
+| [E0033](E0033.md) | error | name that is not in scope |
+| [E0034](E0034.md) | error | name defined twice |
+| [E0035](E0035.md) | error | `for` over something that is not an array or a range |
+| [E0036](E0036.md) | error | `return` without a value |
+| [E0037](E0037.md) | error | `return` with a value in a function that returns none |
+| [E0038](E0038.md) | error | `break` or `continue` outside a loop |
+| [E0039](E0039.md) | error | name declared twice in one scope |
+| [E0040](E0040.md) | error | integer literal too large for `u8` |
+| [E0041](E0041.md) | error | `self` outside a method |
+| [E0042](E0042.md) | error | `u8` that is negated |
+| [E0043](E0043.md) | error | expression without a value |
+| [E0044](E0044.md) | error | comparison of a value that is never `None` with `None` |
+| [E0045](E0045.md) | error | `is` used to test for `None` |
+| [E0046](E0046.md) | error | `is` on something that is not an object |
+| [E0047](E0047.md) | error | comparison of values of different types |
+| [E0048](E0048.md) | error | `??` on a value that is not optional |
+| [E0049](E0049.md) | error | `?.` on a value that is not optional |
+| [E0050](E0050.md) | error | `None` without a type |
+| [E0051](E0051.md) | error | `if let` or `while let` on a value that is not optional |
+| [E0052](E0052.md) | error | call of a function that does not exist |
+| [E0053](E0053.md) | error | call with the wrong number of arguments |
+| [E0054](E0054.md) | error | conversion to the type the value already has |
+| [E0055](E0055.md) | error | labeled argument in a call |
+| [E0056](E0056.md) | error | constructor without every field |
+| [E0057](E0057.md) | error | method read as a field |
+| [E0058](E0058.md) | error | field called as a method |
+| [E0059](E0059.md) | error | `print` of something it cannot print |
+| [E0060](E0060.md) | error | `print` of an array |
+| [E0061](E0061.md) | error | `print` of an expression that never finishes |
+| [E0062](E0062.md) | error | optional used as if it were present |
+| [E0063](E0063.md) | error | field or method that does not exist |
+| [E0064](E0064.md) | error | constructor with more arguments than fields |
+| [E0065](E0065.md) | error | constructor argument without a label |
+| [E0066](E0066.md) | error | constructor that names its fields out of order |
+| [E0067](E0067.md) | error | array filled with one object |
+| [E0068](E0068.md) | error | index of something that is not an array |
+| [E0069](E0069.md) | error | `sum` of an array that is not `[i64]` |
+| [E0070](E0070.md) | error | array method called as a function |
+| [E0071](E0071.md) | error | nesting too deep |
+| [E0072](E0072.md) | error | source that is not valid UTF-8 |
+| [E0073](E0073.md) | error | assignment to `self` |
+| [E0074](E0074.md) | error | assignment to a function |
+| [W0001](W0001.md) | warning | unreachable code |
+| [W0002](W0002.md) | warning | variable that is never reassigned |
+
+## Explanations
+
+Each explanation has the same shape: a `# <CODE>: <title>` line, one
+paragraph that states the rule, then `## Why`, `## Broken` and `## Fixed`,
+and an optional `## Related`. The Broken program reports exactly its code;
+the Fixed program reports nothing. Tests compile both, and apply every
+certain fix to the Broken program.
+
+## Numbers
+
+A new code takes the next free number in its series, in the order codes land
+on `main`. A code is never reused or renumbered.
+
+No code has retired yet. When the compiler stops reporting one, its variant
+will leave `DiagnosticKind`, its file will stay here and gain a
+`Status: retired in <stage>` line, and `sisuc --explain` will serve it from a
+table of retired codes.
+
+## JSON output
+
+`sisuc --format json` writes every line on stderr as one JSON object (JSON
+Lines). It works with `--check`, a build and `--emit`; stdout is the same as
+in text, and stays empty when there is an error. `--format` comes first, before
+any other argument. A usage error stays a plain text line, since the format
+is not known until the arguments parse.
+
+Every object has `version`, which is `1` and is bumped on any breaking
+change, and `kind`, one of `diagnostic`, `tool_error` and `summary`. Keys
+come in the order shown.
+
+A diagnostic about the source:
+
+```json
+{"version":1,"kind":"diagnostic","code":"E0001","severity":"error","message":"cannot assign to `n`","primary":{"file":"a.sisu","start":36,"end":41,"line":4,"column":5,"label":"cannot assign twice"},"secondary":[{"file":"a.sisu","start":26,"end":27,"line":3,"column":9,"label":"declared with `let` here"}],"help":null,"fixes":[{"message":"declare it with `let mut`","certain":true,"edits":[{"start":26,"end":26,"line":3,"column":9,"replacement":"mut "}]}]}
+```
+
+- `code`: the diagnostic's code, such as `E0001`.
+- `severity`: `"error"` or `"warning"`.
+- `message`: what is wrong.
+- `primary`: the offending code. `secondary`: a list of other spans that
+  explain it. Each span has:
+  - `file`: the input path exactly as given on the command line;
+  - `start` and `end`: a half-open byte range of the input;
+  - `line` and `column`: where `start` is, both 1-based; the column counts
+    characters, not bytes;
+  - `label`: the text about the span, or `null`.
+- `help`: advice that is not an edit, or `null`. A fix's message is in the
+  fix, never here.
+- `fixes`: a list of edits that resolve the diagnostic, each with:
+  - `message`: what the fix does;
+  - `certain`: `true` when applying the edits is always correct, `false` when
+    the fix is likely but not proven, such as a did-you-mean guess, or a line join
+    or idiom rewrite whose edits would delete a comment;
+  - `edits`: a list of `start`, `end`, `line` and `column` as in a span, and
+    `replacement`, the text that replaces the range.
+
+A tool error, such as an unreadable input, an output that would overwrite the
+input, or a failed link. It has no code; codes are for the source.
+
+```json
+{"version":1,"kind":"tool_error","message":"cannot read x.sisu: No such file or directory (os error 2)"}
+```
+
+- `message`: what went wrong, without the `sisuc:` prefix that text output
+  puts before it. A failed link adds the C compiler's own output after a
+  newline.
+
+The summary, always the last line, also when there is no diagnostic:
+
+```json
+{"version":1,"kind":"summary","errors":1,"warnings":0,"explanations":{"E0001":"# E0001: ..."}}
+```
+
+- `errors` and `warnings`: how many diagnostics of each severity; tool errors
+  are not counted. A tool error and the exit code tell that the command
+  failed.
+- `explanations`: each code seen in this run, sorted, mapped to its
+  explanation, the text `sisuc --explain` prints.
+
+Text output ends the same way, after at least one diagnostic: a line with
+the counts, then a line naming the codes seen.
+
+## Applying fixes
+
+- `start` and `end` are a half-open byte range in the original input, never
+  in a partly edited one.
+- A fix's edits apply together, and they do not overlap.
+- The same edit can appear in several diagnostics; for example, two
+  assignments to one `let` each offer `let mut`. Apply it once.
+- A diagnostic's fixes are alternatives: apply at most one of them.

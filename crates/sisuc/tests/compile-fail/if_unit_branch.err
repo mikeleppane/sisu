@@ -1,6 +1,0 @@
-error: expression has no value
- --> if_unit_branch.sisu:4:39
-  |
-4 |     let y: i64 = if true { 1 } else { nothing() }
-  |                                       ^^^^^^^^^
-

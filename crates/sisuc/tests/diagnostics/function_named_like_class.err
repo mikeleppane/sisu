@@ -1,0 +1,11 @@
+error[E0034]: `A` is already a class
+ --> function_named_like_class.sisu:3:4
+  |
+1 | class A {}
+  |       - first defined here
+2 |
+3 | fn A() {}
+  |    ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0034

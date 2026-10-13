@@ -1,0 +1,12 @@
+class Node {
+    value: i64
+    next: Node?
+}
+
+fn first() -> Node? {
+    Node(value: 1, next: None)
+}
+
+fn main() {
+    print(first().value)
+}

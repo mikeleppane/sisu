@@ -1,0 +1,13 @@
+error[E0063]: `Point` has no field `dept`
+ --> E0063-similar.sisu:8:13
+  |
+8 |     print(p.dept)
+  |             ^^^^
+  |
+help: a field with a similar name exists: `depth`
+  |
+8 |     print(p.depth)
+  |                 +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0063

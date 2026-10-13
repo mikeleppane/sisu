@@ -1,0 +1,8 @@
+error[E0053]: `len` takes 0 arguments, found 1
+ --> E0053-array.sisu:3:11
+  |
+3 |     print(xs.len(1))
+  |           ^^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0053

@@ -24,70 +24,65 @@ fn lowers_for_over_range() {
 
 #[test]
 fn range_bounds_are_i64() {
-    errors(
+    codes(
         "fn f(b: u8) { for i in 0..b {} }\nfn main() {}",
-        &[("expected `i64`, found `u8`", (1, 27))],
+        &[(Code::Mismatch, (1, 27))],
     );
 }
 
 #[test]
 fn range_start_is_i64() {
-    errors(
+    codes(
         "fn f(b: u8) { for i in b..0 {} }\nfn main() {}",
-        &[("expected `i64`, found `u8`", (1, 24))],
+        &[(Code::Mismatch, (1, 24))],
     );
 }
 
 #[test]
 fn loop_variable_has_the_element_type() {
     clean("fn f(xs: [u8]) { for x in xs { let y: u8 = x } }\nfn main() {}");
-    errors(
+    codes(
         "fn f(xs: [u8]) { for x in xs { let y: bool = x } }\nfn main() {}",
-        &[("expected `bool`, found `u8`", (1, 46))],
+        &[(Code::Mismatch, (1, 46))],
     );
 }
 
 #[test]
 fn for_needs_array() {
-    expect_error(
+    diagnostic(
         "fn main() { for x in 5 {} }",
-        "`for` needs an array or a range; this is `i64`",
+        Code::ForNeedsArray,
         (1, 22, "5"),
-        None,
         &[],
-        None,
     );
 }
 
 #[test]
 fn for_over_an_optional_array() {
-    expect_error(
+    let d = diagnostic(
         "fn f(m: [i64]?) { for x in m {} }\nfn main() {}",
-        "`m` may be `None`",
+        Code::MayBeNone,
         (1, 28, "m"),
-        None,
         &[],
-        Some("unwrap it with `if let`"),
     );
+    assert!(d.fixes().is_empty(), "{d:?}");
 }
 
 #[test]
 fn loop_variable_is_immutable() {
-    expect_error(
+    diagnostic(
         "fn f(xs: [i64]) {\n    for x in xs {\n        x = 1\n    }\n}\nfn main() {}",
-        "cannot assign to `x`",
+        Code::AssignToImmutable,
         (3, 9, "x = 1"),
-        None,
-        &[(2, 9, "bound by `for` here")],
-        None,
+        &[(2, 9)],
     );
 }
 
 #[test]
 fn loop_variable_ends_with_the_loop() {
-    errors(
+    codes(
         "fn f(xs: [i64]) {\n    for x in xs {}\n    print(x)\n}\nfn main() {}",
-        &[("cannot find `x` in this scope", (3, 11))],
+        &[(Code::BindingNotFound, (3, 11))],
     );
 }
 
@@ -108,29 +103,25 @@ fn break_and_continue_work_in_for() {
 
 #[test]
 fn for_has_no_value() {
-    error(
+    codes(
         "fn f(xs: [i64]) -> i64 { for x in xs {} }\nfn main() {}",
-        "function `f` must return `i64`, but its body has no value",
-        (1, 41),
+        &[(Code::BodyHasNoValue, (1, 41))],
     );
 }
 
 #[test]
 fn for_poison() {
-    errors(
+    codes(
         "fn main() {\n    for x in nope { print(x + true) }\n}",
-        &[("cannot find `nope` in this scope", (2, 14))],
+        &[(Code::BindingNotFound, (2, 14))],
     );
 }
 
 #[test]
 fn bad_range_bound_still_checks_the_body() {
     // `i` is `i64` whatever the bounds are, so the body's own error is real.
-    errors(
+    codes(
         "fn main() {\n    for i in nope..3 { print(i + true) }\n}",
-        &[
-            ("cannot find `nope` in this scope", (2, 14)),
-            ("expected `i64`, found `bool`", (2, 34)),
-        ],
+        &[(Code::BindingNotFound, (2, 14)), (Code::Mismatch, (2, 34))],
     );
 }

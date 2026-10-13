@@ -1,0 +1,8 @@
+class Point {
+    let x: i64
+    y: i64
+}
+
+fn main() {
+    print(1)
+}

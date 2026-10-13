@@ -1,0 +1,8 @@
+error[E0032]: expected `i64`, found `[]`
+ --> E0032-empty-array.sisu:2:18
+  |
+2 |     let x: i64 = []
+  |                  ^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

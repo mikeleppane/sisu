@@ -1,0 +1,4 @@
+fn main() {
+    let price = 5 $ 3
+    print(price)
+}

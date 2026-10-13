@@ -1,0 +1,7 @@
+fn report(ok: bool) {
+    print(if ok { return } else { return })
+}
+
+fn main() {
+    report(true)
+}

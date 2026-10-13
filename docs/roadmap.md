@@ -18,6 +18,13 @@ These are adopted. Together they give Sisu a working imperative core.
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
+### Diagnostics foundation
+
+Before the rest of milestone 4, every diagnostic gets a stable code, one
+registry for its wording, a tested explanation and a JSON form for tools
+([ADR 0013](adr/0013-diagnostics-have-stable-codes.md)). Milestones keep their numbers. Milestone 4's strings are built on
+top of it, and every later milestone adds its codes the same way.
+
 ### Decided in milestone 1
 
 These came out of the review of the milestone 1 spec and are now part of it:
@@ -131,7 +138,7 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 | Milestone | Add | Why |
 | --- | --- | --- |
 | 4 | Reserve the keywords that later milestones bring: `import` and `pub` (planned for milestone 2, it did not land), `enum`, `match`, `record`, `type`, `weak`, `const`, `test` and `todo` | A program that names a variable `match` would break when that keyword lands |
-| 4 | `let mut` replaces `var`; a class field is bare, set once by the constructor, or `mut` (ADR 0011). `var` stays reserved, so using it gets an error with the help "use `let mut`". | Every program and test changes, so it is cheapest before strings and enums add more code |
+| 4 | `let mut` replaces `var`; a class field is bare, set once by the constructor, or `mut` (ADR 0011). `var` stays reserved, so using it is error `E0013`, "there is no `var` in Sisu", with the help "Sisu declares a variable with `let mut`" (on a field, "a field that can change is marked `mut`"). | Every program and test changes, so it is cheapest before strings and enums add more code |
 | 4 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value. Planned for milestone 3, it did not land. | Named limits, such as a sieve size, without global variables |
 | 4 | String interpolation `"x = {x}"`. `print(x)` and `"{x}"` go through one internal operation per type that turns a value into text. Milestone 8's `Display` interface replaces that operation, so neither is rewritten. | The biggest single win for real programs |
 | 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. Today `_` is an ordinary name, so a second `let _` in one scope is an error and `_` can be read. | A loop or a call whose value is not needed takes no made-up name |

@@ -1,0 +1,15 @@
+error[E0049]: `p` is not optional
+  --> E0049-method.sisu:11:13
+   |
+11 |     let d = p
+   |             ^
+   |
+help: replace `?.` with `.`
+   |
+11 -     let d = p
+12 -         ?.double()
+11 +     let d = p.double()
+   |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0049

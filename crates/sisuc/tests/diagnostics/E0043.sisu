@@ -1,0 +1,8 @@
+fn greet() {
+    print(1)
+}
+
+fn main() {
+    let x = greet()
+    print(x)
+}

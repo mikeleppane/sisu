@@ -6,7 +6,7 @@ use super::array::optional_array;
 use super::expr::local;
 use super::{Binding, BindingKind, CheckedBlock, Checker, Poisoned, block_expr, type_of};
 use crate::ast::{self, StmtKind};
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
 use crate::tir::{self, ExprKind, Type};
 
 impl Checker {
@@ -25,12 +25,16 @@ impl Checker {
         let (mut failed, mut warned, mut mismatch) = (false, false, false);
         for (i, stmt) in block.stmts.iter().enumerate() {
             if ty == Some(Type::Never) && !warned {
-                self.diagnostics
-                    .push(Diagnostic::warning(stmt.span, "unreachable code"));
+                self.report(DiagnosticKind::UnreachableCode { at: stmt.span });
                 warned = true;
             }
             let last = i + 1 == block.stmts.len();
-            let stmt_ty = match self.stmt(stmt, expected.filter(|_| last)) {
+            let outer_jump = std::mem::take(&mut self.invalid_jump);
+            let checked = self.stmt(stmt, expected.filter(|_| last));
+            let invalid_jump = self.invalid_jump;
+            // Nested blocks leave their flag set, so an enclosing statement sees it too.
+            self.invalid_jump |= outer_jump;
+            let stmt_ty = match checked {
                 Ok(stmt) => {
                     let ty = stmt_type(&stmt);
                     stmts.push(stmt);
@@ -39,6 +43,9 @@ impl Checker {
                 Err(poisoned) => {
                     failed = true;
                     mismatch = last && poisoned.mismatch;
+                    // An invalid jump made the block `never` only by error; what follows is no
+                    // new news. Any other failed `never` statement still leaves the block.
+                    warned |= invalid_jump && poisoned.ty == Some(Type::Never);
                     poisoned.ty
                 }
             };
@@ -93,12 +100,12 @@ impl Checker {
                     Some(None) => None,
                     _ => type_of(&init).cloned(),
                 };
-                let kind = if *mutable {
+                let kind = if mutable.is_some() {
                     BindingKind::Var
                 } else {
                     BindingKind::Let
                 };
-                let local = self.declare(name, ty, kind);
+                let local = self.declare(name, ty, kind, *mutable);
                 Ok(tir::Stmt::Let {
                     local,
                     init: init.map_err(|_| unit())?,
@@ -124,7 +131,7 @@ impl Checker {
             }
             StmtKind::WhileLet { name, value, body } => {
                 self.loop_depth += 1;
-                let (scrutinee, bound, _) = self.unwrapped("while let", value);
+                let (scrutinee, bound, _) = self.unwrapped(Unwrap::WhileLet, value);
                 let (bind, body) = self.unwrapping_block("while let", name, bound, body, None);
                 self.loop_depth -= 1;
                 let (Ok(scrutinee), Ok(body)) = (scrutinee, body) else {
@@ -230,8 +237,9 @@ impl Checker {
                 (None, Some(optional_array(e)))
             }
             Some(ty) => {
-                let message = format!("`for` needs an array or a range; this is {}", self.show(ty));
-                (None, Some(Diagnostic::error(e.span, message)))
+                let found = self.type_name(ty);
+                let d = DiagnosticKind::ForNeedsArray { found, at: e.span };
+                (None, Some(d.into()))
             }
             None => (None, None),
         };
@@ -316,21 +324,15 @@ impl Checker {
         let value = match value {
             None => match &self.ret {
                 Some(ret) if *ret != Type::Unit => {
-                    let d = Diagnostic::error(
-                        span,
-                        format!("`return` needs a value of type {}", self.show(ret)),
-                    );
-                    self.diagnostics.push(d);
+                    let want = self.type_name(ret);
+                    self.report(DiagnosticKind::ReturnNeedsValue { want, at: span });
                     return Err(never());
                 }
                 _ => None,
             },
             Some(value) if self.ret == Some(Type::Unit) => {
                 if type_of(&self.value(value, None)).is_some() {
-                    self.diagnostics.push(Diagnostic::error(
-                        value.span,
-                        "this function returns no value",
-                    ));
+                    self.report(DiagnosticKind::UnexpectedReturnValue { at: value.span });
                 }
                 return Err(never());
             }
@@ -348,12 +350,15 @@ impl Checker {
     }
 
     /// `break` or `continue`, of type `never` even outside a loop.
-    fn jump(&mut self, span: Span, keyword: &str, kind: ExprKind) -> Result<tir::Stmt, Poisoned> {
+    fn jump(
+        &mut self,
+        span: Span,
+        keyword: &'static str,
+        kind: ExprKind,
+    ) -> Result<tir::Stmt, Poisoned> {
         if self.loop_depth == 0 {
-            self.diagnostics.push(Diagnostic::error(
-                span,
-                format!("`{keyword}` outside a loop"),
-            ));
+            self.report(DiagnosticKind::JumpOutsideLoop { keyword, at: span });
+            self.invalid_jump = true;
             return Err(Poisoned::typed(Type::Never));
         }
         Ok(tir::Stmt::Expr(tir::Expr {
@@ -375,7 +380,7 @@ impl Checker {
         expected: Option<&Type>,
     ) -> (tir::LocalId, CheckedBlock) {
         self.scopes.push(HashMap::new());
-        let bind = self.declare(name, ty, BindingKind::Unwrapped(keyword));
+        let bind = self.declare(name, ty, BindingKind::Unwrapped(keyword), None);
         (bind, self.scoped_block(block, expected))
     }
 
@@ -429,13 +434,14 @@ impl Checker {
         (spills, operands)
     }
 
-    /// Adds `name` to the innermost scope as a new local. A name already in that scope is
-    /// reported and keeps its first binding.
+    /// Adds `name` to the innermost scope as a new local; `keyword` is the `mut` of a
+    /// `let mut`. A name already in that scope is reported and poisoned.
     pub(super) fn declare(
         &mut self,
         name: &ast::Ident,
         ty: Option<Type>,
         kind: BindingKind,
+        keyword: Option<Span>,
     ) -> tir::LocalId {
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
@@ -448,26 +454,33 @@ impl Checker {
             .scopes
             .last_mut()
             .expect("a scope should be open while a block is checked");
+        let mut binding = Binding {
+            local,
+            ty,
+            kind,
+            span: name.span,
+            keyword,
+            reassigned: false,
+        };
         if let Some(first) = scope.get(&name.name) {
             self.diagnostics.push(
-                Diagnostic::error(
-                    name.span,
-                    format!("`{}` is already declared in this scope", name.name),
-                )
-                .secondary(first.span, "first declared here"),
+                DiagnosticKind::AlreadyDeclared {
+                    name: name.name.clone(),
+                    at: name.span,
+                    first: first.span,
+                }
+                .into(),
             );
-        } else {
-            scope.insert(
-                name.name.clone(),
-                Binding {
-                    local,
-                    ty,
-                    kind,
-                    span: name.span,
-                    reassigned: false,
-                },
-            );
+            // A use after it may mean either binding, so neither is judged: the name becomes
+            // `Error`, can be assigned, and never warns.
+            binding = Binding {
+                ty: None,
+                kind: BindingKind::Var,
+                reassigned: true,
+                ..binding
+            };
         }
+        scope.insert(name.name.clone(), binding);
         local
     }
 
@@ -478,11 +491,14 @@ impl Checker {
             .pop()
             .expect("a scope should be open while a block is checked");
         for (name, b) in scope {
-            if b.kind == BindingKind::Var && !b.reassigned {
-                self.diagnostics.push(
-                    Diagnostic::warning(b.span, format!("`{name}` is never reassigned"))
-                        .help("declare it with `let`"),
-                );
+            if let Some(keyword) = b.keyword
+                && !b.reassigned
+            {
+                self.report(DiagnosticKind::NeverReassigned {
+                    name,
+                    at: b.span,
+                    keyword,
+                });
             }
         }
     }

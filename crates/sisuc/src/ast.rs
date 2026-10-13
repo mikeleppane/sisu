@@ -7,6 +7,23 @@ use crate::diagnostic::Span;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Program {
     pub(crate) items: Vec<Item>,
+    /// The named items that hold a syntax error, which the checker treats as declared.
+    pub(crate) broken: Vec<Broken>,
+    /// Where each comment starts, so that a fix does not delete one as if it were certain.
+    pub(crate) comments: Vec<usize>,
+}
+
+/// A function or class that holds a syntax error, so only its name survives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Broken {
+    pub(crate) name: Ident,
+    pub(crate) kind: BrokenKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BrokenKind {
+    Function,
+    Class,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +36,8 @@ pub(crate) enum Item {
 pub(crate) struct Class {
     pub(crate) name: Ident,
     pub(crate) members: Vec<Member>,
+    /// The names of the methods that hold a syntax error; the class itself is intact.
+    pub(crate) broken_methods: Vec<Ident>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +109,8 @@ pub(crate) struct Stmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StmtKind {
     Let {
-        mutable: bool,
+        /// The `mut` keyword of a `let mut`.
+        mutable: Option<Span>,
         name: Ident,
         ty: Option<TypeExpr>,
         init: Expr,
@@ -396,7 +416,7 @@ impl fmt::Display for Stmt {
                 ty,
                 init,
             } => {
-                let keyword = if *mutable { "let mut" } else { "let" };
+                let keyword = if mutable.is_some() { "let mut" } else { "let" };
                 write!(f, "({keyword} {}", name.name)?;
                 if let Some(ty) = ty {
                     write!(f, " {ty}")?;
@@ -565,7 +585,7 @@ mod tests {
             None,
             block(vec![
                 stmt(StmtKind::Let {
-                    mutable: false,
+                    mutable: None,
                     name: ident("x"),
                     ty: None,
                     init: int(1),
@@ -600,7 +620,7 @@ mod tests {
             Some(ty("bool")),
             block(vec![
                 stmt(StmtKind::Let {
-                    mutable: true,
+                    mutable: Some(sp()),
                     name: ident("d"),
                     ty: Some(ty("i64")),
                     init: expr(ExprKind::Unary {
@@ -633,6 +653,8 @@ mod tests {
         let second = func("g", vec![], None, block(vec![]));
         let program = Program {
             items: vec![Item::Function(is_prime), Item::Function(second)],
+            broken: Vec::new(),
+            comments: Vec::new(),
         };
         assert_eq!(
             program.to_string(),

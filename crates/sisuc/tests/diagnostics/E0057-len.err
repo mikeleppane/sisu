@@ -1,0 +1,13 @@
+error[E0057]: `len` is a method of `[i64]`, not a field
+ --> E0057-len.sisu:3:14
+  |
+3 |     print(xs.len)
+  |              ^^^
+  |
+help: call it: `len()`
+  |
+3 |     print(xs.len())
+  |                 ++
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0057

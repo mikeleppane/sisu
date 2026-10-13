@@ -1,0 +1,12 @@
+class Point {
+    x: i64
+
+    fn norm(self) -> i64 {
+        self.x
+    }
+}
+
+fn main() {
+    let p = Point(x: 1)
+    print(p.nrm())
+}

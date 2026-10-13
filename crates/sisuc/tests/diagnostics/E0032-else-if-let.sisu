@@ -1,0 +1,7 @@
+fn pick(a: bool, o: u8?, x: u8) -> i64 {
+    if a { 1 } else if let n = o { x } else { x }
+}
+
+fn main() {
+    print(pick(true, None, 2))
+}

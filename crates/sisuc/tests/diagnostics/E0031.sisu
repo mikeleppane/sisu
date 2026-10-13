@@ -1,0 +1,7 @@
+fn five() -> i64 {
+    let n = 5
+}
+
+fn main() {
+    print(five())
+}

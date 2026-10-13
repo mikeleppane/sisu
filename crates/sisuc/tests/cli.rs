@@ -61,27 +61,40 @@ fn lexer_error_exits_1() {
         .output()
         .expect("sisuc starts");
     assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(at_severity(&stderr, "error") == Some(0), "{stderr}");
     assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .starts_with("error: unexpected character `&`\n --> lexer_error_exits_1.sisu:1:3")
+        stderr
+            .contains("error[E0010]: unexpected character `&`\n --> lexer_error_exits_1.sisu:1:3"),
+        "{stderr}"
     );
 }
 
 #[test]
 fn bare_flag_is_a_usage_error() {
-    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-        .current_dir(env!("CARGO_TARGET_TMPDIR"))
-        .arg("--check")
-        .output()
-        .expect("sisuc starts");
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"));
+    assert_usage_errors(&[&["--check"]]);
+}
+
+/// Runs `sisuc` with each of `cases` in the target tmp dir, and checks that each is a usage
+/// error.
+fn assert_usage_errors(cases: &[&[&str]]) {
+    for args in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .current_dir(env!("CARGO_TARGET_TMPDIR"))
+            .args(*args)
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.starts_with("usage: sisuc"), "{args:?}: {stderr}");
+    }
 }
 
 /// `--rc-checks` is accepted only right after an optional `-O2`, and only for a build.
 #[test]
 fn rc_checks_is_build_only() {
-    let cases: [&[&str]; 7] = [
+    let cases: [&[&str]; 8] = [
+        &["--rc-checks", "--explain", "E0001"],
         &["--rc-checks", "--emit", "ir", "f.sisu"],
         &["-O2", "--rc-checks", "--emit", "ir", "f.sisu"],
         &["--rc-checks", "--check", "f.sisu"],
@@ -90,18 +103,7 @@ fn rc_checks_is_build_only() {
         &["--check", "--rc-checks"],
         &["--rc-checks", "--rc-checks", "f.sisu"],
     ];
-    for args in cases {
-        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-            .current_dir(env!("CARGO_TARGET_TMPDIR"))
-            .args(args)
-            .output()
-            .expect("sisuc starts");
-        assert_eq!(out.status.code(), Some(1), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"),
-            "{args:?}"
-        );
-    }
+    assert_usage_errors(&cases);
 }
 
 #[test]
@@ -181,9 +183,22 @@ fn parse_error_exits_1() {
         .output()
         .expect("sisuc starts");
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with(
-        "error: expected `fn` or `class`, found `let`\n --> parse_error_exits_1.sisu:1:1"
-    ));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(at_severity(&stderr, "error") == Some(0), "{stderr}");
+    assert!(
+        stderr.contains(
+            "error[E0011]: expected `fn` or `class`, found `let`\n --> parse_error_exits_1.sisu:1:1"
+        ),
+        "{stderr}"
+    );
+}
+
+/// The offset of the first diagnostic header of `severity` in `stderr`, with or without a code.
+fn at_severity(stderr: &str, severity: &str) -> Option<usize> {
+    [format!("{severity}["), format!("{severity}:")]
+        .iter()
+        .filter_map(|header| stderr.find(header.as_str()))
+        .min()
 }
 
 /// Runs `sisuc <flags> <name>.sisu` on `source`, saved as `<name>.sisu` in the target tmp dir.
@@ -218,7 +233,7 @@ fn check_warning_exits_0() {
         "fn main() {\n    let mut count = 0\n    print(count)\n}\n",
     );
     assert_eq!(out.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("warning: "));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("warning[W0002]: "));
 }
 
 #[test]
@@ -228,7 +243,7 @@ fn check_error_exits_1() {
         "fn main() {\n    let n = 0\n    n = 1\n}\n",
     );
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error[E0001]: cannot assign to `n`"));
 }
 
 #[test]
@@ -239,9 +254,41 @@ fn check_warning_and_error_exits_1() {
     );
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let warning = stderr.find("warning: ").expect("a warning");
-    let error = stderr.find("error: ").expect("an error");
+    let warning = at_severity(&stderr, "warning").expect("a warning");
+    let error = at_severity(&stderr, "error").expect("an error");
     assert!(warning < error, "{stderr}");
+}
+
+#[test]
+fn explain_prints_the_explanation() {
+    let expected = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics/E0001.md"
+    ))
+    .expect("reads the explanation");
+    for code in ["E0001", "e0001"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+            .args(["--explain", code])
+            .output()
+            .expect("sisuc starts");
+        assert_eq!(out.status.code(), Some(0), "{code}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{code}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{code}");
+    }
+}
+
+#[test]
+fn explain_rejects_an_unknown_code() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .args(["--explain", "E9999"])
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "sisuc: unknown diagnostic code `E9999`\n"
+    );
 }
 
 #[test]
@@ -281,7 +328,7 @@ fn invalid_utf8_on_line_two_is_a_diagnostic_at_its_line_and_column() {
     assert_eq!(code, Some(1));
     assert!(
         stderr.starts_with(&format!(
-            "error: source is not valid UTF-8\n --> {name}:2:12\n"
+            "error[E0072]: source is not valid UTF-8\n --> {name}:2:12\n"
         )),
         "{stderr}"
     );
@@ -294,7 +341,7 @@ fn invalid_utf8_at_the_start_is_a_diagnostic() {
     assert_eq!(code, Some(1));
     assert!(
         stderr.starts_with(&format!(
-            "error: source is not valid UTF-8\n --> {name}:1:1\n"
+            "error[E0072]: source is not valid UTF-8\n --> {name}:1:1\n"
         )),
         "{stderr}"
     );
@@ -308,7 +355,7 @@ fn a_truncated_character_at_end_of_file_is_a_diagnostic() {
     assert_eq!(code, Some(1));
     assert!(
         stderr.starts_with(&format!(
-            "error: source is not valid UTF-8\n --> {name}:2:1\n"
+            "error[E0072]: source is not valid UTF-8\n --> {name}:2:1\n"
         )),
         "{stderr}"
     );
@@ -321,7 +368,7 @@ fn invalid_utf8_after_crlf_line_breaks_counts_each_break_as_one_line() {
     assert_eq!(code, Some(1));
     assert!(
         stderr.starts_with(&format!(
-            "error: source is not valid UTF-8\n --> {name}:3:3\n"
+            "error[E0072]: source is not valid UTF-8\n --> {name}:3:3\n"
         )),
         "{stderr}"
     );
@@ -329,7 +376,7 @@ fn invalid_utf8_after_crlf_line_breaks_counts_each_break_as_one_line() {
     let (_, stderr) = check_bytes(name_start, b"a\r\n\xff\r\n");
     assert!(
         stderr.starts_with(&format!(
-            "error: source is not valid UTF-8\n --> {name_start}:2:1\n"
+            "error[E0072]: source is not valid UTF-8\n --> {name_start}:2:1\n"
         )),
         "{stderr}"
     );
@@ -343,7 +390,7 @@ fn an_encoded_surrogate_is_invalid_utf8_at_its_first_byte() {
     assert_eq!(code, Some(1));
     assert!(
         stderr.starts_with(&format!(
-            "error: source is not valid UTF-8\n --> {name}:2:3\n"
+            "error[E0072]: source is not valid UTF-8\n --> {name}:2:3\n"
         )),
         "{stderr}"
     );
@@ -396,7 +443,7 @@ fn emit_ir_error_prints_no_ir() {
         &["--emit", "ir"],
     );
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error[E0001]: cannot assign to `n`"));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
 }
 
@@ -409,7 +456,8 @@ fn emit_ir_warning_still_prints_ir() {
     );
     assert_eq!(out.status.code(), Some(0));
     assert!(
-        String::from_utf8_lossy(&out.stderr).starts_with("warning: `count` is never reassigned")
+        String::from_utf8_lossy(&out.stderr)
+            .starts_with("warning[W0002]: `count` is never reassigned")
     );
     ir_sections(&String::from_utf8_lossy(&out.stdout));
 }
@@ -450,22 +498,64 @@ fn emit_tir_shows_moves() {
 }
 
 #[test]
-fn emit_tir_error_prints_no_tir() {
-    let out = run_on(
-        "emit_tir_error_prints_no_tir",
-        "fn main() {\n    let n = 0\n    n = 1\n}\n",
-        &["--emit", "tir"],
-    );
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: cannot assign to `n`"));
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+fn emit_with_an_error_prints_nothing_on_stdout() {
+    let flags: [(&[&str], &str); 2] = [
+        (&["--emit", "tir"], "error[E0001]: "),
+        (
+            &["--format", "json", "--emit", "tir"],
+            r#"{"version":1,"kind":"diagnostic","code":"E0001","#,
+        ),
+    ];
+    for (flags, first) in flags {
+        let out = run_on(
+            "emit_with_an_error_prints_nothing_on_stdout",
+            "fn main() {\n    let n = 0\n    n = 1\n}\n",
+            flags,
+        );
+        assert_eq!(out.status.code(), Some(1), "{flags:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.starts_with(first), "{flags:?}: {stderr}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{flags:?}");
+    }
+}
+
+/// On a valid file, `--format json` leaves stdout as text has it, and stderr holds only the
+/// summary.
+#[test]
+fn json_emit_keeps_stdout() {
+    for stage in ["tokens", "ast", "tir", "ir", "ir-raw"] {
+        let text = run_on("json_emit_keeps_stdout", SQUARE, &["--emit", stage]);
+        let json = run_on(
+            "json_emit_keeps_stdout",
+            SQUARE,
+            &["--format", "json", "--emit", stage],
+        );
+        for out in [&text, &json] {
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "{stage}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        assert!(!text.stdout.is_empty(), "{stage}");
+        assert_eq!(json.stdout, text.stdout, "{stage}");
+        assert_eq!(String::from_utf8_lossy(&text.stderr), "", "{stage}");
+        assert_eq!(
+            String::from_utf8_lossy(&json.stderr),
+            format!("{CLEAN_SUMMARY}\n"),
+            "{stage}"
+        );
+    }
 }
 
 const FIB: &str = "fn fib(n: i64) -> i64 {\n    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }\n}\n\nfn main() {\n    print(fib(30))\n}\n";
 
 #[test]
 fn o2_combinations_are_usage_errors() {
-    let cases: [&[&str]; 12] = [
+    let cases: [&[&str]; 14] = [
+        &["-O2", "--explain", "E0001"],
+        &["--explain", "E0001", "-O2"],
         &["-O2", "--check", "f.sisu"],
         &["-O2", "--emit", "tokens", "f.sisu"],
         &["-O2", "--emit", "ast", "f.sisu"],
@@ -479,18 +569,7 @@ fn o2_combinations_are_usage_errors() {
         &["--check", "-O2"],
         &["--emit", "ir-raw", "-O2"],
     ];
-    for args in cases {
-        let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
-            .current_dir(env!("CARGO_TARGET_TMPDIR"))
-            .args(args)
-            .output()
-            .expect("sisuc starts");
-        assert_eq!(out.status.code(), Some(1), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&out.stderr).starts_with("usage: sisuc"),
-            "{args:?}"
-        );
-    }
+    assert_usage_errors(&cases);
 }
 
 #[test]
@@ -578,4 +657,161 @@ fn print_in_a_loop_keeps_no_bounds_check_at_o2() {
         .unwrap_or_else(|| panic!("{stdout}"));
     assert!(before.contains("call void @sisu_panic_bounds("), "{before}");
     assert!(!after.contains("call void @sisu_panic_bounds("), "{after}");
+}
+
+/// The JSON summary line of a run with no diagnostics.
+const CLEAN_SUMMARY: &str =
+    r#"{"version":1,"kind":"summary","errors":0,"warnings":0,"explanations":{}}"#;
+
+#[test]
+fn json_unreadable_input_is_a_tool_error() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(env!("CARGO_TARGET_TMPDIR"))
+        .args(["--format", "json", "--check", "no_such_dir/missing.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            r#"{"version":1,"kind":"tool_error","message":"cannot read no_such_dir/missing.sisu: No such file or directory (os error 2)"}"#,
+            CLEAN_SUMMARY
+        ]
+    );
+}
+
+/// `--format` is accepted only as the first two arguments, with `text` or `json`, and never with
+/// `--explain`. A usage error stays text, also after `--format json`.
+#[test]
+fn format_usage_errors() {
+    assert_usage_errors(&[
+        &["--format", "json"],
+        &["--format", "yaml", "--check", "a.sisu"],
+        &["--format", "text", "--explain", "E0001"],
+        // A later `--format` would otherwise fill the input slot of a valid shape.
+        &["--check", "--format"],
+        &["--emit", "tir", "--format"],
+        &["-O2", "--emit", "ir", "--format"],
+        &["--explain", "--format"],
+    ]);
+}
+
+#[test]
+fn json_link_failure_stays_json() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("json_link_failure.sisu"), "fn main() {}\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args([
+            "--format",
+            "json",
+            "json_link_failure.sisu",
+            "missing-dir/out",
+        ])
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.starts_with(r#"{"version":1,"kind":""#)),
+        "{stderr}"
+    );
+    assert_eq!(lines.last(), Some(&CLEAN_SUMMARY), "{stderr}");
+    let messages: Vec<String> = lines
+        .iter()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("each line is JSON"))
+        .filter(|v| v["kind"] == "tool_error")
+        .map(|v| v["message"].as_str().expect("a string message").to_string())
+        .collect();
+    let [message] = messages.as_slice() else {
+        panic!("one tool error in {stderr}");
+    };
+    // cc's own stderr follows the status, and names the output it could not write.
+    let (status, detail) = message
+        .split_once('\n')
+        .expect("cc's output after a newline");
+    assert!(status.starts_with("cc failed: "), "{message}");
+    assert!(detail.contains("missing-dir/out"), "{message}");
+    assert_eq!(detail, detail.trim(), "{message}");
+}
+
+#[test]
+fn json_overwrite_is_a_tool_error() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("json_overwrite.sisu"), "fn main() {}\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args([
+            "--format",
+            "json",
+            "json_overwrite.sisu",
+            "json_overwrite.sisu",
+        ])
+        .output()
+        .expect("sisuc starts");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            r#"{"version":1,"kind":"tool_error","message":"output json_overwrite.sisu would overwrite the input"}"#,
+            CLEAN_SUMMARY
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("json_overwrite.sisu")).expect("reads"),
+        "fn main() {}\n"
+    );
+}
+
+#[test]
+fn warnings_only_build_succeeds_with_summary() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(
+        dir.join("warnings_only_build.sisu"),
+        "fn main() {\n    let mut count = 3\n    print(count)\n}\n",
+    )
+    .expect("writes");
+    let exe = dir.join("warnings_only_build");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .arg("warnings_only_build.sisu")
+        .arg(&exe)
+        .output()
+        .expect("sisuc starts");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.ends_with(
+            "\n\nsisuc: 1 warning\nsisuc: for more on a code, run `sisuc --explain <code>`: W0002\n"
+        ),
+        "{stderr}"
+    );
+    let run = Command::new(&exe).output().expect("the program starts");
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "3\n");
+}
+
+#[test]
+fn format_text_is_the_default() {
+    let source = "fn main() {\n    let n = 0\n    n = 1\n}\n";
+    let plain = run_on("format_text_is_the_default", source, &["--check"]);
+    let text = run_on(
+        "format_text_is_the_default",
+        source,
+        &["--format", "text", "--check"],
+    );
+    assert_eq!(text.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&text.stderr).starts_with("error[E0001]: "),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    assert_eq!(text.stderr, plain.stderr);
 }

@@ -268,8 +268,7 @@ fn root_local(place: &Place) -> Option<LocalId> {
 mod tests {
     use super::*;
     use crate::check::check;
-    use crate::lexer::lex;
-    use crate::parser::parse;
+    use crate::parser::parse_ok;
 
     /// Checks `src`, with an empty `main` added when it has none, marks it, and prints it.
     fn marked(src: &str) -> String {
@@ -278,7 +277,7 @@ mod tests {
         } else {
             format!("{src}\nfn main() {{}}")
         };
-        let ast = parse(&lex(&src).expect("source lexes")).expect("source parses");
+        let ast = parse_ok(&src);
         let (program, diagnostics) = check(&ast);
         let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
         mark(&mut program);

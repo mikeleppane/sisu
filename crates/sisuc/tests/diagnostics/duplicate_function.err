@@ -1,0 +1,11 @@
+error[E0034]: function `f` is defined twice
+ --> duplicate_function.sisu:3:4
+  |
+1 | fn f() {}
+  |    - first defined here
+2 |
+3 | fn f() {}
+  |    ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0034

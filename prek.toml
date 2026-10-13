@@ -6,8 +6,8 @@
 repo = "builtin"
 hooks = [
   { id = "trailing-whitespace" },
-  # `no_trailing_newline.sisu` must not end in a newline, and the stderr snapshots end in one blank line.
-  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/compile-fail/(.*\.err|no_trailing_newline\.sisu)$' },
+  # `no_trailing_newline.sisu` and `eof-quote.sisu` must not end in a newline, and the stderr snapshots end in one blank line.
+  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/diagnostics/(.*\.err|no_trailing_newline\.sisu|eof-quote\.sisu)$' },
   { id = "mixed-line-ending" },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files" },
@@ -40,6 +40,13 @@ id = "expect-messages"
 name = "expect messages say should"
 language = "system"
 entry = "scripts/check-expect-messages.sh"
+types = ["rust"]
+
+[[repos.hooks]]
+id = "test-wording"
+name = "unit tests assert codes, not wording"
+language = "system"
+entry = "scripts/check-test-wording.sh"
 types = ["rust"]
 
 [[repos.hooks]]
