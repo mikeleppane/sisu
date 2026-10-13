@@ -23,7 +23,7 @@ the pipeline early, as [Developing Sisu](development.md#look-inside-the-compiler
 lists. `--format json` switches the diagnostics to JSON Lines, and
 `--explain <code>` prints the explanation of a code and runs no stage.
 
-**Lexer** (`lexer.rs`). Turns source text into tokens. A line break that can
+**Lexer** (`lexer/`). Turns source text into tokens. A line break that can
 end a statement becomes a `Newline` token, because statements end at
 newlines, not semicolons
 ([ADR 0001](adr/0001-newline-terminated-statements.md)). After most errors

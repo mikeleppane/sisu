@@ -91,6 +91,16 @@ fn literal_does_not_fit() {
 }
 
 #[test]
+fn hex_literal_follows_the_u8_rules() {
+    contains("fn main() { let b: u8 = 0xFF }", &["255u8"]);
+    // The error quotes the literal as written.
+    codes(
+        "fn main() { let b: u8 = 0x100 }",
+        &[(Code::IntegerDoesNotFit, (1, 25))],
+    );
+}
+
+#[test]
 fn u8_cannot_be_negative() {
     codes(
         "fn main() { let x: u8 = -1 }",

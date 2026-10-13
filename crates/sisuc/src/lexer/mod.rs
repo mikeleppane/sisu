@@ -1,5 +1,7 @@
 //! The lexer: source text to tokens.
 
+mod literal;
+
 use std::fmt::Write;
 use std::iter::Peekable;
 use std::str::CharIndices;
@@ -9,8 +11,12 @@ use crate::diagnostic::{Diagnostic, DiagnosticKind, Join, LineIndex, Span};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
     Ident(String),
-    /// The magnitude of an integer literal: at most `MIN_MAGNITUDE`, which only a unary `-` accepts.
-    Int(u64),
+    /// An integer literal: its magnitude, at most `MIN_MAGNITUDE`, which only a unary `-`
+    /// accepts, and its `text` as written.
+    Int {
+        value: u64,
+        text: String,
+    },
     Fn,
     Let,
     Mut,
@@ -79,7 +85,7 @@ impl TokenKind {
     pub(crate) fn name(&self) -> &'static str {
         match self {
             TokenKind::Ident(_) => "Ident",
-            TokenKind::Int(_) => "Int",
+            TokenKind::Int { .. } => "Int",
             TokenKind::Fn => "Fn",
             TokenKind::Let => "Let",
             TokenKind::Mut => "Mut",
@@ -144,7 +150,7 @@ impl TokenKind {
     pub(crate) fn describe(&self) -> String {
         let text = match self {
             TokenKind::Ident(name) => name.as_str(),
-            TokenKind::Int(n) => return format!("`{n}`"),
+            TokenKind::Int { text, .. } => return format!("`{text}`"),
             TokenKind::Fn => "fn",
             TokenKind::Let => "let",
             TokenKind::Mut => "mut",
@@ -275,11 +281,13 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
                 keyword_or_ident(&source[start..end])
             }
             c if c.is_ascii_digit() => {
-                let end = take_while(&mut chars, source, |c| c.is_ascii_digit() || c == '_');
-                TokenKind::Int(int_literal(source, start, end).unwrap_or_else(|d| {
+                literal::number(source, start, &mut chars).unwrap_or_else(|d| {
                     diagnostics.push(d);
-                    0
-                }))
+                    TokenKind::Int {
+                        value: 0,
+                        text: "0".to_string(),
+                    }
+                })
             }
             '-' if matches!(chars.peek(), Some(&(_, ' ' | '\t')))
                 && tokens.last().is_some_and(|t| t.kind == TokenKind::Newline) =>
@@ -422,7 +430,7 @@ fn can_end_statement(token: Option<&Token>) -> bool {
         matches!(
             t.kind,
             Ident(_)
-                | Int(_)
+                | Int { .. }
                 | True
                 | False
                 | Return
@@ -637,26 +645,6 @@ pub(crate) fn literal_too_large(at: Span) -> Diagnostic {
     DiagnosticKind::IntegerTooLarge { at }.into()
 }
 
-/// Parses `source[start..end]`, a run of digits and `_`, as a magnitude of at most `MIN_MAGNITUDE`.
-fn int_literal(source: &str, start: usize, end: usize) -> Result<u64, Diagnostic> {
-    let text = &source[start..end];
-    for (i, _) in text.match_indices('_') {
-        let is_digit = |j: usize| text.as_bytes().get(j).is_some_and(u8::is_ascii_digit);
-        if !i.checked_sub(1).is_some_and(is_digit) || !is_digit(i + 1) {
-            let at = start + i;
-            return Err(DiagnosticKind::DigitSeparator {
-                at: Span::new(at, at + 1),
-            }
-            .into());
-        }
-    }
-    text.replace('_', "")
-        .parse()
-        .ok()
-        .filter(|&n| n <= MIN_MAGNITUDE)
-        .ok_or_else(|| literal_too_large(Span::new(start, end)))
-}
-
 /// The operator or punctuation starting with `c`, consuming a second char when it has one.
 fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
     use TokenKind::{
@@ -781,6 +769,18 @@ mod tests {
         TokenKind::Ident(s.to_string())
     }
 
+    /// The token of a decimal literal written without separators.
+    fn int(value: u64) -> TokenKind {
+        int_text(value, &value.to_string())
+    }
+
+    fn int_text(value: u64, text: &str) -> TokenKind {
+        TokenKind::Int {
+            value,
+            text: text.to_string(),
+        }
+    }
+
     #[test]
     fn keywords_and_symbols() {
         use TokenKind::{Arrow, Colon, Eof, Fn, LBrace, LParen, RBrace, RParen};
@@ -871,8 +871,8 @@ mod tests {
     #[test]
     fn dot_and_question_dot_continue_a_line() {
         use TokenKind::{
-            Dot, Else, Eof, Eq, If, Int, LBrace, LParen, Let, Newline, QuestionDot,
-            QuestionQuestion, RBrace, RParen,
+            Dot, Else, Eof, Eq, If, LBrace, LParen, Let, Newline, QuestionDot, QuestionQuestion,
+            RBrace, RParen,
         };
         assert_eq!(
             all_kinds("let t = a\n    .sum()"),
@@ -930,7 +930,7 @@ mod tests {
                 RBrace,
                 Else,
                 LBrace,
-                Int(0),
+                int(0),
                 RBrace,
                 RParen,
                 Newline,
@@ -960,7 +960,10 @@ mod tests {
 
     #[test]
     fn digit_separators() {
-        assert_eq!(kinds("100_000"), [TokenKind::Int(100_000), TokenKind::Eof]);
+        assert_eq!(
+            kinds("100_000"),
+            [int_text(100_000, "100_000"), TokenKind::Eof]
+        );
     }
 
     #[test]
@@ -977,7 +980,7 @@ mod tests {
     fn max_literal() {
         assert_eq!(
             kinds("9223372036854775807"),
-            [TokenKind::Int(9_223_372_036_854_775_807), TokenKind::Eof]
+            [int(9_223_372_036_854_775_807), TokenKind::Eof]
         );
     }
 
@@ -986,8 +989,92 @@ mod tests {
     fn min_magnitude_literal() {
         assert_eq!(
             kinds("9223372036854775808"),
-            [TokenKind::Int(MIN_MAGNITUDE), TokenKind::Eof]
+            [int(MIN_MAGNITUDE), TokenKind::Eof]
         );
+    }
+
+    #[test]
+    fn bases() {
+        let source = "0xFF 0xff 0b1010_0101 0o17 0x7FFF_FFFF_FFFF_FFFF 0";
+        assert_eq!(
+            kinds(source),
+            [
+                int_text(255, "0xFF"),
+                int_text(255, "0xff"),
+                int_text(165, "0b1010_0101"),
+                int_text(15, "0o17"),
+                int_text(i64::MAX.cast_unsigned(), "0x7FFF_FFFF_FFFF_FFFF"),
+                int(0),
+                TokenKind::Eof
+            ]
+        );
+    }
+
+    /// As in decimal, the magnitude of `i64::MIN` lexes in any base: the parser decides.
+    #[test]
+    fn min_magnitude_in_other_bases() {
+        assert_eq!(
+            kinds("0x8000_0000_0000_0000"),
+            [
+                int_text(MIN_MAGNITUDE, "0x8000_0000_0000_0000"),
+                TokenKind::Eof
+            ]
+        );
+    }
+
+    /// A prefixed literal is one token that spans its prefix and its digits.
+    #[test]
+    fn base_literal_span() {
+        let t = &tokens("0xFF")[0];
+        assert_eq!((t.span.start, t.span.end), (0, 4));
+    }
+
+    #[test]
+    fn base_errors() {
+        use Code::{BasePrefixUpperCase, BasePrefixWithoutDigits, DigitOutsideBase};
+        for (src, expected) in [
+            ("0X1F", (BasePrefixUpperCase, 1, 1)),
+            ("0B1", (BasePrefixUpperCase, 1, 1)),
+            ("0O7", (BasePrefixUpperCase, 1, 1)),
+            ("0x", (BasePrefixWithoutDigits, 1, 1)),
+            ("0b", (BasePrefixWithoutDigits, 1, 1)),
+            ("0o", (BasePrefixWithoutDigits, 1, 1)),
+            ("0b102", (DigitOutsideBase, 1, 5)),
+            ("0o9", (DigitOutsideBase, 1, 3)),
+            ("0xFG", (DigitOutsideBase, 1, 4)),
+            ("0x_FF", (Code::DigitSeparator, 1, 3)),
+            ("0xFF_", (Code::DigitSeparator, 1, 5)),
+            ("0x1_0000_0000_0000_0000", (Code::IntegerTooLarge, 1, 1)),
+        ] {
+            assert_eq!(err(src), expected, "{src}");
+        }
+    }
+
+    /// The upper case prefix is reported only when its fix would leave a clean literal.
+    #[test]
+    fn upper_case_prefix_yields_to_other_errors() {
+        assert_eq!(err("0XG"), (Code::DigitOutsideBase, 1, 3));
+        assert_eq!(err("0X"), (Code::BasePrefixWithoutDigits, 1, 1));
+        assert_eq!(err("0X_1"), (Code::DigitSeparator, 1, 3));
+        assert_eq!(
+            err("0XFFFF_FFFF_FFFF_FFFF_F"),
+            (Code::IntegerTooLarge, 1, 1)
+        );
+    }
+
+    #[test]
+    fn upper_case_prefix_fix_is_certain() {
+        for (src, fixed) in [("0X1F", "0x1F"), ("0B1", "0b1"), ("0O7", "0o7")] {
+            let d = only(src);
+            assert!(fix_edits(&d).is_some_and(|(certain, _)| certain), "{src}");
+            assert_eq!(apply_fix(src, &d), fixed);
+        }
+    }
+
+    /// A prefix letter after the `0` with a gap is an identifier, not a base.
+    #[test]
+    fn base_prefix_needs_no_gap() {
+        assert_eq!(kinds("0 x"), [int(0), ident("x"), TokenKind::Eof]);
     }
 
     #[test]
@@ -1174,15 +1261,15 @@ mod tests {
 
     #[test]
     fn no_newline_inside_parens() {
-        use TokenKind::{Eof, Int, LParen, Newline, Plus, RParen};
+        use TokenKind::{Eof, LParen, Newline, Plus, RParen};
         assert_eq!(
             all_kinds("f(1\n+2)"),
             [
                 ident("f"),
                 LParen,
-                Int(1),
+                int(1),
                 Plus,
-                Int(2),
+                int(2),
                 RParen,
                 Newline,
                 Eof
@@ -1221,8 +1308,8 @@ mod tests {
 
     #[test]
     fn no_newline_after_operator() {
-        use TokenKind::{Eof, Int, Newline, Plus};
-        assert_eq!(all_kinds("1 +\n2"), [Int(1), Plus, Int(2), Newline, Eof]);
+        use TokenKind::{Eof, Newline, Plus};
+        assert_eq!(all_kinds("1 +\n2"), [int(1), Plus, int(2), Newline, Eof]);
     }
 
     #[test]
@@ -1350,36 +1437,36 @@ mod tests {
 
     #[test]
     fn bracket_tokens_and_keywords() {
-        use TokenKind::{DotDot, Eof, For, In, Int, LBracket, RBracket, Semicolon};
+        use TokenKind::{DotDot, Eof, For, In, LBracket, RBracket, Semicolon};
         assert_eq!(
             kinds("[1, 2][0]"),
             [
                 LBracket,
-                Int(1),
+                int(1),
                 TokenKind::Comma,
-                Int(2),
+                int(2),
                 RBracket,
                 LBracket,
-                Int(0),
+                int(0),
                 RBracket,
                 Eof
             ]
         );
         assert_eq!(
             kinds("[0; 3]"),
-            [LBracket, Int(0), Semicolon, Int(3), RBracket, Eof]
+            [LBracket, int(0), Semicolon, int(3), RBracket, Eof]
         );
         assert_eq!(kinds("for x in"), [For, ident("x"), In, Eof]);
-        assert_eq!(kinds("0..n"), [Int(0), DotDot, ident("n"), Eof]);
+        assert_eq!(kinds("0..n"), [int(0), DotDot, ident("n"), Eof]);
         assert_eq!(kinds("a.b"), [ident("a"), TokenKind::Dot, ident("b"), Eof]);
     }
 
     #[test]
     fn brackets_suppress_newlines() {
-        use TokenKind::{Comma, Eof, Int, LBracket, Newline, RBracket};
+        use TokenKind::{Comma, Eof, LBracket, Newline, RBracket};
         assert_eq!(
             all_kinds("[\n1,\n2\n]"),
-            [LBracket, Int(1), Comma, Int(2), RBracket, Newline, Eof]
+            [LBracket, int(1), Comma, int(2), RBracket, Newline, Eof]
         );
         // The only `Newline` is the one after the closing `]`.
         let nested = all_kinds("[\n    [1],\n    [2],\n]");
@@ -1390,7 +1477,7 @@ mod tests {
     #[test]
     fn block_inside_brackets_separates_statements() {
         let kinds = all_kinds("[\n    if c {\n        let n = 1\n        n\n    } else { 0 },\n]");
-        let one = kinds.iter().position(|k| *k == TokenKind::Int(1));
+        let one = kinds.iter().position(|k| *k == int(1));
         assert_eq!(
             one.map(|i| &kinds[i + 1]),
             Some(&TokenKind::Newline),
@@ -1400,14 +1487,14 @@ mod tests {
 
     #[test]
     fn bracket_line_start_outside_brackets_is_a_new_statement() {
-        use TokenKind::{Eof, Int, LBracket, Newline, RBracket};
+        use TokenKind::{Eof, LBracket, Newline, RBracket};
         assert_eq!(
             all_kinds("a\n[0]"),
             [
                 ident("a"),
                 Newline,
                 LBracket,
-                Int(0),
+                int(0),
                 RBracket,
                 Newline,
                 Eof
@@ -1664,9 +1751,9 @@ mod tests {
             all_kinds("[0;\n3]"),
             [
                 TokenKind::LBracket,
-                TokenKind::Int(0),
+                int(0),
                 Semicolon,
-                TokenKind::Int(3),
+                int(3),
                 TokenKind::RBracket,
                 Newline,
                 Eof
@@ -1707,8 +1794,8 @@ mod tests {
             ]
         );
         let kinds: Vec<_> = lexed.tokens.into_iter().map(|t| t.kind).collect();
-        assert!(kinds.contains(&TokenKind::Int(2)), "{kinds:?}");
-        assert!(kinds.contains(&TokenKind::Int(4)), "{kinds:?}");
+        assert!(kinds.contains(&int(2)), "{kinds:?}");
+        assert!(kinds.contains(&int(4)), "{kinds:?}");
     }
 
     #[test]
@@ -1743,7 +1830,7 @@ mod tests {
 
     #[test]
     fn quote_without_a_close_skips_the_line() {
-        use TokenKind::{Eof, Eq, Int, Let, Newline};
+        use TokenKind::{Eof, Eq, Let, Newline};
         let src = "let n = \"abc\nlet m = 1\n";
         let lexed = lex(src).expect("the lexer recovers");
         assert_eq!(lexed.diagnostics.len(), 1, "{:?}", lexed.diagnostics);
@@ -1757,7 +1844,7 @@ mod tests {
                 Let,
                 ident("m"),
                 Eq,
-                Int(1),
+                int(1),
                 Newline,
                 Eof
             ]
@@ -1795,16 +1882,15 @@ mod tests {
 
     #[test]
     fn bad_literal_lexes_as_zero() {
-        use TokenKind::Int;
         let lexed = lex("let a = 1_\nlet b = 2").expect("the lexer recovers");
         assert_eq!(lexed.diagnostics.len(), 1, "{:?}", lexed.diagnostics);
         let ints: Vec<_> = lexed
             .tokens
             .into_iter()
             .map(|t| t.kind)
-            .filter(|k| matches!(k, Int(_)))
+            .filter(|k| matches!(k, TokenKind::Int { .. }))
             .collect();
-        assert_eq!(ints, [Int(0), Int(2)]);
+        assert_eq!(ints, [int(0), int(2)]);
     }
 
     /// The `(code, line, col)` of every diagnostic of `src`, which the lexer recovers from.

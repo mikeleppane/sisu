@@ -1048,10 +1048,16 @@ impl Parser<'_> {
         let start = self.bump().span;
         if matches!(op, UnaryOp::Neg) && self.at_min_literal() {
             // `i64::MIN` has no positive twin, so `-9223372036854775808` is one literal.
+            let TokenKind::Int { text, .. } = self.peek().kind.clone() else {
+                unreachable!("`at_min_literal` saw an `Int`")
+            };
             let literal = self.bump().span;
             return Ok(Expr {
                 span: start.to(literal),
-                kind: ExprKind::Int(i64::MIN),
+                kind: ExprKind::Int {
+                    value: i64::MIN,
+                    text: format!("-{text}"),
+                },
             });
         }
         let operand = self.unary()?;
@@ -1068,7 +1074,13 @@ impl Parser<'_> {
     /// `?.` or `[` would apply to the literal before the `-` does, so that literal is too large.
     fn at_min_literal(&self) -> bool {
         // `Int` is never `Eof`, so the token after it exists.
-        self.at(&TokenKind::Int(MIN_MAGNITUDE)) && !starts_postfix(&self.tokens[self.pos + 1].kind)
+        matches!(
+            self.peek().kind,
+            TokenKind::Int {
+                value: MIN_MAGNITUDE,
+                ..
+            }
+        ) && !starts_postfix(&self.tokens[self.pos + 1].kind)
     }
 
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
@@ -1166,11 +1178,11 @@ impl Parser<'_> {
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.peek().clone();
         let kind = match token.kind {
-            TokenKind::Int(n) => {
+            TokenKind::Int { value, text } => {
                 // `MIN_MAGNITUDE` fits only as the operand of a `-`, which `unary` takes first.
-                let n = i64::try_from(n).map_err(|_| literal_too_large(token.span))?;
+                let value = i64::try_from(value).map_err(|_| literal_too_large(token.span))?;
                 self.bump();
-                ExprKind::Int(n)
+                ExprKind::Int { value, text }
             }
             TokenKind::True | TokenKind::False => {
                 self.bump();
@@ -1445,6 +1457,19 @@ mod tests {
         };
         assert_eq!(sum.to_string(), "(- 1 -9223372036854775808)");
         assert_eq!((sum.span.start, sum.span.end), (12, 36));
+    }
+
+    /// The magnitude of `i64::MIN` is `i64::MIN` after a `-` in any base, and too large without.
+    #[test]
+    fn min_magnitude_in_hex() {
+        assert_eq!(
+            body("fn main() { -0x8000_0000_0000_0000 }"),
+            "(block -9223372036854775808)"
+        );
+        assert_eq!(
+            parse_err("fn main() { 0x8000_0000_0000_0000 }"),
+            (Code::IntegerTooLarge, 1, 13)
+        );
     }
 
     /// Anywhere else 2^63 is the one "too large" error, at the literal. The lexer rejects larger.

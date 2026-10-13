@@ -1,0 +1,4 @@
+fn main() {
+    let b: u8 = 0x100
+    print(b)
+}

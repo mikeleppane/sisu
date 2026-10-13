@@ -168,7 +168,11 @@ pub(crate) struct Expr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExprKind {
-    Int(i64),
+    /// An integer literal: its value and its `text` as written, which a diagnostic quotes.
+    Int {
+        value: i64,
+        text: String,
+    },
     Bool(bool),
     Name(String),
     Call {
@@ -454,7 +458,7 @@ pub(crate) fn dot(safe: bool) -> &'static str {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ExprKind::Int(n) => write!(f, "{n}"),
+            ExprKind::Int { value, .. } => write!(f, "{value}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::Name(name) => f.write_str(name),
             ExprKind::Call { callee, args } => {
@@ -555,7 +559,10 @@ mod tests {
     }
 
     fn int(n: i64) -> Expr {
-        expr(ExprKind::Int(n))
+        expr(ExprKind::Int {
+            value: n,
+            text: n.to_string(),
+        })
     }
 
     fn stmt(kind: StmtKind) -> Stmt {

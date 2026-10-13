@@ -27,6 +27,29 @@ impl Checker {
         checked
     }
 
+    /// The integer literal `value`, written as `text`, typed by `expected`.
+    fn integer(&mut self, at: Span, value: i64, text: &str, expected: Option<&Type>) -> Checked {
+        let ty = literal_type(expected);
+        if ty == Type::U8 && !(0..=i64::from(u8::MAX)).contains(&value) {
+            // Only `-9223372036854775808` parses to a negative literal.
+            self.diagnostics.push(if value < 0 {
+                DiagnosticKind::NegatedU8 { at }.into()
+            } else {
+                DiagnosticKind::IntegerDoesNotFit {
+                    text: text.to_string(),
+                    at,
+                }
+                .into()
+            });
+            return Err(Poisoned::typed(ty));
+        }
+        Ok(tir::Expr {
+            kind: tir::ExprKind::Int(value),
+            ty,
+            span: at,
+        })
+    }
+
     /// `expr` for each kind of expression.
     fn expr_kind(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let node = |kind, ty| {
@@ -37,20 +60,7 @@ impl Checker {
             })
         };
         match &e.kind {
-            ExprKind::Int(n) => {
-                let ty = literal_type(expected);
-                if ty == Type::U8 && !(0..=i64::from(u8::MAX)).contains(n) {
-                    let at = e.span;
-                    // Only `-9223372036854775808` parses to a negative literal.
-                    self.diagnostics.push(if *n < 0 {
-                        DiagnosticKind::NegatedU8 { at }.into()
-                    } else {
-                        DiagnosticKind::IntegerDoesNotFit { value: *n, at }.into()
-                    });
-                    return Err(Poisoned::typed(ty));
-                }
-                node(tir::ExprKind::Int(*n), ty)
-            }
+            ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
             ExprKind::ArrayLit(elements) => self.array_lit(e.span, elements, expected),
             ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
@@ -146,7 +156,7 @@ impl Checker {
         let checked = self.value(operand, expected);
         if type_of(&checked) == Some(&Type::U8) {
             // A literal's "does not fit" is moot once its negation is an error.
-            if matches!(operand.kind, ExprKind::Int(_)) {
+            if matches!(operand.kind, ExprKind::Int { .. }) {
                 self.diagnostics.truncate(before);
             }
             self.diagnostics
@@ -817,7 +827,7 @@ impl Checker {
                 checked.ty == *element
                     || matches!(
                         (&value.value.kind, element),
-                        (ExprKind::Int(n), Type::U8) if u8::try_from(*n).is_ok()
+                        (ExprKind::Int { value, .. }, Type::U8) if u8::try_from(*value).is_ok()
                     )
             })
     }
@@ -1165,7 +1175,7 @@ pub(super) fn operator(op: ast::BinaryOp) -> Option<(tir::BinaryOp, Type)> {
 /// An integer literal, or `+ - * / %` and unary `-` over such operands only (spec rule 2).
 pub(super) fn int_literal(e: &ast::Expr) -> bool {
     match &e.kind {
-        ExprKind::Int(_) => true,
+        ExprKind::Int { .. } => true,
         ExprKind::Unary {
             op: UnaryOp::Neg,
             operand,

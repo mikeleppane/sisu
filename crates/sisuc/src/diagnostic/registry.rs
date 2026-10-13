@@ -114,6 +114,9 @@ codes! {
     InvalidUtf8 = "E0072",
     AssignToSelf = "E0073",
     AssignToFunction = "E0074",
+    BasePrefixUpperCase = "E0075",
+    BasePrefixWithoutDigits = "E0076",
+    DigitOutsideBase = "E0077",
 }
 
 impl Code {
@@ -172,6 +175,12 @@ pub(crate) enum DiagnosticKind {
     DigitSeparator { at: Span },
     /// An integer literal at `at` that does not fit `i64`.
     IntegerTooLarge { at: Span },
+    /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`).
+    BasePrefixUpperCase { prefix: char, at: Span },
+    /// The base prefix at `at` (`0` and `prefix`) with no digits after it.
+    BasePrefixWithoutDigits { prefix: char, at: Span },
+    /// The `digit`, at `at`, in a literal of base `radix` (2, 8 or 16), which is not a digit there.
+    DigitOutsideBase { digit: char, radix: u32, at: Span },
     /// The character `c` at `at`, which Sisu does not use.
     UnexpectedCharacter { c: char, at: Span },
     /// The token `found` at `at`, where `what` should stand.
@@ -271,8 +280,9 @@ pub(crate) enum DiagnosticKind {
     JumpOutsideLoop { keyword: &'static str, at: Span },
     /// The binding `name`, at `at`, declared before at `first` in the same scope.
     AlreadyDeclared { name: String, at: Span, first: Span },
-    /// The integer literal `value`, at `at`, which does not fit the `u8` its position expects.
-    IntegerDoesNotFit { value: i64, at: Span },
+    /// The integer literal `text` as written, at `at`, which does not fit the `u8` its position
+    /// expects.
+    IntegerDoesNotFit { text: String, at: Span },
     /// A `self` at `at`, outside a method.
     SelfOutsideMethod { at: Span },
     /// A unary `-` at `at` on a `u8`.
@@ -552,6 +562,9 @@ impl DiagnosticKind {
             DiagnosticKind::UnexpectedClosingBracket { .. } => Code::UnexpectedClosingBracket,
             DiagnosticKind::DigitSeparator { .. } => Code::DigitSeparator,
             DiagnosticKind::IntegerTooLarge { .. } => Code::IntegerTooLarge,
+            DiagnosticKind::BasePrefixUpperCase { .. } => Code::BasePrefixUpperCase,
+            DiagnosticKind::BasePrefixWithoutDigits { .. } => Code::BasePrefixWithoutDigits,
+            DiagnosticKind::DigitOutsideBase { .. } => Code::DigitOutsideBase,
             DiagnosticKind::UnexpectedCharacter { .. } => Code::UnexpectedCharacter,
             DiagnosticKind::Expected { .. } => Code::Expected,
             DiagnosticKind::Semicolon { .. } => Code::Semicolon,
@@ -729,6 +742,27 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::IntegerTooLarge { at } => {
                 Diagnostic::coded(code, at, "integer literal is too large for `i64`")
+            }
+            DiagnosticKind::BasePrefixUpperCase { prefix, at } => {
+                Diagnostic::coded(code, at, "base prefixes are lower case").with_fix(Fix {
+                    message: "write the prefix in lower case".to_string(),
+                    certain: true,
+                    edits: vec![Edit {
+                        span: Span::new(at.end - 1, at.end),
+                        replacement: prefix.to_ascii_lowercase().to_string(),
+                    }],
+                })
+            }
+            DiagnosticKind::BasePrefixWithoutDigits { prefix, at } => {
+                Diagnostic::coded(code, at, format!("`0{prefix}` needs at least one digit"))
+            }
+            DiagnosticKind::DigitOutsideBase { digit, radix, at } => {
+                let base = match radix {
+                    2 => "a binary",
+                    8 => "an octal",
+                    _ => "a hexadecimal",
+                };
+                Diagnostic::coded(code, at, format!("`{digit}` is not {base} digit"))
             }
             DiagnosticKind::UnexpectedCharacter { c, at } => {
                 // A character the user cannot see is named by its code point, not printed.
@@ -985,8 +1019,8 @@ impl From<DiagnosticKind> for Diagnostic {
                 format!("`{name}` is already declared in this scope"),
             )
             .with_secondary(first, "first declared here"),
-            DiagnosticKind::IntegerDoesNotFit { value, at } => {
-                Diagnostic::coded(code, at, format!("`{value}` does not fit in `u8`"))
+            DiagnosticKind::IntegerDoesNotFit { text, at } => {
+                Diagnostic::coded(code, at, format!("`{text}` does not fit in `u8`"))
             }
             DiagnosticKind::SelfOutsideMethod { at } => {
                 Diagnostic::coded(code, at, "`self` is only available in a method")

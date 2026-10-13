@@ -688,7 +688,7 @@ These do not make code nicer to write, so they wait:
 - A formatter, `sisu fmt`, after milestone 7, once `enum` and `match` have
   fixed most of the syntax. It has one style and no options, as with `gofmt`
   and `zig fmt`. It must keep comments, but the lexer drops them today
-  (`crates/sisuc/src/lexer.rs`). As `gofmt` does, the lexer would record each
+  (`crates/sisuc/src/lexer/`). As `gofmt` does, the lexer would record each
   comment's span, and the formatter would write it back next to the nearest
   syntax-tree node. It keeps single blank lines between statements, found
   from the spans. Formatting twice must change nothing, and the formatted
