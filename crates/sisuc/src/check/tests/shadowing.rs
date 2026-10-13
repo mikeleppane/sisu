@@ -30,13 +30,15 @@ fn if_let_binding_shadowed() {
     }
 }
 
-/// A shadowed `let mut` can no longer be reassigned, so it warns at once.
+/// A shadowed `let mut` can no longer be reassigned, so it warns at once, unless it was
+/// reassigned before the shadowing `let`.
 #[test]
-fn shadowed_mut_still_warns() {
+fn shadowed_mut_warns_unless_reassigned_first() {
     codes(
         "fn main() {\n    let mut a = 0\n    let a = 1\n    print(a)\n}",
         &[(Code::NeverReassigned, (2, 13))],
     );
+    clean("fn main() {\n    let mut a = 0\n    a = 1\n    let a = 2\n    print(a)\n}");
 }
 
 /// The error's secondary span is the shadowing `let`'s name, and its certain fix makes that

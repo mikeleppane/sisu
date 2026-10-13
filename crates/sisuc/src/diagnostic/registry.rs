@@ -288,7 +288,7 @@ pub(crate) enum DiagnosticKind {
     UnexpectedReturnValue { at: Span },
     /// A `break` or `continue` (`keyword`) at `at`, outside a loop.
     JumpOutsideLoop { keyword: &'static str, at: Span },
-    /// The binding `name`, at `at`, declared before at `first` in the same scope.
+    /// The parameter `name`, at `at`, which an earlier parameter at `first` already has.
     AlreadyDeclared { name: String, at: Span, first: Span },
     /// The integer literal `text` as written, at `at`, which does not fit the `u8` its position
     /// expects.
