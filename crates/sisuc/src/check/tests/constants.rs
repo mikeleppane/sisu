@@ -220,17 +220,40 @@ fn fold_errors() {
 /// A `char` constant folds, compares by code point and converts as run time does.
 #[test]
 fn const_char() {
+    // Each initializer folds on its own, and the prints show them in order: a comparison in
+    // `main` would not be folded, and a value that folded wrongly would show in its place.
+    let consts = [
+        ("C", "'ä'", "'ä'"),
+        ("LESS", "'a' < 'b'", "true"),
+        ("MORE", "'a' > 'b'", "false"),
+        ("SAME", "C == 'ä'", "true"),
+        ("OTHER", "C == 'a'", "false"),
+        ("DIFFERS", "C != 'a'", "true"),
+        ("EQUAL", "C != 'ä'", "false"),
+        ("BELOW", "char(55295) < char(57344)", "true"),
+        ("ABOVE", "char(57344) < char(55295)", "false"),
+        ("TOP", "char(0x10FFFF) >= char(57344)", "true"),
+        ("CHAIN", "'a' < 'b' <= 'b'", "true"),
+        ("NEXT", "char(i64(C) + 1)", "'å'"),
+        ("N", "'x'", "'x'"),
+        ("CODE", "i64(C)", "228"),
+    ];
+    let lines = |line: &dyn Fn(&str, &str) -> String| -> String {
+        let lines: Vec<_> = consts
+            .iter()
+            .map(|(name, value, _)| line(name, value))
+            .collect();
+        lines.join("")
+    };
+    let decls = lines(&|name, value| format!("const {name} = {value}\n"));
+    let prints = lines(&|name, _| format!("    print({name})\n"));
+    let folded: Vec<_> = consts
+        .iter()
+        .map(|(.., value)| format!("(print {value})"))
+        .collect();
     contains(
-        "const C = 'ä'\nconst LESS = 'a' < 'b'\nconst E = char(i64(C) + 1)\nconst N: char = 'x'\nconst I = i64(C)\nfn main() {\n    print(C)\n    print(LESS)\n    print(E)\n    print(N)\n    print(I)\n    print(C == 'ä')\n    print(char(55295) < char(57344))\n}",
-        &[
-            "(print 'ä')",
-            "(print true)",
-            "(print 'å')",
-            "(print 'x')",
-            "(print 228)",
-            "(print true)",
-            "(print true)",
-        ],
+        &format!("{decls}fn main() {{\n{prints}}}"),
+        &[&format!("(block {})", folded.join(" "))],
     );
     // No arithmetic, even in a constant: the guess wraps the constant as it does a local.
     let src = with_main("const C = 'ä'\nconst D = C + 1");
@@ -251,7 +274,7 @@ fn const_char() {
         assert_eq!(fixes(&src, &d), []);
     }
     clean(&with_main(
-        "const F = char(0xD7FF)\nconst G = char(0xE000)\nconst H = char(0x10FFFF)",
+        "const N: char = 'x'\nconst F = char(0xD7FF)\nconst G = char(0xE000)\nconst H = char(0x10FFFF)",
     ));
 }
 

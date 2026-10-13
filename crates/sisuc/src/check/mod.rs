@@ -154,6 +154,9 @@ struct Checker {
     /// Whether the expression being checked is a link of an assigned field's base chain (field
     /// bases, method receivers, indexed bases), where a `?.` cannot stand.
     in_target: bool,
+    /// The span of the compound assignment whose `Binary` is being checked. That `Binary` spans
+    /// the statement, so a rewrite of it would break the assignment.
+    compound: Option<Span>,
     /// Where each comment starts.
     comments: Vec<usize>,
 }
@@ -174,6 +177,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         loops: Vec::new(),
         invalid_jump: false,
         in_target: false,
+        compound: None,
         comments: program.comments.clone(),
     };
     checker.collect_names(program);

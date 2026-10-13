@@ -279,10 +279,9 @@ impl Checker {
             .collect();
         if let Some(&at) = chars.first() {
             let operands = lhs.span.to(rhs.span);
-            self.report(DiagnosticKind::ArithmeticOnChar {
-                at,
-                convert: Some(CharArithmetic { operands, chars }),
-            });
+            let convert =
+                (self.compound != Some(span)).then_some(CharArithmetic { operands, chars });
+            self.report(DiagnosticKind::ArithmeticOnChar { at, convert });
             return Err(Poisoned::error());
         }
         let [l, r]: [Checked; 2] = checked
@@ -306,7 +305,8 @@ impl Checker {
     /// `char` in a comparison, else `i64`. With none, it is `i64`, so `None + 1` expects an
     /// `i64`. Once an operand is `Error`, the later ones are checked against `Error`. An operand
     /// of `arithmetic` that is a `char` is left unreported, as the poison `typed` `char`: its
-    /// caller reports the operator.
+    /// caller reports the operator, and the other operands are held to nothing. In a comparison,
+    /// a `char` after a number reports that number, as a `char` before one reports the number.
     fn integers(
         &mut self,
         operands: &[&ast::Expr],
@@ -328,14 +328,29 @@ impl Checker {
             Some(Type::I64)
         };
         let mut want = ty.clone();
+        let leader = first.as_ref().map(|(k, _)| *k);
         let (mut checked, mut mismatched) = (Vec::with_capacity(operands.len()), false);
         for (i, e) in operands.iter().enumerate() {
             let value = match first.take_if(|(k, _)| *k == i) {
                 Some((_, operand)) => operand,
                 None => self.value(e, Some(want.as_ref().unwrap_or(&UNKNOWN))),
             };
-            let (operand, m) = if arithmetic && type_of(&value) == Some(&Type::Char) {
+            let char_value = type_of(&value) == Some(&Type::Char);
+            let (operand, m) = if arithmetic && char_value {
+                // The operator is rejected whatever stands beside the `char`.
+                want = None;
                 (Err(Poisoned::typed(Type::Char)), false)
+            } else if let Some(k) = leader
+                .filter(|_| char_value && !arithmetic && matches!(want, Some(Type::I64 | Type::U8)))
+            {
+                // A `char` after a number in a comparison: the number is the one converted.
+                if let Some(got) = type_of(&checked[k]).cloned() {
+                    let d = self.mismatch(operands[k].span, Some(operands[k]), &Type::Char, &got);
+                    self.diagnostics.push(d);
+                }
+                checked[k] = Err(Poisoned::error());
+                want = None;
+                (Err(Poisoned::error()), true)
             } else {
                 self.settled(e, value, want.as_ref())
             };
@@ -357,7 +372,17 @@ impl Checker {
         (l, l_mismatched): (Checked, bool),
         rhs: &ast::Expr,
     ) -> Checked {
-        let (r, r_mismatched) = self.operand(rhs, type_of(&l).and(Some(&want)));
+        let expected = type_of(&l).and(Some(&want));
+        let checked = self.value(rhs, Some(expected.unwrap_or(&UNKNOWN)));
+        // Only a compound assignment's number gets here with a `char` to its right.
+        if want != Type::Bool && type_of(&checked) == Some(&Type::Char) {
+            self.report(DiagnosticKind::ArithmeticOnChar {
+                at: rhs.span,
+                convert: None,
+            });
+            return Err(Poisoned::error());
+        }
+        let (r, r_mismatched) = self.settled(rhs, checked, expected);
         let kind = l.ok().zip(r.ok()).map(|(l, r)| tir::ExprKind::Binary {
             op,
             lhs: Box::new(l),

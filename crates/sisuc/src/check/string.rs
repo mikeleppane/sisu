@@ -28,14 +28,26 @@ impl Checker {
         };
         let checked = self.value(&arg.value, None);
         let d = match type_of(&checked) {
-            Some(ty) if *ty == to => DiagnosticKind::AlreadyConverted {
-                value: path(&arg.value),
-                ty: self.type_name(&to),
-                at: arg.value.span,
-                conversion: span,
-                grouped: !single_term(&arg.value),
+            Some(ty) if *ty == to => {
+                let grouped = !single_term(&arg.value);
+                // The removal deletes the head, and the tail unless the value stays grouped.
+                let head = span.start..arg.value.span.start;
+                let tail = arg.value.span.end..span.end;
+                let commented = self
+                    .comments
+                    .iter()
+                    .any(|c| head.contains(c) || (!grouped && tail.contains(c)));
+                DiagnosticKind::AlreadyConverted {
+                    value: path(&arg.value),
+                    ty: self.type_name(&to),
+                    at: arg.value.span,
+                    conversion: span,
+                    grouped,
+                    labeled,
+                    commented,
+                }
+                .into()
             }
-            .into(),
             // The one type `x` should have is offered a conversion to it.
             Some(ty) if !from.contains(ty) => match from {
                 [only] => self.mismatch(arg.value.span, Some(&arg.value), only, ty),

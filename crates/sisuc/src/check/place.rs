@@ -90,7 +90,10 @@ impl Checker {
                 },
                 span,
             };
-            return self.assign(span, target, &value);
+            self.compound = Some(span);
+            let assigned = self.assign(span, target, &value);
+            self.compound = None;
+            return assigned;
         }
         let place = self.place(span, target, false);
         let Some(ty) = place.ty else {

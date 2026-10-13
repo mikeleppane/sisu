@@ -360,12 +360,17 @@ pub(crate) enum DiagnosticKind {
     /// A conversion to `ty` of the value at `at`, which already has that type. `value` is its
     /// path as written, when it has one, and `conversion` is the whole call. `grouped` is set
     /// when the value is more than one term, so removing the conversion keeps its parentheses.
+    /// `labeled` is set when the argument has a label, which the removal would delete along with
+    /// its own error, so there is no fix. `commented` is set when the removal would delete a
+    /// comment, which makes it a guess.
     AlreadyConverted {
         value: Option<String>,
         ty: String,
         at: Span,
         conversion: Span,
         grouped: bool,
+        labeled: bool,
+        commented: bool,
     },
     /// A label at `at` on an argument of a call that is not a constructor.
     LabeledArgument { at: Span },
@@ -1276,6 +1281,8 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 conversion,
                 grouped,
+                labeled,
+                commented,
             } => {
                 let edit = |span: Span, replacement: &str| Edit {
                     span,
@@ -1288,13 +1295,19 @@ impl From<DiagnosticKind> for Diagnostic {
                 } else {
                     vec![edit(head, ""), edit(Span::new(at.end, conversion.end), "")]
                 };
-                Diagnostic::coded(code, at, format!("{} is already `{ty}`", named(value))).with_fix(
-                    Fix {
-                        message: "remove the conversion".to_string(),
-                        certain: true,
-                        edits,
+                let d = Diagnostic::coded(code, at, format!("{} is already `{ty}`", named(value)));
+                if labeled {
+                    return d;
+                }
+                d.with_fix(Fix {
+                    message: if commented {
+                        "remove the conversion, and the comments inside it".to_string()
+                    } else {
+                        "remove the conversion".to_string()
                     },
-                )
+                    certain: !commented,
+                    edits,
+                })
             }
             DiagnosticKind::LabeledArgument { at } => {
                 Diagnostic::coded(code, at, "labels on arguments come in milestone 10")

@@ -89,6 +89,34 @@ fn char_arithmetic() {
             (5, 5, "p.c"),
             None,
         ),
+        // A `char` on the right of a number's compound assignment is the one reported, in
+        // each place the number can be: a local, a field and an element.
+        (
+            "fn f(c: char) {\n    let mut n = 1\n    n += c\n}",
+            (3, 10, "c"),
+            None,
+        ),
+        (
+            "class P {\n    mut n: i64\n}\nfn f(p: P, c: char) {\n    p.n += c\n}",
+            (5, 12, "c"),
+            None,
+        ),
+        (
+            "fn f(c: char) {\n    let mut a = [1]\n    a[0] += c\n}",
+            (3, 13, "c"),
+            None,
+        ),
+        // The `char` on the left is reported first, whatever stands on the right.
+        (
+            "fn f(c: char) {\n    let mut d = c\n    d += c\n}",
+            (3, 5, "d"),
+            None,
+        ),
+        (
+            "fn f(c: char) {\n    let mut a = [c]\n    a[0] *= 2\n}",
+            (3, 5, "a[0]"),
+            None,
+        ),
     ];
     for (src, pos, edits) in rows {
         let src = with_main(src);
@@ -138,11 +166,26 @@ fn char_arithmetic_reports_once() {
         &with_main("fn f(c: char) {\n    print(c + 1 + 2)\n}"),
         &[(Code::ArithmeticOnChar, (2, 11))],
     );
-    // A `u8` or an `i64` beside the `char` is not reported as well.
+    // A `u8` or an `i64` beside the `char` is not reported as well, on either side.
     codes(
-        &with_main("fn f(c: char, b: u8, n: i64) {\n    print(b + c)\n    print(n * c)\n}"),
+        &with_main(
+            "fn f(c: char, b: u8, n: i64) {\n    print(b + c)\n    print(n * c)\n    print(c + b)\n    print(c - n)\n    print(b + c + b)\n}",
+        ),
         &[
             (Code::ArithmeticOnChar, (2, 15)),
+            (Code::ArithmeticOnChar, (3, 15)),
+            (Code::ArithmeticOnChar, (4, 11)),
+            (Code::ArithmeticOnChar, (5, 11)),
+            (Code::ArithmeticOnChar, (6, 15)),
+        ],
+    );
+    // An error of the other operand stays: an unknown name is its own mistake.
+    codes(
+        &with_main("fn f(c: char) {\n    print(c + z)\n    print(z + c)\n}"),
+        &[
+            (Code::ArithmeticOnChar, (2, 11)),
+            (Code::BindingNotFound, (2, 15)),
+            (Code::BindingNotFound, (3, 11)),
             (Code::ArithmeticOnChar, (3, 15)),
         ],
     );
@@ -206,7 +249,6 @@ fn already_converted_groups_what_is_not_one_term() {
     for (body, fixed) in [
         ("print(i64(n))", "print(n)"),
         ("print(i64((n)))", "print((n))"),
-        ("print(i64(n + 1))", "print((n + 1))"),
         ("print(i64((n + 1)))", "print((n + 1))"),
         ("print(i64((n) + (1)) * 2)", "print(((n) + (1)) * 2)"),
         ("print(i64(-n))", "print((-n))"),
@@ -219,9 +261,64 @@ fn already_converted_groups_what_is_not_one_term() {
         let src = scalars(body);
         let d = &diags(&src)[0];
         assert_eq!(d.code(), Code::AlreadyConverted, "{src}");
+        fix_removes_its_code(&src, d);
         let edits: Vec<_> = d.fixes()[0].edits().iter().collect();
         assert_eq!(apply(&src, &edits), scalars(fixed), "{body}");
     }
+}
+
+/// The fix deletes what stands between the conversion and its operand, so a comment there makes
+/// it a guess: the person may want it kept.
+#[test]
+fn already_converted_with_a_comment_is_a_guess() {
+    for (body, fixed) in [
+        ("print(i64(\n        // c\n        n\n    ))", "print(n)"),
+        ("print(i64(n // t\n    ))", "print(n)"),
+        (
+            "print(i64(\n        // c\n        n + 1\n    ))",
+            "print((n + 1\n    ))",
+        ),
+    ] {
+        let src = scalars(body);
+        let d = &diags(&src)[0];
+        assert_eq!(d.code(), Code::AlreadyConverted, "{src}");
+        let found = fixes(&src, d);
+        assert_eq!(found.len(), 1, "{src}");
+        assert!(!found[0].0, "{src}");
+        assert_eq!(applied(&src, d), scalars(fixed), "{body}");
+    }
+}
+
+/// A comment the removal keeps, or that stands outside the conversion, does not demote the fix.
+#[test]
+fn already_converted_keeps_comments_it_does_not_delete() {
+    for body in [
+        "print(i64(n)) // after",
+        "// before\n    print(i64(n))",
+        // The grouped tail stays, with its comment.
+        "print(i64(n + 1 // t\n    ) * 2)",
+    ] {
+        let src = scalars(body);
+        let d = &diags(&src)[0];
+        assert_eq!(d.code(), Code::AlreadyConverted, "{src}");
+        fix_removes_its_code(&src, d);
+    }
+}
+
+/// A label is its own mistake, which the fix would delete with the conversion: none is offered.
+#[test]
+fn already_converted_with_a_label_has_no_fix() {
+    let src = scalars("print(i64(x: n))");
+    let ds = diags(&src);
+    let found: Vec<_> = ds.iter().map(|d| (d.code(), at(&src, d.span()))).collect();
+    assert_eq!(
+        found,
+        [
+            (Code::LabeledArgument, (2, 15)),
+            (Code::AlreadyConverted, (2, 18)),
+        ]
+    );
+    assert_eq!(fixes(&src, &ds[1]), []);
 }
 
 #[test]
@@ -242,7 +339,7 @@ fn char_comparison_mismatch() {
     );
 }
 
-/// The number is the mistake, whichever side it is on.
+/// The number is the mistake, whichever side it is on and whichever comparison it is in.
 #[test]
 fn char_beside_a_number_in_equality() {
     for (body, at) in [
@@ -251,9 +348,62 @@ fn char_beside_a_number_in_equality() {
         ("print(c == b)", (2, 16)),
         ("print(n == c)", (2, 11)),
         ("print(b != c)", (2, 11)),
+        ("print(n < c)", (2, 11)),
+        ("print(b < c)", (2, 11)),
+        ("print(c < n)", (2, 15)),
+        ("print(c >= b)", (2, 16)),
+        ("print(1 < c)", (2, 11)),
+        ("print(n < n <= c)", (2, 11)),
     ] {
         codes(&scalars(body), &[(Code::Mismatch, at)]);
     }
+    // Its fix converts that number to a `char`.
+    for (body, col, open, close) in [
+        ("print(n < c)", 11, "char(", ")"),
+        ("print(b < c)", 11, "char(i64(", "))"),
+    ] {
+        let src = scalars(body);
+        let d = diagnostic(&src, Code::Mismatch, (2, col, &body[col - 5..col - 4]), &[]);
+        let edit = |col, replacement: &str| (2, col, "", replacement.to_owned());
+        assert_eq!(
+            fixes(&src, &d),
+            [(false, vec![edit(col, open), edit(col + 1, close)])]
+        );
+    }
+}
+
+/// Operators that take no `char`, besides the binary ones.
+#[test]
+fn char_beside_other_operators() {
+    // `-c` is a number's sign, which a conversion fixes.
+    let src = scalars("print(-c)");
+    let d = diagnostic(&src, Code::Mismatch, (2, 12, "c"), &[]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(
+            false,
+            vec![(2, 12, "", "i64(".to_owned()), (2, 13, "", ")".to_owned())]
+        )]
+    );
+    assert_eq!(applied(&src, &d), scalars("print(-i64(c))"));
+    clean(&applied(&src, &d));
+    // `!c` wants a `bool`, which no conversion makes.
+    let src = scalars("print(!c)");
+    let d = diagnostic(&src, Code::Mismatch, (2, 12, "c"), &[]);
+    assert_eq!(fixes(&src, &d), []);
+    // An optional `char` is the optional's mistake, and its arithmetic is not reported.
+    codes(
+        &with_main("fn f(m: char?) {\n    print(m + 1)\n}"),
+        &[(Code::Mismatch, (2, 11))],
+    );
+    // A copy of a `char` is a `char`: it is not assignable, and not arithmetic.
+    codes(
+        &with_main("fn f(c: char) {\n    let d = c\n    d += 1\n}"),
+        &[
+            (Code::ArithmeticOnChar, (3, 5)),
+            (Code::AssignToImmutable, (3, 5)),
+        ],
+    );
 }
 
 #[test]
