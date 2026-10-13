@@ -27,8 +27,10 @@ lists. `--format json` switches the diagnostics to JSON Lines, and
 end a statement becomes a `Newline` token, because statements end at
 newlines, not semicolons
 ([ADR 0001](adr/0001-newline-terminated-statements.md)). It decodes a `char`
-literal and its escapes into one scalar value, so later stages never see the
-escape text. After most errors
+literal and its escapes into one scalar value, and a string literal into its
+text, so later stages never see the escape text. A string with `{expr}` parts
+becomes a `StrHead` token, the expression's tokens, and `StrMiddle` or
+`StrTail` tokens for the text between and after them. After most errors
 the lexer skips the bad text and goes on, so it records every one of them,
 and the parser keeps the earliest per item. A bracket that is unclosed or does
 not match is the exception: the run then reports one diagnostic and the parser
@@ -77,7 +79,14 @@ An array is one counted heap block too: a header of two `i64`s, the count and
 the length, then the elements. Each array type gets the same helpers, such as
 `sisu_rc.release.[i64]`, plus `sisu_rc.unique.[i64]`, which copies the block
 before a write when another holder shares it. An index out of bounds calls
-`sisu_panic_bounds`. With `--rc-checks`, these helpers check each count
+`sisu_panic_bounds`.
+
+A string is one counted block with a header of three `i64`s: the count, the
+length and the capacity, then the UTF-8 bytes. A literal is a private global
+whose count starts at 1, so it is never freed. `+` appends in place when the
+left operand's count is 1, growing the block through `sisu_realloc`, and
+copies otherwise. An interpolation allocates one block sized for the most text
+each part can give, then writes the parts into it. With `--rc-checks`, these helpers check each count
 before they change it, and `main` calls `sisu_rc_check_exit` before it
 returns.
 
@@ -92,9 +101,12 @@ removed whether or not the link succeeds.
 
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
 into every program. Generated code calls it to print values, to panic and to
-allocate and free objects and arrays: `sisu_print_int`, `sisu_print_bool`,
-`sisu_print_char` (in `text.rs`, which is for text), `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`, `sisu_alloc` and
-`sisu_free`. The print functions write into a buffer that the runtime owns,
+allocate and free objects, arrays and strings: `sisu_print_int`,
+`sisu_print_bool`, `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`,
+`sisu_alloc`, `sisu_realloc` and `sisu_free`. Text lives in `text.rs`:
+`sisu_print_char`, `sisu_print_str`, `sisu_str_compare`, and `sisu_write_int`,
+`sisu_write_bool` and `sisu_write_char`, which interpolation calls. `print(x)`
+and `"{x}"` share one formatter per type. The print functions write into a buffer that the runtime owns,
 and `main` calls `sisu_flush_stdout` before it returns. The runtime counts
 the blocks that are allocated and not yet freed. A program built with
 `--rc-checks` calls `sisu_rc_fault` when a count check fails, and

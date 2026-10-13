@@ -14,7 +14,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
-| 4 | Strings | A program reverses and compares strings | In progress: stage 2 of 5 |
+| 4 | Strings | A program reverses and compares strings | In progress: stage 3 of 5 |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
@@ -40,6 +40,11 @@ These are adopted. Together they give Sisu a working imperative core.
 - arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
   read and written by index, compared with `==`, and walked with `for x in xs`
   or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
+- `char`, one Unicode scalar value such as `'ä'`, compared by code point and
+  converted with `i64(c)` and `char(n)`
+- `string`: UTF-8 literals with escapes, `+` and `+=`, comparison by bytes,
+  `len()` in bytes, and interpolation such as `"n = {n}"`; `+=` on a string
+  that nothing else holds appends in place
 - copy-on-write arrays: `let b = a` shares until one of them is written, and a
   counted local's last read moves it instead of copying
 - error messages in the style of `rustc`, pointing at the code, each with a
