@@ -10,4 +10,14 @@ fn main() {
     print("a\0b" < "a\0c")           // true: the bytes after the zero decide
     print("a\0b".len())              // 3
     print("\u{E4}" == "a\u{308}")    // false: no Unicode normalisation
+    // `+` and `+=` copy bytes by length, zero bytes included, also across growth.
+    let joined = "a\0b" + "ä\0c"
+    print(joined)                    // a<NUL>bä<NUL>c
+    print(joined.len())              // 7
+    let mut z = "\0"
+    for i in 0..10 {
+        z += "a\0"
+    }
+    print(z)                         // <NUL>, then a<NUL> ten times
+    print(z.len())                   // 21
 }

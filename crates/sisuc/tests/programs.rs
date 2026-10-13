@@ -123,7 +123,7 @@ fn allocs_in_panics_without_the_summary_line() {
 }
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
-const ALLOCATIONS: [(&str, &str, &str, i64); 4] = [
+const ALLOCATIONS: [(&str, &str, &str, i64); 8] = [
     // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
@@ -132,6 +132,13 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 4] = [
     ("walk", "10000000\n", "0\n", 0),
     // A literal lives in the program image: evaluating it allocates nothing.
     ("literal", "3000\n", "0\n", 0),
+    // One copy of the literal to capacity 2, then reallocations to 4, 8, ..., 1024. Valgrind
+    // counts each `realloc` as an allocation.
+    ("append_local", "1001\n", "1\n", 10),
+    ("append_assign", "1001\n", "1\n", 10),
+    // `saved` is live across each append, so each append copies once.
+    ("append_shared", "1001\n1000\n", "1\n1\n", 1000),
+    ("append_grow", "1001\n", "1\n", 10),
 ];
 
 #[test]

@@ -1,0 +1,51 @@
+// String `+` appends into a left operand nobody else holds and copies one that is shared. Each
+// line prints the whole text, so a wrong append, a lost byte or a written literal shows.
+fn abc() -> string {
+    let mut s = "ab"
+    s += "c"
+    s
+}
+
+fn main() {
+    // `b` shares the block, so `a + "x"` copies it.
+    let mut a = "a" + "b"
+    let b = a
+    a = a + "x"
+    print(a)                         // abx
+    print(b)                         // ab
+
+    // Shadowing: the new `s` takes over the old one's block.
+    let s = "s" + "t"
+    let s = s + "x"
+    print(s)                         // stx
+
+    // The temporary `"ab" + "c"` is owned, so `+ "d"` appends into it.
+    print("ab" + "c" + "d")          // abcd
+
+    // `s += "c"` copies the literal `"ab"`, so the second call sees it unchanged.
+    print(abc())                     // abc
+    print(abc())                     // abc
+
+    // Growth past several reallocations keeps every earlier byte.
+    let mut u = ""
+    for i in 0..20 {
+        u += "ä"
+    }
+    print(u)                         // ääääääääääääääääääää
+    print(u.len())                   // 40
+
+    // Each iteration's `name + "!"` is released at the end of the iteration.
+    for name in ["a", "b"] {
+        let name = name + "!"
+        print(name)                  // a! then b!
+    }
+
+    // The outer `t` is read after the branch, so the inner `t + "x"` copies.
+    let t = "t" + "u"
+    let c = t.len() == 2
+    if c {
+        let t = t + "x"
+        print(t)                     // tux
+    }
+    print(t)                         // tu
+}

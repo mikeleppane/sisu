@@ -718,7 +718,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
             ExprKind::Char(c) => self.context.i32_type().const_int(u64::from(*c), false),
             ExprKind::Str(text) => return Some(self.string_lit(text).into()),
-            ExprKind::Concat { .. } => panic!("`Concat` lands in Task 13"),
+            ExprKind::Concat { lhs, rhs } => return Some(self.concat_expr(lhs, rhs).into()),
             ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {
                 return Some(self.array_fill(&e.ty, value, len).into());

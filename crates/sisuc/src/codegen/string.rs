@@ -4,10 +4,10 @@
 //! header: it owns the layout, the string nodes and the bodies of the string helpers, which
 //! `define_helpers` reaches through `define_string_helper`.
 
-use inkwell::IntPredicate;
 use inkwell::module::Linkage;
 use inkwell::types::StructType;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
+use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, param};
 use super::{Codegen, POSITIONED};
@@ -94,6 +94,169 @@ impl<'ctx> Codegen<'ctx, '_> {
         let string = global.as_pointer_value();
         self.retain(string.into(), &Type::String);
         string
+    }
+
+    /// The address of byte `offset` of `string`, which is at most its capacity.
+    #[expect(
+        unsafe_code,
+        reason = "inkwell marks GEP unsafe for a wrong index list; this GEP takes one `i64` index"
+    )]
+    fn string_byte(
+        &self,
+        string: PointerValue<'ctx>,
+        offset: IntValue<'ctx>,
+    ) -> PointerValue<'ctx> {
+        // SAFETY: the one `i64` index steps over `i8`s, so the index list is valid for its
+        // pointee type. `inbounds` is sound because the block holds `cap` bytes after the
+        // header and every caller passes an offset of at most `cap`, one past the end at most.
+        unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    self.context.i8_type(),
+                    self.string_field(string, BYTES),
+                    &[offset],
+                    "byte",
+                )
+                .expect(POSITIONED)
+        }
+    }
+
+    /// `Concat`: evaluates `lhs`, then `rhs`, and joins them with `concat`.
+    pub(super) fn concat_expr(&mut self, lhs: &Expr, rhs: &Expr) -> PointerValue<'ctx> {
+        let (l, r) = (self.operand(lhs), self.operand(rhs));
+        self.concat(l.into_pointer_value(), r.into_pointer_value())
+    }
+
+    /// `sisu_realloc(ptr, old_size, align, new_size) -> ptr` from the runtime, declared on
+    /// first use, so that a module without `+` stays as it was.
+    fn realloc(&self) -> FunctionValue<'ctx> {
+        self.module.get_function("sisu_realloc").unwrap_or_else(|| {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let i64_type = self.context.i64_type().into();
+            let params = [ptr_type.into(), i64_type, i64_type, i64_type];
+            let fn_type = ptr_type.fn_type(&params, false);
+            self.module.add_function("sisu_realloc", fn_type, None)
+        })
+    }
+
+    /// `lhs + rhs`, which takes both owned references and returns an owned one. When
+    /// the count of `lhs` is 1, the bytes of `rhs` are appended into its block, which is first
+    /// reallocated to `max(needed, 2 * cap)` when its capacity is below the `needed` length.
+    /// Otherwise a new block with capacity `needed` receives both byte runs, and `lhs` is
+    /// released. Either way `rhs` is released last.
+    pub(super) fn concat(
+        &self,
+        lhs: PointerValue<'ctx>,
+        rhs: PointerValue<'ctx>,
+    ) -> PointerValue<'ctx> {
+        let layout = self.string_layout();
+        let i64_type = self.context.i64_type();
+        let header = i64_type.const_int(layout.size, false);
+        let align = i64_type.const_int(u64::from(layout.align), false);
+        let block_size = |cap| {
+            self.builder
+                .build_int_nuw_add(header, cap, "size")
+                .expect(POSITIONED)
+        };
+        let (len, rhs_len) = (self.string_len(lhs), self.string_len(rhs));
+        // Both strings exist in memory, which on x86-64 is below 2^47 bytes, so no length,
+        // capacity or block size here can overflow.
+        let needed = self
+            .builder
+            .build_int_nuw_add(len, rhs_len, "needed")
+            .expect(POSITIONED);
+        let function = self.current_function();
+        let block = |name| self.context.append_basic_block(function, name);
+        let (owned, grow, copy, join) =
+            (block("owned"), block("grow"), block("copy"), block("join"));
+        let count = self
+            .builder
+            .build_load(i64_type, lhs, "count")
+            .expect(POSITIONED)
+            .into_int_value();
+        let one = self.int_compare(IntPredicate::EQ, count, i64_type.const_int(1, false));
+        self.builder
+            .build_conditional_branch(one, owned, copy)
+            .expect(POSITIONED);
+
+        // Both operands are owned references, so with a count of 1 `lhs` is not `rhs`'s block:
+        // reallocating it leaves `rhs` in place.
+        self.builder.position_at_end(owned);
+        let cap = self.load_string_field(lhs, CAP);
+        let full = self.int_compare(IntPredicate::ULT, cap, needed);
+        self.builder
+            .build_conditional_branch(full, grow, join)
+            .expect(POSITIONED);
+
+        self.builder.position_at_end(grow);
+        let double = self
+            .builder
+            .build_int_nuw_mul(cap, i64_type.const_int(2, false), "double")
+            .expect(POSITIONED);
+        let more = self.int_compare(IntPredicate::UGT, needed, double);
+        let new_cap = self
+            .builder
+            .build_select(more, needed, double, "cap")
+            .expect(POSITIONED)
+            .into_int_value();
+        let grown = self
+            .builder
+            .build_call(
+                self.realloc(),
+                &[
+                    lhs.into(),
+                    block_size(cap).into(),
+                    align.into(),
+                    block_size(new_cap).into(),
+                ],
+                "grown",
+            )
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("`sisu_realloc` should return a pointer, as the runtime declares it")
+            .into_pointer_value();
+        self.store(self.string_field(grown, CAP), new_cap.into());
+        self.branch_to(join);
+
+        self.builder.position_at_end(copy);
+        let fresh = self
+            .builder
+            .build_call(
+                self.alloc,
+                &[block_size(needed).into(), align.into()],
+                "string",
+            )
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
+            .into_pointer_value();
+        self.store(fresh, i64_type.const_int(1, false).into());
+        self.store(self.string_field(fresh, CAP), needed.into());
+        self.copy_bytes(self.string_field(fresh, BYTES), lhs, len);
+        self.release(lhs.into(), &Type::String);
+        let copied = self.current_block();
+        self.branch_to(join);
+
+        self.builder.position_at_end(join);
+        let result = self
+            .builder
+            .build_phi(self.context.ptr_type(AddressSpace::default()), "string")
+            .expect(POSITIONED);
+        result.add_incoming(&[(&lhs, owned), (&grown, grow), (&fresh, copied)]);
+        let result = result.as_basic_value().into_pointer_value();
+        self.copy_bytes(self.string_byte(result, len), rhs, rhs_len);
+        self.store(self.string_field(result, LEN), needed.into());
+        self.release(rhs.into(), &Type::String);
+        result
+    }
+
+    /// Copies the first `len` bytes of `string` to `to`.
+    fn copy_bytes(&self, to: PointerValue<'ctx>, string: PointerValue<'ctx>, len: IntValue<'ctx>) {
+        self.builder
+            .build_memcpy(to, 1, self.string_field(string, BYTES), 1, len)
+            .expect("an alignment of 1 should be a power of two");
     }
 
     /// `sisu_str_compare` on the bytes of `a` and `b`: -1, 0 or 1.

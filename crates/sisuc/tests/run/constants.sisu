@@ -9,6 +9,7 @@ const B = 255
 const BYTE = u8(B)
 const C = 'a'
 const NEXT = char(i64(C) + 1)
+const GREETING = "hel" + "lo" // spellchecker:disable-line
 
 fn main() {
     let l = 100
@@ -31,4 +32,10 @@ fn main() {
     let c = 'a'
     print(NEXT) // b
     print(char(i64(c) + 1)) // b
+    print(GREETING) // hello
+    // The constant's block is a literal's, so the append copies it and the constant stays.
+    let mut s = GREETING
+    s += "!"
+    print(s) // hello!
+    print(GREETING) // hello
 }

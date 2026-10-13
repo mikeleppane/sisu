@@ -1,5 +1,6 @@
 // `==` on composites compares strings by content: in arrays, optionals and class fields, and
-// `[char]` by code point. Every string here is a literal.
+// `[char]` by code point. The `[string?]` holds strings built at run time, so dropping it is
+// checked under Valgrind.
 class Person {
     name: string
     age: i64
@@ -25,4 +26,7 @@ fn main() {
     let none: string? = None
     print(some?.len() ?? 0)                              // 4
     print(none?.len() ?? 0)                              // 0
+    let held: [string?] = ["a" + "b", None, "c" + ""]
+    print(held == ["ab", None, "c"])                     // true
+    print(held == [None, None, "c" + ""])                // false
 }

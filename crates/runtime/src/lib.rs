@@ -2,7 +2,7 @@
 
 pub mod text;
 
-use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error, realloc};
 use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::os::fd::AsFd;
@@ -338,6 +338,46 @@ pub unsafe extern "C" fn sisu_free(ptr: *mut u8, size: usize, align: usize) {
     LIVE.store(LIVE.load(Relaxed).wrapping_sub(1), Relaxed);
 }
 
+/// Grows or shrinks an object that `sisu_alloc` or `sisu_realloc` returned to `new_size`
+/// bytes, keeping its first `min(old_size, new_size)` bytes. Generated code calls this to grow
+/// a string's block. The object stays one object, so the live count does not change.
+///
+/// Aborts when `new_size` is 0 or the new layout overflows `isize`, as `sisu_alloc` does.
+/// Calls `handle_alloc_error` when the allocator returns null, so the result is never null.
+///
+/// # Safety
+///
+/// - `ptr` came from `sisu_alloc(old_size, align)` or `sisu_realloc` with these sizes.
+/// - `ptr` is not used after this call.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name and passes a raw pointer"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_realloc(
+    ptr: *mut u8,
+    old_size: usize,
+    align: usize,
+    new_size: usize,
+) -> *mut u8 {
+    let Ok(new_layout) = Layout::from_size_align(new_size, align) else {
+        std::process::abort()
+    };
+    if new_size == 0 {
+        std::process::abort()
+    }
+    // SAFETY: the block was allocated with `old_size` and `align`, which `sisu_alloc` or an
+    // earlier `sisu_realloc` accepted as a valid layout.
+    let layout = unsafe { Layout::from_size_align_unchecked(old_size, align) };
+    // SAFETY: the caller upholds the `# Safety` contract above, and `new_size` is non-zero and
+    // valid with `align`, as `new_layout` proves.
+    let grown = unsafe { realloc(ptr, layout, new_size) };
+    if grown.is_null() {
+        handle_alloc_error(new_layout)
+    }
+    grown
+}
+
 /// Exit code for a reference-count check failure under `--rc-checks`.
 const RC_CHECK_EXIT: i32 = 102;
 
@@ -388,6 +428,7 @@ mod tests {
     use super::{
         BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_flush_stdout,
         sisu_free, sisu_panic_bounds, sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
+        sisu_realloc,
     };
     use std::os::fd::AsRawFd;
     use std::os::unix::process::ExitStatusExt;
@@ -430,8 +471,35 @@ mod tests {
         unsafe { sisu_free(ptr, 24, 4096) };
     }
 
-    /// Child entry point for the `alloc_aborts_*` tests. It returns at once
-    /// unless the parent set the env var, so a normal test run ignores it.
+    #[expect(
+        unsafe_code,
+        reason = "the test writes through the raw pointer, grows it and frees it"
+    )]
+    #[test]
+    fn realloc_keeps_bytes() {
+        let ptr = sisu_alloc(24, 8);
+        for i in 0..24 {
+            // SAFETY: `ptr` points to 24 allocated bytes and `i` is below 24.
+            unsafe { ptr.add(i).write(u8::try_from(i).expect("i is below 24")) };
+        }
+        // SAFETY: `ptr` came from `sisu_alloc(24, 8)` and is not used afterwards.
+        let grown = unsafe { sisu_realloc(ptr, 24, 8, 4096) };
+        assert_eq!(grown.addr() % 8, 0, "pointer must stay 8-aligned");
+        for i in 0..24 {
+            // SAFETY: the grown block keeps the 24 bytes written above.
+            let byte = unsafe { grown.add(i).read() };
+            assert_eq!(usize::from(byte), i);
+        }
+        // SAFETY: `grown` came from `sisu_realloc` with the new size 4096 and alignment 8.
+        unsafe { sisu_free(grown, 4096, 8) };
+    }
+
+    /// Child entry point for the `alloc_aborts_*` and `realloc_aborts_*` tests. It returns at
+    /// once unless the parent set the env var, so a normal test run ignores it.
+    #[expect(
+        unsafe_code,
+        reason = "the `realloc` cases call an unsafe extern function"
+    )]
     #[test]
     fn abort_child() {
         let Ok(case) = std::env::var(ABORT_CASE_VAR) else {
@@ -441,7 +509,17 @@ mod tests {
             "zero" => (0, 8),
             "invalid_align" => (8, 3),
             "overflow" => (usize::MAX - 8, 4096),
-            other => panic!("unknown abort case {other}"),
+            realloc_case => {
+                let new_size = match realloc_case {
+                    "realloc_zero" => 0,
+                    "realloc_overflow" => usize::MAX - 8,
+                    other => panic!("unknown abort case {other}"),
+                };
+                // SAFETY: the block came from `sisu_alloc(24, 8)`; the call aborts before
+                // anything could use it again.
+                unsafe { sisu_realloc(sisu_alloc(24, 8), 24, 8, new_size) };
+                return;
+            }
         };
         sisu_alloc(size, align);
         // Reached only if `sisu_alloc` returned: exit normally so the parent sees no signal.
@@ -515,6 +593,16 @@ mod tests {
     #[test]
     fn alloc_aborts_when_layout_overflows() {
         assert_child_aborts("overflow");
+    }
+
+    #[test]
+    fn realloc_aborts_on_zero_size() {
+        assert_child_aborts("realloc_zero");
+    }
+
+    #[test]
+    fn realloc_aborts_when_layout_overflows() {
+        assert_child_aborts("realloc_overflow");
     }
 
     /// Child entry point for the `check_exit_*` and `rc_fault_*` tests. `LIVE` is

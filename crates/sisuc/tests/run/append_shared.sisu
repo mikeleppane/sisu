@@ -1,0 +1,14 @@
+fn iterations() -> i64 { 1000 }
+
+// `saved` shares `s` across each append, so each `s += "x"` copies: one allocation per append,
+// sized for the appended text.
+fn main() {
+    let mut s = "a"
+    let mut saved = s
+    for i in 0..iterations() {
+        saved = s
+        s += "x"
+    }
+    print(s.len())                   // 1001 (1 with no iterations)
+    print(saved.len())               // 1000: the value before the last append (1 with none)
+}

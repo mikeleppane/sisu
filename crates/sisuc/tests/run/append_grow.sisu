@@ -1,0 +1,19 @@
+fn iterations() -> i64 { 1000 }
+
+// `let s = s + "x"` is the last use of the parameter, and `grow(s, n - 1)` passes the new `s` on
+// as its last use, so each level appends in place: one copy of the literal, then a reallocation
+// at each doubling to 1024. The `+ ""` after the call keeps it from being a tail call, which
+// `-O2` would turn into a loop and inline into `main`; appending nothing to the owned result
+// allocates nothing.
+// o2-calls: main grow 1
+fn grow(s: string, n: i64) -> string {
+    if n == 0 {
+        return s
+    }
+    let s = s + "x"
+    grow(s, n - 1) + ""
+}
+
+fn main() {
+    print(grow("a", iterations()).len()) // 1001 (1 with no iterations)
+}

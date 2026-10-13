@@ -1,0 +1,30 @@
+// An operand already evaluated is released when a later one leaves early, and a comparison chain
+// that stops early releases what it evaluated. Every string here is built at run time, so a leak
+// shows under Valgrind.
+fn join(a: string, b: string, c: bool) -> i64 {
+    let s = a + (if c { return 0 } else { b })
+    s.len()
+}
+
+fn f() -> string {
+    print("f")                       // f
+    "a" + ""
+}
+
+fn g() -> string {
+    print("g")                       // g
+    "c" + ""
+}
+
+// `a < f()` holds, so the chain reaches its third operand, which returns.
+fn chain(a: string, b: string, c: bool) {
+    print(a < f() < (if c { return } else { b }))
+}
+
+fn main() {
+    print(join("a" + "b", "c" + "d", false)) // 4
+    print(join("a" + "b", "c" + "d", true)) // 0
+    chain("0" + "", "z" + "", true)  // f
+    // `"b" < f()` fails, so `g` never runs.
+    print("b" < f() < g())           // f, then false
+}
