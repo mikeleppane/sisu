@@ -1275,9 +1275,16 @@ mod tests {
             ("0x_FF", (Code::DigitSeparator, 1, 3)),
             ("0xFF_", (Code::DigitSeparator, 1, 5)),
             ("0x1_0000_0000_0000_0000", (Code::IntegerTooLarge, 1, 1)),
+            // 2^64 in octal; the binary one follows the loop.
+            (
+                "0o2_000_000_000_000_000_000_000",
+                (Code::IntegerTooLarge, 1, 1),
+            ),
         ] {
             assert_eq!(err(src), expected, "{src}");
         }
+        let binary = format!("0b1{}", "0".repeat(64));
+        assert_eq!(err(&binary), (Code::IntegerTooLarge, 1, 1));
     }
 
     /// The upper case prefix is reported only when its fix would leave a clean literal.

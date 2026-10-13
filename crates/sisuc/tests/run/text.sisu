@@ -1,4 +1,11 @@
 // `chars()`, `bytes()` and `string(cs)` on text of every UTF-8 width: 1, 2, 3 and 4 bytes.
+class Doc {
+    name: string
+    letters: [char]
+}
+
+fn word() -> string { "o" + "k" }
+
 fn main() {
     let s = "aä€😀"
     let cs = s.chars()
@@ -27,4 +34,17 @@ fn main() {
     print(t.chars().len())           // 2
     print(("a" + "ä").bytes().len()) // 3
     print(string(("ä" + "€").chars())) // ä€
+    // A field, an element and a call result as the receiver or the argument.
+    let d = Doc(name: "ä" + "b", letters: ['h', 'i'])
+    print(d.name.chars().len())      // 2
+    print(d.name.bytes().len())      // 3
+    print(string(d.letters))         // hi
+    let ws = ["x" + "ü", "y"]
+    print(ws[0].chars().len())       // 2
+    print(ws[0].bytes().len())       // 3
+    let grid = [['a', 'b'], ['c']]
+    print(string(grid[0]))           // ab
+    print(word().chars().len())      // 2
+    print(word().bytes().len())      // 2
+    print(string(word().chars()))    // ok
 }

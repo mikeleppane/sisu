@@ -144,7 +144,7 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 12] = [
     ("append_field_assign", "1001\nx\n", "1\na\n", 10),
     ("append_element", "1001\nx\n", "1\na\n", 10),
     // Each interpolation allocates its result and nothing else.
-    ("interp", "9\n", "0\n", 1000),
+    ("interp", "9\ne\n", "1\n-\n", 1000),
 ];
 
 #[test]

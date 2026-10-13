@@ -1,7 +1,8 @@
 // `char`: literals, printing, conversions to and from `i64`, optionals and arrays.
 // `climb` is recursive, and not in tail position, and `main` calls it from a loop with a depth that
-// changes, so `-O2` keeps the call: a `char` crosses a real call as an argument and as a result,
-// and the conversion on its way out checks a value `-O2` does not know.
+// changes, so `-O2` keeps the call: a `char` crosses a real call as its result, and the conversion
+// on its way out checks a value `-O2` does not know. The argument is always 'a', so `-O2` drops it
+// and only the unoptimized build passes a `char` in.
 // o2-calls: main climb 1
 fn climb(c: char, steps: i64) -> char {
     if steps == 0 { c } else { char(i64(climb(c, steps - 1)) + 1) }
@@ -30,6 +31,8 @@ fn main() {
     print(maybe(true) == 'ä')        // true
     print(maybe(true) != 'a')        // true
     print(maybe(false) == None)      // true
+    print(maybe(true) == None)       // false
+    print(maybe(true) == maybe(true)) // true
     let cs = ['a', 'ä', '😀']
     print(cs.len())                  // 3
     print(cs[2])                     // 😀

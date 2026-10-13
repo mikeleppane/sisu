@@ -7,9 +7,11 @@ fn main() {
     let n = 7
     let c = 'ä'
     let b = true
-    let mut last = ""
+    let mut last = "-"
     for i in 0..iterations() {
         last = "{s}{n}{c}{b}"
     }
-    print(last.len())                // 9: `ab7ätrue` (0 with no iterations)
+    print(last.len())                // 9: `ab7ätrue` (1 with no iterations)
+    let cs = last.chars()
+    print(cs[cs.len() - 1])          // e (- with no iterations): the last char, read through `chars()`
 }

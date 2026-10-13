@@ -33,6 +33,8 @@ fn main() {
     print(NEXT) // b
     print(char(i64(c) + 1)) // b
     print(GREETING) // hello
+    let hel = "hel" // spellchecker:disable-line
+    print(hel + "lo") // hello, built at run time // spellchecker:disable-line
     // The constant's block is a literal's, so the append copies it and the constant stays.
     let mut s = GREETING
     s += "!"

@@ -9,5 +9,6 @@ fn main() {
     e += "x"
     print(e)                         // x
     print("".chars().len())          // 0
+    print("".bytes().len())          // 0
     print(string("".chars()) == "")  // true
 }
