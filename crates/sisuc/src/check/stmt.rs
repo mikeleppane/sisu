@@ -403,7 +403,7 @@ impl Checker {
     }
 
     /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let`, `while let` or
-    /// `for`) binds it: the block cannot declare `name` again. The bound local, and the block.
+    /// `for`) binds it. The bound local, and the block.
     /// A `for _` binds a fresh unnamed local and declares no name.
     pub(super) fn unwrapping_block(
         &mut self,
@@ -473,7 +473,8 @@ impl Checker {
     }
 
     /// Adds `name` to the innermost scope as a new local; `keyword` is the `mut` of a
-    /// `let mut`. A name already in that scope is reported and poisoned.
+    /// `let mut`. It replaces a binding of that name in the scope, except that a parameter whose
+    /// name another parameter has is reported and poisoned.
     pub(super) fn declare(
         &mut self,
         name: &ast::Ident,
@@ -488,6 +489,7 @@ impl Checker {
             ty: ty.clone().unwrap_or(Type::Unit),
             mutable: kind == BindingKind::Var,
         });
+        let shadows_mut = self.lookup(&name.name).is_some_and(|b| b.keyword.is_some());
         let scope = self
             .scopes
             .last_mut()
@@ -499,8 +501,11 @@ impl Checker {
             span: name.span,
             keyword,
             reassigned: false,
+            shadows_mut,
         };
-        if let Some(first) = scope.get(&name.name) {
+        if kind == BindingKind::Param
+            && let Some(first) = scope.get(&name.name)
+        {
             self.diagnostics.push(
                 DiagnosticKind::AlreadyDeclared {
                     name: name.name.clone(),
@@ -509,16 +514,18 @@ impl Checker {
                 }
                 .into(),
             );
-            // A use after it may mean either binding, so neither is judged: the name becomes
-            // `Error`, can be assigned, and never warns.
+            // A use after it may mean either parameter, so neither is judged: the name becomes
+            // `Error` and can be assigned.
             binding = Binding {
                 ty: None,
                 kind: BindingKind::Var,
-                reassigned: true,
                 ..binding
             };
         }
-        scope.insert(name.name.clone(), binding);
+        // Nothing can reassign the binding it replaces from here on.
+        if let Some(old) = scope.insert(name.name.clone(), binding) {
+            self.never_reassigned(name.name.clone(), &old);
+        }
         local
     }
 
@@ -529,15 +536,21 @@ impl Checker {
             .pop()
             .expect("a scope should be open while a block is checked");
         for (name, b) in scope {
-            if let Some(keyword) = b.keyword
-                && !b.reassigned
-            {
-                self.report(DiagnosticKind::NeverReassigned {
-                    name,
-                    at: b.span,
-                    keyword,
-                });
-            }
+            self.never_reassigned(name, &b);
+        }
+    }
+
+    /// Warns when `b`, which `name` can no longer reach, is a `let mut` that was never
+    /// reassigned.
+    fn never_reassigned(&mut self, name: String, b: &Binding) {
+        if let Some(keyword) = b.keyword
+            && !b.reassigned
+        {
+            self.report(DiagnosticKind::NeverReassigned {
+                name,
+                at: b.span,
+                keyword,
+            });
         }
     }
 

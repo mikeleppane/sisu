@@ -116,6 +116,7 @@ mod tests {
             element: false,
             cause: Immutable::Let {
                 declared: Span::new(20, 21),
+                redeclared: false,
             },
         }
         .into()

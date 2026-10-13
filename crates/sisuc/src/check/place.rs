@@ -154,9 +154,13 @@ impl Checker {
                 };
                 b.reassigned |= b.kind == BindingKind::Var;
                 let (local, ty, kind, declared) = (b.local, b.ty.clone(), b.kind, b.span);
+                let redeclared = b.shadows_mut;
                 let cause = match kind {
                     BindingKind::Var => None,
-                    BindingKind::Let => Some(Immutable::Let { declared }),
+                    BindingKind::Let => Some(Immutable::Let {
+                        declared,
+                        redeclared,
+                    }),
                     BindingKind::Param => Some(Immutable::Param { declared }),
                     BindingKind::Unwrapped(keyword) => {
                         Some(Immutable::Unwrapped { keyword, declared })

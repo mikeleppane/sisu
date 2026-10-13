@@ -1,10 +1,10 @@
-error[E0039]: `total` is already declared in this scope
- --> E0039.sisu:3:9
+error[E0039]: `a` is already declared in this scope
+ --> E0039.sisu:1:16
   |
-2 |     let total = 1
-  |         ----- first declared here
-3 |     let total = 2
-  |         ^^^^^
+1 | fn add(a: i64, a: i64) -> i64 {
+  |        -       ^
+  |        |
+  |        first declared here
 
 sisuc: 1 error
 sisuc: for more on a code, run `sisuc --explain <code>`: E0039

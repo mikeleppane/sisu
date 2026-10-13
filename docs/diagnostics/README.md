@@ -47,7 +47,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0036](E0036.md) | error | `return` without a value |
 | [E0037](E0037.md) | error | `return` with a value in a function that returns none |
 | [E0038](E0038.md) | error | `break` or `continue` outside a loop |
-| [E0039](E0039.md) | error | name declared twice in one scope |
+| [E0039](E0039.md) | error | parameter name used twice |
 | [E0040](E0040.md) | error | integer literal too large for `u8` |
 | [E0041](E0041.md) | error | `self` outside a method |
 | [E0042](E0042.md) | error | `u8` that is negated |

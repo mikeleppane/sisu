@@ -107,10 +107,12 @@ struct Binding {
     ty: Option<Type>,
     kind: BindingKind,
     span: Span,
-    /// The `mut` of a `let mut`; `Some` only when `kind` is `Var`, which a redeclared name is
-    /// with or without one.
+    /// The `mut` of a `let mut`; `Some` only when `kind` is `Var`, which a repeated parameter
+    /// is without one.
     keyword: Option<Span>,
     reassigned: bool,
+    /// Whether the binding visible where it was declared, in any scope, is a `let mut`.
+    shadows_mut: bool,
 }
 
 /// Which part of a loop the code being checked is in.

@@ -44,6 +44,9 @@ fn main() {
         ys.len()
     }
     print(count)                      // 3: the block's array is released at its `}`
+    let xs = [1, 2]
+    let xs = xs.len()
+    print(xs)                         // 2: the second `xs` is the first one's length
     print(0xFF + 0b1 + 0o10)          // 264
     let _ = loud()
 }

@@ -557,8 +557,10 @@ pub(crate) enum LetField {
 
 /// Why a place cannot change; each `declared` is the name where it was declared.
 pub(crate) enum Immutable {
+    /// `redeclared` when the `let` shadows a `let mut`, in its scope or an outer one.
     Let {
         declared: Span,
+        redeclared: bool,
     },
     Param {
         declared: Span,
@@ -682,12 +684,22 @@ impl From<DiagnosticKind> for Diagnostic {
                 let what = if element { "an element of " } else { "" };
                 let d = Diagnostic::coded(code, at, format!("cannot assign to {what}`{name}`"));
                 match cause {
-                    Immutable::Let { declared } => if element {
+                    Immutable::Let {
+                        declared,
+                        redeclared,
+                    } => if element {
                         d
                     } else {
                         d.with_label("cannot assign twice")
                     }
-                    .with_secondary(declared, "declared with `let` here")
+                    .with_secondary(
+                        declared,
+                        if redeclared {
+                            format!("`{name}` is redeclared here with `let`")
+                        } else {
+                            "declared with `let` here".to_string()
+                        },
+                    )
                     .with_fix(insert_mut("declare it with `let mut`", declared)),
                     Immutable::Param { declared } => d
                         .with_secondary(declared, "declared as a parameter here")

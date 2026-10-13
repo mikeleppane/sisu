@@ -8,6 +8,7 @@ mod arrays;
 mod for_loops;
 mod patterns;
 mod places;
+mod shadowing;
 mod u8;
 
 fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
@@ -207,12 +208,10 @@ fn unknown_function() {
 }
 
 #[test]
-fn redeclare_in_block() {
-    diagnostic(
+fn shadow_in_block() {
+    contains(
         "fn main() {\n    let x = 1\n    let x = 2\n}",
-        Code::AlreadyDeclared,
-        (3, 9, "x"),
-        &[(2, 9)],
+        &["(let x#0 1)", "(let x#1 2)"],
     );
 }
 
@@ -223,6 +222,16 @@ fn repeated_param() {
         Code::AlreadyDeclared,
         (1, 14, "a"),
         &[(1, 6)],
+    );
+}
+
+/// A repeated parameter is poisoned: only the repetition is reported, not an assignment to it
+/// nor a use of it.
+#[test]
+fn repeated_param_is_poisoned() {
+    codes(
+        "fn f(a: i64, a: i64) {\n    a = 1\n    print(a + true)\n}\nfn main() {}",
+        &[(Code::AlreadyDeclared, (1, 14))],
     );
 }
 
@@ -309,28 +318,6 @@ fn duplicate_call_resolves_to_first() {
         "fn f(a: i64) -> i64 { a }\nfn f(b: bool) -> bool { b }\nfn main() {\n    print(f(1))\n}",
         &[(Code::DefinedTwice, (2, 4))],
     );
-}
-
-/// A redeclared name is poisoned: only the redeclaration is reported, not the uses after it nor
-/// the first binding.
-#[test]
-fn redeclared_name_is_poisoned() {
-    for (src, at) in [
-        ("let x = 1\n    let x = true\n    print(x + 1)", (3, 9)),
-        ("let x = 1\n    let mut x = 2\n    x = 3", (3, 13)),
-        ("let x = 1\n    let mut x = 2\n    print(x)", (3, 13)),
-        ("let mut x = 1\n    let x = 2\n    x = 3", (3, 9)),
-        ("let mut x = 1\n    let x = 2\n    print(x)", (3, 9)),
-        (
-            "let x = 1\n    let x: bool = true\n    let b: bool = x\n    print(b)",
-            (3, 9),
-        ),
-    ] {
-        codes(
-            &format!("fn main() {{\n    {src}\n}}"),
-            &[(Code::AlreadyDeclared, at)],
-        );
-    }
 }
 
 #[test]
@@ -2396,20 +2383,6 @@ fn none_beside_unit_or_never_needs_a_type() {
                 "fn g() {{}}\nfn f(c: bool) {{\n    {value}\n    print(1)\n}}\nfn main() {{}}"
             ),
             &[(Code::CannotInfer, (3, col))],
-        );
-    }
-}
-
-/// The `if let` and `while let` binding belongs to the scope of its block, so the block
-/// cannot declare the name again.
-#[test]
-fn unwrapping_block_cannot_redeclare_the_binding() {
-    for (head, x, col) in [("if let", 12, 24), ("while let", 15, 27)] {
-        diagnostic(
-            &format!("{T}fn f(n: T?) {{\n    {head} x = n {{ let x = 1 }}\n}}\nfn main() {{}}"),
-            Code::AlreadyDeclared,
-            (6, col, "x"),
-            &[(6, x)],
         );
     }
 }

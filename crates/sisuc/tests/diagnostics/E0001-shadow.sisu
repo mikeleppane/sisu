@@ -1,0 +1,5 @@
+fn main() {
+    let mut total = 0
+    let total = total
+    total += 1
+}
