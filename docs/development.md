@@ -137,7 +137,7 @@ red.
 CodSpeed measures Sisu against itself in simulation mode. The benchmarks are
 in `codspeed.yml`: the `fib`, `sieve` and `binary_trees` programs at reduced
 inputs, and the compiler on `bench/binary_trees` (`--check` and an `-O2`
-build) and on a generated 1000-function input.
+build) and on a generated 200-function input.
 `scripts/codspeed-prep.sh` builds them and checks every program's output
 first. The `CodSpeed` workflow runs on pushes to `main` and on pull requests
 that touch the code, the benchmarks or their tooling. It never turns a check

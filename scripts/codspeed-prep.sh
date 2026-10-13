@@ -9,7 +9,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 out=target/codspeed
-sections=1000
+sections=200
 
 cargo build --release --locked -p sisuc -p sisu-runtime
 rm -rf "$out"
