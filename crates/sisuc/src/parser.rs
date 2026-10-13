@@ -911,9 +911,11 @@ impl Parser<'_> {
         self.expect(&TokenKind::Eq)?;
         let init = self.child(base, &mut reach, Self::expr)?;
         self.depth = reach;
-        // Reported last, so that the fix leaves a `let` that parses.
+        // Reported last, and only where the statement ends, so that the fix leaves a `let` that
+        // parses: past a stray token, the block reports that token's own error.
         if let Some(keyword) = mutable
             && name.name == "_"
+            && (self.at(&TokenKind::Newline) || self.at(&TokenKind::RBrace))
         {
             return Err(DiagnosticKind::MutOnUnderscore {
                 at: name.span,
@@ -1919,10 +1921,28 @@ mod tests {
             assert_eq!(fixed, want);
             assert!(parsed(&fixed).diagnostics.is_empty(), "{fixed}");
         }
-        // A `let` that does not parse reports its own error first, and offers no fix.
+        // A `let` that does not parse, or does not end its line, reports its own error first and
+        // offers no fix: applying one would leave the same error behind.
         assert_eq!(
             parse_err("fn main() { let mut _ }"),
             (Code::Expected, 1, 23)
+        );
+        assert_eq!(
+            parse_err("fn main() { let mut _ = 1 2 }"),
+            (Code::Expected, 1, 27)
+        );
+        assert_eq!(
+            parse_err("fn main() { let mut _ = 1; }"),
+            (Code::Semicolon, 1, 26)
+        );
+        // The fixed source reports the same error, four columns (`mut `) earlier.
+        assert_eq!(
+            parse_err("fn main() { let _ = 1 2 }"),
+            (Code::Expected, 1, 23)
+        );
+        assert_eq!(
+            parse_err("fn main() { let _ = 1; }"),
+            (Code::Semicolon, 1, 22)
         );
     }
 

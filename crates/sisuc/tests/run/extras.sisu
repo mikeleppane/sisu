@@ -1,8 +1,14 @@
 // Milestone 4 extras. `_` patterns: `for _` runs the body without a name, and `let _ = e`
 // evaluates `e` and releases it at once; Valgrind proves the array from `make` is freed.
-fn make() -> [i64] {
-    print(7)                          // 7
-    [1, 2]
+// Recursive and called from a loop with a depth that changes, so that the `-O2` build keeps both
+// calls (as `copies.sisu` does): the array crosses a real call before `let _` releases it.
+// o2-calls: main make 2
+fn make(depth: i64) -> [i64] {
+    let mut xs = [1, 2]
+    if depth > 0 {
+        xs = make(depth - 1)
+    }
+    xs
 }
 
 fn main() {
@@ -15,8 +21,11 @@ fn main() {
         print(2)                      // 2, twice
     }
     print(20)                         // 20
-    let _ = make()                    // 7
+    for i in 0..1000 {
+        let _ = make(i % 2 + 1)
+        let _: [i64] = make(i % 2 + 2)
+    }
     print(30)                         // 30
-    let _: [i64] = make()             // 7
-    print(40)                         // 40
+    let _ = xs                        // a local read: `xs` is still live
+    print(xs[0] + xs[1])              // 11
 }
