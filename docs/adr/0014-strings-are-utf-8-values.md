@@ -7,10 +7,11 @@ A `string` is a sequence of bytes that is always valid UTF-8. Four rules
 follow from that.
 
 - **Valid UTF-8 is an invariant.** Every `string` is valid UTF-8, from its
-  creation until it is freed. Nothing at run time checks it in milestone 4,
-  because nothing can break it: the lexer validates literals, `char(n)`
-  validates its argument and panics when `n` is not a scalar value, and every
-  operation (`+`, `+=`, interpolation, `string(cs)`) joins valid pieces whole.
+  creation until it is freed. Nothing at run time reports it, because nothing
+  can break it; the runtime aborts if a compiler bug breaks it. The lexer
+  validates literals, `char(n)` validates its argument and panics when `n` is
+  not a scalar value, and every operation (`+`, `+=`, interpolation,
+  `string(cs)`) joins valid pieces whole.
   The first operation that turns bytes into a `string`, such as reading a
   line from standard input, must validate them and report failure instead of
   producing the string.

@@ -200,3 +200,6 @@ the counts, then a line naming the codes seen.
 - The same edit can appear in several diagnostics; for example, two
   assignments to one `let` each offer `let mut`. Apply it once.
 - A diagnostic's fixes are alternatives: apply at most one of them.
+- A fix that would leave the input with more syntax errors than it has is
+  never offered, so applying any one fix keeps the program as parseable as it
+  was.

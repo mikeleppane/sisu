@@ -50,9 +50,9 @@ These are adopted. Together they give Sisu a working imperative core.
   `string(cs)` builds a `string` from a `[char]`; each call builds a new value
 - copy-on-write arrays: `let b = a` shares until one of them is written, and a
   counted local's last read moves it instead of copying
-- `let _ = e` and `for _ in ...`, which drop a value without a name; shadowing in
-  the same scope; `0x`, `0b` and `0o` integer literals; block expressions such as
-  `let a = { ... }`; and top-level `const`
+- `let _ = e` and `for _ in ...`, which drop a value without a name;
+  shadowing in the same scope; `0x`, `0b` and `0o` integer literals; block
+  expressions such as `let a = { ... }`; and top-level `const`
 - error messages in the style of `rustc`, pointing at the code, each with a
   stable code that `sisuc --explain` describes, a JSON form, and fixes where
   the checker can offer one
@@ -61,8 +61,9 @@ These are adopted. Together they give Sisu a working imperative core.
 
 Before the rest of milestone 4, every diagnostic gets a stable code, one
 registry for its wording, a tested explanation and a JSON form for tools
-([ADR 0013](adr/0013-diagnostics-have-stable-codes.md)). Milestones keep their numbers. Milestone 4's strings are built on
-top of it, and every later milestone adds its codes the same way.
+([ADR 0013](adr/0013-diagnostics-have-stable-codes.md)). Milestones keep
+their numbers. Milestone 4's strings are built on top of it, and every later
+milestone adds its codes the same way.
 
 ### Decided in milestone 1
 
@@ -118,8 +119,9 @@ These came out of the milestone 2 design and are now part of its spec:
   field or an array element. `s = s + t` and `names[i] = names[i] + t` append
   alike, and a prepend (`"x" + s`) always copies. There is no builder type:
   `+=` on a string held once is the builder.
-- Interpolation, `"n = {n}"`, is the only way to build text from numbers, `bool`
-  and `char`. `string + char` and `string + i64` are errors that point to it.
+- Interpolation, `"n = {n}"`, is the only way to build text from numbers and
+  `bool`; a `char` also goes through `string([c])`. `string + char` and
+  `string + i64` are errors that point to interpolation.
 - `let mut` replaces `var` (ADR 0011); `let _` and `for _` drop a value
   without a name; same-scope shadowing is allowed; `0x`, `0b` and `0o`
   literals; block expressions; top-level `const`; and a list of reserved
@@ -345,7 +347,7 @@ settle before work starts.
 
 | Work | Needs | Unblocks |
 | --- | --- | --- |
-| Milestone 4: strings | None: its decisions are settled (ADR 0014, same-scope shadowing) | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
+| Milestone 4: strings | Done | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
 | Milestone 5: standard streams, arguments, environment | 4 | The word-count tool |
 | Milestone 6: floats | Decision: floats | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
 | Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
@@ -363,17 +365,15 @@ settle before work starts.
 
 ### What can start now
 
-With milestone 3 done, each of these tracks can run beside the others once
+With milestone 4 done, each of these tracks can run beside the others once
 the decisions it needs are settled:
 
 - **Decisions**: every entry in "Open decisions" is design work with no
   code. Settle the shared ones first, because several tracks build on each:
   values with fields, names and namespaces, argument labels, closure syntax,
   and the cycle part of equality and hashing.
-- **The language core**: milestone 4, then 5. Milestone 6 can be built in
-  parallel and land after 4.
-- **Enums**: milestone 7. It does not need strings, floats or I/O.
-  `match` on strings waits for milestone 4.
+- **The language core**: milestone 5. Milestone 6 can be built in parallel.
+- **Enums**: milestone 7. It does not need floats or I/O.
 - **Closures**: `weak` fields, then closures and function types from
   milestone 9. A function type names concrete types, such as
   `(i64) -> bool`, so closures need no generics.
@@ -385,7 +385,7 @@ the decisions it needs are settled:
   `let mut` replacing `var` (land it first: it touches every test program),
   reserved keywords, `const`, `_`, hexadecimal literals, block expressions
   and `todo`. All but `todo` landed in milestone 4, stage 1. `panic("msg")`
-  waits for milestone 4's strings, and `test` blocks for `panic`.
+  can use milestone 4's strings now, and `test` blocks wait for `panic`.
 - **Tooling**: everything under "Early tooling", and from "Later and stretch
   goals" parser error recovery, the lints whose features exist, linking with
   `lld`, and debug info.
@@ -396,7 +396,7 @@ milestone 4's strings keep one count, so the shared `@sisu_rc.retain` splits
 by kind. Land `weak` fields and strings one after the other, not as two
 rewrites of `codegen/rc.rs` at once.
 
-Once 4 and 7 are done, milestone 8 starts. Once 8 is done, milestone 12 and
+Once 7 is done, milestone 8 starts. Once 8 is done, milestone 12 and
 the Sisu prelude can start, iterator methods once closures are done too, and
 compiler-implemented interfaces once records are done too. The standard
 library comes after them, and concurrency last.
