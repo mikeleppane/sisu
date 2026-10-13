@@ -108,21 +108,18 @@ jobs:
           set -o pipefail
           scripts/coverage.sh "$BASE" | tee "$RUNNER_TEMP/coverage.txt"
       - id: summary
+        continue-on-error: true
         if: always()
         env:
           STEPS: ${{ toJSON(steps) }}
         run: |
+          rest=
           if [ "$(jq -r '.coverage.outcome' <<<"$STEPS")" = success ]; then
             # stdout may carry lines before the report; it starts at "Coverage:".
             report=$(sed -n '/^Coverage:/,$p' "$RUNNER_TEMP/coverage.txt")
             line=${report%%$'\n'*}
-            {
-              echo "$line"
-              echo
-              echo '```text'
-              echo "${report#"$line"}"
-              echo '```'
-            } >>"$GITHUB_STEP_SUMMARY"
+            rest=$(printf '%s\n' "${report#"$line"}" | sed '/./,$!d')
+            [ -n "$line" ] || line='Coverage unavailable: no report line.'
           else
             failed=coverage
             for id in checkout toolchain tools llvm valgrind coverage; do
@@ -132,9 +129,18 @@ jobs:
               fi
             done
             line="Coverage unavailable: the $failed step failed."
-            echo "$line" >>"$GITHUB_STEP_SUMMARY"
           fi
+          # Write the output first so the comment survives a failed summary write.
           echo "line=$line" >>"$GITHUB_OUTPUT"
+          {
+            echo "$line"
+            if [ -n "$rest" ]; then
+              echo
+              echo '```text'
+              echo "$rest"
+              echo '```'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
       - id: comment
         continue-on-error: true
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
@@ -144,6 +150,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          LINE=${LINE:-Coverage unavailable: the summary step failed.}
           body=$(printf '<!-- sisu-coverage -->\n%s' "$LINE")
           # --jq runs per page, so keep only the first id across pages.
           ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
