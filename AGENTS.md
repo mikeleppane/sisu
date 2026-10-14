@@ -27,14 +27,7 @@ Once per clone, run `scripts/install-llvm.sh`, `prek install`, `cargo install --
 
 ## Open-source facts: use GitHits, do not guess
 
-Before you use, change or explain anything about an open-source library, crate, tool or GitHub Action, check it with the GitHits MCP tools. Do not rely on memory, and do not rely on documentation that may describe a different version. This applies to APIs, behavior, configuration keys, CLI flags, versions, licenses and advisories. It covers `inkwell`, `llvm-sys`, LLVM itself, `cargo-nextest`, `cargo-deny`, `prek` and every GitHub Action in `.github/workflows/`.
-
-- Code, at the version in `Cargo.lock` or the pinned SHA: use `search`, `grep` and `read` to inspect source, symbols and docs. Read the source before you explain a behavior or debug an error that comes from a dependency.
-- Package intelligence: use `pkg_info`, `pkg_vulns`, `pkg_deps` and `pkg_changelog` before you add a dependency. Use `pkg_upgrade_review` before you bump one.
-- Examples: use `get_example` to find implementation patterns in other projects. Then check each API it uses against our pinned versions.
-- Cite what you used. Name any assumption you could not verify.
-
-If GitHits is unavailable, say so. Then check the source of the exact pinned version, for example in `~/.cargo/registry/src/`, before you continue.
+Check every fact about an open-source dependency, tool or GitHub Action (`inkwell`, `llvm-sys`, LLVM, `cargo-nextest`, `cargo-deny`, `prek`, `.github/workflows/`) with the GitHits tools, at the version in `Cargo.lock` or the pinned SHA; the `githits-mcp` skill says which tool to use. Cite what you used and name what you could not verify. If GitHits is unavailable, say so and read the pinned source in `~/.cargo/registry/src/`.
 
 ## Agent skills
 

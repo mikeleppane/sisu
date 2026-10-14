@@ -27,7 +27,7 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 ## Staging work across tasks
 
 - **No reachable crash lands in a stage.** A feature that a later task implements is rejected by the checker until then, never left to a codegen panic. An existing code reports the feature until it lands.
-- **A stage's later arms panic by name.** Inside one stage, when a task adds a syntax or `tir` node that a later task of the same stage handles, the later code's match arm is `panic!("<node> lands in Task N")`, and Task N removes it. The stage's last task leaves none behind.
+- **A stage's later arms panic by name.** Inside one stage, when a task adds a syntax or `tir` node that a later task of the same stage handles, the later code's match arm is `panic!("<node> lands in Task N")`, and Task N removes it. The stage's last task leaves none behind. A checker arm that an explanation program reaches is the exception: the explanation tests in `diagnostic/explanations.rs` check Fixed programs and certain fixes, so a panic there fails the suite. That arm returns a stopgap type instead, and Task N replaces it.
 - **A restriction on a type sits where the type is made.** Put it in the constructor every path goes through (as `optional_of` does), not where an annotation is read.
 
 ## Code
