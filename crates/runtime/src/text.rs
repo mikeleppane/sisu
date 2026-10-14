@@ -242,14 +242,42 @@ pub unsafe extern "C" fn sisu_utf8_encode(chars: *const u32, n: usize, out: *mut
     }
 }
 
+/// The end of the run of characters that starts at byte `from` of `text` and are all white
+/// space when `space` is true, or all not white space when it is false: the first byte where
+/// the run stops, or the end of `text`. White space is the Unicode `White_Space` property, as
+/// `char::is_whitespace` has it. An ASCII byte is classified without decoding, which is the
+/// common case. `from` is at most the length of `text` and on a character boundary.
+fn run_end(text: &str, from: usize, space: bool) -> usize {
+    let mut at = from;
+    while let Some(&byte) = text.as_bytes().get(at) {
+        let (white, width) = if byte.is_ascii() {
+            // The ASCII `White_Space` characters: tab, line feed, vertical tab, form feed,
+            // carriage return and space.
+            (matches!(byte, b'\t'..=b'\r' | b' '), 1)
+        } else {
+            let c = text[at..]
+                .chars()
+                .next()
+                .expect("`at` should be a character boundary before the end of `text`");
+            (c.is_whitespace(), c.len_utf8())
+        };
+        if white != space {
+            break;
+        }
+        at += width;
+    }
+    at
+}
+
 /// How many words the `len` bytes at `bytes` hold, which is the length of the `[string]` that
-/// `words()` returns. A word is a run of characters that are not `White_Space`. This validates
-/// the whole buffer once; `sisu_word_next` then trusts it.
+/// `words()` returns, and what `s.words().len()` compiles to. A word is a run of characters
+/// that are not white space, as `run_end` defines it.
 ///
 /// # Safety
 ///
-/// `bytes` is not null and `len` bytes at it are readable. They are valid UTF-8; if they are
-/// not, the program aborts.
+/// `bytes` is not null and `len` bytes at it are readable and valid UTF-8. They are a string's
+/// bytes, which always are (ADR 0014), so only a debug build checks them, here: once per
+/// `words()`, where a check in `sisu_word_next` would rescan the string for every word.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
@@ -257,18 +285,30 @@ pub unsafe extern "C" fn sisu_utf8_encode(chars: *const u32, n: usize, out: *mut
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sisu_words_count(bytes: *const u8, len: usize) -> usize {
     // SAFETY: the caller promises `len` readable bytes at `bytes`.
-    unsafe { utf8(bytes, len) }.split_whitespace().count()
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+    debug_assert!(
+        core::str::from_utf8(bytes).is_ok(),
+        "a string's bytes should be valid UTF-8"
+    );
+    // SAFETY: the caller promises the bytes are valid UTF-8.
+    let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+    let (mut count, mut at) = (0, run_end(text, 0, true));
+    while at < text.len() {
+        count += 1;
+        at = run_end(text, run_end(text, at, false), true);
+    }
+    count
 }
 
 /// The first word at or after byte `from` of the `len` bytes at `bytes`: writes its start to
-/// `start` and returns its end. When no word is left, both are `len`. It decodes only from
+/// `start` and returns its end. When no word is left, both are `len`. It reads only from
 /// `from` to the end of the word, so `words()` does linear work in all.
 ///
 /// # Safety
 ///
-/// `bytes` is not null and `len` bytes at it are readable and valid UTF-8, which generated
-/// code knows by calling `sisu_words_count` on them first; this does not check. `from` is at
-/// most `len` and on a character boundary, as 0 and the end of an earlier word are. `start` is
+/// `bytes` is not null and `len` bytes at it are readable and valid UTF-8, as a string's bytes
+/// always are (ADR 0014); this does not check them. `from` is at most
+/// `len` and on a character boundary, as 0 and the end of an earlier word are. `start` is
 /// writable.
 #[expect(
     unsafe_code,
@@ -281,16 +321,12 @@ pub unsafe extern "C" fn sisu_word_next(
     from: usize,
     start: *mut usize,
 ) -> usize {
-    // SAFETY: the caller promises `len` readable bytes at `bytes`, valid UTF-8 as
-    // `sisu_words_count` checked.
+    // SAFETY: the caller promises `len` readable bytes of valid UTF-8 at `bytes`.
     let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len)) };
-    let rest = &text[from..];
-    let skipped = rest.len() - rest.trim_start().len();
-    let word = &rest[skipped..];
-    let word_len = word.find(char::is_whitespace).unwrap_or(word.len());
+    let first = run_end(text, from, true);
     // SAFETY: the caller promises `start` is writable.
-    unsafe { start.write(from + skipped) };
-    from + skipped + word_len
+    unsafe { start.write(first) };
+    run_end(text, first, false)
 }
 
 /// Prints the `len` bytes at `bytes` and a newline to standard output. Sisu's `print` calls
@@ -507,6 +543,24 @@ mod tests {
         ];
         for (text, want) in rows {
             assert_eq!(words(text), want, "{text:?}");
+        }
+    }
+
+    /// Every scalar value splits words exactly when `char::is_whitespace` holds for it, which
+    /// `split_whitespace` uses: the ASCII fast path and the decoding path agree with the
+    /// standard library. Each value sits between two words, then in a run of itself.
+    #[test]
+    fn words_agree_with_split_whitespace_for_every_char() {
+        let mut text = String::new();
+        for c in char::MIN..=char::MAX {
+            for repeat in [1, 3] {
+                text.clear();
+                text.push('a');
+                text.extend(std::iter::repeat_n(c, repeat));
+                text.push('b');
+                let want: Vec<&str> = text.split_whitespace().collect();
+                assert_eq!(words(&text), want, "{c:?} x{repeat}");
+            }
         }
     }
 

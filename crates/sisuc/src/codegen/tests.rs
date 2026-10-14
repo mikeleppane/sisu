@@ -856,6 +856,28 @@ fn words_declarations_carry_memory_effects() {
     assert!(!plain.contains("sisu_word"), "{plain}");
 }
 
+/// `s.words().len()` is one `sisu_words_count` call: no `[string]` is built, so no
+/// `sisu_word_next` call fills one. A `[string]` kept in a local is still built, word by word.
+#[test]
+fn len_of_words_only_counts() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn main() {\n    let n = (\"a \" + \"b\").words().len()\n}",
+    )
+    .print_to_string()
+    .to_string();
+    assert!(ir.contains("call i64 @sisu_words_count("), "{ir}");
+    assert!(!ir.contains("sisu_word_next"), "{ir}");
+    let kept = compiled(
+        &context,
+        "fn main() {\n    let ws = (\"a \" + \"b\").words()\n    let n = ws.len()\n}",
+    )
+    .print_to_string()
+    .to_string();
+    assert!(kept.contains("call i64 @sisu_word_next("), "{kept}");
+}
+
 /// `sisu_read_line` never unwinds, and carries no `memory` attribute: the call overwrites the
 /// line an earlier call returned, so LLVM must not move a read of those bytes past it. It may
 /// exit (a failed read panics), so it is not `willreturn` either.

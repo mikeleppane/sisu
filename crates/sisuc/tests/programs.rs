@@ -726,9 +726,10 @@ fn read_line_refills_its_buffer() {
 
 /// A line of 2 MiB holds a million words, each found from where the last one ended. A split
 /// that rescanned from the start of the line would take far longer than the test's timeout.
+/// The `[string]` is kept in a local, so it is built: `line.words().len()` would only count.
 #[test]
 fn words_is_linear() {
-    let source = "fn main() {\n    if let line = read_line() {\n        print(line.words().len())\n    }\n}\n";
+    let source = "fn main() {\n    if let line = read_line() {\n        let ws = line.words()\n        print(ws.len())\n    }\n}\n";
     let input = "a ".repeat(1 << 20).into_bytes();
     for o2 in [false, true] {
         let exe = compile_tmp("words_linear", source, o2);
