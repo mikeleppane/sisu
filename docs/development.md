@@ -182,13 +182,21 @@ this run left such a file, and otherwise with cargo-fuzz's status. Files
 from an earlier run do not count. `--tmin` writes a `minimized-from-` file
 to the same directory.
 
-Two limits of fork mode:
+Three limits of fork mode:
 
 - The log keeps no detail of a timeout or an out-of-memory failure, because
   fork mode drops the child's report. The input is still saved, and
   `scripts/fuzz.sh --replay <input>` reproduces it.
+- A crash on a corpus input, during fork mode's first pass over the corpus,
+  leaves no panic message in the log: that pass discards the children's
+  output. So after the run the script replays each new `crash-` input once,
+  for at most 2 minutes, and appends its output, with the panic message and
+  backtrace, to `fuzz.log`. The replay changes neither the exit status nor
+  which inputs count.
 - A stack overflow leaves a `crash-` file only on a best-effort basis:
-  libFuzzer's crash handler is not async-signal-safe.
+  libFuzzer's crash handler is not async-signal-safe. It dies by a fatal
+  signal, with no panic message and no Rust backtrace. A crash with no panic
+  message is a stack overflow or another fatal signal; replay it to confirm.
 
 ### The nightly job
 
@@ -216,7 +224,8 @@ ignored the first signal. After setup, only the fuzz step decides whether
 the job fails.
 
 The summary gives the seconds fuzzed, the executions in processed jobs and
-each failing input with its replay command.
+each failing input with its replay command. Its paths are those of the CI
+run's checkout.
 
 GitHub disables a `schedule` trigger in a public repository after 60 days
 without activity in it. That stop sends no failure email: the only sign is a
@@ -225,7 +234,12 @@ missing nightly run. Re-enable the workflow on the Actions tab.
 ### Fix a fuzz failure
 
 Download `fuzz-minimized`, or `fuzz-failure` when minimizing failed, and
-replay the input with `scripts/fuzz.sh --replay <input>`. Then:
+replay the input with `scripts/fuzz.sh --replay <input>`. The artifacts
+unpack without the `fuzz/artifacts/` prefix: `fuzz-failure` holds
+`front_end/crash-…` next to `fuzz.log`, and `fuzz-minimized` holds a bare
+`minimized-from-…`. Pass the downloaded file by its own path; `--replay`
+resolves it from your directory before it moves to the repository root.
+Then:
 
 - Fix the root cause in the compiler, never in the fuzz entry point.
 - If the input now reports a diagnostic, add it as a

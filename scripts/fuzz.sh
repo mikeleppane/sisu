@@ -6,7 +6,8 @@
 #   scripts/fuzz.sh --tmin <input>     minimize one input into fuzz/artifacts/front_end/
 #   scripts/fuzz.sh --cmin             minimize fuzz/corpus/front_end in place
 # A fuzz run writes fuzz/artifacts/fuzz.log, run.txt and summary.md, and failing inputs
-# land in fuzz/artifacts/front_end/. It exits 1 when it produced a crash-, timeout- or
+# land in fuzz/artifacts/front_end/. Each new crash- input is then replayed once, and its
+# output appended to fuzz.log. The run exits 1 when it produced a crash-, timeout- or
 # oom- artifact, and otherwise with cargo-fuzz's status.
 set -euo pipefail
 
@@ -17,6 +18,8 @@ esac
 cd "$(git rev-parse --show-toplevel)"
 export RUST_BACKTRACE=1
 limits=(-max_len=16384 -timeout=60 -rss_limit_mb=2048)
+# Seconds for the replay of one crash, past libFuzzer's own -timeout.
+replay_seconds=120
 corpus=fuzz/corpus/front_end
 found=fuzz/artifacts/front_end
 
@@ -88,6 +91,22 @@ while IFS= read -r -d '' f; do
     esac
 done < <(find "$found" -type f -newer "$marker" -print0 | sort -z)
 
+# Fork mode's first pass over the corpus sends the children's output to /dev/null, so a
+# crash on a restored input leaves no panic message in the log. A plain replay prints it;
+# its own status changes neither the run's status nor which inputs count.
+for failure in "${failures[@]}"; do
+    if [[ ${failure%% *} != crash ]]; then continue; fi
+    path=${failure#* }
+    {
+        echo
+        echo "==> scripts/fuzz.sh: replay of ${path}"
+        replay=0
+        timeout -k 10 "$replay_seconds" \
+            cargo fuzz run --sanitizer none front_end "$path" -- "${limits[@]}" || replay=$?
+        echo "==> scripts/fuzz.sh: the replay exited ${replay}"
+    } >>"$log" 2>&1 || log_complete=false
+done
+
 # Fork mode interleaves the children's output, whose lines start `#<n>\t`; the parent's
 # status lines start `#<n>: cov:`, and the last one holds the total.
 executions=$(awk '/^#[0-9]+: cov:/ { n = substr($1, 2, length($1) - 2) } END { print (n == "" ? "unknown" : n) }' "$log")
@@ -108,12 +127,17 @@ executions=$(awk '/^#[0-9]+: cov:/ { n = substr($1, 2, length($1) - 2) } END { p
         echo "The fuzzer exited ${status} with no failing input; see \`fuzz.log\`."
     elif ((${#failures[@]} == 0)); then
         echo "None."
+    else
+        echo "Paths are the run's own. Replay a downloaded input by its own path: \`--replay\` resolves it from your directory."
+        echo
     fi
     for failure in "${failures[@]}"; do
         class=${failure%% *}
         path=${failure#* }
         echo "- **${class}**: \`${path}\`. Replay: \`scripts/fuzz.sh --replay ${path}\`."
-        if [[ $class != crash ]]; then
+        if [[ $class == crash ]]; then
+            echo "  Its replay is at the end of \`fuzz.log\`. A crash whose replay shows no panic message is a stack overflow or another fatal signal."
+        else
             echo "  No Rust backtrace: without a sanitizer, libFuzzer prints no native stack for this class."
         fi
     done
