@@ -24,13 +24,16 @@ same reason.
 
 ## Considered options
 
-- **Minimal built-ins (Go)**: Go has about 15 built-ins and no I/O functions
-  at all. The prelude stays small, but every program that prints must import
-  a package first. Sisu's first programs read and write text, so the cost
+- **Minimal built-ins (Go)**: Go has about 15 built-ins. Only `print` and
+  `println` do I/O, they write to standard error, and they are meant for
+  debugging. General-purpose I/O needs a package. The prelude stays small,
+  but every program that prints to standard output must import a package
+  first. Sisu's first programs read and write text, so the cost
   would fall on nearly every program.
 - **The whole library (Swift)**: Swift exposes its whole standard library in
-  every file. Nothing needs an import, but every library name is taken, and a
-  reader cannot tell which module a name came from. Python's 70 built-ins sit
+  every file. Nothing needs an import, but a reader must know the whole
+  library to read any name in it, and cannot tell which module a name came
+  from. Python's 70 built-ins sit
   between the two ends and have the same problem on a smaller scale.
 - **A prelude that user code can shadow (Rust)**: Rust's prelude holds types
   and traits but no I/O functions, and user code may define a name that hides
