@@ -117,7 +117,10 @@ mod tests {
         assert!(out.contains("\x1b["), "{out}");
         assert!(out.matches("E0001").count() >= 2, "{out}");
         let last = out.lines().last().expect("the report should not be empty");
-        serde_json::from_str::<serde_json::Value>(last).expect("the last line should be JSON");
+        let summary: serde_json::Value =
+            serde_json::from_str(last).expect("the last line should be JSON");
+        // Only the JSON pass counts errors, so this fails if it is given no diagnostics.
+        assert_eq!(summary["errors"], 1, "{out}");
     }
 
     #[test]
