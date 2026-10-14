@@ -255,10 +255,10 @@ fn run_end(text: &str, from: usize, space: bool) -> usize {
             // carriage return and space.
             (matches!(byte, b'\t'..=b'\r' | b' '), 1)
         } else {
-            let c = text[at..]
-                .chars()
-                .next()
-                .expect("`at` should be a character boundary before the end of `text`");
+            let c = text[at..].chars().next().expect(
+                "`at` should be a character boundary before the end of `text`: `from` is \
+                     one, and each step moves past a whole character",
+            );
             (c.is_whitespace(), c.len_utf8())
         };
         if white != space {
@@ -276,8 +276,9 @@ fn run_end(text: &str, from: usize, space: bool) -> usize {
 /// # Safety
 ///
 /// `bytes` is not null and `len` bytes at it are readable and valid UTF-8. They are a string's
-/// bytes, which always are (ADR 0014), so only a debug build checks them, here: once per
-/// `words()`, where a check in `sisu_word_next` would rescan the string for every word.
+/// bytes, which always are (ADR 0014), so only a debug build checks them (ADR 0016), here:
+/// once per `words()` or `s.words().len()`, where a check in `sisu_word_next` would rescan
+/// the string for every word.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
@@ -307,7 +308,7 @@ pub unsafe extern "C" fn sisu_words_count(bytes: *const u8, len: usize) -> usize
 /// # Safety
 ///
 /// `bytes` is not null and `len` bytes at it are readable and valid UTF-8, as a string's bytes
-/// always are (ADR 0014); this does not check them. `from` is at most
+/// always are (ADR 0014); this does not check them (ADR 0016). `from` is at most
 /// `len` and on a character boundary, as 0 and the end of an earlier word are. `start` is
 /// writable.
 #[expect(

@@ -129,9 +129,10 @@ times wc yet: rerun `scripts/bench.sh` on an idle machine to add one.
 - **The words are counted, not built.** Codegen compiles
   `line.words().len()` to one `sisu_words_count` call, because the
   `[string]` would be released as soon as its length is read. C, Rust and
-  Java count the same way. Go's `strings.Fields` and Python's `split()`
-  build the list of words, and so does Sisu when a program keeps the
-  `[string]` in a local. That copies each word into a new string.
+  Java count the same way. Go's `strings.Fields` builds a slice of
+  substrings that share the line's bytes. Python's `split()`, and Sisu when
+  a program keeps the `[string]` in a local, copy each word into a new
+  string.
 - **Finding white space is most of what is left.** The word scanner,
   `run_end`, takes 48% of the instructions. It tests an ASCII byte directly
   and decodes only the other characters, to test them against Unicode white
@@ -139,7 +140,8 @@ times wc yet: rerun `scripts/bench.sh` on an idle machine to add one.
 - **The line is still copied and checked.** `read_line` repairs the line's
   UTF-8 and copies it into a new string. With `malloc` and `free`, that is
   most of the other half. `sisu_words_count` trusts the string's UTF-8,
-  which ADR 0014 guarantees, and checks it only in a debug build.
+  which ADR 0014 guarantees, and checks it only in a debug build
+  (ADR 0016).
 
 ## Running them
 
