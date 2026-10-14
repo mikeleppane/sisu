@@ -73,7 +73,9 @@ driver runs it after the checker finds no errors.
 [inkwell](https://github.com/TheDan64/inkwell) bindings. Each Sisu function
 becomes an LLVM function named `sisu.<name>`, and each method one named
 `sisu.<Class>.<method>`. Codegen also emits a `main` with the C signature,
-which the C startup code calls and which runs `sisu.main`. Integer overflow
+which the C startup code calls and which runs `sisu.main`, passing it `args`,
+a `[string]` built from `argc` and `argv`, when `sisu.main` takes that
+parameter. Integer overflow
 and division by zero call `sisu_panic` instead of wrapping
 ([ADR 0003](adr/0003-arithmetic-panics.md)). A `Panic` node, which `panic`
 and `todo` lower to, calls `sisu_panic_message` with its location and
@@ -124,7 +126,9 @@ to panic and to allocate and free objects, arrays and strings:
 `sisu_utf8_count`, `sisu_utf8_decode`, `sisu_utf8_len` and `sisu_utf8_encode`,
 which `chars()` and `string(cs)` call, and `sisu_words_count` and
 `sisu_word_next`, which `words()` calls. `stdin.rs` holds `sisu_read_line`,
-which `read_line()` calls. `print(x)` and `"{x}"` share one formatter per
+which `read_line()` calls. `args.rs` holds `sisu_args_len` and `sisu_arg`,
+which the generated `main` calls to build `args` when `sisu.main` takes it.
+`print(x)` and `"{x}"` share one formatter per
 type. The `sisu_print_*` functions write into a buffer that the runtime owns,
 and `main` calls `sisu_flush_stdout` before it returns. The `sisu_eprint_*`
 functions write each value at once, in one write to standard error. The
