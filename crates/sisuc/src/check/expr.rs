@@ -73,6 +73,7 @@ impl Checker {
             ExprKind::NoneLit => self.none(e.span, expected),
             ExprKind::Name(name) => self.name(e.span, *name),
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
+            ExprKind::Todo(args) => self.todo(e.span, args),
             ExprKind::SelfValue => {
                 let Some(class) = self.self_class else {
                     self.diagnostics

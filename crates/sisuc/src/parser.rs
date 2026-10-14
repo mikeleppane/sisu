@@ -218,6 +218,10 @@ impl<'a> Parser<'a> {
                 word,
                 at: found.span,
             },
+            TokenKind::Todo => DiagnosticKind::ReservedWord {
+                word: "todo",
+                at: found.span,
+            },
             _ => DiagnosticKind::Expected {
                 what: what.to_string(),
                 found: found.kind.describe(),
@@ -1328,6 +1332,7 @@ impl<'a> Parser<'a> {
                 }
                 ExprKind::Name(name)
             }
+            TokenKind::Todo => return self.todo(),
             TokenKind::LParen => {
                 self.bump();
                 let inner = self.expr()?;
@@ -1363,6 +1368,37 @@ impl<'a> Parser<'a> {
             kind,
             span: token.span,
         })
+    }
+
+    /// `todo` or `todo(args)`. Rust's `todo!` and `todo!(...)`, and an empty `todo()`, are
+    /// reported with the fix that deletes what is extra.
+    fn todo(&mut self) -> Result<Expr, Diagnostic> {
+        let keyword = self.bump().span;
+        let (tokens, pos) = (self.tokens, self.pos);
+        let next = |n: usize| &tokens[(pos + n).min(tokens.len() - 1)];
+        let (at, delete) = match (&next(0).kind, &next(1).kind, &next(2).kind) {
+            (TokenKind::Bang, TokenKind::LParen, TokenKind::RParen) => {
+                (next(0).span, next(0).span.to(next(2).span))
+            }
+            (TokenKind::Bang, ..) => (next(0).span, next(0).span),
+            (TokenKind::LParen, TokenKind::RParen, _) => {
+                (next(0).span, next(0).span.to(next(1).span))
+            }
+            (TokenKind::LParen, ..) => {
+                let (args, close) = self.args()?;
+                return Ok(Expr {
+                    kind: ExprKind::Todo(args),
+                    span: keyword.to(close),
+                });
+            }
+            _ => {
+                return Ok(Expr {
+                    kind: ExprKind::Todo(Vec::new()),
+                    span: keyword,
+                });
+            }
+        };
+        Err(DiagnosticKind::TodoForm { at, delete }.into())
     }
 
     /// The rest of a string literal with interpolations, after its `StrHead` at `start` with the
@@ -2570,11 +2606,48 @@ mod tests {
         for (src, line, col) in [
             ("fn main() {\n    let match = 1\n}", 2, 9),
             ("class C {\n    enum: i64\n}", 2, 5),
-            ("fn main() {\n    print(todo)\n}", 2, 11),
+            ("fn main() {\n    print(echo)\n}", 2, 11),
+            ("fn main() {\n    let todo = 1\n}", 2, 9),
+            ("fn todo() {}", 1, 4),
+            ("class todo {}", 1, 7),
             ("fn main() {\n    print(p.type)\n}", 2, 13),
             ("import x", 1, 1),
         ] {
             assert_eq!(parse_err(src), (Code::ReservedWord, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn todo_forms() {
+        for (expr, expected) in [
+            ("todo", "(todo)"),
+            ("todo(\"why\")", "(todo \"why\")"),
+            ("todo(\"a\", \"b\")", "(todo \"a\" \"b\")"),
+        ] {
+            let src = format!("fn main() {{\n    {expr}\n}}");
+            assert_eq!(body(&src), format!("(block {expected})"), "{src}");
+        }
+        // A `todo` that ends the file has fewer than three tokens after it.
+        parse_ok("fn main() {}\nconst X = todo");
+        // The arguments are a call's, with its errors.
+        assert_eq!(
+            parse_err("fn main() {\n    todo(1 2)\n}"),
+            (Code::Expected, 2, 12)
+        );
+    }
+
+    /// Each other way of writing `todo`: the error's position, and the line its fix makes.
+    #[test]
+    fn todo_misspelled() {
+        for (line, col, after) in [
+            ("todo()", 9, "todo"),
+            ("todo!", 9, "todo"),
+            ("todo!(\"why\")", 9, "todo(\"why\")"),
+            ("todo!()", 9, "todo"),
+        ] {
+            let src = format!("fn main() {{\n    {line}\n}}");
+            assert_eq!(parse_err(&src), (Code::TodoForm, 2, col), "{src}");
+            assert_eq!(fixed(&src), format!("fn main() {{\n    {after}\n}}"));
         }
     }
 

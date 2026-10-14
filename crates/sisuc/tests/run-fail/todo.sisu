@@ -1,0 +1,8 @@
+fn parse() -> i64 {
+    todo
+}
+
+fn main() {
+    print(1) // 1
+    print(parse())
+}

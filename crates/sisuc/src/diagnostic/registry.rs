@@ -41,6 +41,7 @@ codes! {
     AssignToImmutable = "E0001",
     UnreachableCode = "W0001",
     NeverReassigned = "W0002",
+    TodoLeft = "W0003",
     LeadingBinaryMinus = "E0002",
     UnclosedBracket = "E0003",
     BraceOnNewLine = "E0004",
@@ -138,6 +139,7 @@ codes! {
     EmptyInterpolation = "E0096",
     CommentInInterpolation = "E0097",
     CannotInterpolate = "E0098",
+    TodoForm = "E0099",
 }
 
 impl Code {
@@ -534,6 +536,11 @@ pub(crate) enum DiagnosticKind {
         help: Option<InterpolateHelp>,
         at: Span,
     },
+    /// The `todo` at `at`, which panics when it runs.
+    TodoLeft { at: Span },
+    /// A `todo` written as Rust's `todo!` or as `todo()`: `at` is the first extra token, and
+    /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`.
+    TodoForm { at: Span, delete: Span },
 }
 
 /// What a literal that is not closed is the literal of.
@@ -840,6 +847,8 @@ impl DiagnosticKind {
             DiagnosticKind::EmptyInterpolation { .. } => Code::EmptyInterpolation,
             DiagnosticKind::CommentInInterpolation { .. } => Code::CommentInInterpolation,
             DiagnosticKind::CannotInterpolate { .. } => Code::CannotInterpolate,
+            DiagnosticKind::TodoLeft { .. } => Code::TodoLeft,
+            DiagnosticKind::TodoForm { .. } => Code::TodoForm,
         }
     }
 }
@@ -1778,6 +1787,22 @@ impl From<DiagnosticKind> for Diagnostic {
                     None => d,
                 }
             }
+            DiagnosticKind::TodoLeft { at } => {
+                Diagnostic::coded(code, at, "`todo` panics when it runs")
+            }
+            DiagnosticKind::TodoForm { at, delete } => Diagnostic::coded(
+                code,
+                at,
+                "`todo` takes one message in parentheses, or none",
+            )
+            .with_fix(Fix {
+                message: "remove it".to_string(),
+                certain: true,
+                edits: vec![Edit {
+                    span: delete,
+                    replacement: String::new(),
+                }],
+            }),
         }
     }
 }

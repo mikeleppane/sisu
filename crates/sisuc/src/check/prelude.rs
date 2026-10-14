@@ -1,6 +1,8 @@
 //! The prelude: the functions every file sees without an import, `print` and `panic`. No
-//! top-level function, class or constant takes one of their names.
+//! top-level function, class or constant takes one of their names. `todo`, a keyword that
+//! panics as `panic` does, is checked here too.
 
+use super::array::pair;
 use super::expr::typed;
 use super::{Checked, Checker, Poisoned, payload, type_of};
 use crate::ast;
@@ -82,6 +84,46 @@ impl Checker {
         };
         let message = self.message(&arg.value);
         // A message that failed is the failure of this rule, so the call is `Error`.
+        let failed = labeled || message.is_err();
+        let kind = message
+            .ok()
+            .filter(|_| !labeled)
+            .map(|message| tir::ExprKind::Panic(Box::new(message)));
+        typed(span, Type::Never, failed, kind)
+    }
+
+    /// `todo` or `todo(message)`, which panics as `panic` does, with Rust's `todo!` messages.
+    /// It always gets the warning that it is left in the program.
+    pub(super) fn todo(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
+        self.report(DiagnosticKind::TodoLeft {
+            at: Span::new(span.start, span.start + "todo".len()),
+        });
+        let labeled = self.labels(args);
+        let text = |text: &str| tir::Expr {
+            kind: tir::ExprKind::Str(text.to_string()),
+            ty: Type::String,
+            span,
+        };
+        let message = match args {
+            [] => Ok(text("not yet implemented")),
+            [arg] => self.message(&arg.value).map(|message| {
+                let operands = vec![text("not yet implemented: "), message];
+                self.spilled(span, Type::String, operands, |operands| {
+                    let (lhs, rhs) = pair(operands);
+                    tir::ExprKind::Concat { lhs, rhs }
+                })
+            }),
+            _ => {
+                self.report(DiagnosticKind::ArgumentCount {
+                    name: "todo".to_string(),
+                    want: 1,
+                    found: args.len(),
+                    at: span,
+                });
+                self.stray(args);
+                return Err(Poisoned::error());
+            }
+        };
         let failed = labeled || message.is_err();
         let kind = message
             .ok()

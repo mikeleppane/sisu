@@ -355,6 +355,7 @@ fn single_term(e: &ast::Expr) -> bool {
         | ExprKind::SelfValue
         | ExprKind::NoneLit
         | ExprKind::Call { .. }
+        | ExprKind::Todo(_)
         | ExprKind::Field { .. }
         | ExprKind::MethodCall { .. }
         | ExprKind::Index { .. }
