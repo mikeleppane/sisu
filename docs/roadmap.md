@@ -522,6 +522,17 @@ Each is small once its milestone's main feature exists:
   prelude. What depends on a value's layout, such as an array's length,
   element access and allocation, stays built in. Milestone 11 turns the
   prelude into the standard library's first module.
+- Milestone 8: two data-oriented changes wait for generics (agreed
+  2026-10-14). Niches: `Option<T>` stores `None` as a value `T` can never
+  hold, so `char?` becomes an `i32` with `0x110000` for `None` (8 bytes to
+  4) and `bool?` an `i8` with 2. One rule covers every `Option`-shaped
+  enum; `char?` gets no special case before it, since milestone 7's enums
+  take no niche. `i64?` and `u8?` have no spare value and keep `{ i1, T }`.
+  A `None` sentinel never reaches the runtime: printing decodes it first.
+  Interned types: `tir::Type` becomes a `TypeId(u32)` handle into one
+  table, as `Symbol` is for names, so copying, comparing and hashing a type
+  cost an integer operation. Monomorphization multiplies the types the
+  checker builds; interning before it would design `TypeId` twice.
 - Milestone 9: `for` over any iterator. Milestone 3's `for` lowers to a loop
   over an array or a range. An iterator `for` lowers to a loop that calls
   `next()` until it returns `None`, before the last-use pass runs, so a
