@@ -48,6 +48,9 @@ These are adopted. Together they give Sisu a working imperative core.
   field or an array element
 - text as arrays: `s.chars()` gives a `[char]`, `s.bytes()` a `[u8]`, and
   `string(cs)` builds a `string` from a `[char]`; each call builds a new value
+- `panic("why")`, which stops the program with a message, and the keyword
+  `todo`, which does the same and warns at compile time; either may stand on
+  the right of `??`, as in `name ?? panic("no name")`
 - copy-on-write arrays: `let b = a` shares until one of them is written, and a
   counted local's last read moves it instead of copying
 - `let _ = e` and `for _ in ...`, which drop a value without a name;

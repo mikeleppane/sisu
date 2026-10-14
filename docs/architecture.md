@@ -55,7 +55,9 @@ become `if let`, and `x += 1` becomes `x = x + 1`. A `+=` on a string field
 or element, or an assignment that adds to its own field or element place,
 becomes an `Append`. A local keeps `Assign` with `Concat` and appends in place
 through `concat`'s count-1 path. It folds each top-level `const` to a literal
-and replaces every use of its name with that literal. It reports every error
+and replaces every use of its name with that literal. A call to a prelude
+function such as `print` or `panic` has its own rule, and `panic(msg)` and
+`todo` become a `Panic` node of type `never`. It reports every error
 in one run: an expression that already failed gets the poison type, so one
 mistake produces one diagnostic. A program with no errors comes out as the
 typed tree, `tir`, which is all that codegen reads.
@@ -111,7 +113,8 @@ removed whether or not the link succeeds.
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
 into every program. Generated code calls it to print values, to panic and to
 allocate and free objects, arrays and strings: `sisu_print_int`,
-`sisu_print_bool`, `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`,
+`sisu_print_bool`, `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_message`,
+`sisu_panic_bounds`,
 `sisu_alloc`, `sisu_realloc` and `sisu_free`. Text lives in `text.rs`:
 `sisu_print_char`, `sisu_print_str`, `sisu_str_compare`, and `sisu_write_int`,
 `sisu_write_bool` and `sisu_write_char`, which interpolation calls, and
