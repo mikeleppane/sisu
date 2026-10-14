@@ -49,6 +49,7 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 - **Wording lives in the registry.** No call site writes diagnostic text.
 - **A recovery or fix change is probed for cascades.** Fixing only the first error must leave every other diagnostic in place ([ADR 0013](docs/adr/0013-diagnostics-have-stable-codes.md)). Probe skipped text inside, before and after an item; a broken item header; a redeclared name; and a failed condition before a branch that returns. `each_certain_fix_removes_exactly_its_diagnostic` checks the fixtures; the reviewer probes the inputs no fixture covers.
 - **The primary span covers the offending code.** For "end of line" and "end of file", it is an empty span at that point. `Diagnostic::render` asserts in debug builds that every span sits on character boundaries and does not end with a line break.
+- **A span comes from its token or node.** Carry the keyword's or operand's own span into the AST rather than computing one as `span.start + n` from a wider span: a parenthesized expression's span starts at `(`, and a comment can put multi-byte characters before the token. Stepping one byte past a known ASCII byte, such as a `"`, is fine.
 
 ## Files the compiler writes
 

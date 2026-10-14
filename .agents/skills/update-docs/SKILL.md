@@ -84,9 +84,12 @@ gitignored, and the docs do not link to it.
 - Keep the README short. A new capability is one bullet, not a section.
 - The diagram: edit `docs/architecture/sisu-pipeline.json`, then regenerate
   both SVGs as "Updating the diagram" in `docs/architecture.md` describes.
-  The `archify` skill, when installed, ships the command-line tool. Never
-  edit the SVGs by hand. If you cannot run archify, update the JSON and
-  report that the SVGs are stale.
+  The `archify` skill ships the command-line tool at
+  `~/.agents/skills/archify/bin/archify.mjs`. Chrome comes from Playwright's
+  cache: `ARCHIFY_CHROME=$(printf '%s\n' ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome | tail -1)`.
+  Run `finalize` and `export-svgs.mjs` with the sandbox off, because the
+  sandbox blocks Chrome's sockets. Never edit the SVGs by hand. If you cannot
+  run archify, update the JSON and report that the SVGs are stale.
 
 ## 5. Check
 

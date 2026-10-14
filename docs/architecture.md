@@ -148,11 +148,16 @@ change to the pipeline:
 1. Edit the JSON.
 2. From `docs/architecture`, render it with archify's command-line tool,
    where `<archify>` is your archify checkout, or the directory of the
-   `archify` agent skill when it is installed:
+   `archify` agent skill when it is installed (`~/.agents/skills/archify`):
    `node <archify>/bin/archify.mjs finalize architecture sisu-pipeline.json
    sisu-pipeline.html --quality showcase`. The HTML lands next to the JSON.
-3. Open the HTML, and save **Export → SVG · Light** and **Export → SVG ·
-   Dark** over `sisu-pipeline-light.svg` and `sisu-pipeline-dark.svg`.
+   With `ARCHIFY_CHROME` set to a Chrome or Chromium binary, `finalize`
+   also runs archify's browser check.
+3. Export both SVGs over `sisu-pipeline-light.svg` and
+   `sisu-pipeline-dark.svg`: run `ARCHIFY_CHROME=<chrome> node
+   export-svgs.mjs`, which clicks the viewer's **Export → SVG · Light** and
+   **Export → SVG · Dark** in headless Chrome. Without Chrome, open the HTML
+   and use those two menu items by hand.
 
 The rendered HTML is not committed. It is over the 500 KB limit of the
 `check-added-large-files` hook, and the JSON regenerates it.
