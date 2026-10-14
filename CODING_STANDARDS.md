@@ -35,6 +35,8 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 
 - **An `expect` message states the invariant.** Write what should hold and why, with "should", naming the thing involved: `the checker should reject \`break\` outside a loop`. The panic then reads as a broken assumption. "builder is positioned" describes success, and the error that follows it reads as noise. A prek hook checks that non-test messages say "should"; the reviewer checks that they name the invariant and why it holds.
 
+- **A CI loop over found input has a total time bound.** A script or workflow step that loops over input whose count it does not control, such as artifacts, corpus files or test cases, caps the loop's total time. The cap fits the job's `timeout-minutes` with every later step, such as a failure upload, still ahead. A job killed at its limit skips those steps and loses their output.
+
 - **Sizes come from `TargetData`.** Sizes and alignments in generated code are measured with LLVM's `TargetData`, never written as numbers. The 16-byte array header is two `i64`s measured the same way.
 
 ## Performance

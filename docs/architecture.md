@@ -17,8 +17,11 @@ the terms.
 
 ## The stages
 
-**Driver** (`crates/sisuc/src/main.rs`). Reads the command line, runs the
-stages in order and prints diagnostics. The `--emit` and `--check` flags stop
+**Driver** (`crates/sisuc/src/lib.rs`). Reads the command line, runs the
+stages in order and prints diagnostics. The `sisuc` binary (`main.rs`) only
+runs it on a thread with a 64 MiB stack. The fuzzer calls the library too:
+`fuzz.rs` runs the `--check` path on raw bytes and asserts that every
+diagnostic span and fix edit is well formed. The `--emit` and `--check` flags stop
 the pipeline early, as [Developing Sisu](development.md#look-inside-the-compiler)
 lists. `--format json` switches the diagnostics to JSON Lines, and
 `--explain <code>` prints the explanation of a code and runs no stage.

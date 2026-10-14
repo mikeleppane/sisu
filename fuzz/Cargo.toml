@@ -1,0 +1,25 @@
+[package]
+name = "sisuc-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libc = "0.2.190"
+libfuzzer-sys = "0.4.13"
+sisuc = { path = "../crates/sisuc" }
+
+# Its own workspace: the root workspace's build, tests, lints and `cargo deny`
+# never see this crate. libfuzzer-sys carries the NCSA license, which deny.toml
+# does not allow, and this crate is never shipped.
+[workspace]
+
+[[bin]]
+name = "front_end"
+path = "fuzz_targets/front_end.rs"
+test = false
+doc = false
+bench = false

@@ -176,6 +176,105 @@ Set these once in the CodSpeed UI: "Informational Status Checks on Failure"
 on, PR comment mode "On Change", threshold 10%. Do not make the check
 required.
 
+## Fuzz the front end
+
+The fuzz target, `fuzz/fuzz_targets/front_end.rs`, feeds arbitrary bytes to
+`sisuc --check`. It renders the report as text and as JSON, and asserts that
+every span and every fix edit is well formed. A panic, a stack overflow, a
+timeout or running out of memory is a failure. The target lives in `fuzz/`,
+its own Cargo workspace, and runs under cargo-fuzz without a sanitizer.
+Install cargo-fuzz once:
+
+```console
+$ cargo install --locked cargo-fuzz@0.13.2
+```
+
+`scripts/fuzz.sh` holds every libFuzzer flag:
+
+```console
+$ scripts/fuzz.sh [seconds]          # fuzz for 1800 s by default
+$ scripts/fuzz.sh --replay <input>   # run one input
+$ scripts/fuzz.sh --tmin <input>     # minimize one failing input
+$ scripts/fuzz.sh --cmin             # shrink fuzz/corpus/front_end in place
+```
+
+A fuzz run starts from the corpus in `fuzz/corpus/front_end` and the `.sisu`
+files under `crates/sisuc/tests`, with `fuzz/front_end.dict` as its
+dictionary. It runs in fork mode with at least two jobs. It writes
+`fuzz/artifacts/fuzz.log`, `run.txt` (the commit and tool versions) and
+`summary.md`, and puts each failing input in `fuzz/artifacts/front_end/`,
+named `crash-`, `timeout-` or `oom-` and its hash. The script exits 1 when
+this run left such a file, and otherwise with cargo-fuzz's status. Files
+from an earlier run do not count. `--tmin` writes a `minimized-from-` file
+to the same directory.
+
+Three limits of fork mode:
+
+- The log keeps no detail of a timeout or an out-of-memory failure, because
+  fork mode drops the child's report. The input is still saved, and
+  `scripts/fuzz.sh --replay <input>` reproduces it.
+- A crash on a corpus input, during fork mode's first pass over the corpus,
+  leaves no panic message in the log: that pass discards the children's
+  output. So after the run the script replays the first 3 new `crash-`
+  inputs once, each for up to 130 s (`timeout -k 10 120`), and appends their
+  output, with the panic message and backtrace, to `fuzz.log`. A run with
+  more crashes says in the log and the summary how many it left out; replay
+  those with `--replay`. The replays change neither the exit status nor
+  which inputs count.
+- A stack overflow leaves a `crash-` file only on a best-effort basis:
+  libFuzzer's crash handler is not async-signal-safe. It dies by a fatal
+  signal, with no panic message and no Rust backtrace. A crash with no panic
+  message is a stack overflow or another fatal signal; replay it to confirm.
+
+### The nightly job
+
+The `Fuzz` workflow (`.github/workflows/fuzz.yml`) runs every night at
+02:23 UTC, and by hand with `workflow_dispatch`. It restores the corpus from
+the newest `fuzz-corpus-` cache entry, fuzzes for 30 minutes and saves the
+corpus under a new key. The first run starts from the test programs alone.
+
+When the fuzz step fails, the job:
+
+1. Uploads `fuzz/artifacts/` as the artifact `fuzz-failure`: the raw input,
+   the log, the run record and the summary.
+2. Minimizes the first failing input, preferring a crash to a timeout and a
+   timeout to an OOM, for at most 15 minutes. Each step that shrinks the
+   input writes a new `minimized-from-` file. All of them are uploaded as
+   `fuzz-minimized`, and the summary names the newest, which is the
+   smallest.
+
+Every run then writes `summary.md` to the run's page and shrinks the corpus
+with `--cmin`, for at most 10 minutes, before it saves it. A failed or
+killed shrink leaves the corpus as it was. Only a failed merge logs
+`Failed to minimize corpus`. A shrink stopped at the time limit shows as
+exit code 124 in the log of the "Minimize the corpus" step, or 137 if it
+ignored the first signal. After setup, only the fuzz step decides whether
+the job fails.
+
+The summary gives the seconds fuzzed, the executions in processed jobs and
+each failing input with its replay command. Its paths are those of the CI
+run's checkout.
+
+GitHub disables a `schedule` trigger in a public repository after 60 days
+without activity in it. That stop sends no failure email: the only sign is a
+missing nightly run. Re-enable the workflow on the Actions tab.
+
+### Fix a fuzz failure
+
+Download `fuzz-minimized`, or `fuzz-failure` when minimizing failed, and
+replay the input with `scripts/fuzz.sh --replay <input>`. The artifacts
+unpack without the `fuzz/artifacts/` prefix: `fuzz-failure` holds
+`front_end/crash-…` next to `fuzz.log`, and `fuzz-minimized` holds a bare
+`minimized-from-…`. Pass the downloaded file by its own path; `--replay`
+resolves it from your directory before it moves to the repository root.
+Then:
+
+- Fix the root cause in the compiler, never in the fuzz entry point.
+- If the input now reports a diagnostic, add it as a
+  `crates/sisuc/tests/diagnostics` case.
+- If the input now compiles, add a checker or parser unit test.
+- Either way, the minimized input becomes a test that fails before the fix.
+
 ## Compile and run a program
 
 `sisuc` takes a source file and the name of the executable to write:
@@ -310,5 +409,6 @@ must accept any syntax those programs use.
 | `crates/sisuc/tests/run`, `run-fail`, `diagnostics` | End-to-end cases, each with the output it must print. |
 | `crates/sisuc/tests/programs` | The programs the small-stack tests run. |
 | `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
-| `scripts` | `install-llvm.sh`, `mutants.sh`, `coverage.sh`, `codspeed-prep.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
+| `fuzz` | The front-end fuzz target, its own Cargo workspace, run by `scripts/fuzz.sh`. |
+| `scripts` | `install-llvm.sh`, `mutants.sh`, `coverage.sh`, `codspeed-prep.sh`, `fuzz.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
 | `docs` | Architecture, roadmap, decisions (`adr/`) and agent guides (`agents/`). |
