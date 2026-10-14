@@ -15,7 +15,8 @@ set -euo pipefail
 case ${1:-} in
 --replay | --tmin) input=$(realpath "${2:?$1 needs an input}") ;;
 esac
-cd "$(git rev-parse --show-toplevel)"
+# The script's own checkout, not the caller's: run from another worktree, it still fuzzes this one.
+cd "$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 export RUST_BACKTRACE=1
 limits=(-max_len=16384 -timeout=60 -rss_limit_mb=2048)
 # Seconds for the replay of one crash, past libFuzzer's own -timeout, and how many crashes
