@@ -221,10 +221,6 @@ impl<'a> Parser<'a> {
                 word,
                 at: found.span,
             },
-            TokenKind::Todo => DiagnosticKind::ReservedWord {
-                word: "todo",
-                at: found.span,
-            },
             _ => DiagnosticKind::Expected {
                 what: what.to_string(),
                 found: found.kind.describe(),
@@ -2621,13 +2617,22 @@ mod tests {
             ("fn main() {\n    let match = 1\n}", 2, 9),
             ("class C {\n    enum: i64\n}", 2, 5),
             ("fn main() {\n    print(echo)\n}", 2, 11),
-            ("fn main() {\n    let todo = 1\n}", 2, 9),
-            ("fn todo() {}", 1, 4),
-            ("class todo {}", 1, 7),
             ("fn main() {\n    print(p.type)\n}", 2, 13),
             ("import x", 1, 1),
         ] {
             assert_eq!(parse_err(src), (Code::ReservedWord, line, col), "{src}");
+        }
+    }
+
+    /// `todo` is a keyword, so where a name goes it is reported as any other keyword is.
+    #[test]
+    fn todo_is_not_a_name() {
+        for (src, line, col) in [
+            ("fn main() {\n    let todo = 1\n}", 2, 9),
+            ("fn todo() {}", 1, 4),
+            ("class todo {}", 1, 7),
+        ] {
+            assert_eq!(parse_err(src), (Code::Expected, line, col), "{src}");
         }
     }
 
