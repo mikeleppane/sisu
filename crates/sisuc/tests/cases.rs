@@ -1,6 +1,6 @@
 //! One test per file in `tests/run`, `tests/run-fail` and `tests/diagnostics`. A `run` case exits
-//! 0 and prints its `.out`, and its `.err` on stderr when it has one, else nothing there; a `run_fail` case panics with its `.out` on stdout and its `.err` on
-//! stderr; a `diagnostics` case makes `sisuc --check` report its `.err` on stderr, and
+//! 0 and prints its `.out`, and its `.err` on stderr when it has one, else nothing there; a
+//! `run_fail` case panics with its `.out` on stdout and its `.err` on stderr; a `diagnostics` case makes `sisuc --check` report its `.err` on stderr, and
 //! `sisuc --format json --check` its `.json`. Every
 //! file in these directories must belong to a case, as a file its mode reads, and none may be
 //! hidden.

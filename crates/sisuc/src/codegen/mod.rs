@@ -81,11 +81,11 @@ pub(crate) fn compile<'ctx>(
     );
 
     // A string crosses into the runtime as its bytes and its length: `sisu_print_str(bytes,
-    // len)` and `sisu_str_compare(a, a_len, b, b_len) -> i64`.
+    // len)`, `sisu_eprint_str(bytes, len)` and `sisu_str_compare(a, a_len, b, b_len) -> i64`.
     let bytes_len: [BasicMetadataTypeEnum; 2] = [ptr_type.into(), i64_type.into()];
     // The runtime's print functions, one set for each `Stream`, in the order of its variants.
-    let printers =
-        ["sisu_print", "sisu_eprint"].map(|prefix| declare_printers(context, &module, prefix));
+    let printers = ["sisu_print", "sisu_eprint"]
+        .map(|prefix| declare_printers(context, &module, prefix, &bytes_len));
     let compare = i64_type.fn_type(&[bytes_len, bytes_len].concat(), false);
     let str_compare = module.add_function("sisu_str_compare", compare, None);
     // A pure function of the bytes it reads: `ArgMem` `Ref` (1) and no other location.
@@ -182,12 +182,13 @@ struct Printers<'ctx> {
     str: FunctionValue<'ctx>,
 }
 
-/// `<prefix>_int`, `_bool`, `_char` and `_str`. `zeroext` keeps the C `bool` ABI: the callee
+/// `<prefix>_int`, `_bool`, `_char` and `_str`, which takes the string's `bytes_len`. `zeroext` keeps the C `bool` ABI: the callee
 /// may read all 8 bits of the argument, so the caller must extend the `i1` with zeros.
 fn declare_printers<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     prefix: &str,
+    bytes_len: &[BasicMetadataTypeEnum<'ctx>],
 ) -> Printers<'ctx> {
     let bool = declare_print(
         module,
@@ -207,15 +208,7 @@ fn declare_printers<'ctx>(
             &format!("{prefix}_char"),
             &[context.i32_type().into()],
         ),
-        // A string crosses as its bytes and its length.
-        str: declare_print(
-            module,
-            &format!("{prefix}_str"),
-            &[
-                context.ptr_type(AddressSpace::default()).into(),
-                context.i64_type().into(),
-            ],
-        ),
+        str: declare_print(module, &format!("{prefix}_str"), bytes_len),
     }
 }
 

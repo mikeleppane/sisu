@@ -1,0 +1,10 @@
+error[E0060]: cannot eprint `[i64]?`
+ --> E0060-eprint-optional.sisu:3:12
+  |
+3 |     eprint(xs)
+  |            ^^
+  |
+  = help: unwrap it with `if let`, then eprint each element in a `for` loop
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0060
