@@ -151,16 +151,6 @@ fn missing_main() {
     assert_eq!(diags(src)[0].span(), Span::new(0, 0));
 }
 
-#[test]
-fn main_with_params() {
-    diagnostic(
-        "fn main(x: i64) {}",
-        Code::MainSignature,
-        (1, 4, "main"),
-        &[],
-    );
-}
-
 /// `main` takes no parameters or one `[string]` of any name, and returns no value. A type that
 /// does not resolve is reported once, as unknown, and not again as a wrong signature.
 #[test]
@@ -173,6 +163,7 @@ fn main_signatures() {
         ("fn main(argc: i64, argv: [string]) {}", vec![signature]),
         ("fn main() -> i64 { 0 }", vec![signature]),
         ("fn main(args: [i64]) {}", vec![signature]),
+        ("fn main(x: i64) {}", vec![signature]),
         ("fn main(args: [string]?) {}", vec![signature]),
         (
             "fn main(args: [Bogus]) {}",

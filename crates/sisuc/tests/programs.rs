@@ -687,7 +687,7 @@ fn invalid_utf8_is_repaired_byte_for_byte() {
         assert_eq!(out.stdout, b"a\xEF\xBF\xBDb\n");
         let exe = compile_tmp("echo_args_repair", ECHO_ARGS, o2);
         let arg = OsStr::from_bytes(b"x\xFFy").to_os_string();
-        let out = support::Invocation::new(Vec::new(), vec![arg]).run(&exe, false);
+        let out = support::Invocation::new(Vec::new(), vec![arg]).run(&exe, true);
         assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
         assert_eq!(out.stdout, b"x\xEF\xBF\xBDy\n");
     }

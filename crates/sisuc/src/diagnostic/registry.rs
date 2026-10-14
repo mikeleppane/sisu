@@ -1160,10 +1160,10 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::MainSignature { at } => {
                 Diagnostic::coded(
-                code,
-                at,
-                "`main` takes no parameters, or one `[string]`, and returns no value",
-            )
+                    code,
+                    at,
+                    "`main` takes no parameters, or one `[string]`, and returns no value",
+                )
             }
             DiagnosticKind::UnknownType {
                 name,

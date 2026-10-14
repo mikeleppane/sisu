@@ -77,9 +77,9 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// The C `main`'s `argc` and `argv`, passed as `count` and `strings`, as `main`'s `args`: a
     /// new `[string]` of the arguments after the program name. `sisu_args_len(argc)` counts
-    /// them, and reads no memory.
-    /// `sisu_arg(argv, index, len)` gives each, which is copied at once, before the next call can
-    /// overwrite it; like `sisu_read_line`, it has no `memory` attribute. Neither unwinds.
+    /// them, and reads no memory. `sisu_arg(argv, index, len)` gives each, which is copied at
+    /// once, before the next call can overwrite it; like `sisu_read_line`, it has no `memory`
+    /// attribute. Neither unwinds.
     pub(super) fn args(
         &self,
         count: IntValue<'ctx>,
