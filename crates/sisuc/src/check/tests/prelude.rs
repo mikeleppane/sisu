@@ -21,8 +21,7 @@ fn panic_lowers() {
     assert_eq!(panic.ty, Type::Never);
 }
 
-/// The panic's location, and its count error, are the callee's, not the parentheses' around it,
-/// as `todo`'s are its keyword's.
+/// The panic's location, and its count error, are the callee's, not the parentheses' around it.
 #[test]
 fn panic_in_parentheses() {
     let src = "fn main() {\n    (panic(\"x\"))\n}";
