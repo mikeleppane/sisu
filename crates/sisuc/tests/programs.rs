@@ -2,7 +2,9 @@
 //! `cases.rs`), such as a small stack, an allocation count or a generated source, and the bless
 //! rules of the `cases` harness.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -670,20 +672,41 @@ fn generated_lines(total: usize) -> Vec<u8> {
     unreachable!("the range never ends")
 }
 
-/// An invalid byte in a line comes back as the three bytes of `U+FFFD`, which a `.out` file,
-/// read through `from_utf8_lossy`, cannot tell from the raw byte.
+/// Prints each of its arguments.
+const ECHO_ARGS: &str =
+    "fn main(args: [string]) {\n    for a in args {\n        print(a)\n    }\n}\n";
+
+/// An invalid byte in a line of input, or in an argument, comes back as the three bytes of
+/// `U+FFFD`, which a `.out` file, read through `from_utf8_lossy`, cannot tell from the raw byte.
 #[test]
-fn read_line_repairs_byte_for_byte() {
+fn invalid_utf8_is_repaired_byte_for_byte() {
     for o2 in [false, true] {
         let exe = compile_tmp("echo_repair", ECHO, o2);
-        let out = support::Invocation::new(b"a\xFFb\n".to_vec()).run(&exe, false);
+        let out = support::Invocation::new(b"a\xFFb\n".to_vec(), Vec::new()).run(&exe, false);
         assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
         assert_eq!(out.stdout, b"a\xEF\xBF\xBDb\n");
+        let exe = compile_tmp("echo_args_repair", ECHO_ARGS, o2);
+        let arg = OsStr::from_bytes(b"x\xFFy").to_os_string();
+        let out = support::Invocation::new(Vec::new(), vec![arg]).run(&exe, true);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(out.stdout, b"x\xEF\xBF\xBDy\n");
+    }
+}
+
+/// An argument holding a space, which a `// args:` line cannot pass, stays one argument.
+#[test]
+fn args_keep_spaces() {
+    for o2 in [false, true] {
+        let exe = compile_tmp("echo_args_spaces", ECHO_ARGS, o2);
+        let out = support::Invocation::new(Vec::new(), vec!["two words".into()]).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "two words\n");
     }
 }
 
 /// A line longer than the runtime's 8 KiB input buffer, input of several buffers, and a `€`
-/// whose bytes straddle the first buffer's end all come back whole, with no memory error.
+/// at bytes 8191..8194 (across the first buffer's end when the first read fills it) all come
+/// back whole, with no memory error. The `Lines` unit tests force the split itself.
 #[test]
 fn read_line_refills_its_buffer() {
     let mut first = "a".repeat(8191) + "€";
@@ -694,7 +717,7 @@ fn read_line_refills_its_buffer() {
     assert_eq!(&input[8191..8194], "€".as_bytes());
     for o2 in [false, true] {
         let exe = compile_tmp("echo_refill", ECHO, o2);
-        let out = support::Invocation::new(input.clone()).run(&exe, true);
+        let out = support::Invocation::new(input.clone(), Vec::new()).run(&exe, true);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(0), "{stderr}");
         assert!(out.stdout == input, "{stderr}");
@@ -709,7 +732,7 @@ fn words_is_linear() {
     let input = "a ".repeat(1 << 20).into_bytes();
     for o2 in [false, true] {
         let exe = compile_tmp("words_linear", source, o2);
-        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        let out = support::Invocation::new(input.clone(), Vec::new()).run(&exe, false);
         assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
         assert_eq!(String::from_utf8_lossy(&out.stdout), "1048576\n");
     }
@@ -722,7 +745,7 @@ fn stdin_larger_than_a_pipe() {
     let input = generated_lines(1 << 20);
     for o2 in [false, true] {
         let exe = compile_tmp("echo_large", ECHO, o2);
-        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        let out = support::Invocation::new(input.clone(), Vec::new()).run(&exe, false);
         assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
         assert!(out.stdout == input, "{} bytes out", out.stdout.len());
     }
@@ -736,7 +759,7 @@ fn program_exiting_before_its_input_ends() {
     let input = generated_lines(1 << 20);
     for o2 in [false, true] {
         let exe = compile_tmp("read_one_line", source, o2);
-        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        let out = support::Invocation::new(input.clone(), Vec::new()).run(&exe, false);
         assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
         assert_eq!(String::from_utf8_lossy(&out.stdout), "line \n");
     }
@@ -1202,6 +1225,17 @@ fn o2_calls_marker_rejects_a_caller_with_parameters() {
         message.contains("o2-calls caller `outer` takes parameters"),
         "{message}"
     );
+}
+
+/// A case has one argument list, so a second `// args:` line is a mistake.
+#[test]
+#[should_panic(expected = "more than one `// args:` line")]
+fn two_args_markers_fail() {
+    let dir = fixture(
+        "two_args_markers_fail",
+        &[("a.sisu", "// args: a\n// args: b\nfn main() {}\n")],
+    );
+    support::Invocation::of(&dir.join("a.sisu"));
 }
 
 #[test]

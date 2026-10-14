@@ -15,7 +15,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
 | 4 | Strings | A program reverses and compares strings | Done |
-| 5 | Standard streams and arguments | A word-count tool reads standard input | Planned |
+| 5 | Standard streams and arguments | A word-count tool reads standard input | Done |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
 ### What works today
@@ -138,6 +138,21 @@ These came out of the milestone 2 design and are now part of its spec:
   classes, arrays and optionals (milestone 8), and building a `string` from
   `[u8]`, which needs UTF-8 validation and a failure path (milestone 5's input
   or milestone 12).
+
+### Decided in milestone 5
+
+- `fn main(args: [string])` is the one way to get the program's arguments:
+  the program name is not in `args`, and each argument is repaired to valid
+  UTF-8 as `read_line` repairs a line. `main` takes no `argc`, `argv` or
+  return value; a chosen exit code comes from a function that never returns.
+- `read_line()` removes `\n` and `\r\n` from the end of a line and keeps a
+  lone `\r`. A last line with no line ending still comes back, and an empty
+  line is `""`, not `None`. Each ill-formed UTF-8 sequence becomes one
+  `U+FFFD`, as Rust's `String::from_utf8_lossy` does, so a `string` stays
+  valid UTF-8. End of input is sticky.
+- `words()` splits on Unicode `White_Space`, which includes the no-break
+  space `U+00A0`, and drops empty pieces. Matching `wc -w` byte for byte
+  waits for a locale story.
 
 ## Beyond milestone 6
 

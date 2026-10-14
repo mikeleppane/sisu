@@ -1,0 +1,8 @@
+// args: one two three
+// The arguments come in order, without the program name.
+fn main(args: [string]) {
+    print(args.len())   // 3
+    for a in args {
+        print(a)        // one, two, three
+    }
+}

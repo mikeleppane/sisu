@@ -1,5 +1,6 @@
 //! The Sisu runtime: functions that compiled Sisu programs call over the C ABI.
 
+pub mod args;
 pub mod stdin;
 pub mod text;
 
