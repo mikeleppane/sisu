@@ -705,7 +705,8 @@ fn args_keep_spaces() {
 }
 
 /// A line longer than the runtime's 8 KiB input buffer, input of several buffers, and a `€`
-/// whose bytes straddle the first buffer's end all come back whole, with no memory error.
+/// at bytes 8191..8194 (across the first buffer's end when the first read fills it) all come
+/// back whole, with no memory error. The `Lines` unit tests force the split itself.
 #[test]
 fn read_line_refills_its_buffer() {
     let mut first = "a".repeat(8191) + "€";
