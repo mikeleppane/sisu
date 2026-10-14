@@ -1,7 +1,7 @@
 //! The entry point of the front-end fuzz target: `sisuc --check` on one input, with checks that
 //! every span it reports is well formed. The bug signal is a panic.
 
-use crate::diagnostic::{Diagnostic, Edit, Fix};
+use crate::diagnostic::{Diagnostic, Edit, Fix, Span};
 use crate::report::{Format, Reporter};
 
 /// Runs `sisuc --check` on `data` as the file `input.sisu`, reports it as colored text and then
@@ -42,7 +42,7 @@ fn assert_spans(source: &str, diagnostics: &[Diagnostic]) {
             );
             assert!(
                 source.is_char_boundary(span.end),
-                "{code}: span {span:?} ends inside a char or past the source of {len} bytes"
+                "{code}: span {span:?} ends inside a char, in a source of {len} bytes"
             );
         }
         for fix in d.fixes() {
@@ -51,13 +51,20 @@ fn assert_spans(source: &str, diagnostics: &[Diagnostic]) {
                 for b in &edits[i + 1..] {
                     let (a, b) = (a.span(), b.span());
                     assert!(
-                        !(a.start < b.end && b.start < a.end),
-                        "{code}: edits conflict: {a:?} and {b:?} of one fix overlap, in a source of {len} bytes"
+                        !conflict(a, b),
+                        "{code}: edits conflict: {a:?} then {b:?} of one fix, in a source of {len} bytes"
                     );
                 }
             }
         }
     }
+}
+
+/// Edit `a`, listed before edit `b` in one fix, conflicts with it: they overlap, or `b` inserts at
+/// the start of a non-empty `a`, where `Fix::apply` would let `a` replace the insertion.
+fn conflict(a: Span, b: Span) -> bool {
+    (a.start < b.end && b.start < a.end)
+        || (b.start == b.end && b.start == a.start && a.start < a.end)
 }
 
 #[cfg(test)]
@@ -114,28 +121,53 @@ mod tests {
         ))
         .expect("the seed should be readable");
         let out = on_stack(&seed);
-        assert!(out.contains("\x1b["), "{out}");
-        assert!(out.matches("E0001").count() >= 2, "{out}");
-        let last = out.lines().last().expect("the report should not be empty");
-        let summary: serde_json::Value =
-            serde_json::from_str(last).expect("the last line should be JSON");
-        // Only the JSON pass counts errors, so this fails if it is given no diagnostics.
-        assert_eq!(summary["errors"], 1, "{out}");
+        let (text, json) = split(&out);
+        assert!(text.contains("\x1b["), "{out}");
+        // The `.json` fixture of this seed records its one diagnostic at 35.
+        assert_eq!(diagnostic(&json, "E0001")["primary"]["start"], 35, "{out}");
+        let last = json.last().expect("the JSON report should not be empty");
+        assert_eq!(last["kind"], "summary", "{out}");
+    }
+
+    /// `out` split at its first line that starts with `{`: the text report, and each line of
+    /// the JSON report parsed.
+    fn split(out: &str) -> (&str, Vec<serde_json::Value>) {
+        let at = out
+            .find("\n{")
+            .expect("the JSON report should follow the text report")
+            + 1;
+        let json = out[at..]
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each JSON line should parse"))
+            .collect();
+        (&out[..at], json)
+    }
+
+    /// The one diagnostic line of `json`, which must have `code`.
+    fn diagnostic<'a>(json: &'a [serde_json::Value], code: &str) -> &'a serde_json::Value {
+        let found: Vec<_> = json.iter().filter(|v| v["kind"] == "diagnostic").collect();
+        assert_eq!(found.len(), 1, "{json:?}");
+        assert_eq!(found[0]["code"], code, "{json:?}");
+        found[0]
     }
 
     #[test]
     fn invalid_utf8_reports_over_the_replacement_text() {
-        for data in [
-            &b"\xff"[..],
-            b"fn main() {}\n\xff",
-            b"fn main() {}\n\xe2\x82",
+        for (data, valid_up_to) in [
+            (&b"\xff"[..], 0),
+            (b"fn main() {}\n\xff", 13),
+            (b"fn main() {}\n\xe2\x82", 13),
         ] {
             let out = on_stack(data);
-            assert!(out.contains(Code::InvalidUtf8.as_str()), "{out}");
+            let (_, json) = split(&out);
+            let d = diagnostic(&json, Code::InvalidUtf8.as_str());
+            assert_eq!(d["primary"]["start"], valid_up_to, "{out}");
         }
     }
 
     /// The deepest parentheses `tests/nesting.rs` compiles: 253 levels inside `print(`.
+    /// Measured in a debug build, `front_end` on this program overflows a 4 MiB stack and every
+    /// smaller power of two from 64 KiB, and fits in 8 MiB.
     #[test]
     fn deepest_nesting_fits_the_stack() {
         let n = 253;
@@ -174,6 +206,8 @@ mod tests {
                 // An insertion at the end of a replaced range, in either order.
                 fixed(&[(span(0, 1), "x"), (span(1, 1), "y")]),
                 fixed(&[(span(1, 1), "y"), (span(0, 1), "x")]),
+                // An insertion listed before the replacement at its start.
+                fixed(&[(span(0, 0), "y"), (span(0, 1), "x")]),
                 fixed(&[(span(5, 5), "a"), (span(5, 5), "b")]),
                 // Adjacent replacements, in either order.
                 fixed(&[(span(0, 1), ""), (span(1, 3), "")]),
@@ -231,5 +265,11 @@ mod tests {
     #[should_panic(expected = "edits conflict")]
     fn rejects_an_insertion_inside_a_replacement() {
         assert_spans(SOURCE, &[fixed(&[(span(0, 3), ""), (span(1, 1), "")])]);
+    }
+
+    #[test]
+    #[should_panic(expected = "edits conflict")]
+    fn rejects_an_insertion_after_a_replacement_at_its_start() {
+        assert_spans(SOURCE, &[fixed(&[(span(0, 1), "x"), (span(0, 0), "y")])]);
     }
 }

@@ -339,7 +339,7 @@ pub(crate) struct Checked {
     /// the replacement text `decode` returns.
     pub(crate) source: String,
     pub(crate) diagnostics: Vec<Diagnostic>,
-    /// No diagnostic is an error, and the bytes are UTF-8.
+    /// The front end returned a program: `program.is_some()`, today's `--check` exit rule.
     pub(crate) passed: bool,
 }
 
