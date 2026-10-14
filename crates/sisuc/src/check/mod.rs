@@ -8,13 +8,14 @@ mod place;
 mod stmt;
 mod string;
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast;
 use crate::diagnostic::{
     Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, MismatchFix, Severity, Span,
     suggestion,
 };
+use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 use constant::ConstInfo;
 
@@ -84,7 +85,7 @@ struct ClassInfo {
     /// The first field of each name, in declaration order.
     fields: Vec<FieldInfo>,
     /// The first method of each name, and every broken one.
-    methods: HashMap<String, Declared<tir::FuncId>>,
+    methods: FxHashMap<Symbol, Declared<tir::FuncId>>,
 }
 
 struct FieldInfo {
@@ -131,18 +132,18 @@ enum LoopContext {
 
 struct Checker {
     /// The first function of each name, and every broken one.
-    function_ids: HashMap<String, Declared<tir::FuncId>>,
+    function_ids: FxHashMap<Symbol, Declared<tir::FuncId>>,
     /// Indexed by `FuncId`, so a duplicate function has a signature of its own.
     signatures: Vec<Signature>,
     /// Indexed by `ClassId`, so a duplicate class has fields and methods of its own.
     classes: Vec<ClassInfo>,
     /// The first class of each name, and every broken one.
-    class_ids: HashMap<String, Declared<tir::ClassId>>,
+    class_ids: FxHashMap<Symbol, Declared<tir::ClassId>>,
     /// The first constant of each name, and every broken one.
-    constants: HashMap<String, Declared<ConstInfo>>,
+    constants: FxHashMap<Symbol, Declared<ConstInfo>>,
     diagnostics: Vec<Diagnostic>,
     // The rest is per body.
-    scopes: Vec<HashMap<String, Binding>>,
+    scopes: Vec<FxHashMap<Symbol, Binding>>,
     locals: Vec<tir::Local>,
     /// `None` is `Error`.
     ret: Option<Type>,
@@ -165,17 +166,17 @@ struct Checker {
     in_constant: bool,
     /// Each `+` found to join a `string` under an expected `u8`, which a later check of it
     /// checks with no expected type.
-    joins: HashSet<Span>,
+    joins: FxHashSet<Span>,
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
 pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagnostic>) {
     let mut checker = Checker {
-        function_ids: HashMap::new(),
+        function_ids: FxHashMap::default(),
         signatures: Vec::new(),
         classes: Vec::new(),
-        class_ids: HashMap::new(),
-        constants: HashMap::new(),
+        class_ids: FxHashMap::default(),
+        constants: FxHashMap::default(),
         diagnostics: Vec::new(),
         scopes: Vec::new(),
         locals: Vec::new(),
@@ -188,7 +189,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         quotes: program.quotes.clone(),
         breaks: program.breaks.clone(),
         in_constant: false,
-        joins: HashSet::new(),
+        joins: FxHashSet::default(),
     };
     checker.collect_names(program);
     let declared = checker.collect_signatures(program);
@@ -230,14 +231,14 @@ fn lower_class(class: &ClassInfo) -> Option<tir::Class> {
         .iter()
         .map(|f| {
             Some(tir::Field {
-                name: f.name.name.clone(),
+                name: f.name.name.to_string(),
                 ty: f.ty.clone()?,
                 mutable: f.mutable,
             })
         })
         .collect::<Option<_>>()?;
     Some(tir::Class {
-        name: class.name.name.clone(),
+        name: class.name.name.to_string(),
         fields,
     })
 }
@@ -268,7 +269,7 @@ impl Checker {
     /// of each name, so that types, calls and uses can name any of them. They share a
     /// namespace. `FuncId`s run in source order, a class's methods at its place.
     fn collect_names(&mut self, program: &ast::Program) {
-        let mut first = HashMap::new();
+        let mut first = FxHashMap::default();
         let mut next_function = 0;
         // Source order among the constants.
         let mut order = 0;
@@ -279,14 +280,13 @@ impl Checker {
                     self.classes.push(ClassInfo {
                         name: class.name.clone(),
                         fields: Vec::new(),
-                        methods: HashMap::new(),
+                        methods: FxHashMap::default(),
                     });
                     let name = &class.name;
                     if !self.built_in(name)
                         && self.first_callable(&mut first, Definition::Class, name)
                     {
-                        self.class_ids
-                            .insert(name.name.clone(), Declared::Known(id));
+                        self.class_ids.insert(name.name, Declared::Known(id));
                     }
                     next_function += class
                         .members
@@ -298,10 +298,8 @@ impl Checker {
                     if !self.built_in(&f.name)
                         && self.first_callable(&mut first, Definition::Function, &f.name)
                     {
-                        self.function_ids.insert(
-                            f.name.name.clone(),
-                            Declared::Known(tir::FuncId(next_function)),
-                        );
+                        self.function_ids
+                            .insert(f.name.name, Declared::Known(tir::FuncId(next_function)));
                     }
                     next_function += 1;
                 }
@@ -310,7 +308,7 @@ impl Checker {
                         && self.first_callable(&mut first, Definition::Constant, &c.name)
                     {
                         self.constants.insert(
-                            c.name.name.clone(),
+                            c.name.name,
                             Declared::Known(ConstInfo::new(c.name.span, order)),
                         );
                     }
@@ -322,13 +320,13 @@ impl Checker {
             let name = &broken.name.name;
             match broken.kind {
                 ast::BrokenKind::Function => {
-                    self.function_ids.insert(name.clone(), Declared::Broken);
+                    self.function_ids.insert(*name, Declared::Broken);
                 }
                 ast::BrokenKind::Class => {
-                    self.class_ids.insert(name.clone(), Declared::Broken);
+                    self.class_ids.insert(*name, Declared::Broken);
                 }
                 ast::BrokenKind::Constant => {
-                    self.constants.insert(name.clone(), Declared::Broken);
+                    self.constants.insert(*name, Declared::Broken);
                 }
             }
             // Functions, classes and constants share a namespace, so an intact item of another
@@ -348,10 +346,10 @@ impl Checker {
     /// Whether `name` is a built-in type's, which no class, function or constant may take;
     /// reports it when it is.
     fn built_in(&mut self, name: &ast::Ident) -> bool {
-        let found = built_in_type(&name.name).is_some();
+        let found = built_in_type(name.name.as_str()).is_some();
         if found {
             self.report(DiagnosticKind::BuiltInTypeName {
-                name: name.name.clone(),
+                name: name.name.to_string(),
                 at: name.span,
             });
         }
@@ -361,11 +359,11 @@ impl Checker {
     /// Whether `name` is the first function, class or constant of its name; reports it when not.
     fn first_callable(
         &mut self,
-        first: &mut HashMap<String, (Span, Definition)>,
+        first: &mut FxHashMap<Symbol, (Span, Definition)>,
         kind: Definition,
         name: &ast::Ident,
     ) -> bool {
-        if name.name == "print" {
+        if name.name.as_str() == "print" {
             self.report(defined_twice(kind, name, Earlier::BuiltIn));
             return false;
         }
@@ -376,7 +374,7 @@ impl Checker {
     /// reports it when not. `owner` is the class whose members `first` holds.
     fn first_definition(
         &mut self,
-        first: &mut HashMap<String, (Span, Definition)>,
+        first: &mut FxHashMap<Symbol, (Span, Definition)>,
         kind: Definition,
         owner: Option<&str>,
         name: &ast::Ident,
@@ -390,7 +388,7 @@ impl Checker {
             self.report(defined_twice(kind, name, first));
             return false;
         }
-        first.insert(name.name.clone(), (name.span, kind));
+        first.insert(name.name, (name.span, kind));
         true
     }
 
@@ -405,7 +403,7 @@ impl Checker {
         for item in &program.items {
             let class = match item {
                 ast::Item::Function(f) => {
-                    self.signature(f, f.name.name.clone());
+                    self.signature(f, f.name.name.to_string());
                     declared.push((f, None));
                     continue;
                 }
@@ -414,7 +412,7 @@ impl Checker {
             };
             let id = tir::ClassId(next_class);
             next_class += 1;
-            let mut first = HashMap::new();
+            let mut first = FxHashMap::default();
             for member in &class.members {
                 match member {
                     ast::Member::Field(field) => {
@@ -422,7 +420,7 @@ impl Checker {
                         if self.first_definition(
                             &mut first,
                             Definition::Field,
-                            Some(&class.name.name),
+                            Some(class.name.name.as_str()),
                             &field.name,
                         ) {
                             self.classes[id.0].fields.push(FieldInfo {
@@ -438,12 +436,12 @@ impl Checker {
                         if self.first_definition(
                             &mut first,
                             Definition::Method,
-                            Some(&class.name.name),
+                            Some(class.name.name.as_str()),
                             &method.name,
                         ) {
                             self.classes[id.0]
                                 .methods
-                                .insert(method.name.name.clone(), Declared::Known(func));
+                                .insert(method.name.name, Declared::Known(func));
                         }
                         self.signature(method, format!("{}.{}", class.name.name, method.name.name));
                         declared.push((method, Some(id)));
@@ -453,7 +451,7 @@ impl Checker {
             for method in &class.broken_methods {
                 self.classes[id.0]
                     .methods
-                    .insert(method.name.clone(), Declared::Broken);
+                    .insert(method.name, Declared::Broken);
             }
         }
         declared
@@ -490,9 +488,9 @@ impl Checker {
                     "a class on a reference cycle should have a field that leads into the cycle",
                 );
             reports.push(DiagnosticKind::NeverConstructed {
-                class: class.name.name.clone(),
-                field: field.name.name.clone(),
-                target: self.classes[target.0].name.name.clone(),
+                class: class.name.name.to_string(),
+                field: field.name.name.to_string(),
+                target: self.classes[target.0].name.name.to_string(),
                 at: field.name.span,
                 ty: field.ty_span,
             });
@@ -522,10 +520,10 @@ impl Checker {
     /// Reports a missing `main`, or one with parameters or a return type. A `main` rejected as
     /// defined twice is not missing: its error is reported already.
     fn check_main(&mut self, declared: &[(&ast::Function, Option<tir::ClassId>)]) {
-        match self.function_ids.get("main") {
+        match self.function_ids.get(&Symbol::intern("main")) {
             None if declared
                 .iter()
-                .any(|(f, class)| class.is_none() && f.name.name == "main") => {}
+                .any(|(f, class)| class.is_none() && f.name.name.as_str() == "main") => {}
             None => self.report(DiagnosticKind::NoMain),
             Some(Declared::Broken) => {}
             Some(Declared::Known(id)) => {
@@ -545,19 +543,19 @@ impl Checker {
                 // A broken name poisons every use, a built-in type's too.
                 if let Some(Declared::Broken) = self.class_ids.get(name) {
                     return None;
-                } else if let Some(named) = built_in_type(name) {
+                } else if let Some(named) = built_in_type(name.as_str()) {
                     named
                 } else if let Some(&Declared::Known(id)) = self.class_ids.get(name) {
                     Type::Class(id)
                 } else {
-                    let span = Span::new(ty.span.start, ty.span.start + name.len());
+                    let span = Span::new(ty.span.start, ty.span.start + name.as_str().len());
                     let types =
                         ["i64", "u8", "bool", "char", "string"].map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
                     self.report(DiagnosticKind::UnknownType {
-                        name: name.clone(),
+                        name: name.to_string(),
                         at: span,
-                        suggestion: suggestion(name, types.into_iter().chain(classes)),
+                        suggestion: suggestion(name.as_str(), types.into_iter().chain(classes)),
                     });
                     return None;
                 }
@@ -583,7 +581,7 @@ impl Checker {
         let (name, param_types, ret) = (sig.name.clone(), sig.params.clone(), sig.ret.clone());
         self.ret.clone_from(&ret);
         self.self_class = class;
-        self.scopes.push(HashMap::new());
+        self.scopes.push(FxHashMap::default());
         // `self` is a keyword, so it needs no binding: `ExprKind::SelfValue` reads local 0.
         let receiver = class.map(|class| {
             self.locals.push(tir::Local {
@@ -623,7 +621,7 @@ impl Checker {
                 let d = if *got == Type::Unit {
                     let end = f.body.span.end;
                     DiagnosticKind::BodyHasNoValue {
-                        function: f.name.name.clone(),
+                        function: f.name.name.to_string(),
                         want: self.type_name(want),
                         at: Span::new(end - 1, end),
                     }
@@ -652,7 +650,7 @@ impl Checker {
     }
 
     /// "cannot find binding `name`", offering the closest binding of any open scope.
-    fn not_found(&self, name: &str, span: Span) -> Diagnostic {
+    fn not_found(&self, name: Symbol, span: Span) -> Diagnostic {
         let bindings = self
             .scopes
             .iter()
@@ -661,14 +659,14 @@ impl Checker {
         DiagnosticKind::BindingNotFound {
             name: name.to_string(),
             at: span,
-            suggestion: suggestion(name, bindings),
+            suggestion: suggestion(name.as_str(), bindings),
         }
         .into()
     }
 
     fn type_name(&self, ty: &Type) -> String {
         match ty {
-            Type::Class(id) => self.classes[id.0].name.name.clone(),
+            Type::Class(id) => self.classes[id.0].name.name.to_string(),
             Type::Array(element) => format!("[{}]", self.type_name(element)),
             Type::Optional(payload) => format!("{}?", self.type_name(payload)),
             ty => ty.to_string(),
@@ -804,7 +802,7 @@ fn wrap_block(block: &mut CheckedBlock, ty: &Type) {
 fn defined_twice(kind: Definition, name: &ast::Ident, first: Earlier) -> DiagnosticKind {
     DiagnosticKind::DefinedTwice {
         kind,
-        name: name.name.clone(),
+        name: name.name.to_string(),
         at: name.span,
         first,
     }

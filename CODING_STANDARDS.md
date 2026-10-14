@@ -36,6 +36,13 @@ Reviewers apply these rules to every diff. Clippy, rustfmt and prek already enfo
 
 - **Sizes come from `TargetData`.** Sizes and alignments in generated code are measured with LLVM's `TargetData`, never written as numbers. The 16-byte array header is two `i64`s measured the same way.
 
+## Performance
+
+- **Borrow or move before you clone.** In the lexer, parser and checker, code that only reads a value takes a reference, and code that hands it on moves it. A `clone()`, `to_string()` or `to_vec()` on a per-token, per-node or per-lookup path needs a reason: the receiver keeps the value and the source still needs it. Names travel as `Symbol`s and become a `String` only where they leave for `tir` or a diagnostic.
+- **The clean path does no repeat work.** A step that lexes, parses or checks the whole source again runs only when its result is used, as `front_end::sound_fixes` does.
+- **A cost claim is measured.** A diff that claims a speedup, or that a change costs nothing, gives callgrind instruction counts before and after (see `AGENTS.md`). CodSpeed's simulation mode runs under callgrind too. Without a measured gain, the simpler code wins ([ADR 0006](docs/adr/0006-values-correctness-simplicity-readability-performance.md)).
+- **Hash maps are `FxHashMap` and `FxHashSet`.** Keys are compiler data, not attacker input, so the std SipHash defence buys nothing.
+
 ## Diagnostics
 
 - **One rule, one code.** A rule reports the same code wherever it fires: lexer or parser, inside or outside brackets.

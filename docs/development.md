@@ -142,7 +142,9 @@ build) and on a generated 200-function input.
 first. The `CodSpeed` workflow runs on pushes to `main` and on pull requests
 that touch the code, the benchmarks or their tooling. It never turns a check
 red. Agents read results through the CodSpeed MCP tools and do not run
-CodSpeed locally.
+CodSpeed locally. To compare a change before pushing, count the instructions
+of `target/release/sisuc --check target/codspeed/large/main.sisu` under
+callgrind, as `AGENTS.md` shows.
 
 Set these once in the CodSpeed UI: "Informational Status Checks on Failure"
 on, PR comment mode "On Change", threshold 10%. Do not make the check

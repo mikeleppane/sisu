@@ -30,7 +30,9 @@ newlines, not semicolons
 literal and its escapes into one scalar value, and a string literal into its
 text, so later stages never see the escape text. A string with `{expr}` parts
 becomes a `StrHead` token, the expression's tokens, and `StrMiddle` or
-`StrTail` tokens for the text between and after them. After most errors
+`StrTail` tokens for the text between and after them. The lexer interns each
+name into a `Symbol` (`symbol.rs`), so the parser and checker copy, compare and
+hash names as integers; `tir` and diagnostics hold the text as a `String`. After most errors
 the lexer skips the bad text and goes on, so it records every one of them,
 and the parser keeps the earliest per item. A bracket that is unclosed or does
 not match is the exception: the run then reports one diagnostic and the parser

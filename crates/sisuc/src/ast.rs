@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::diagnostic::Span;
+use crate::symbol::Symbol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Program {
@@ -82,7 +83,7 @@ pub(crate) struct Function {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Ident {
-    pub(crate) name: String,
+    pub(crate) name: Symbol,
     pub(crate) span: Span,
 }
 
@@ -103,7 +104,7 @@ pub(crate) struct TypeExpr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypeKind {
-    Name(String),
+    Name(Symbol),
     /// `[T]`; the element type may itself be optional or an array.
     Array(Box<TypeExpr>),
 }
@@ -198,7 +199,7 @@ pub(crate) enum ExprKind {
     /// A string literal with interpolations: its text pieces as `Str`, without empty ones, and
     /// its expressions, in order.
     Interpolate(Vec<Expr>),
-    Name(String),
+    Name(Symbol),
     Call {
         callee: Ident,
         args: Vec<Arg>,
@@ -354,7 +355,7 @@ impl fmt::Display for CompareOp {
 impl fmt::Display for TypeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            TypeKind::Name(name) => f.write_str(name)?,
+            TypeKind::Name(name) => f.write_str(name.as_str())?,
             TypeKind::Array(element) => write!(f, "[{element}]")?,
         }
         if self.optional {
@@ -504,7 +505,7 @@ impl fmt::Display for Expr {
                 spaced(f, parts)?;
                 f.write_str(")")
             }
-            ExprKind::Name(name) => f.write_str(name),
+            ExprKind::Name(name) => f.write_str(name.as_str()),
             ExprKind::Call { callee, args } => {
                 write!(f, "(call {}", callee.name)?;
                 spaced(f, args)?;
@@ -582,14 +583,14 @@ mod tests {
 
     fn ident(name: &str) -> Ident {
         Ident {
-            name: name.to_string(),
+            name: Symbol::intern(name),
             span: sp(),
         }
     }
 
     fn ty(name: &str) -> TypeExpr {
         TypeExpr {
-            kind: TypeKind::Name(name.to_string()),
+            kind: TypeKind::Name(Symbol::intern(name)),
             optional: false,
             span: sp(),
         }
@@ -600,7 +601,7 @@ mod tests {
     }
 
     fn name(n: &str) -> Expr {
-        expr(ExprKind::Name(n.to_string()))
+        expr(ExprKind::Name(Symbol::intern(n)))
     }
 
     fn int(n: i64) -> Expr {

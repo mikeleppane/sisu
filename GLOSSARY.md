@@ -191,6 +191,11 @@ The program as the checker understood it: names resolved, every expression
 typed, sugar such as `while` and `?.` lowered. Codegen reads only this.
 _Avoid_: IR (that is LLVM's), HIR
 
+**Symbol**:
+A name as the parser and checker hold it: a small integer that stands for the
+name's text. The lexer interns each name, so equal names get the same symbol.
+_Avoid_: atom, interned string
+
 **Poison type**:
 The type the checker gives an expression that already failed a rule, so that
 one mistake produces one diagnostic.

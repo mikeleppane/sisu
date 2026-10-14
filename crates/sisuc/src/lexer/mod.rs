@@ -7,11 +7,12 @@ use std::iter::Peekable;
 use std::str::CharIndices;
 
 use crate::diagnostic::{Code, Diagnostic, DiagnosticKind, Join, LineIndex, Span};
+use crate::symbol::Symbol;
 use literal::End;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
-    Ident(String),
+    Ident(Symbol),
     /// A lone `_`, which only `let` and `for` accept (`_x` and `x_` are names).
     Underscore,
     /// An integer literal: its magnitude, at most `MIN_MAGNITUDE`, which only a unary `-`
@@ -836,7 +837,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         "_" => TokenKind::Underscore,
-        _ => TokenKind::Ident(text.to_string()),
+        _ => TokenKind::Ident(Symbol::intern(text)),
     }
 }
 
@@ -953,7 +954,7 @@ mod tests {
     }
 
     fn ident(s: &str) -> TokenKind {
-        TokenKind::Ident(s.to_string())
+        TokenKind::Ident(Symbol::intern(s))
     }
 
     /// The token of a decimal literal written without separators.

@@ -10,6 +10,7 @@ mod lexer;
 mod link;
 mod parser;
 mod report;
+mod symbol;
 mod tir;
 
 use std::ffi::OsString;

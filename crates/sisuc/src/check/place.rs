@@ -4,6 +4,7 @@ use super::expr::{literal_type, local, operator};
 use super::{BindingKind, Checked, Checker, Declared, Poisoned, UNKNOWN, block_expr, type_of};
 use crate::ast;
 use crate::diagnostic::{DiagnosticKind, Immutable, Span};
+use crate::symbol::Symbol;
 use crate::tir::{self, ExprKind, Type};
 
 /// A place, flattened. `operands` are its own operands in evaluation order: a field root's
@@ -81,7 +82,7 @@ impl Checker {
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
         let unit = || Poisoned::typed(Type::Unit);
-        if let ast::ExprKind::Name(name) = &target.kind {
+        if let ast::ExprKind::Name(name) = target.kind {
             // `assign` already reports an unknown target; a synthetic read would repeat it.
             if self.lookup(name).is_none() {
                 return self.assign(span, target, value);
@@ -193,8 +194,8 @@ impl Checker {
     /// The constant `name` as the root of a place that `span` assigns, reported, if `name` names
     /// one. The value is still checked against the constant's type. A broken constant poisons
     /// the assignment without a diagnostic.
-    fn constant_place(&mut self, span: Span, name: &str, element: bool) -> Option<CheckedPlace> {
-        let Declared::Known(constant) = self.constants.get(name)? else {
+    fn constant_place(&mut self, span: Span, name: Symbol, element: bool) -> Option<CheckedPlace> {
+        let Declared::Known(constant) = self.constants.get(&name)? else {
             return Some(CheckedPlace::failed());
         };
         let (declared, ty) = (constant.span, constant.ty.clone());
@@ -215,13 +216,13 @@ impl Checker {
     /// index, so the write replaces an element of it.
     fn place(&mut self, span: Span, target: &ast::Expr, element: bool) -> CheckedPlace {
         match &target.kind {
-            ast::ExprKind::Name(name) => {
+            &ast::ExprKind::Name(name) => {
                 let Some(b) = self.lookup(name) else {
                     if let Some(place) = self.constant_place(span, name, element) {
                         return place;
-                    } else if self.function_ids.contains_key(name) {
+                    } else if self.function_ids.contains_key(&name) {
                         self.report(DiagnosticKind::AssignToFunction {
-                            name: name.clone(),
+                            name: name.to_string(),
                             at: target.span,
                         });
                     } else {
@@ -251,7 +252,7 @@ impl Checker {
                 };
                 if let Some(cause) = cause {
                     self.report(DiagnosticKind::AssignToImmutable {
-                        name: name.clone(),
+                        name: name.to_string(),
                         at: span,
                         element,
                         cause,
@@ -278,7 +279,7 @@ impl Checker {
                 let field = &self.classes[class.0].fields[index];
                 let (ty, writable) = (field.ty.clone(), field.mutable);
                 if !writable {
-                    let (name, declared) = (field.name.name.clone(), field.name.span);
+                    let (name, declared) = (field.name.name.to_string(), field.name.span);
                     self.report(DiagnosticKind::AssignToImmutable {
                         name,
                         at: span,

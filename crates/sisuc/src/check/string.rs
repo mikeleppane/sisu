@@ -193,7 +193,7 @@ impl Checker {
         };
         if !args.is_empty() {
             let d = DiagnosticKind::ArgumentCount {
-                name: method.name.clone(),
+                name: method.name.to_string(),
                 want: 0,
                 found: args.len(),
                 at: span,
