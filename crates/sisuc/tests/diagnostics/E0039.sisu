@@ -1,5 +1,7 @@
+fn add(a: i64, a: i64) -> i64 {
+    a + a
+}
+
 fn main() {
-    let total = 1
-    let total = 2
-    print(total)
+    print(add(1, 2))
 }

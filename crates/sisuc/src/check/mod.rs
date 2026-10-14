@@ -2,17 +2,21 @@
 //! checks, and records every error instead of stopping at the first.
 
 mod array;
+mod constant;
 mod expr;
 mod place;
 mod stmt;
+mod string;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast;
 use crate::diagnostic::{
-    Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, Severity, Span, suggestion,
+    Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, MismatchFix, Severity, Span,
+    suggestion,
 };
 use crate::tir::{self, Type};
+use constant::ConstInfo;
 
 /// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
 /// still known (an `if` with one failed branch takes the other's), else it is the poison
@@ -66,9 +70,9 @@ struct Signature {
     ret: Option<Type>,
 }
 
-/// What a function, class or method name stands for: the first intact item of that name, or a
-/// broken one, which holds a syntax error. A broken name wins over an intact one, and every use of
-/// it is poisoned without a diagnostic: its item's error is reported already.
+/// What a function, class, constant or method name stands for: the first intact item of that
+/// name, or a broken one, which holds a syntax error. A broken name wins over an intact one, and
+/// every use of it is poisoned without a diagnostic: its item's error is reported already.
 #[derive(Clone, Copy)]
 enum Declared<T> {
     Known(T),
@@ -107,10 +111,22 @@ struct Binding {
     ty: Option<Type>,
     kind: BindingKind,
     span: Span,
-    /// The `mut` of a `let mut`; `Some` only when `kind` is `Var`, which a redeclared name is
-    /// with or without one.
+    /// The `mut` of a `let mut`; `Some` only when `kind` is `Var`, which a repeated parameter
+    /// is without one.
     keyword: Option<Span>,
     reassigned: bool,
+    /// Whether the binding visible where it was declared, in any scope, is a `let mut`.
+    shadows_mut: bool,
+}
+
+/// Which part of a loop the code being checked is in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoopContext {
+    /// The body, where `break` and `continue` act on the loop.
+    Body,
+    /// A `while` condition or a `for` source, which is not part of the body. The span is the
+    /// loop's keyword.
+    Header(Span),
 }
 
 struct Checker {
@@ -122,6 +138,8 @@ struct Checker {
     classes: Vec<ClassInfo>,
     /// The first class of each name, and every broken one.
     class_ids: HashMap<String, Declared<tir::ClassId>>,
+    /// The first constant of each name, and every broken one.
+    constants: HashMap<String, Declared<ConstInfo>>,
     diagnostics: Vec<Diagnostic>,
     // The rest is per body.
     scopes: Vec<HashMap<String, Binding>>,
@@ -130,8 +148,8 @@ struct Checker {
     ret: Option<Type>,
     /// The class of the method being checked, whose `self` is local 0.
     self_class: Option<tir::ClassId>,
-    /// Loops open around the code being checked; a `while` condition counts as inside.
-    loop_depth: usize,
+    /// Loops open around the code being checked, innermost last: what a `break` would act on.
+    loops: Vec<LoopContext>,
     /// Set by a `break` or `continue` outside a loop; `scoped_block` reads it per statement.
     invalid_jump: bool,
     /// Whether the expression being checked is a link of an assigned field's base chain (field
@@ -139,6 +157,15 @@ struct Checker {
     in_target: bool,
     /// Where each comment starts.
     comments: Vec<usize>,
+    /// Where each string literal starts, in order.
+    quotes: Vec<usize>,
+    /// Where each line break is, in order.
+    breaks: Vec<usize>,
+    /// Whether a constant's value is being checked, where interpolation is not known.
+    in_constant: bool,
+    /// Each `+` found to join a `string` under an expected `u8`, which a later check of it
+    /// checks with no expected type.
+    joins: HashSet<Span>,
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
@@ -148,18 +175,24 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         signatures: Vec::new(),
         classes: Vec::new(),
         class_ids: HashMap::new(),
+        constants: HashMap::new(),
         diagnostics: Vec::new(),
         scopes: Vec::new(),
         locals: Vec::new(),
         ret: None,
         self_class: None,
-        loop_depth: 0,
+        loops: Vec::new(),
         invalid_jump: false,
         in_target: false,
         comments: program.comments.clone(),
+        quotes: program.quotes.clone(),
+        breaks: program.breaks.clone(),
+        in_constant: false,
+        joins: HashSet::new(),
     };
     checker.collect_names(program);
     let declared = checker.collect_signatures(program);
+    checker.fold_constants(program);
     checker.never_constructed();
     checker.check_main(&declared);
     // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
@@ -231,12 +264,14 @@ impl Checker {
         self.diagnostics.push(kind.into());
     }
 
-    /// Pass 1: gives every class a `ClassId` and records the first function and class of each
-    /// name, so that types and calls can name any of them. Classes and functions share a
+    /// Pass 1: gives every class a `ClassId` and records the first function, class and constant
+    /// of each name, so that types, calls and uses can name any of them. They share a
     /// namespace. `FuncId`s run in source order, a class's methods at its place.
     fn collect_names(&mut self, program: &ast::Program) {
         let mut first = HashMap::new();
         let mut next_function = 0;
+        // Source order among the constants.
+        let mut order = 0;
         for item in &program.items {
             match item {
                 ast::Item::Class(class) => {
@@ -270,6 +305,17 @@ impl Checker {
                     }
                     next_function += 1;
                 }
+                ast::Item::Const(c) => {
+                    if !self.built_in(&c.name)
+                        && self.first_callable(&mut first, Definition::Constant, &c.name)
+                    {
+                        self.constants.insert(
+                            c.name.name.clone(),
+                            Declared::Known(ConstInfo::new(c.name.span, order)),
+                        );
+                    }
+                    order += 1;
+                }
             }
         }
         for broken in &program.broken {
@@ -281,20 +327,26 @@ impl Checker {
                 ast::BrokenKind::Class => {
                     self.class_ids.insert(name.clone(), Declared::Broken);
                 }
+                ast::BrokenKind::Constant => {
+                    self.constants.insert(name.clone(), Declared::Broken);
+                }
             }
-            // Functions and classes share a namespace, so an intact item of the other kind and
-            // this name is poisoned too.
+            // Functions, classes and constants share a namespace, so an intact item of another
+            // kind and this name is poisoned too.
             if let Some(class) = self.class_ids.get_mut(name) {
                 *class = Declared::Broken;
             }
             if let Some(function) = self.function_ids.get_mut(name) {
                 *function = Declared::Broken;
             }
+            if let Some(constant) = self.constants.get_mut(name) {
+                *constant = Declared::Broken;
+            }
         }
     }
 
-    /// Whether `name` is a built-in type's, which no class or function may take; reports it
-    /// when it is.
+    /// Whether `name` is a built-in type's, which no class, function or constant may take;
+    /// reports it when it is.
     fn built_in(&mut self, name: &ast::Ident) -> bool {
         let found = built_in_type(&name.name).is_some();
         if found {
@@ -306,7 +358,7 @@ impl Checker {
         found
     }
 
-    /// Whether `name` is the first function or class of its name; reports it when not.
+    /// Whether `name` is the first function, class or constant of its name; reports it when not.
     fn first_callable(
         &mut self,
         first: &mut HashMap<String, (Span, Definition)>,
@@ -358,6 +410,7 @@ impl Checker {
                     continue;
                 }
                 ast::Item::Class(class) => class,
+                ast::Item::Const(_) => continue,
             };
             let id = tir::ClassId(next_class);
             next_class += 1;
@@ -498,7 +551,8 @@ impl Checker {
                     Type::Class(id)
                 } else {
                     let span = Span::new(ty.span.start, ty.span.start + name.len());
-                    let types = ["i64", "u8", "bool"].map(|ty| (ty, Definition::Type));
+                    let types =
+                        ["i64", "u8", "bool", "char", "string"].map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
                     self.report(DiagnosticKind::UnknownType {
                         name: name.clone(),
@@ -622,8 +676,8 @@ impl Checker {
     }
 
     /// "expected `want`, found `got`" at `span`, where `source` is the expression found, when
-    /// known. Between `u8` and `i64` it offers to convert `source`, unless that is an `if`: an
-    /// `else if` is one, and `else u8(if ...)` does not parse.
+    /// known. Between `u8`, `i64` and `char` it offers to convert `source`, unless that is an
+    /// `if`: an `else if` is one, and `else u8(if ...)` does not parse.
     fn mismatch(
         &self,
         span: Span,
@@ -631,25 +685,33 @@ impl Checker {
         want: &Type,
         got: &Type,
     ) -> Diagnostic {
-        let to = match (payload(want), got) {
-            (Type::U8, Type::I64) => Some("u8"),
-            (Type::I64, Type::U8) => Some("i64"),
-            _ => None,
+        // `u8` and `char` convert into each other through `i64`.
+        let (to, through) = match (payload(want), got) {
+            (Type::U8, Type::I64) => (Some("u8"), None),
+            (Type::I64, Type::U8 | Type::Char) => (Some("i64"), None),
+            (Type::Char, Type::I64) => (Some("char"), None),
+            (Type::U8, Type::Char) => (Some("u8"), Some("i64")),
+            (Type::Char, Type::U8) => (Some("char"), Some("i64")),
+            _ => (None, None),
         };
         DiagnosticKind::Mismatch {
-            want: self.type_name(want),
+            want: vec![self.type_name(want)],
             got: self.type_name(got),
             at: span,
-            convert: to
+            other: None,
+            fix: to
                 .zip(source.filter(|e| {
                     !matches!(
                         e.kind,
                         ast::ExprKind::If { .. } | ast::ExprKind::IfLet { .. }
                     )
                 }))
-                .map(|(to, e)| Conversion {
-                    to,
-                    operand: e.span,
+                .map(|(to, e)| {
+                    MismatchFix::Convert(Conversion {
+                        to,
+                        through,
+                        operand: e.span,
+                    })
                 }),
         }
         .into()
@@ -662,6 +724,8 @@ fn built_in_type(name: &str) -> Option<Type> {
         "i64" => Some(Type::I64),
         "u8" => Some(Type::U8),
         "bool" => Some(Type::Bool),
+        "char" => Some(Type::Char),
+        "string" => Some(Type::String),
         _ => None,
     }
 }

@@ -8,6 +8,6 @@ fn total(xs: [i64]) -> i64 {
 
 fn main() {
     let xs = [1, 2, 3]
-    let n: i64 = "three"
+    let n: i64 = "three
     print(totl(xs))
 }

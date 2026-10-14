@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::io::Write;
 
 use crate::diagnostic::{Code, Diagnostic, LineIndex, Severity, json};
+use crate::front_end;
 
 /// How the reporter writes.
 pub(crate) enum Format {
@@ -37,7 +38,7 @@ impl<W: Write> Reporter<W> {
     /// Writes each of `diagnostics` about `source`, read from `path`.
     pub(crate) fn diagnostics(&mut self, path: &str, source: &str, diagnostics: &[Diagnostic]) {
         let lines = LineIndex::new(source);
-        for d in diagnostics {
+        for d in &front_end::sound_fixes(source, diagnostics) {
             match d.severity() {
                 Severity::Error => self.errors += 1,
                 Severity::Warning => self.warnings += 1,
@@ -116,6 +117,7 @@ mod tests {
             element: false,
             cause: Immutable::Let {
                 declared: Span::new(20, 21),
+                redeclared: false,
             },
         }
         .into()

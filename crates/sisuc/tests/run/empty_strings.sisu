@@ -1,0 +1,14 @@
+// The empty string is a real string: it has a length, equals itself and sorts first.
+fn main() {
+    print("".len())                  // 0
+    print("" == "")                  // true
+    print("" < "a")                  // true
+    print("" + "")                   // (an empty line)
+    print("" + "" + "x")             // x: the empty owned result has capacity 0, so it grows to 1
+    let mut e = ""
+    e += "x"
+    print(e)                         // x
+    print("".chars().len())          // 0
+    print("".bytes().len())          // 0
+    print(string("".chars()) == "")  // true
+}

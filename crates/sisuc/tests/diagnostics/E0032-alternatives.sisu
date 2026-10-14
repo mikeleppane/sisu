@@ -1,0 +1,4 @@
+fn main() {
+    let ok = true
+    print(i64(ok))
+}

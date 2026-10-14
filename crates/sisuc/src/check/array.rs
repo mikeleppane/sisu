@@ -28,10 +28,11 @@ impl Checker {
                 Some(ty) if *ty == UNKNOWN => return Err(Poisoned::error()),
                 Some(ty) => (
                     DiagnosticKind::Mismatch {
-                        want: self.type_name(ty),
+                        want: vec![self.type_name(ty)],
                         got: "[]".to_string(),
                         at: span,
-                        convert: None,
+                        other: None,
+                        fix: None,
                     },
                     true,
                 ),
@@ -290,7 +291,7 @@ impl Checker {
     }
 
     /// Reports `d` for a method call that cannot be checked, and its arguments' own errors.
-    fn rejected(&mut self, d: Diagnostic, args: &[ast::Arg]) -> Checked {
+    pub(super) fn rejected(&mut self, d: Diagnostic, args: &[ast::Arg]) -> Checked {
         self.diagnostics.push(d);
         self.labels(args);
         self.stray(args);
@@ -317,7 +318,7 @@ fn expected_element(expected: Option<&Type>) -> Option<&Type> {
 }
 
 /// The two operands `spilled` hands back for a node of two.
-fn pair(operands: Vec<tir::Expr>) -> (Box<tir::Expr>, Box<tir::Expr>) {
+pub(super) fn pair(operands: Vec<tir::Expr>) -> (Box<tir::Expr>, Box<tir::Expr>) {
     let [a, b]: [tir::Expr; 2] = operands
         .try_into()
         .expect("`spilled` should hand its closure one operand per input, and there are two");

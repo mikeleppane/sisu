@@ -1,0 +1,14 @@
+error[E0032]: expected `string`, found `i64`
+ --> E0032-u8-join.sisu:3:17
+  |
+3 |     let b: u8 = 300 + s
+  |                 ^^^   - `+` joins this `string`
+  |
+help: use interpolation
+  |
+3 -     let b: u8 = 300 + s
+3 +     let b: u8 = "{300}{s}"
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

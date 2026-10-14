@@ -18,7 +18,7 @@ Types are checked at compile time and inferred for local variables. There is
 no null: a value that may be missing has an optional type such as `Tree?`, and
 the checker makes the program handle `None`.
 
-Sisu is a passion project at an early stage. It cannot handle text yet, and any
+Sisu is a passion project at an early stage. It cannot read input yet, and any
 change may break programs that compiled before it. See [Status](#status).
 
 ## What Sisu values
@@ -168,8 +168,9 @@ editors and agents, and marks each fix as certain or a guess.
 ## Status
 
 Sisu has no releases and runs on x86-64 Linux only. Today it compiles
-functions, `i64`, `u8` and `bool`, classes with methods, optionals and arrays.
-Strings come next, then input and output, then floats. After that the
+functions, `i64`, `u8`, `bool` and `char`, classes with methods, optionals,
+arrays, and strings with `+`, `+=`, interpolation and `chars()`.
+Input and output come next, then floats. After that the
 [roadmap](docs/roadmap.md) proposes enums with `match`, generics, closures,
 records, modules with a standard library, and `Result` with `?`.
 

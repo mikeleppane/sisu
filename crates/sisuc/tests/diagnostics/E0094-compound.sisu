@@ -1,0 +1,5 @@
+fn main() {
+    let mut c = 'a'
+    c += 1
+    print(c)
+}

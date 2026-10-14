@@ -1,0 +1,4 @@
+fn main() {
+    let c = '\uE4'
+    print(c)
+}

@@ -8,13 +8,14 @@ mod render;
 mod suggest;
 
 pub(crate) use registry::{
-    Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable, Join, LetField, Literal,
+    CharArithmetic, Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable,
+    InterpolateHelp, Join, LetField, Literal, LiteralKind, MismatchFix, Operand, Panic,
     SemicolonPlace, Unwrap,
 };
 pub(crate) use suggest::{Suggestion, suggestion};
 
 /// A byte range of the source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Span {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -139,9 +140,25 @@ impl Diagnostic {
     pub(crate) fn fixes(&self) -> &[Fix] {
         &self.fixes
     }
+
+    /// Keeps only the fixes that `keep` accepts.
+    pub(crate) fn retain_fixes(&mut self, keep: impl FnMut(&Fix) -> bool) {
+        self.fixes.retain(keep);
+    }
 }
 
 impl Fix {
+    /// `source` with the edits applied. Two insertions at one offset keep their order.
+    pub(crate) fn apply(&self, source: &str) -> String {
+        let mut edits: Vec<&Edit> = self.edits.iter().collect();
+        edits.sort_by_key(|e| e.span.start);
+        let mut out = source.to_string();
+        for edit in edits.iter().rev() {
+            out.replace_range(edit.span.start..edit.span.end, &edit.replacement);
+        }
+        out
+    }
+
     pub(crate) fn message(&self) -> &str {
         &self.message
     }

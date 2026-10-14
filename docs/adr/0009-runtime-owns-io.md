@@ -40,5 +40,7 @@ return only integers, `bool`, floats and pointers.
 - Until `Result` exists (milestone 12), an I/O function reports failure as
   `None` or a panic. The runtime signals it with a null pointer or a
   negative count.
-- Where invalid UTF-8 is caught, in the runtime or in generated code, is
-  decided with what a string is (milestone 4).
+- Where invalid UTF-8 is caught is settled by
+  [ADR 0014](0014-strings-are-utf-8-values.md): the first operation that
+  turns bytes into a string, such as a read from standard input, validates
+  them.

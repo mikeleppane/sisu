@@ -1,0 +1,11 @@
+error[E0034]: `main` is already a constant
+ --> E0034-const-first.sisu:3:4
+  |
+1 | const main = 1
+  |       ---- first defined here
+2 |
+3 | fn main() {
+  |    ^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0034

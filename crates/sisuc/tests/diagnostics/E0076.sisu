@@ -1,0 +1,4 @@
+fn main() {
+    let n = 0x
+    print(n)
+}

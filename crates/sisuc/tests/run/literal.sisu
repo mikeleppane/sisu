@@ -1,0 +1,12 @@
+fn iterations() -> i64 { 1000 }
+
+// A literal lives in the program image: each evaluation retains its block and allocates nothing,
+// and the count never reaches 0, so the block is never freed.
+fn main() {
+    let mut total = 0
+    for i in 0..iterations() {
+        let s = "abc"
+        total += s.len()
+    }
+    print(total)                     // 3000 (0 with no iterations)
+}

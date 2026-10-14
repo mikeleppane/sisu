@@ -1,0 +1,8 @@
+error[E0076]: `0B` needs at least one digit
+ --> E0076-upper-binary.sisu:2:13
+  |
+2 |     let n = 0B
+  |             ^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0076

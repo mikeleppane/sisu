@@ -123,13 +123,28 @@ fn allocs_in_panics_without_the_summary_line() {
 }
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
-const ALLOCATIONS: [(&str, &str, &str, i64); 3] = [
+const ALLOCATIONS: [(&str, &str, &str, i64); 12] = [
     // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
     ("copies", "499500\n1000\n", "0\n0\n", 1000),
     // `for` over an array copies nothing.
     ("walk", "10000000\n", "0\n", 0),
+    // A literal lives in the program image: evaluating it allocates nothing.
+    ("literal", "3000\n", "0\n", 0),
+    // One copy of the literal to capacity 2, then reallocations to 4, 8, ..., 1024. Valgrind
+    // counts each `realloc` as an allocation.
+    ("append_local", "1001\nx\n", "1\na\n", 10),
+    ("append_assign", "1001\nx\n", "1\na\n", 10),
+    // `saved` is live across each append, so each append copies once.
+    ("append_shared", "1001\n1000\nx\nx\n", "1\n1\na\na\n", 1000),
+    ("append_grow", "1001\nx\n", "1\na\n", 10),
+    // A field or element append is in place too: one copy, then a reallocation per doubling.
+    ("append_field", "1001\nx\n", "1\na\n", 10),
+    ("append_field_assign", "1001\nx\n", "1\na\n", 10),
+    ("append_element", "1001\nx\n", "1\na\n", 10),
+    // Each interpolation allocates its result and nothing else.
+    ("interp", "9\ne\n", "1\n-\n", 1000),
 ];
 
 #[test]
@@ -269,6 +284,10 @@ fn panic_cases() {
             "u8(a)",
             "value does not fit in `u8`",
         ),
+        char_case("char_negative", "-1"),
+        char_case("char_d800", "0xD800"),
+        char_case("char_dfff", "0xDFFF"),
+        char_case("char_above", "0x110000"),
         sum_case("sum_overflow", "9_223_372_036_854_775_807, 1"),
         // The total fits, but the running sum overflows at the second element.
         sum_case("sum_overflow_midway", "9_223_372_036_854_775_807, 1, -1"),
@@ -283,13 +302,8 @@ fn panic_cases() {
             "-1",
             "index -1 out of bounds for length 5",
         ),
-        // The inner index is checked at its own level, after the outer one.
-        (
-            "write_bounds",
-            "fn main() {\n    let mut grid = [[false, false, false]]\n    grid[0][9] = true\n}\n"
-                .to_string(),
-            "3:13: index 9 out of bounds for length 3".to_string(),
-        ),
+        write_bounds_case(),
+        append_bounds_case(),
         (
             "length_negative",
             "fn main() {\n    let n = -1\n    let xs = [0; n]\n    print(xs.len())\n}\n"
@@ -321,6 +335,29 @@ fn panic_cases() {
     }
 }
 
+/// A `panic_cases` row for `grid[0][9] = true`: the inner index is checked at its own level,
+/// after the outer one.
+fn write_bounds_case() -> (&'static str, String, String) {
+    (
+        "write_bounds",
+        "fn main() {\n    let mut grid = [[false, false, false]]\n    grid[0][9] = true\n}\n"
+            .to_string(),
+        "3:13: index 9 out of bounds for length 3".to_string(),
+    )
+}
+
+/// A `panic_cases` row for `names[i] += say()` with `i` past the end: the append reads the
+/// element's slot, bounds-checked, before `say()` runs. `say` would print, so the empty stdout
+/// `panic_cases` expects shows the panic comes first.
+fn append_bounds_case() -> (&'static str, String, String) {
+    (
+        "append_bounds",
+        "fn say() -> string {\n    print(\"said\")\n    \"x\"\n}\nfn main() {\n    let mut names = [\"a\", \"b\"]\n    let i = 3\n    names[i] += say()\n}\n"
+            .to_string(),
+        "8:11: index 3 out of bounds for length 2".to_string(),
+    )
+}
+
 /// A `panic_cases` row whose panic is at `print(<expr>)` on line 3, column 11.
 fn print_case(
     name: &'static str,
@@ -332,6 +369,16 @@ fn print_case(
         name,
         format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
         format!("3:11: {message}"),
+    )
+}
+
+/// A `panic_cases` row whose `char(a)` panics for `a` set to `value`.
+fn char_case(name: &'static str, value: &str) -> (&'static str, String, String) {
+    print_case(
+        name,
+        &format!("let a = {value}"),
+        "char(a)",
+        "value is not a valid `char`",
     )
 }
 

@@ -4,14 +4,15 @@
 //!
 //! The walk goes backward through each function, in the order codegen evaluates nodes, with
 //! the set of locals live after the current point. It must match codegen exactly:
-//! - `Call`, `New` and `ArrayLit` evaluate their arguments left to right; `Index` evaluates
-//!   base then index; `Contains` base then value; `ArrayFill` value then length; `Equal`,
-//!   `Is` and arithmetic lhs then rhs.
+//! - `Call`, `New` and `ArrayLit` evaluate their arguments left to right, and `Interpolate` its
+//!   parts; `Index` evaluates base then index; `Contains` base then value; `ArrayFill` value
+//!   then length; `Equal`, `Is`, `Concat` and arithmetic lhs then rhs.
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
 //! - Assigning an element evaluates a field root's base, then the indexes from the root
-//!   outwards, then the value, then uses the root local without moving it.
+//!   outwards, then the value, then uses the root local without moving it. An `Append` to a
+//!   field or an element evaluates as the assignment to it does.
 //! - `Return` leaves nothing live, `Break` takes the loop's exit set, `Continue` its head set.
 //! - `&&`, `||` and each step of a comparison chain have an edge that skips the rest.
 
@@ -68,7 +69,7 @@ impl Walk {
                 self.live[local.0] = false;
                 self.expr(value);
             }
-            Stmt::Assign { place, value } => {
+            Stmt::Assign { place, value } | Stmt::Append { place, value } => {
                 // An element write loads its root local's slot after the value, and keeps it.
                 if let Some(root) = root_local(place) {
                     self.live[root.0] = true;
@@ -93,6 +94,10 @@ impl Walk {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per node kind, so the evaluation order reads in one place"
+    )]
     fn expr(&mut self, e: &mut Expr) {
         if let ExprKind::Local(local) | ExprKind::Move(local) = e.kind {
             if self.rewrite && self.counted[local.0] && !self.live[local.0] {
@@ -104,16 +109,24 @@ impl Walk {
         match &mut e.kind {
             ExprKind::Int(_)
             | ExprKind::Bool(_)
+            | ExprKind::Char(_)
+            | ExprKind::Str(_)
             | ExprKind::None
             | ExprKind::Local(_)
             | ExprKind::Move(_) => {}
-            ExprKind::Call { args, .. } | ExprKind::New { args, .. } | ExprKind::ArrayLit(args) => {
+            ExprKind::Call { args, .. }
+            | ExprKind::New { args, .. }
+            | ExprKind::ArrayLit(args)
+            | ExprKind::Interpolate(args) => {
                 for arg in args.iter_mut().rev() {
                     self.expr(arg);
                 }
             }
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
+            | ExprKind::Chars(operand)
+            | ExprKind::Bytes(operand)
+            | ExprKind::FromChars(operand)
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
@@ -130,6 +143,7 @@ impl Walk {
                 self.expr(lhs);
             }
             ExprKind::Binary { lhs, rhs, .. }
+            | ExprKind::Concat { lhs, rhs }
             | ExprKind::Equal { lhs, rhs, .. }
             | ExprKind::Is { lhs, rhs }
             | ExprKind::ArrayFill {
@@ -332,6 +346,26 @@ mod tests {
         );
     }
 
+    /// `Interpolate` evaluates its parts left to right: only the last one's read may move.
+    #[test]
+    fn interpolate_parts_left_to_right() {
+        has(
+            "fn f(s: string) -> string { \"{s}{s}\" }",
+            "f",
+            &["(interp s#0 (move s#0))"],
+        );
+    }
+
+    /// `Concat` evaluates its left operand, then its right: only the right one's read may move.
+    #[test]
+    fn concat_lhs_then_rhs() {
+        has(
+            "fn f(s: string) -> string { s + s }",
+            "f",
+            &["(concat s#0 (move s#0))"],
+        );
+    }
+
     /// A comparison chain evaluates its operands in order, so only the last read moves.
     #[test]
     fn comparison_chain_reads() {
@@ -448,6 +482,15 @@ mod tests {
                 "(= (index ys#1 (- (len (move xs#0)) 1)) 5)",
             ],
         );
+    }
+
+    /// An `Append` evaluates as the assignment to its place: a field root's base before the
+    /// value, and an element's root local after the value, never moved.
+    #[test]
+    fn append_order() {
+        let src = "class P {\n    mut name: string\n}\nfn field(p: P) {\n    p.name = p.name + p.name\n}\nfn element() {\n    let mut xs = [\"a\"]\n    xs[0] = xs[0] + xs[0]\n}";
+        has(src, "field", &["(append (. p#0 name) (. (move p#0) name))"]);
+        has(src, "element", &["(append (index xs#0 0) (index xs#0 0))"]);
     }
 
     /// `break` leaves the loop with the set live after it, so a read before the loop stays live.

@@ -1,0 +1,17 @@
+fn iterations() -> i64 { 1000 }
+
+class P {
+    mut name: string
+}
+
+// `p.name` holds its string once, so each `p.name += "x"` appends in place: one copy of the
+// literal into a block of capacity 2, then a reallocation at each doubling to 1024.
+fn main() {
+    let p = P(name: "a")
+    for i in 0..iterations() {
+        p.name += "x"
+    }
+    print(p.name.len())              // 1001 (1 with no iterations)
+    let cs = p.name.chars()
+    print(cs[cs.len() - 1])          // x (a with no iterations): the last char, read through `chars()`
+}

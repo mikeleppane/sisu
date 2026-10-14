@@ -1,0 +1,11 @@
+error[E0001]: cannot assign to `LIMIT`
+ --> E0001-const.sisu:4:5
+  |
+1 | const LIMIT = 100
+  |       ----- declared with `const` here
+...
+4 |     LIMIT = 200
+  |     ^^^^^^^^^^^ cannot assign
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001

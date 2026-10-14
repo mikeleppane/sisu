@@ -1,0 +1,3 @@
+fn main() {
+    let match = 1
+}

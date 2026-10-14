@@ -1,0 +1,4 @@
+fn main() {
+    let s = "items"
+    let b: u8 = 300 + s
+}

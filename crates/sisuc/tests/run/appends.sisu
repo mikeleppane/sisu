@@ -1,0 +1,98 @@
+// An append reads its place first, then the appended text, and copies when another holder
+// shares the string or an array on its path. Every string a line drops is built at run time, so
+// Valgrind checks that each is released exactly once.
+class Q {
+    mut s: string
+}
+
+class P {
+    mut name: string
+    q: Q
+}
+
+class B {
+    mut tags: [string]
+}
+
+// Appends `!` to `p.name`, then gives `?`.
+fn g(p: P) -> string {
+    p.name += "!"
+    "?"
+}
+
+// Shares `p.name` with `p.q.s`, then gives `x`.
+fn keep(p: P) -> string {
+    let q = p.q
+    q.s = p.name
+    "x"
+}
+
+// Shares `names` with `b.tags`, then gives `x`.
+fn share(names: [string], b: B) -> string {
+    b.tags = names
+    "x"
+}
+
+fn main() {
+    let mut a = "a" + "b"
+    let b = a
+    a += "x"
+    print(a)                         // abx
+    print(b)                         // ab
+    let mut s = "c" + "d"
+    s += s
+    print(s)                         // cdcd
+
+    let p = P(name: "p" + "q", q: Q(s: "s" + "t"))
+    let saved = p.name
+    p.name += "x"
+    print(p.name)                    // pqx
+    print(saved)                     // pq
+    p.name = p.name + g(p)
+    print(p.name)                    // pqx?: the name before `g`, then what `g` gives
+    p.name = p.name + keep(p)
+    print(p.name)                    // pqx?x
+    print(p.q.s)                     // pqx?: `keep` shared the name before the append
+    p.name = "o" + "k"
+    let before = p.name
+    p.name += p.name
+    print(p.name)                    // okok
+    print(before)                    // ok
+    p.name += "\0x"
+    print(p.name)                    // okok<NUL>x
+    print(p.name.len())              // 6
+
+    let mut names = ["u" + "p", "m" + "e"]
+    let copy = names
+    names[0] += "x"
+    print(names[0])                  // upx
+    print(copy[0])                   // up
+    names[0] += names[0]
+    print(names[0])                  // upxupx
+    names[1] += names[0]
+    print(names[1])                  // meupxupx
+    print(copy[0])                   // up
+    print(copy[1])                   // me
+
+    // `share` stores `names` elsewhere after the read, so the write copies the array.
+    let holder = B(tags: [])
+    names[0] = names[0] + share(names, holder)
+    print(names[0])                  // upxupxx
+    print(holder.tags[0])            // upxupx
+    let tags = holder.tags
+    holder.tags[0] += "!"
+    print(holder.tags[0])            // upxupx!
+    print(tags[0])                   // upxupx
+
+    let mut grid = [["a" + "b", "c" + "d"], ["e" + "f"]]
+    let saved = grid
+    grid[0][1] += "x"
+    print(grid[0][1])                // cdx
+    print(saved[0][1])               // cd
+
+    for i in 0..3 {
+        p.name = "n{i}"
+        p.name += "!"
+    }
+    print(p.name)                    // n2!
+}

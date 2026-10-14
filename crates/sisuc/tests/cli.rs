@@ -22,7 +22,7 @@ fn emit_tokens_names_the_class_and_optional_tokens() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(
         dir.join("emit_new_tokens.sisu"),
-        "class None is self . ? ?. ??",
+        "class None is self . ? ?. ?? _",
     )
     .expect("writes");
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
@@ -37,7 +37,7 @@ fn emit_tokens_names_the_class_and_optional_tokens() {
         .map(|l| l.split(' ').nth(1).expect("name column"))
         .collect();
     assert_eq!(
-        names[..8],
+        names[..9],
         [
             "Class",
             "NoneKw",
@@ -46,9 +46,66 @@ fn emit_tokens_names_the_class_and_optional_tokens() {
             "Dot",
             "Question",
             "QuestionDot",
-            "QuestionQuestion"
+            "QuestionQuestion",
+            "Underscore"
         ]
     );
+}
+
+#[test]
+fn emit_tokens_char() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("emit_tokens_char.sisu"), "'ä' '\\n'\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_char.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("1:1 Char 'ä'\n1:5 Char '\\n'\n"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn emit_tokens_strings() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(
+        dir.join("emit_tokens_strings.sisu"),
+        "let c = 'a'\nprint(\"a{c}b{c}c\" + \"d\")\n",
+    )
+    .expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_strings.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "1:9 Char 'a'\n",
+        "2:7 StrHead \"a{\n2:10 Ident c\n2:11 StrMiddle }b{\n2:14 Ident c\n2:15 StrTail }c\"\n",
+        "2:21 Str \"d\"\n",
+    ] {
+        assert!(stdout.contains(line), "{stdout}");
+    }
+}
+
+#[test]
+fn emit_tokens_reserved() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("emit_tokens_reserved.sisu"), "match\nconst\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_reserved.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("1:1 Reserved match\n"), "{stdout}");
+    assert!(stdout.contains("\n2:1 Const const\n"), "{stdout}");
 }
 
 #[test]
@@ -187,7 +244,7 @@ fn parse_error_exits_1() {
     assert!(at_severity(&stderr, "error") == Some(0), "{stderr}");
     assert!(
         stderr.contains(
-            "error[E0011]: expected `fn` or `class`, found `let`\n --> parse_error_exits_1.sisu:1:1"
+            "error[E0011]: expected `fn`, `class` or `const`, found `let`\n --> parse_error_exits_1.sisu:1:1"
         ),
         "{stderr}"
     );

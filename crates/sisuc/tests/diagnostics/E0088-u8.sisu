@@ -1,0 +1,6 @@
+const LIMIT = 300
+const SMALL = u8(LIMIT)
+
+fn main() {
+    print(SMALL)
+}

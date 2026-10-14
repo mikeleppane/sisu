@@ -1,0 +1,27 @@
+// Every escape in one string, with `\0` in the middle: `print` writes the bytes by length, so the
+// zero byte and what follows it reach standard output. Comparison and `len` read lengths too,
+// never a terminating zero. `\u{E4}` is `ä` precomposed and `a\u{308}` is `a` plus a combining
+// diaeresis: written as escapes so that no editor can normalise them, they are not equal.
+fn main() {
+    // tab<TAB>line
+    // quote" apostrophe' backslash\ braces{} zero<NUL>after return<CR> umlaut ä emoji 😀
+    print("tab\tline\nquote\" apostrophe\' backslash\\ braces\{\} zero\0after return\r umlaut \u{E4} emoji \u{1F600}")
+    print("a\0b" == "a")             // false: the zero byte is content, so the lengths differ
+    print("a\0b" < "a\0c")           // true: the bytes after the zero decide
+    print("a\0b".len())              // 3
+    print("\u{E4}" == "a\u{308}")    // false: no Unicode normalisation
+    // `+` and `+=` copy bytes by length, zero bytes included, also across growth.
+    let joined = "a\0b" + "ä\0c"
+    print(joined)                    // a<NUL>bä<NUL>c
+    print(joined.len())              // 7
+    let mut z = "\0"
+    for i in 0..10 {
+        z += "a\0"
+    }
+    print(z)                         // <NUL>, then a<NUL> ten times
+    print(z.len())                   // 21
+    // Interpolation copies a string part by its length too.
+    let shown = "<{joined}>{1}"
+    print(shown)                     // <a<NUL>bä<NUL>c>1
+    print(shown.len())               // 10
+}

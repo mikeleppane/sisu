@@ -1,0 +1,32 @@
+// `==` on composites compares strings by content: in arrays, optionals and class fields, and
+// `[char]` by code point. The `[string?]` holds strings built at run time, so dropping it is
+// checked under Valgrind.
+class Person {
+    name: string
+    age: i64
+}
+
+fn maybe(c: bool) -> string? { if c { "" } else { None } }
+
+fn main() {
+    print(["a", "bc"] == ["a", "bc"])                    // true
+    print(["a", "bc"] == ["a", "b"])                     // false
+    print(["a"] == ["a", "bc"])                          // false: the lengths differ
+    print(maybe(true) == maybe(false))                   // false: `""` is not `None`
+    print(maybe(true) == "")                             // true
+    print(maybe(false) == maybe(false))                  // true
+    print(['a', 'ä'] == ['a', 'ä'])                      // true
+    print(['a', 'ä'] == ['a', 'a'])                      // false
+    print(Person(name: "Ann", age: 3) == Person(name: "Ann", age: 3)) // true
+    print(Person(name: "Ann", age: 3) == Person(name: "Anna", age: 3)) // false
+    let filled = ["ab"; 3]
+    print(filled == ["ab", "ab", "ab"])                  // true
+    print(filled != ["ab", "ab", "ac"])                  // true
+    let some: string? = "four"
+    let none: string? = None
+    print(some?.len() ?? 0)                              // 4
+    print(none?.len() ?? 0)                              // 0
+    let held: [string?] = ["a" + "b", None, "c" + ""]
+    print(held == ["ab", None, "c"])                     // true
+    print(held == [None, None, "c" + ""])                // false
+}

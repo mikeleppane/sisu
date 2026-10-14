@@ -36,7 +36,7 @@ Read each target below before you decide it needs no edit.
 | The diff changes | Check and update |
 | --- | --- |
 | Flags or usage text in `crates/sisuc/src/main.rs` | The "Look inside the compiler" table in `docs/development.md`; the Driver card in `docs/architecture/sisu-pipeline.json` |
-| A stage, or what passes between stages: the lexer, parser and AST (`lexer.rs`, `parser.rs`, `ast.rs`), the checker (`check/`) and `tir.rs`, codegen (`codegen/`, including symbol names and LLVM passes), linking (`link.rs`), diagnostics (`diagnostic/`, `report.rs`, `front_end.rs`); also which stage lowers which sugar | The stage paragraphs in `docs/architecture.md`; the diagram (step 4); the "Compiler" terms in `GLOSSARY.md` |
+| A stage, or what passes between stages: the lexer, parser and AST (`lexer/`, `parser.rs`, `ast.rs`), the checker (`check/`) and `tir.rs`, codegen (`codegen/`, including symbol names and LLVM passes), linking (`link.rs`), diagnostics (`diagnostic/`, `report.rs`, `front_end.rs`); also which stage lowers which sugar | The stage paragraphs in `docs/architecture.md`; the diagram (step 4); the "Compiler" terms in `GLOSSARY.md` |
 | Functions exported by `crates/runtime` | The Runtime paragraph in `docs/architecture.md`; the Runtime card in the diagram JSON |
 | A language feature added, removed or renamed (a case in `crates/sisuc/tests/run` added or changed) | "What works today" in `docs/roadmap.md`; "A taste of Sisu" in `README.md`, only if a headline feature is missing from its examples; `GLOSSARY.md` for the terms |
 | A milestone starting or finishing | The milestone line in `README.md`; the milestone table in `docs/roadmap.md` |

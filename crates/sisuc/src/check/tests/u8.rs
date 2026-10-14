@@ -91,6 +91,16 @@ fn literal_does_not_fit() {
 }
 
 #[test]
+fn hex_literal_follows_the_u8_rules() {
+    contains("fn main() { let b: u8 = 0xFF }", &["255u8"]);
+    // The error quotes the literal as written.
+    codes(
+        "fn main() { let b: u8 = 0x100 }",
+        &[(Code::IntegerDoesNotFit, (1, 25))],
+    );
+}
+
+#[test]
 fn u8_cannot_be_negative() {
     codes(
         "fn main() { let x: u8 = -1 }",
@@ -274,14 +284,24 @@ fn mismatch_has_no_fix_for_an_else_if() {
 
 #[test]
 fn already_that_type() {
+    let src = "fn f(x: i64, b: u8) {\n    print(i64(x))\n    print(u8(b))\n    print(i64(5))\n}\nfn main() {}";
     codes(
-        "fn f(x: i64, b: u8) {\n    print(i64(x))\n    print(u8(b))\n    print(i64(5))\n}\nfn main() {}",
+        src,
         &[
             (Code::AlreadyConverted, (2, 15)),
             (Code::AlreadyConverted, (3, 14)),
             (Code::AlreadyConverted, (4, 15)),
         ],
     );
+    // Each gains the certain fix that removes the conversion.
+    for (conversion, fixed) in [("i64(x)", "x"), ("u8(b)", "b"), ("i64(5)", "5")] {
+        let src = format!("fn f(x: i64, b: u8) {{\n    print({conversion})\n}}\nfn main() {{}}");
+        let d = &diags(&src)[0];
+        let edits: Vec<_> = d.fixes().iter().flat_map(Fix::edits).collect();
+        assert!(d.fixes().iter().all(Fix::certain));
+        assert!(apply(&src, &edits).contains(&format!("print({fixed})")));
+        fix_removes_its_code(&src, d);
+    }
 }
 
 #[test]

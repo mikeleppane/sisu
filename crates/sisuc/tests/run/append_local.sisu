@@ -1,0 +1,14 @@
+fn iterations() -> i64 { 1000 }
+
+// `s` holds its string once, so each `s += "x"` appends in place. The first append copies the
+// literal into a block of capacity 2; after that the block is reallocated each time it is full,
+// to the capacities 4, 8, ..., 1024.
+fn main() {
+    let mut s = "a"
+    for i in 0..iterations() {
+        s += "x"
+    }
+    print(s.len())                   // 1001 (1 with no iterations)
+    let cs = s.chars()
+    print(cs[cs.len() - 1])          // x (a with no iterations): the last char, read through `chars()`
+}

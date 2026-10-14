@@ -1,0 +1,5 @@
+const COUNT = COUNT + 1
+
+fn main() {
+    print(COUNT)
+}

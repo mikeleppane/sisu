@@ -106,6 +106,24 @@ fn print_bool_passes_a_zero_extended_i1() {
     }
 }
 
+/// Interpolation passes a `bool` to the runtime as `print` does.
+#[test]
+fn write_bool_passes_a_zero_extended_i1() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(b: bool) -> string {\n    \"{b}\"\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "declare i64 @sisu_write_bool(i1 zeroext, ptr)",
+        "call i64 @sisu_write_bool(i1 zeroext",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+}
+
 #[test]
 fn arithmetic_calls_overflow_intrinsics() {
     let context = Context::create();
@@ -746,14 +764,26 @@ fn fast_path_skips_base_count() {
 }
 
 /// The runtime's print functions touch only memory the module cannot reach (their buffer,
-/// `errno`) and never unwind, but they can exit the process, so they are not `willreturn`.
+/// `errno`) and what a pointer argument points to, which they read, and never unwind, but
+/// they can exit the process, so they are not `willreturn`. `sisu_str_compare` only reads its
+/// arguments' bytes.
 #[test]
 fn print_declarations_carry_attributes() {
     let context = Context::create();
-    let ir = compiled(&context, "fn main() { print(1)\n    print(true) }")
-        .print_to_string()
-        .to_string();
-    for name in ["sisu_print_int", "sisu_print_bool"] {
+    let ir = compiled(
+        &context,
+        "fn main() { print(1)\n    print(true)\n    print(\"s\")\n    print(\"a\" < \"b\") }",
+    )
+    .print_to_string()
+    .to_string();
+    let own = "memory(inaccessiblemem: readwrite, errnomem: readwrite)";
+    let reads = "memory(argmem: read, inaccessiblemem: readwrite, errnomem: readwrite)";
+    for (name, memory) in [
+        ("sisu_print_int", own),
+        ("sisu_print_bool", own),
+        ("sisu_print_str", reads),
+        ("sisu_str_compare", "memory(argmem: read)"),
+    ] {
         let declaration = ir
             .lines()
             .find(|line| line.starts_with("declare ") && line.contains(&format!("@{name}(")))
@@ -765,10 +795,7 @@ fn print_declarations_carry_attributes() {
             .lines()
             .find(|line| line.starts_with(&format!("attributes #{group} = ")))
             .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"));
-        for wanted in [
-            "nounwind",
-            "memory(inaccessiblemem: readwrite, errnomem: readwrite)",
-        ] {
+        for wanted in ["nounwind", memory] {
             assert!(attributes.contains(wanted), "{name}: {attributes}");
         }
         assert!(!attributes.contains("willreturn"), "{name}: {attributes}");

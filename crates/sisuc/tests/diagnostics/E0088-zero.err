@@ -1,0 +1,8 @@
+error[E0088]: division by zero
+ --> E0088-zero.sisu:1:15
+  |
+1 | const RATIO = 10 / 0
+  |               ^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0088

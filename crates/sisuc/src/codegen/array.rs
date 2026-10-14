@@ -24,6 +24,27 @@ pub(super) struct ArrayLayout<'ctx> {
     pub(super) align: u64,
 }
 
+/// A field or element place with its own operands evaluated.
+pub(super) struct PlaceOperands<'p, 'ctx> {
+    /// The root's slot: a local's `alloca`, or the field's address in a field root's base.
+    pub(super) slot: PointerValue<'ctx>,
+    /// The type of the value the root's slot holds.
+    pub(super) ty: Type,
+    /// A field root's base and its type, which the write releases last.
+    object: Option<(PointerValue<'ctx>, &'p Type)>,
+    /// Each index with its value, from the root outwards.
+    pub(super) indexes: Vec<(&'p Expr, IntValue<'ctx>)>,
+}
+
+impl<'ctx> PlaceOperands<'_, 'ctx> {
+    /// Releases a field root's base, which kept the object alive through the write.
+    pub(super) fn release_object(self, codegen: &Codegen<'ctx, '_>) {
+        if let Some((object, ty)) = self.object {
+            codegen.release(object.into(), ty);
+        }
+    }
+}
+
 /// The element type of `ty`, an array type.
 fn element_of(ty: &Type) -> &Type {
     let Type::Array(element) = ty else {
@@ -73,7 +94,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// A block with count 1 and length `len`. A literal passes a constant length, and `unique`
-    /// a run-time length that already passed the checks; `[v; n]` gets them at `span`.
+    /// a run-time length that already passed the checks; `[v; n]` gets them at `span`. A length
+    /// taken from an existing string, as `chars()` and `bytes()` do, needs no check.
     pub(super) fn alloc_array(
         &self,
         element: &Type,
@@ -350,14 +372,18 @@ impl<'ctx> Codegen<'ctx, '_> {
         value
     }
 
-    /// `Len`: the length of `base`, which is then released, unless it is a local: the local
-    /// keeps the block alive, so codegen skips its retain and release.
+    /// `Len`: the length of `base`, an array or a string, which is then released, unless it is
+    /// a local: the local keeps the block alive, so codegen skips its retain and release.
     pub(super) fn len(&mut self, base: &Expr) -> IntValue<'ctx> {
         let (array, borrowed) = self.borrow_or_expr(base);
         let array = array
-            .expect("the checker should only call `len` on an array, which lowers to a pointer")
+            .expect("the checker should only call `len` on an array or a string, which lower to a pointer")
             .into_pointer_value();
-        let len = self.array_len(array);
+        let len = if base.ty == Type::String {
+            self.string_len(array)
+        } else {
+            self.array_len(array)
+        };
         if !borrowed {
             self.release(array.into(), &base.ty);
         }
@@ -430,15 +456,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         hit
     }
 
-    /// `Assign { place: Index { .. }, value }`. The place's own operands come first, left to
-    /// right: a field root's base, then each index from the root outwards. Then `value`, so
-    /// that a value which stores the array elsewhere makes the walk copy it. Then the walk from
-    /// the root's slot: at each level, load the array, check the index against its length,
-    /// make the array unique, and take the element's address as the next slot. Checking first
-    /// means a level whose index is out of bounds copies nothing; an outer level may already
-    /// have copied. Last, the store, the release of the old
-    /// element, and the release of a field root's base.
-    pub(super) fn assign_index(&mut self, place: &Place, value: &Expr) {
+    /// The operands of a field or element `place`, evaluated left to right: a field root's
+    /// base, then each index from the root outwards. `None` when an index exits, which ends
+    /// the statement: `spill` bound every counted operand before it to a local, so nothing is
+    /// left to release.
+    pub(super) fn place_operands<'p>(
+        &mut self,
+        place: &'p Place,
+    ) -> Option<PlaceOperands<'p, 'ctx>> {
         let mut indexes = Vec::new();
         let mut root = place;
         while let Place::Index { base, index } = root {
@@ -455,56 +480,106 @@ impl<'ctx> Codegen<'ctx, '_> {
             )),
             _ => None,
         };
-        // An operand that exits ends the statement. `spill` bound every counted operand
-        // before it to a local, so nothing is left to release here.
         let mut at = Vec::with_capacity(indexes.len());
-        for index in &indexes {
-            let Some(i) = self.expr(index) else { return };
-            at.push(i.into_int_value());
+        for index in indexes {
+            at.push((index, self.expr(index)?.into_int_value()));
         }
-        let Some(value) = self.expr(value) else {
-            return;
-        };
-        let (mut slot, mut ty) = match root {
+        let (slot, ty) = match root {
             Place::Local(local) => {
                 let Some(Slot::Alloca(ptr, _)) = self.locals[local.0] else {
                     unreachable!(
                         "the checker should only let a variable be written, and every variable has an `alloca`"
                     )
                 };
-                (ptr, &self.types[local.0])
+                (ptr, self.types[local.0].clone())
             }
             Place::Field { base, index } => {
                 let Type::Class(class) = base.ty else {
                     unreachable!("the checker should only make a field place on a class-typed base")
                 };
                 let (object, _) =
-                    object.expect("a field root's base should have been evaluated before the walk");
+                    object.expect("a field root's base should have been evaluated above");
                 (
                     self.field_ptr(&base.ty, object, *index),
-                    &self.program.classes[class.0].fields[*index].ty,
+                    self.program.classes[class.0].fields[*index].ty.clone(),
                 )
             }
             Place::Index { .. } => unreachable!("the loop above should stop at the root"),
         };
+        Some(PlaceOperands {
+            slot,
+            ty,
+            object,
+            indexes: at,
+        })
+    }
+
+    /// Walks `place`'s indexes from `root_slot` (bounds check, then `unique`, per level) and
+    /// returns the final slot and its type.
+    pub(super) fn element_slot(
+        &mut self,
+        root_slot: PointerValue<'ctx>,
+        root_ty: &Type,
+        indexes: &[(&Expr, IntValue<'ctx>)],
+    ) -> (PointerValue<'ctx>, Type) {
+        self.walk(root_slot, root_ty, indexes, true)
+    }
+
+    /// Walks `place`'s indexes as `element_slot` does, but makes nothing unique: the slot that
+    /// a read of the place loads.
+    pub(super) fn read_slot(
+        &self,
+        root_slot: PointerValue<'ctx>,
+        root_ty: &Type,
+        indexes: &[(&Expr, IntValue<'ctx>)],
+    ) -> PointerValue<'ctx> {
+        self.walk(root_slot, root_ty, indexes, false).0
+    }
+
+    /// The walk from `slot`, of type `ty`: at each level, load the array, check the index
+    /// against its length, make the array unique if `unique`, and take the element's address
+    /// as the next slot. Checking first means a level whose index is out of bounds copies
+    /// nothing; an outer level may already have copied.
+    fn walk(
+        &self,
+        mut slot: PointerValue<'ctx>,
+        mut ty: &Type,
+        indexes: &[(&Expr, IntValue<'ctx>)],
+        unique: bool,
+    ) -> (PointerValue<'ctx>, Type) {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        for (index, at) in indexes.iter().zip(at) {
-            let array = self
+        for &(index, at) in indexes {
+            let mut array = self
                 .builder
                 .build_load(ptr_type, slot, "array")
                 .expect(POSITIONED)
                 .into_pointer_value();
             self.check_bounds(array, at, index.span);
-            let array = self.unique(slot, ty);
+            if unique {
+                array = self.unique(slot, ty);
+            }
             ty = element_of(ty);
             slot = self.element_ptr(ty, array, at);
         }
+        (slot, ty.clone())
+    }
+
+    /// `Assign { place: Index { .. }, value }`. The place's own operands come first, from
+    /// `place_operands`. Then `value`, so that a value which stores the array elsewhere makes
+    /// `element_slot`'s walk copy it. Last, the store, the release of the old element, and the
+    /// release of a field root's base.
+    pub(super) fn assign_index(&mut self, place: &Place, value: &Expr) {
+        let Some(operands) = self.place_operands(place) else {
+            return;
+        };
+        let Some(value) = self.expr(value) else {
+            return;
+        };
+        let (slot, ty) = self.element_slot(operands.slot, &operands.ty, &operands.indexes);
         let old = ty.is_counted().then(|| self.load(value.get_type(), slot));
         self.store(slot, value);
-        self.discard(old, ty);
-        if let Some((object, ty)) = object {
-            self.release(object.into(), ty);
-        }
+        self.discard(old, &ty);
+        operands.release_object(self);
     }
 
     /// The body of `@sisu_rc.drop.[T]`, `@sisu_rc.eq.[T]` or `@sisu_rc.unique.[T]`, `T`

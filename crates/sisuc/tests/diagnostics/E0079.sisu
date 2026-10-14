@@ -1,0 +1,7 @@
+fn make() -> i64 {
+    1
+}
+
+fn main() {
+    _ = make()
+}

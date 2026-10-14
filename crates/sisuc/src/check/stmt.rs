@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use super::array::optional_array;
 use super::expr::local;
-use super::{Binding, BindingKind, CheckedBlock, Checker, Poisoned, block_expr, type_of};
+use super::{
+    Binding, BindingKind, CheckedBlock, Checker, LoopContext, Poisoned, block_expr, type_of,
+};
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
 use crate::tir::{self, ExprKind, Type};
@@ -35,9 +37,14 @@ impl Checker {
             // Nested blocks leave their flag set, so an enclosing statement sees it too.
             self.invalid_jump |= outer_jump;
             let stmt_ty = match checked {
-                Ok(stmt) => {
-                    let ty = stmt_type(&stmt);
-                    stmts.push(stmt);
+                Ok(lowered) => {
+                    // `let _ = e` lowers to an expression, but a `let` has no value.
+                    let ty = if matches!(stmt.kind, StmtKind::Let { .. }) {
+                        Type::Unit
+                    } else {
+                        stmt_type(&lowered)
+                    };
+                    stmts.push(lowered);
                     Some(ty)
                 }
                 Err(poisoned) => {
@@ -94,6 +101,11 @@ impl Checker {
                     Some(declared) => self.expect(init, declared.as_ref()),
                     None => self.value(init, None),
                 };
+                // `let _ = e` binds nothing: the value is an expression statement, which
+                // codegen releases at once.
+                if name.name == "_" {
+                    return init.map(tir::Stmt::Expr).map_err(|_| unit());
+                }
                 // The initializer's type, which a failed one keeps only while it is still
                 // known (`if` with one failed branch); an unknown declared type is `Error`.
                 let ty = match declared {
@@ -112,10 +124,9 @@ impl Checker {
                 })
             }
             StmtKind::While { cond, body } => {
-                self.loop_depth += 1;
-                let cond = self.expect(cond, Some(&Type::Bool));
-                let body = self.block(body, None);
-                self.loop_depth -= 1;
+                let header = LoopContext::Header(keyword_span(stmt.span, "while"));
+                let cond = self.in_loop(header, |c| c.expect(cond, Some(&Type::Bool)));
+                let body = self.in_loop(LoopContext::Body, |c| c.block(body, None));
                 let (Ok(cond), Ok(body)) = (cond, body) else {
                     return Err(unit());
                 };
@@ -130,10 +141,12 @@ impl Checker {
                 )))
             }
             StmtKind::WhileLet { name, value, body } => {
-                self.loop_depth += 1;
-                let (scrutinee, bound, _) = self.unwrapped(Unwrap::WhileLet, value);
-                let (bind, body) = self.unwrapping_block("while let", name, bound, body, None);
-                self.loop_depth -= 1;
+                let header = LoopContext::Header(keyword_span(stmt.span, "while"));
+                let (scrutinee, bound, _) =
+                    self.in_loop(header, |c| c.unwrapped(Unwrap::WhileLet, value));
+                let (bind, body) = self.in_loop(LoopContext::Body, |c| {
+                    c.unwrapping_block("while let", name, bound, body, None)
+                });
                 let (Ok(scrutinee), Ok(body)) = (scrutinee, body) else {
                     return Err(unit());
                 };
@@ -153,9 +166,12 @@ impl Checker {
             StmtKind::Break => self.jump(stmt.span, "break", ExprKind::Break),
             StmtKind::Continue => self.jump(stmt.span, "continue", ExprKind::Continue),
             StmtKind::Assign { target, value } => self.assign(stmt.span, target, value),
-            StmtKind::CompoundAssign { op, target, value } => {
-                self.compound_assign(stmt.span, *op, target, value)
-            }
+            StmtKind::CompoundAssign {
+                op,
+                op_span,
+                target,
+                value,
+            } => self.compound_assign(stmt.span, (*op, *op_span), target, value),
             StmtKind::Expr(e) => self.expr(e, expected).map(tir::Stmt::Expr),
         }
     }
@@ -171,13 +187,14 @@ impl Checker {
         body: &ast::Block,
     ) -> Result<tir::Stmt, Poisoned> {
         let expr = |kind, ty| tir::Expr { kind, ty, span };
-        let (header, bound) = match source {
-            ast::ForSource::Array(e) => self.for_array(span, e),
-            ast::ForSource::Range { start, end } => self.for_range(span, start, end),
-        };
-        self.loop_depth += 1;
-        let (x, body) = self.unwrapping_block("for", name, bound, body, None);
-        self.loop_depth -= 1;
+        let context = LoopContext::Header(keyword_span(span, "for"));
+        let (header, bound) = self.in_loop(context, |c| match source {
+            ast::ForSource::Array(e) => c.for_array(span, e),
+            ast::ForSource::Range { start, end } => c.for_range(span, start, end),
+        });
+        let (x, body) = self.in_loop(LoopContext::Body, |c| {
+            c.unwrapping_block("for", name, bound, body, None)
+        });
         let (Some(header), Ok(body)) = (header, body) else {
             return Err(Poisoned::typed(Type::Unit));
         };
@@ -349,17 +366,37 @@ impl Checker {
         }))
     }
 
-    /// `break` or `continue`, of type `never` even outside a loop.
+    /// `f`, inside a loop's `context`.
+    fn in_loop<T>(&mut self, context: LoopContext, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.loops.push(context);
+        let checked = f(self);
+        self.loops.pop();
+        checked
+    }
+
+    /// `break` or `continue`, of type `never` even outside a loop. In a loop header it is
+    /// `Error`, so the condition or source around it reports nothing more.
     fn jump(
         &mut self,
         span: Span,
         keyword: &'static str,
         kind: ExprKind,
     ) -> Result<tir::Stmt, Poisoned> {
-        if self.loop_depth == 0 {
-            self.report(DiagnosticKind::JumpOutsideLoop { keyword, at: span });
-            self.invalid_jump = true;
-            return Err(Poisoned::typed(Type::Never));
+        match self.loops.last() {
+            Some(LoopContext::Body) => {}
+            Some(&LoopContext::Header(loop_at)) => {
+                self.report(DiagnosticKind::JumpInLoopHeader {
+                    keyword,
+                    at: span,
+                    loop_at,
+                });
+                return Err(Poisoned::error());
+            }
+            None => {
+                self.report(DiagnosticKind::JumpOutsideLoop { keyword, at: span });
+                self.invalid_jump = true;
+                return Err(Poisoned::typed(Type::Never));
+            }
         }
         Ok(tir::Stmt::Expr(tir::Expr {
             kind,
@@ -368,9 +405,9 @@ impl Checker {
         }))
     }
 
-    /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let` or
-    /// `while let`) binds it: the block cannot declare `name` again. The bound local, and the
-    /// block.
+    /// `block`, its scope holding `name` bound to a `ty`, as `keyword` (`if let`, `while let` or
+    /// `for`) binds it. The bound local, and the block.
+    /// A `for _` binds a fresh unnamed local and declares no name.
     pub(super) fn unwrapping_block(
         &mut self,
         keyword: &'static str,
@@ -380,7 +417,11 @@ impl Checker {
         expected: Option<&Type>,
     ) -> (tir::LocalId, CheckedBlock) {
         self.scopes.push(HashMap::new());
-        let bind = self.declare(name, ty, BindingKind::Unwrapped(keyword), None);
+        let bind = if name.name == "_" {
+            self.fresh(ty.unwrap_or(Type::Unit))
+        } else {
+            self.declare(name, ty, BindingKind::Unwrapped(keyword), None)
+        };
         (bind, self.scoped_block(block, expected))
     }
 
@@ -435,7 +476,8 @@ impl Checker {
     }
 
     /// Adds `name` to the innermost scope as a new local; `keyword` is the `mut` of a
-    /// `let mut`. A name already in that scope is reported and poisoned.
+    /// `let mut`. It replaces a binding of that name in the scope, except that a parameter whose
+    /// name another parameter has is reported and poisoned.
     pub(super) fn declare(
         &mut self,
         name: &ast::Ident,
@@ -450,6 +492,7 @@ impl Checker {
             ty: ty.clone().unwrap_or(Type::Unit),
             mutable: kind == BindingKind::Var,
         });
+        let shadows_mut = self.lookup(&name.name).is_some_and(|b| b.keyword.is_some());
         let scope = self
             .scopes
             .last_mut()
@@ -461,8 +504,11 @@ impl Checker {
             span: name.span,
             keyword,
             reassigned: false,
+            shadows_mut,
         };
-        if let Some(first) = scope.get(&name.name) {
+        if kind == BindingKind::Param
+            && let Some(first) = scope.get(&name.name)
+        {
             self.diagnostics.push(
                 DiagnosticKind::AlreadyDeclared {
                     name: name.name.clone(),
@@ -471,16 +517,18 @@ impl Checker {
                 }
                 .into(),
             );
-            // A use after it may mean either binding, so neither is judged: the name becomes
-            // `Error`, can be assigned, and never warns.
+            // A use after it may mean either parameter, so neither is judged: the name becomes
+            // `Error` and can be assigned.
             binding = Binding {
                 ty: None,
                 kind: BindingKind::Var,
-                reassigned: true,
                 ..binding
             };
         }
-        scope.insert(name.name.clone(), binding);
+        // Nothing can reassign the binding it replaces from here on.
+        if let Some(old) = scope.insert(name.name.clone(), binding) {
+            self.never_reassigned(name.name.clone(), &old);
+        }
         local
     }
 
@@ -491,15 +539,21 @@ impl Checker {
             .pop()
             .expect("a scope should be open while a block is checked");
         for (name, b) in scope {
-            if let Some(keyword) = b.keyword
-                && !b.reassigned
-            {
-                self.report(DiagnosticKind::NeverReassigned {
-                    name,
-                    at: b.span,
-                    keyword,
-                });
-            }
+            self.never_reassigned(name, &b);
+        }
+    }
+
+    /// Warns when `b`, which `name` can no longer reach, is a `let mut` that was never
+    /// reassigned.
+    fn never_reassigned(&mut self, name: String, b: &Binding) {
+        if let Some(keyword) = b.keyword
+            && !b.reassigned
+        {
+            self.report(DiagnosticKind::NeverReassigned {
+                name,
+                at: b.span,
+                keyword,
+            });
         }
     }
 
@@ -523,7 +577,7 @@ struct ForHeader {
 /// The type a statement gives its block when it comes last.
 fn stmt_type(stmt: &tir::Stmt) -> Type {
     match stmt {
-        tir::Stmt::Let { .. } | tir::Stmt::Assign { .. } => Type::Unit,
+        tir::Stmt::Let { .. } | tir::Stmt::Assign { .. } | tir::Stmt::Append { .. } => Type::Unit,
         tir::Stmt::Expr(e) => e.ty.clone(),
     }
 }
@@ -550,4 +604,9 @@ fn lower_loop(
         ty,
     };
     expr(ExprKind::Loop(looped), Type::Unit)
+}
+
+/// The `keyword` that starts a loop statement at `span`.
+fn keyword_span(span: Span, keyword: &str) -> Span {
+    Span::new(span.start, span.start + keyword.len())
 }

@@ -114,6 +114,30 @@ codes! {
     InvalidUtf8 = "E0072",
     AssignToSelf = "E0073",
     AssignToFunction = "E0074",
+    BasePrefixUpperCase = "E0075",
+    BasePrefixWithoutDigits = "E0076",
+    DigitOutsideBase = "E0077",
+    MutOnUnderscore = "E0078",
+    UnderscoreValue = "E0079",
+    UnderscoreName = "E0080",
+    BlockAsStatement = "E0081",
+    JumpInLoopHeader = "E0082",
+    ReservedWord = "E0083",
+    ConstInFunction = "E0084",
+    ConstantType = "E0085",
+    ConstantNotKnown = "E0086",
+    ConstantOrder = "E0087",
+    ConstantPanics = "E0088",
+    UnknownEscape = "E0089",
+    MalformedUnicodeEscape = "E0090",
+    NotScalarValue = "E0091",
+    NotOneCodePoint = "E0092",
+    LiteralNotClosed = "E0093",
+    ArithmeticOnChar = "E0094",
+    BraceInString = "E0095",
+    EmptyInterpolation = "E0096",
+    CommentInInterpolation = "E0097",
+    CannotInterpolate = "E0098",
 }
 
 impl Code {
@@ -172,6 +196,17 @@ pub(crate) enum DiagnosticKind {
     DigitSeparator { at: Span },
     /// An integer literal at `at` that does not fit `i64`.
     IntegerTooLarge { at: Span },
+    /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`). `certain` is
+    /// false when the lower case literal may still be rejected, as a bare 2^63 is.
+    BasePrefixUpperCase {
+        prefix: char,
+        certain: bool,
+        at: Span,
+    },
+    /// The base prefix at `at` (`0` and `prefix`) with no digits after it.
+    BasePrefixWithoutDigits { prefix: char, at: Span },
+    /// The `digit`, at `at`, in a literal of base `radix` (2, 8 or 16), which is not a digit there.
+    DigitOutsideBase { digit: char, radix: u32, at: Span },
     /// The character `c` at `at`, which Sisu does not use.
     UnexpectedCharacter { c: char, at: Span },
     /// The token `found` at `at`, where `what` should stand.
@@ -240,13 +275,15 @@ pub(crate) enum DiagnosticKind {
         want: String,
         at: Span,
     },
-    /// A value of type `got`, at `at`, where `want` is expected; `convert` is the conversion
-    /// that would fit.
+    /// A value of type `got`, at `at`, where one of the types `want` is expected; `fix` is the
+    /// rewrite that would fit. `other` is the `string` operand of the `+` that expects a
+    /// `string` of it, if that is what does.
     Mismatch {
-        want: String,
+        want: Vec<String>,
         got: String,
         at: Span,
-        convert: Option<Conversion>,
+        other: Option<Span>,
+        fix: Option<MismatchFix>,
     },
     /// The binding `name`, at `at`, which no scope holds.
     BindingNotFound {
@@ -269,10 +306,11 @@ pub(crate) enum DiagnosticKind {
     UnexpectedReturnValue { at: Span },
     /// A `break` or `continue` (`keyword`) at `at`, outside a loop.
     JumpOutsideLoop { keyword: &'static str, at: Span },
-    /// The binding `name`, at `at`, declared before at `first` in the same scope.
+    /// The parameter `name`, at `at`, which an earlier parameter at `first` already has.
     AlreadyDeclared { name: String, at: Span, first: Span },
-    /// The integer literal `value`, at `at`, which does not fit the `u8` its position expects.
-    IntegerDoesNotFit { value: i64, at: Span },
+    /// The integer literal `text` as written, at `at`, which does not fit the `u8` its position
+    /// expects.
+    IntegerDoesNotFit { text: String, at: Span },
     /// A `self` at `at`, outside a method.
     SelfOutsideMethod { at: Span },
     /// A unary `-` at `at` on a `u8`.
@@ -326,11 +364,19 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A conversion to `ty` of the value at `at`, which already has that type. `value` is its
-    /// path as written, when it has one.
+    /// path as written, when it has one, and `conversion` is the whole call. `grouped` is set
+    /// when the value is more than one term, so removing the conversion keeps its parentheses.
+    /// `labeled` is set when the argument has a label, which the removal would delete along with
+    /// its own error, so there is no fix. `commented` is set when the removal would delete a
+    /// comment, which makes it a guess.
     AlreadyConverted {
         value: Option<String>,
         ty: String,
         at: Span,
+        conversion: Span,
+        grouped: bool,
+        labeled: bool,
+        commented: bool,
     },
     /// A label at `at` on an argument of a call that is not a constructor.
     LabeledArgument { at: Span },
@@ -422,6 +468,100 @@ pub(crate) enum DiagnosticKind {
     AssignToSelf { at: Span },
     /// An assignment to `name`, at `at`, which is a function.
     AssignToFunction { name: String, at: Span },
+    /// A `let` that binds the `_` at `at` and has the `mut` at `keyword`.
+    MutOnUnderscore { at: Span, keyword: Span },
+    /// The `_` at `at` where a value belongs. `bind` is whether it starts the plain assignment
+    /// `_ = e`, which `let ` in front of it turns into a binding.
+    UnderscoreValue { at: Span, bind: bool },
+    /// The `_` at `at`, where a name belongs.
+    UnderscoreName { at: Span },
+    /// The `{` at `at`, which starts a statement.
+    BlockAsStatement { at: Span },
+    /// A `break` or `continue` (`keyword`) at `at`, in the header of the loop whose keyword is at
+    /// `loop_at`.
+    JumpInLoopHeader {
+        keyword: &'static str,
+        at: Span,
+        loop_at: Span,
+    },
+    /// The word `word` at `at`, which a later version of Sisu gives a meaning.
+    ReservedWord { word: &'static str, at: Span },
+    /// The `const` at `at`, which starts a statement.
+    ConstInFunction { at: Span },
+    /// The type at `at` of a constant, which is none a constant can have.
+    ConstantType { at: Span },
+    /// The part at `at` of a constant's value, which is not known at compile time.
+    ConstantNotKnown { at: Span },
+    /// The use at `at`, in the value of the constant `user`, of the constant `name` declared at
+    /// `declared`: `itself` when `name` is `user`, else `name` is declared below `user`.
+    ConstantOrder {
+        name: String,
+        user: String,
+        at: Span,
+        declared: Span,
+        itself: bool,
+    },
+    /// The operation at `at` in a constant's value, which would `panic` at run time.
+    ConstantPanics { panic: Panic, at: Span },
+    /// The escape `\` and `found`, at `at`, which is none of the escapes.
+    UnknownEscape { found: char, at: Span },
+    /// The `\u` escape at `at`, as far as it reaches, which is not 1 to 6 hex digits in braces.
+    MalformedUnicodeEscape { at: Span },
+    /// The `\u{...}` escape `escape`, as written, at `at`, whose value is not a Unicode scalar
+    /// value.
+    NotScalarValue { escape: String, at: Span },
+    /// The `char` literal at `at`, which holds no code point or more than one; `string` when its
+    /// text holds no `"`, `{` or `}`, which a string literal would read differently.
+    NotOneCodePoint { at: Span, string: bool },
+    /// The literal of `kind` that starts at `at` and stops at a line break or the end of the file.
+    LiteralNotClosed { kind: LiteralKind, at: Span },
+    /// Arithmetic on the `char` at `at`; `convert` is the rewrite through `i64`, when the
+    /// expression can be rewritten in place.
+    ArithmeticOnChar {
+        at: Span,
+        convert: Option<CharArithmetic>,
+    },
+    /// The `}` at `at` in the text of a string literal, which no interpolation opened.
+    BraceInString { at: Span },
+    /// The interpolation at `at`, its braces included, which holds only spaces.
+    EmptyInterpolation { at: Span },
+    /// The `//` at `at`, inside an interpolation.
+    CommentInInterpolation { at: Span },
+    /// The interpolated value at `at`, of type `ty`, which interpolation cannot write as text;
+    /// `help` is the advice for its kind of type, if there is one.
+    CannotInterpolate {
+        ty: String,
+        help: Option<InterpolateHelp>,
+        at: Span,
+    },
+}
+
+/// What a literal that is not closed is the literal of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiteralKind {
+    Char,
+    String,
+}
+
+/// A run-time panic that folding a constant meets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Panic {
+    Overflow,
+    DivisionByZero,
+    NotU8,
+    NotChar,
+}
+
+impl Panic {
+    /// The run-time panic's message, which codegen also uses.
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Panic::Overflow => "integer overflow",
+            Panic::DivisionByZero => "division by zero",
+            Panic::NotU8 => "value does not fit in `u8`",
+            Panic::NotChar => "value is not a valid `char`",
+        }
+    }
 }
 
 /// A literal that takes its type from its position.
@@ -429,6 +569,15 @@ pub(crate) enum DiagnosticKind {
 pub(crate) enum Literal {
     None,
     EmptyArray,
+}
+
+/// The advice for a value that interpolation cannot write as text.
+#[derive(Clone, Copy)]
+pub(crate) enum InterpolateHelp {
+    /// An array, or an optional of one.
+    ForLoop,
+    /// Any other optional.
+    Unwrap,
 }
 
 /// The statement or expression that unwraps an optional.
@@ -456,6 +605,7 @@ pub(crate) enum Definition {
     Method,
     Binding,
     Type,
+    Constant,
 }
 
 impl Definition {
@@ -467,6 +617,7 @@ impl Definition {
             Definition::Method => "method",
             Definition::Binding => "binding",
             Definition::Type => "type",
+            Definition::Constant => "constant",
         }
     }
 }
@@ -484,11 +635,47 @@ pub(crate) enum Earlier {
     BuiltIn,
 }
 
-/// Converting the expression at `operand` to the type `to`: `u8` or `i64`.
+/// Converting the expression at `operand` to the type `to`: `u8`, `i64` or `char`. `u8` and
+/// `char` convert into each other `through` `i64`.
 #[derive(Clone, Copy)]
 pub(crate) struct Conversion {
     pub(crate) to: &'static str,
+    pub(crate) through: Option<&'static str>,
     pub(crate) operand: Span,
+}
+
+/// A rewrite that would give a mismatched value the type expected.
+#[derive(Clone, Copy)]
+pub(crate) enum MismatchFix {
+    Convert(Conversion),
+    /// A `string` `+` a value that is not one, as one interpolated literal of both operands.
+    Interpolate {
+        lhs: Operand,
+        rhs: Operand,
+    },
+    /// A `string(arg)` call, over `call`, of a value that interpolation prints, as the literal
+    /// `"{arg}"`.
+    InterpolateCall {
+        call: Span,
+        arg: Span,
+    },
+}
+
+/// An operand of a `+` that interpolation joins: where it is written, and whether it is a
+/// string literal, which loses its quote on the joined side instead of being wrapped.
+#[derive(Clone, Copy)]
+pub(crate) struct Operand {
+    pub(crate) span: Span,
+    pub(crate) literal: bool,
+}
+
+/// Arithmetic done on `char`s by converting each to `i64` and the result back: `operands` is the
+/// expression from its left operand to its right one, and `chars` are the operands that are
+/// `char`s, in source order.
+#[derive(Clone)]
+pub(crate) struct CharArithmetic {
+    pub(crate) operands: Span,
+    pub(crate) chars: Vec<Span>,
 }
 
 /// Moving a token up to the code before it: the `gap` between them becomes a space.
@@ -521,8 +708,10 @@ pub(crate) enum LetField {
 
 /// Why a place cannot change; each `declared` is the name where it was declared.
 pub(crate) enum Immutable {
+    /// `redeclared` when the `let` shadows a `let mut`, in its scope or an outer one.
     Let {
         declared: Span,
+        redeclared: bool,
     },
     Param {
         declared: Span,
@@ -536,9 +725,17 @@ pub(crate) enum Immutable {
     Field {
         declared: Span,
     },
+    /// A top-level constant.
+    Constant {
+        declared: Span,
+    },
 }
 
 impl DiagnosticKind {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per diagnostic code, so the table reads in one place"
+    )]
     pub(crate) fn code(&self) -> Code {
         match self {
             DiagnosticKind::AssignToImmutable { .. } => Code::AssignToImmutable,
@@ -552,6 +749,9 @@ impl DiagnosticKind {
             DiagnosticKind::UnexpectedClosingBracket { .. } => Code::UnexpectedClosingBracket,
             DiagnosticKind::DigitSeparator { .. } => Code::DigitSeparator,
             DiagnosticKind::IntegerTooLarge { .. } => Code::IntegerTooLarge,
+            DiagnosticKind::BasePrefixUpperCase { .. } => Code::BasePrefixUpperCase,
+            DiagnosticKind::BasePrefixWithoutDigits { .. } => Code::BasePrefixWithoutDigits,
+            DiagnosticKind::DigitOutsideBase { .. } => Code::DigitOutsideBase,
             DiagnosticKind::UnexpectedCharacter { .. } => Code::UnexpectedCharacter,
             DiagnosticKind::Expected { .. } => Code::Expected,
             DiagnosticKind::Semicolon { .. } => Code::Semicolon,
@@ -617,6 +817,27 @@ impl DiagnosticKind {
             DiagnosticKind::InvalidUtf8 { .. } => Code::InvalidUtf8,
             DiagnosticKind::AssignToSelf { .. } => Code::AssignToSelf,
             DiagnosticKind::AssignToFunction { .. } => Code::AssignToFunction,
+            DiagnosticKind::MutOnUnderscore { .. } => Code::MutOnUnderscore,
+            DiagnosticKind::UnderscoreValue { .. } => Code::UnderscoreValue,
+            DiagnosticKind::UnderscoreName { .. } => Code::UnderscoreName,
+            DiagnosticKind::BlockAsStatement { .. } => Code::BlockAsStatement,
+            DiagnosticKind::JumpInLoopHeader { .. } => Code::JumpInLoopHeader,
+            DiagnosticKind::ReservedWord { .. } => Code::ReservedWord,
+            DiagnosticKind::ConstInFunction { .. } => Code::ConstInFunction,
+            DiagnosticKind::ConstantType { .. } => Code::ConstantType,
+            DiagnosticKind::ConstantNotKnown { .. } => Code::ConstantNotKnown,
+            DiagnosticKind::ConstantOrder { .. } => Code::ConstantOrder,
+            DiagnosticKind::ConstantPanics { .. } => Code::ConstantPanics,
+            DiagnosticKind::UnknownEscape { .. } => Code::UnknownEscape,
+            DiagnosticKind::MalformedUnicodeEscape { .. } => Code::MalformedUnicodeEscape,
+            DiagnosticKind::NotScalarValue { .. } => Code::NotScalarValue,
+            DiagnosticKind::NotOneCodePoint { .. } => Code::NotOneCodePoint,
+            DiagnosticKind::LiteralNotClosed { .. } => Code::LiteralNotClosed,
+            DiagnosticKind::ArithmeticOnChar { .. } => Code::ArithmeticOnChar,
+            DiagnosticKind::BraceInString { .. } => Code::BraceInString,
+            DiagnosticKind::EmptyInterpolation { .. } => Code::EmptyInterpolation,
+            DiagnosticKind::CommentInInterpolation { .. } => Code::CommentInInterpolation,
+            DiagnosticKind::CannotInterpolate { .. } => Code::CannotInterpolate,
         }
     }
 }
@@ -638,12 +859,22 @@ impl From<DiagnosticKind> for Diagnostic {
                 let what = if element { "an element of " } else { "" };
                 let d = Diagnostic::coded(code, at, format!("cannot assign to {what}`{name}`"));
                 match cause {
-                    Immutable::Let { declared } => if element {
+                    Immutable::Let {
+                        declared,
+                        redeclared,
+                    } => if element {
                         d
                     } else {
                         d.with_label("cannot assign twice")
                     }
-                    .with_secondary(declared, "declared with `let` here")
+                    .with_secondary(
+                        declared,
+                        if redeclared {
+                            format!("`{name}` is redeclared here with `let`")
+                        } else {
+                            "declared with `let` here".to_string()
+                        },
+                    )
                     .with_fix(insert_mut("declare it with `let mut`", declared)),
                     Immutable::Param { declared } => d
                         .with_secondary(declared, "declared as a parameter here")
@@ -656,6 +887,12 @@ impl From<DiagnosticKind> for Diagnostic {
                     Immutable::Field { declared } => d
                         .with_secondary(declared, "declared without `mut` here")
                         .with_fix(insert_mut("mark the field `mut`", declared)),
+                    Immutable::Constant { declared } => if element {
+                        d
+                    } else {
+                        d.with_label("cannot assign")
+                    }
+                    .with_secondary(declared, "declared with `const` here"),
                 }
             }
             DiagnosticKind::UnreachableCode { at } => {
@@ -730,14 +967,33 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::IntegerTooLarge { at } => {
                 Diagnostic::coded(code, at, "integer literal is too large for `i64`")
             }
-            DiagnosticKind::UnexpectedCharacter { c, at } => {
-                // A character the user cannot see is named by its code point, not printed.
-                let shown = if c.is_whitespace() || c.is_control() || is_format(c) {
-                    format!("U+{:04X}", u32::from(c))
-                } else {
-                    format!("`{c}`")
+            DiagnosticKind::BasePrefixUpperCase {
+                prefix,
+                certain,
+                at,
+            } => {
+                Diagnostic::coded(code, at, "base prefixes are lower case").with_fix(Fix {
+                    message: "write the prefix in lower case".to_string(),
+                    certain,
+                    edits: vec![Edit {
+                        span: Span::new(at.end - 1, at.end),
+                        replacement: prefix.to_ascii_lowercase().to_string(),
+                    }],
+                })
+            }
+            DiagnosticKind::BasePrefixWithoutDigits { prefix, at } => {
+                Diagnostic::coded(code, at, format!("`0{prefix}` needs at least one digit"))
+            }
+            DiagnosticKind::DigitOutsideBase { digit, radix, at } => {
+                let base = match radix {
+                    2 => "a binary",
+                    8 => "an octal",
+                    _ => "a hexadecimal",
                 };
-                let d = Diagnostic::coded(code, at, format!("unexpected character {shown}"));
+                Diagnostic::coded(code, at, format!("`{digit}` is not {base} digit"))
+            }
+            DiagnosticKind::UnexpectedCharacter { c, at } => {
+                let d = Diagnostic::coded(code, at, format!("unexpected character {}", shown(c)));
                 match c {
                     '&' => d.with_fix(guess("if you meant logical and, use `&&`", at, "&&")),
                     '|' => d.with_fix(guess("if you meant logical or, use `||`", at, "||")),
@@ -895,7 +1151,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 suggestion,
             } => similar(
                 Diagnostic::coded(code, at, format!("cannot find type `{name}`")).with_help(
-                    "the types are `i64`, `u8`, `bool`, classes and arrays such as `[i64]`",
+                    "the types are `i64`, `u8`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
                 ),
                 at,
                 suggestion,
@@ -909,21 +1165,89 @@ impl From<DiagnosticKind> for Diagnostic {
                 want,
                 got,
                 at,
-                convert,
+                other,
+                fix,
             } => {
-                let d = Diagnostic::coded(code, at, format!("expected `{want}`, found `{got}`"));
-                match convert {
-                    Some(Conversion { to, operand }) => d.with_fix(Fix {
+                let want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
+                let mut d = Diagnostic::coded(
+                    code,
+                    at,
+                    format!("expected {}, found `{got}`", want.join(" or ")),
+                );
+                if let Some(other) = other {
+                    d = d.with_secondary(other, "`+` joins this `string`");
+                }
+                match fix {
+                    Some(MismatchFix::Convert(Conversion {
+                        to,
+                        through,
+                        operand,
+                    })) => d.with_fix(Fix {
                         message: format!("if the types are right, convert it with `{to}(...)`"),
                         certain: false,
                         edits: vec![
                             Edit {
                                 span: Span::new(operand.start, operand.start),
-                                replacement: format!("{to}("),
+                                replacement: through.map_or(format!("{to}("), |through| {
+                                    format!("{to}({through}(")
+                                }),
                             },
                             Edit {
                                 span: Span::new(operand.end, operand.end),
-                                replacement: ")".to_string(),
+                                replacement: ")".repeat(1 + usize::from(through.is_some())),
+                            },
+                        ],
+                    }),
+                    Some(MismatchFix::Interpolate { lhs, rhs }) => {
+                        // The text between the operands goes, with a literal's quote beside it;
+                        // any other operand is wrapped in braces, and the outer ones get quotes.
+                        let (start, close) = if lhs.literal {
+                            (lhs.span.end - 1, "")
+                        } else {
+                            (lhs.span.end, "}")
+                        };
+                        let (end, open) = if rhs.literal {
+                            (rhs.span.start + 1, "")
+                        } else {
+                            (rhs.span.start, "{")
+                        };
+                        let mut edits = vec![Edit {
+                            span: Span::new(start, end),
+                            replacement: format!("{close}{open}"),
+                        }];
+                        if !lhs.literal {
+                            edits.insert(
+                                0,
+                                Edit {
+                                    span: Span::new(lhs.span.start, lhs.span.start),
+                                    replacement: "\"{".to_string(),
+                                },
+                            );
+                        }
+                        if !rhs.literal {
+                            edits.push(Edit {
+                                span: Span::new(rhs.span.end, rhs.span.end),
+                                replacement: "}\"".to_string(),
+                            });
+                        }
+                        d.with_fix(Fix {
+                            message: "use interpolation".to_string(),
+                            certain: false,
+                            edits,
+                        })
+                    }
+                    // The call's name and parentheses become the literal's quote and brace.
+                    Some(MismatchFix::InterpolateCall { call, arg }) => d.with_fix(Fix {
+                        message: "use interpolation".to_string(),
+                        certain: false,
+                        edits: vec![
+                            Edit {
+                                span: Span::new(call.start, arg.start),
+                                replacement: "\"{".to_string(),
+                            },
+                            Edit {
+                                span: Span::new(arg.end, call.end),
+                                replacement: "}\"".to_string(),
                             },
                         ],
                     }),
@@ -985,8 +1309,8 @@ impl From<DiagnosticKind> for Diagnostic {
                 format!("`{name}` is already declared in this scope"),
             )
             .with_secondary(first, "first declared here"),
-            DiagnosticKind::IntegerDoesNotFit { value, at } => {
-                Diagnostic::coded(code, at, format!("`{value}` does not fit in `u8`"))
+            DiagnosticKind::IntegerDoesNotFit { text, at } => {
+                Diagnostic::coded(code, at, format!("`{text}` does not fit in `u8`"))
             }
             DiagnosticKind::SelfOutsideMethod { at } => {
                 Diagnostic::coded(code, at, "`self` is only available in a method")
@@ -1071,8 +1395,39 @@ impl From<DiagnosticKind> for Diagnostic {
                     format!("`{name}` takes {want} argument{plural}, found {found}"),
                 )
             }
-            DiagnosticKind::AlreadyConverted { value, ty, at } => {
-                Diagnostic::coded(code, at, format!("{} is already `{ty}`", named(value)))
+            DiagnosticKind::AlreadyConverted {
+                value,
+                ty,
+                at,
+                conversion,
+                grouped,
+                labeled,
+                commented,
+            } => {
+                let edit = |span: Span, replacement: &str| Edit {
+                    span,
+                    replacement: replacement.to_string(),
+                };
+                // The head, `T(` and what sits before the value, then the `)` after it.
+                let head = Span::new(conversion.start, at.start);
+                let edits = if grouped {
+                    vec![edit(head, "(")]
+                } else {
+                    vec![edit(head, ""), edit(Span::new(at.end, conversion.end), "")]
+                };
+                let d = Diagnostic::coded(code, at, format!("{} is already `{ty}`", named(value)));
+                if labeled {
+                    return d;
+                }
+                d.with_fix(Fix {
+                    message: if commented {
+                        "remove the conversion, and the comments inside it".to_string()
+                    } else {
+                        "remove the conversion".to_string()
+                    },
+                    certain: !commented,
+                    edits,
+                })
             }
             DiagnosticKind::LabeledArgument { at } => {
                 Diagnostic::coded(code, at, "labels on arguments come in milestone 10")
@@ -1114,7 +1469,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 format!("`{name}` is a field of `{owner}`, not a method"),
             ),
             DiagnosticKind::PrintArgument { at, class } => {
-                let takes = "`print` takes one `i64`, `u8` or `bool`";
+                let takes = "`print` takes one `i64`, `u8`, `bool`, `char` or `string`";
                 match class {
                     Some(class) => Diagnostic::coded(code, at, format!("cannot print `{class}`"))
                         .with_help(takes),
@@ -1248,8 +1603,195 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::AssignToFunction { name, at } => {
                 Diagnostic::coded(code, at, format!("`{name}` is a function, not a variable"))
             }
+            DiagnosticKind::MutOnUnderscore { at, keyword } => {
+                Diagnostic::coded(code, at, "`_` binds nothing, so it cannot be `mut`").with_fix(
+                    Fix {
+                        message: "use `let _`".to_string(),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: Span::new(keyword.start, at.start),
+                            replacement: String::new(),
+                        }],
+                    },
+                )
+            }
+            DiagnosticKind::UnderscoreValue { at, bind } => {
+                let d = Diagnostic::coded(code, at, "`_` is not a value");
+                if bind {
+                    d.with_fix(Fix {
+                        message: "bind it with `let _`".to_string(),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: Span::new(at.start, at.start),
+                            replacement: "let ".to_string(),
+                        }],
+                    })
+                } else {
+                    d
+                }
+            }
+            DiagnosticKind::UnderscoreName { at } => {
+                Diagnostic::coded(code, at, "`_` cannot be a name")
+            }
+            DiagnosticKind::BlockAsStatement { at } => {
+                Diagnostic::coded(code, at, "a block cannot stand alone as a statement")
+                    .with_help("bind its value: `let x = { ... }`")
+            }
+            DiagnosticKind::JumpInLoopHeader { keyword, at, loop_at } => {
+                Diagnostic::coded(code, at, format!("`{keyword}` cannot appear in a loop header"))
+                    .with_secondary(loop_at, "the header of this loop")
+            }
+            DiagnosticKind::ReservedWord { word, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{word}` is reserved for a later version of Sisu"),
+            ),
+            DiagnosticKind::ConstInFunction { at } => {
+                Diagnostic::coded(code, at, "`const` is declared at the top level").with_fix(Fix {
+                    message: "use `let`".to_string(),
+                    certain: true,
+                    edits: vec![Edit {
+                        span: at,
+                        replacement: "let".to_string(),
+                    }],
+                })
+            }
+            DiagnosticKind::ConstantType { at } => {
+                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `bool`, `char` or `string`")
+            }
+            DiagnosticKind::ConstantNotKnown { at } => {
+                Diagnostic::coded(code, at, "a constant's value must be known at compile time")
+                    .with_help("use literals, operators and earlier constants")
+            }
+            DiagnosticKind::ConstantOrder {
+                name,
+                user,
+                at,
+                declared,
+                itself,
+            } => if itself {
+                Diagnostic::coded(code, at, format!("`{name}` cannot use itself"))
+            } else {
+                Diagnostic::coded(code, at, format!("`{name}` is declared below `{user}`"))
+                    .with_help(format!("move `{name}` above `{user}`"))
+            }
+            .with_secondary(declared, "declared here"),
+            DiagnosticKind::ConstantPanics { panic, at } => {
+                Diagnostic::coded(code, at, panic.message())
+            }
+            DiagnosticKind::UnknownEscape { found, at } => {
+                let escape = if invisible(found) {
+                    format!("`\\` followed by {}", shown(found))
+                } else {
+                    format!("`\\{found}`")
+                };
+                Diagnostic::coded(code, at, format!("unknown escape {escape}"))
+                    .with_help(
+                        r#"the escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\{`, `\}` and `\u{...}`"#,
+                    )
+                    .with_fix(guess(
+                        r"if you meant a backslash, write `\\`",
+                        Span::new(at.start, at.start),
+                        "\\",
+                    ))
+            }
+            DiagnosticKind::MalformedUnicodeEscape { at } => {
+                Diagnostic::coded(code, at, r"malformed `\u` escape")
+                    .with_help(r"write `\u{` and 1 to 6 hex digits, then `}`")
+            }
+            DiagnosticKind::NotScalarValue { escape, at } => {
+                Diagnostic::coded(code, at, format!("`{escape}` is not a Unicode scalar value"))
+                    .with_help("scalar values run from 0 to 10FFFF, without D800 to DFFF")
+            }
+            DiagnosticKind::NotOneCodePoint { at, string } => {
+                let d = Diagnostic::coded(code, at, "a `char` holds one code point");
+                if string {
+                    let quote = |at| Edit {
+                        span: Span::new(at, at + 1),
+                        replacement: "\"".to_string(),
+                    };
+                    d.with_fix(Fix {
+                        message: "if you meant a string, write it in double quotes".to_string(),
+                        certain: false,
+                        edits: vec![quote(at.start), quote(at.end - 1)],
+                    })
+                } else {
+                    d
+                }
+            }
+            DiagnosticKind::LiteralNotClosed { kind, at } => match kind {
+                LiteralKind::Char => Diagnostic::coded(code, at, "`char` literal is not closed"),
+                LiteralKind::String => Diagnostic::coded(code, at, "string literal is not closed")
+                    .with_help(r"write `\n` for a line break"),
+            },
+            DiagnosticKind::ArithmeticOnChar { at, convert } => {
+                let d = Diagnostic::coded(code, at, "arithmetic does not apply to `char`");
+                match convert {
+                    Some(CharArithmetic { operands, chars }) => d.with_fix(Fix {
+                        message: "convert to `i64` and back".to_string(),
+                        certain: false,
+                        edits: char_arithmetic_edits(operands, &chars),
+                    }),
+                    None => d,
+                }
+            }
+            DiagnosticKind::BraceInString { at } => {
+                Diagnostic::coded(code, at, "a `}` in a string must be escaped").with_fix(Fix {
+                    message: r"write `\}`".to_string(),
+                    certain: true,
+                    edits: vec![backslash(at.start)],
+                })
+            }
+            DiagnosticKind::EmptyInterpolation { at } => {
+                Diagnostic::coded(code, at, "empty interpolation").with_fix(Fix {
+                    message: r"write `\{\}` for literal braces".to_string(),
+                    certain: false,
+                    edits: vec![backslash(at.start), backslash(at.end - 1)],
+                })
+            }
+            DiagnosticKind::CommentInInterpolation { at } => {
+                Diagnostic::coded(code, at, "a comment cannot appear inside an interpolation")
+            }
+            DiagnosticKind::CannotInterpolate { ty, help, at } => {
+                let d = Diagnostic::coded(code, at, format!("cannot interpolate `{ty}`"));
+                match help {
+                    Some(InterpolateHelp::ForLoop) => d.with_help("build the text in a `for` loop"),
+                    Some(InterpolateHelp::Unwrap) => {
+                        d.with_help("unwrap it with `if let`, or give a default with `??`")
+                    }
+                    None => d,
+                }
+            }
         }
     }
+}
+
+/// The edit that writes a `\` at `at`.
+fn backslash(at: usize) -> Edit {
+    Edit {
+        span: Span::new(at, at),
+        replacement: "\\".to_string(),
+    }
+}
+
+/// The edits that turn the expression `operands` into `char(...)` of the same arithmetic on
+/// `i64`s, wrapping each of `chars` in `i64(...)`. Insertions at one offset are one edit.
+fn char_arithmetic_edits(operands: Span, chars: &[Span]) -> Vec<Edit> {
+    let mut edits: Vec<Edit> = Vec::new();
+    let mut insert = |at: usize, text: &str| match edits.last_mut() {
+        Some(last) if last.span.start == at => last.replacement.push_str(text),
+        _ => edits.push(Edit {
+            span: Span::new(at, at),
+            replacement: text.to_string(),
+        }),
+    };
+    insert(operands.start, "char(");
+    for c in chars {
+        insert(c.start, "i64(");
+        insert(c.end, ")");
+    }
+    insert(operands.end, ")");
+    edits
 }
 
 /// The help that lists a class's `fields` in declaration order.
@@ -1286,6 +1828,20 @@ fn similar(d: Diagnostic, at: Span, suggestion: Option<Suggestion>) -> Diagnosti
         at,
         &name,
     ))
+}
+
+/// Whether `c` is a character the user cannot see.
+fn invisible(c: char) -> bool {
+    c.is_whitespace() || c.is_control() || is_format(c)
+}
+
+/// `c` as a message names it: a character the user cannot see by its code point, not printed.
+fn shown(c: char) -> String {
+    if invisible(c) {
+        format!("U+{:04X}", u32::from(c))
+    } else {
+        format!("`{c}`")
+    }
 }
 
 /// Whether `c` is in Unicode category Cf (format). Neither the standard library nor a dependency

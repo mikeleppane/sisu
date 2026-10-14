@@ -1,0 +1,10 @@
+error[E0087]: `COUNT` cannot use itself
+ --> E0087-itself.sisu:1:15
+  |
+1 | const COUNT = COUNT + 1
+  |       -----   ^^^^^
+  |       |
+  |       declared here
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0087

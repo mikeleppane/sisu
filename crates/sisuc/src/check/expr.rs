@@ -6,7 +6,7 @@ use super::{
 };
 use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
 use crate::diagnostic::{
-    Definition, Diagnostic, DiagnosticKind, Literal, Span, Unwrap, suggestion,
+    CharArithmetic, Definition, Diagnostic, DiagnosticKind, Literal, Span, Unwrap, suggestion,
 };
 use crate::tir::{self, Type};
 
@@ -27,6 +27,29 @@ impl Checker {
         checked
     }
 
+    /// The integer literal `value`, written as `text`, typed by `expected`.
+    fn integer(&mut self, at: Span, value: i64, text: &str, expected: Option<&Type>) -> Checked {
+        let ty = literal_type(expected);
+        if ty == Type::U8 && !(0..=i64::from(u8::MAX)).contains(&value) {
+            // Only `-9223372036854775808` parses to a negative literal.
+            self.diagnostics.push(if value < 0 {
+                DiagnosticKind::NegatedU8 { at }.into()
+            } else {
+                DiagnosticKind::IntegerDoesNotFit {
+                    text: text.to_string(),
+                    at,
+                }
+                .into()
+            });
+            return Err(Poisoned::typed(ty));
+        }
+        Ok(tir::Expr {
+            kind: tir::ExprKind::Int(value),
+            ty,
+            span: at,
+        })
+    }
+
     /// `expr` for each kind of expression.
     fn expr_kind(&mut self, e: &ast::Expr, expected: Option<&Type>) -> Checked {
         let node = |kind, ty| {
@@ -37,39 +60,16 @@ impl Checker {
             })
         };
         match &e.kind {
-            ExprKind::Int(n) => {
-                let ty = literal_type(expected);
-                if ty == Type::U8 && !(0..=i64::from(u8::MAX)).contains(n) {
-                    let at = e.span;
-                    // Only `-9223372036854775808` parses to a negative literal.
-                    self.diagnostics.push(if *n < 0 {
-                        DiagnosticKind::NegatedU8 { at }.into()
-                    } else {
-                        DiagnosticKind::IntegerDoesNotFit { value: *n, at }.into()
-                    });
-                    return Err(Poisoned::typed(ty));
-                }
-                node(tir::ExprKind::Int(*n), ty)
-            }
+            ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
+            ExprKind::Char(c) => node(tir::ExprKind::Char(*c), Type::Char),
+            ExprKind::Str(s) => node(tir::ExprKind::Str(s.clone()), Type::String),
+            ExprKind::Interpolate(parts) => self.interpolate(e.span, parts),
             ExprKind::ArrayLit(elements) => self.array_lit(e.span, elements, expected),
             ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
             ExprKind::Index { base, index } => self.index(e.span, base, index),
             ExprKind::NoneLit => self.none(e.span, expected),
-            ExprKind::Name(name) => match self.lookup(name) {
-                Some(Binding {
-                    local,
-                    ty: Some(ty),
-                    ..
-                }) => node(tir::ExprKind::Local(*local), ty.clone()),
-                // `Error`: its diagnostic was recorded where it was bound.
-                Some(_) => Err(Poisoned::error()),
-                None => {
-                    let d = self.not_found(name, e.span);
-                    self.diagnostics.push(d);
-                    Err(Poisoned::error())
-                }
-            },
+            ExprKind::Name(name) => self.name(e.span, name),
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
             ExprKind::SelfValue => {
                 let Some(class) = self.self_class else {
@@ -109,7 +109,12 @@ impl Checker {
                     }),
                 )
             }
-            ExprKind::Binary { op, lhs, rhs } => self.binary(e.span, *op, lhs, rhs, expected),
+            ExprKind::Binary {
+                op,
+                op_span,
+                lhs,
+                rhs,
+            } => self.binary(e.span, (*op, *op_span), lhs, rhs, expected, false),
             ExprKind::Compare { operands, ops } => self.compare(e.span, operands, ops),
             ExprKind::If {
                 cond,
@@ -129,6 +134,36 @@ impl Checker {
                 else_block.as_ref(),
                 expected,
             ),
+            ExprKind::Block(block) => self.block(block, expected).map(|block| {
+                let ty = block.ty.clone();
+                tir::Expr {
+                    kind: tir::ExprKind::Block(block),
+                    ty,
+                    span: e.span,
+                }
+            }),
+        }
+    }
+
+    /// A read of `name`: a local, a constant, or an unknown name, which is reported.
+    fn name(&mut self, span: Span, name: &str) -> Checked {
+        match self.lookup(name) {
+            Some(Binding {
+                local,
+                ty: Some(ty),
+                ..
+            }) => Ok(tir::Expr {
+                kind: tir::ExprKind::Local(*local),
+                ty: ty.clone(),
+                span,
+            }),
+            // `Error`: its diagnostic was recorded where it was bound.
+            Some(_) => Err(Poisoned::error()),
+            None => self.constant_use(name, span).unwrap_or_else(|| {
+                let d = self.not_found(name, span);
+                self.diagnostics.push(d);
+                Err(Poisoned::error())
+            }),
         }
     }
 
@@ -146,7 +181,7 @@ impl Checker {
         let checked = self.value(operand, expected);
         if type_of(&checked) == Some(&Type::U8) {
             // A literal's "does not fit" is moot once its negation is an error.
-            if matches!(operand.kind, ExprKind::Int(_)) {
+            if matches!(operand.kind, ExprKind::Int { .. }) {
                 self.diagnostics.truncate(before);
             }
             self.diagnostics
@@ -156,20 +191,25 @@ impl Checker {
         Ok(self.against(operand, checked, Some(&Type::I64)))
     }
 
-    /// A comparison chain: every operand is of one integer type.
+    /// A comparison chain: every operand is of one integer type, or every one a `string`.
     fn compare(&mut self, span: Span, operands: &[ast::Expr], ops: &[CompareOp]) -> Checked {
         let operands: Vec<_> = operands.iter().collect();
-        let (checked, _, mismatched) = self.integers(&operands, None);
+        let (checked, ty, mismatched) = self.integers(&operands, None, Operator::Compare);
         let operands = checked.into_iter().collect::<Result<Vec<_>, _>>().ok();
-        typed(
-            span,
-            Type::Bool,
-            mismatched,
-            operands.map(|operands| tir::ExprKind::Compare {
-                operands,
-                ops: ops.to_vec(),
-            }),
-        )
+        match operands {
+            Some(operands) if ty == Some(Type::String) => {
+                Ok(self.string_chain(span, operands, ops))
+            }
+            operands => typed(
+                span,
+                Type::Bool,
+                mismatched,
+                operands.map(|operands| tir::ExprKind::Compare {
+                    operands,
+                    ops: ops.to_vec(),
+                }),
+            ),
+        }
     }
 
     /// An expression whose value is used: not `unit` or `never`.
@@ -195,6 +235,16 @@ impl Checker {
     /// that wants `want`, so that rule's expression is `Error`.
     pub(super) fn operand(&mut self, e: &ast::Expr, want: Option<&Type>) -> (Checked, bool) {
         let checked = self.value(e, Some(want.unwrap_or(&UNKNOWN)));
+        self.settled(e, checked, want)
+    }
+
+    /// `operand` for `e`, already checked against `want`'s expectation.
+    pub(super) fn settled(
+        &mut self,
+        e: &ast::Expr,
+        checked: Checked,
+        want: Option<&Type>,
+    ) -> (Checked, bool) {
         // `want` was rejected inside `e`, which `against` cannot tell from an `Error` operand.
         if matches!(checked, Err(Poisoned { mismatch: true, .. })) {
             return (checked, true);
@@ -230,26 +280,52 @@ impl Checker {
 
     /// Once an operand is `Error`, the other is checked against `Error` too: with that
     /// operand's type unknown, the operator may be the mistake. So `x + true` draws no
-    /// diagnostic when `x` is `Error`, and `true && 1` draws one.
-    fn binary(
+    /// diagnostic when `x` is `Error`, and `true && 1` draws one. A `compound` operator stands
+    /// for a compound assignment, a statement that a rewrite of the operator would break. `op`
+    /// comes with its token's span, where arithmetic on a `char` is reported.
+    pub(super) fn binary(
         &mut self,
         span: Span,
-        op: ast::BinaryOp,
+        (op, op_span): (ast::BinaryOp, Span),
         lhs: &ast::Expr,
         rhs: &ast::Expr,
         expected: Option<&Type>,
+        compound: bool,
     ) -> Checked {
         let Some((tir_op, want)) = operator(op) else {
             return self.equal(span, op == ast::BinaryOp::Ne, lhs, rhs);
         };
         if want == Type::Bool {
             let lhs = self.operand(lhs, Some(&want));
-            return self.arithmetic(span, tir_op, want, lhs, rhs);
+            return self.arithmetic(span, (tir_op, op_span), want, lhs, rhs);
         }
-        let (checked, ty, mismatched) = self.integers(&[lhs, rhs], expected);
+        let operator = if tir_op == tir::BinaryOp::Add {
+            Operator::Plus { compound }
+        } else {
+            Operator::Arithmetic
+        };
+        let (checked, ty, mismatched) = self.binary_operands(span, &[lhs, rhs], expected, operator);
+        let chars: Vec<Span> = [lhs, rhs]
+            .iter()
+            .zip(&checked)
+            .filter(|(_, c)| type_of(c) == Some(&Type::Char))
+            .map(|(e, _)| e.span)
+            .collect();
+        if !chars.is_empty() {
+            let operands = lhs.span.to(rhs.span);
+            let convert = (!compound).then_some(CharArithmetic { operands, chars });
+            self.report(DiagnosticKind::ArithmeticOnChar {
+                at: op_span,
+                convert,
+            });
+            return Err(Poisoned::error());
+        }
         let [l, r]: [Checked; 2] = checked
             .try_into()
             .unwrap_or_else(|_| panic!("`integers` should return one result per operand"));
+        if ty == Some(Type::String) {
+            return self.concat(span, l, r, mismatched);
+        }
         let kind = l.ok().zip(r.ok()).map(|(l, r)| tir::ExprKind::Binary {
             op: tir_op,
             lhs: Box::new(l),
@@ -261,54 +337,183 @@ impl Checker {
         }
     }
 
+    /// `integers` for the binary operator at `span`. A `+` that a `string` makes a join under an
+    /// expected `u8` is checked again with none, so that no operand is held to a `u8` it was
+    /// never going to meet: its `string` meets that `u8` once, where the caller checks it. The
+    /// join is remembered, so an operand checked again checks a join inside it once, with no
+    /// expected type: each level of nesting adds a check, where it would double them.
+    fn binary_operands(
+        &mut self,
+        span: Span,
+        operands: &[&ast::Expr],
+        expected: Option<&Type>,
+        operator: Operator,
+    ) -> (Vec<Checked>, Option<Type>, bool) {
+        let joins = operator == (Operator::Plus { compound: false });
+        if !joins || literal_type(expected) != Type::U8 {
+            return self.integers(operands, expected, operator);
+        }
+        if self.joins.contains(&span) {
+            return self.integers(operands, None, operator);
+        }
+        let (diagnostics, locals) = (self.diagnostics.len(), self.locals.len());
+        let result = self.integers(operands, expected, operator);
+        if result.1 != Some(Type::String) {
+            return result;
+        }
+        // The first check is dropped, and its locals with it, so none is left that nothing binds.
+        self.diagnostics.truncate(diagnostics);
+        self.locals.truncate(locals);
+        self.joins.insert(span);
+        self.integers(operands, None, operator)
+    }
+
     /// The operands of one integer operator, checked in source order; the type they share,
     /// `None` when it is `Error`; and whether one was reported against it. The type is `u8`
     /// when `expected` is `u8` or `u8?`. Otherwise the first concrete operand (of `rank` 0) is
-    /// checked first, with no expected type, and gives it: `u8` beside a `u8`, else `i64`.
-    /// With none, it is `i64`, so `None + 1` expects an `i64`. Once an operand is `Error`, the
-    /// later ones are checked against `Error`.
+    /// checked first, with no expected type, and gives it: `u8` beside a `u8`, `char` beside a
+    /// `char` in a comparison, else `i64`. With none, it is `i64`, so `None + 1` expects an
+    /// `i64`. Once an operand is `Error`, the later ones are checked against `Error`. An operand
+    /// of `arithmetic` that is a `char` is left unreported, as the poison `typed` `char`: its
+    /// caller reports the operator, so what the operator's type finds wrong with the other
+    /// operands is dropped, in either order. In a comparison, a `char` after a number reports
+    /// that number, as a `char` before one reports the number.
+    ///
+    /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
+    /// drives from either side: an operand of another type is reported against `string`, with
+    /// the guess to interpolate, the one before a `string` included, in place of what its own
+    /// type was found to lack. A join after an `Error` is `Error`. An expected `u8` is
+    /// `binary_operands`' to drop.
     fn integers(
         &mut self,
         operands: &[&ast::Expr],
         expected: Option<&Type>,
+        operator: Operator,
     ) -> (Vec<Checked>, Option<Type>, bool) {
+        let arithmetic = operator != Operator::Compare;
+        let compound = operator == (Operator::Plus { compound: true });
         let mut first = None;
-        let ty = if literal_type(expected) == Type::U8 {
+        let mut ty = if literal_type(expected) == Type::U8 {
             Some(Type::U8)
         } else if let Some(k) = operands.iter().position(|e| rank(e) == 0) {
             let checked = self.value(operands[k], None);
-            let ty = type_of(&checked).map(|ty| literal_type(Some(ty)));
+            let ty = type_of(&checked).map(|ty| match payload(ty) {
+                Type::Char if !arithmetic => Type::Char,
+                Type::String if operator != Operator::Arithmetic => Type::String,
+                _ => literal_type(Some(ty)),
+            });
             first = Some((k, checked));
             ty
         } else {
             Some(Type::I64)
         };
         let mut want = ty.clone();
+        let leader = first.as_ref().map(|(k, _)| *k);
         let (mut checked, mut mismatched) = (Vec::with_capacity(operands.len()), false);
+        // The diagnostics of the operator's type: mismatches, and a literal's, which that type
+        // types. They wait until a `char` operand is ruled out.
+        let mut deferred = Vec::new();
+        // The type of the operand checked last, as it was found, before it was held to `want`.
+        let mut before = None;
+        // Whether a concrete operand was `Error` as found, which its own diagnostic reported.
+        let mut failed = false;
         for (i, e) in operands.iter().enumerate() {
-            let (operand, m) = match first.take_if(|(k, _)| *k == i) {
-                Some((_, operand)) => self.against(e, operand, want.as_ref()),
-                None => self.operand(e, want.as_ref()),
+            let start = self.diagnostics.len();
+            let value = match first.take_if(|(k, _)| *k == i) {
+                Some((_, operand)) => operand,
+                None => self.value(e, Some(want.as_ref().unwrap_or(&UNKNOWN))),
+            };
+            if rank(e) != 0 {
+                deferred.extend(self.diagnostics.drain(start..));
+            }
+            let char_value = type_of(&value) == Some(&Type::Char);
+            let got = type_of(&value).cloned();
+            let joins = matches!(operator, Operator::Plus { .. });
+            let (operand, m) = if let Some(got) = got
+                .as_ref()
+                .filter(|got| joins && want == Some(Type::String) && **got != Type::String)
+            {
+                deferred.push(self.concat_mismatch(e, got, operands, compound));
+                (Err(Poisoned::error()), true)
+            } else if joins && !compound && got == Some(Type::String) && ty != Some(Type::String) {
+                // A `string` in `+` makes it a join, whatever the operand before it, if any, was
+                // held to: that operand is reported against `string` instead. Under an expected
+                // `u8`, that the `+` is a join is all this check finds: `binary_operands` checks
+                // it again with none.
+                ty = Some(Type::String);
+                if let Some(other) = before.take() {
+                    // All that is deferred is that operand's, the first of two.
+                    deferred.clear();
+                    let d = self.concat_mismatch(operands[0], &other, operands, false);
+                    self.diagnostics.push(d);
+                    checked[0] = Err(Poisoned::error());
+                    want = None;
+                    (Err(Poisoned::error()), true)
+                } else {
+                    // An `Error` before it may be the mistake, so the join is `Error` too.
+                    (value, true)
+                }
+            } else if arithmetic && char_value {
+                (Err(Poisoned::typed(Type::Char)), false)
+            } else if let Some(k) = leader
+                .filter(|_| char_value && !arithmetic && matches!(want, Some(Type::I64 | Type::U8)))
+            {
+                // A `char` after a number in a comparison: the number is the one converted.
+                if let Some(got) = type_of(&checked[k]).cloned() {
+                    let d = self.mismatch(operands[k].span, Some(operands[k]), &Type::Char, &got);
+                    self.diagnostics.push(d);
+                }
+                checked[k] = Err(Poisoned::error());
+                want = None;
+                (Err(Poisoned::error()), true)
+            } else {
+                let start = self.diagnostics.len();
+                let settled = self.settled(e, value, want.as_ref());
+                deferred.extend(self.diagnostics.drain(start..));
+                settled
             };
             if type_of(&operand).is_none() {
                 want = None;
             }
             mismatched |= m;
+            failed |= got.is_none() && rank(e) == 0;
             checked.push(operand);
+            before = got;
+        }
+        // The operator is rejected whatever stands beside the `char`, unless that is an `Error`:
+        // then the operator may be the mistake, as for any other type, and the sum is `Error`.
+        if !(arithmetic && checked.iter().any(|c| type_of(c) == Some(&Type::Char))) {
+            self.diagnostics.append(&mut deferred);
+        } else if failed {
+            for c in &mut checked {
+                *c = Err(Poisoned::error());
+            }
+            ty = None;
         }
         (checked, ty, mismatched)
     }
 
-    /// `lhs op rhs`, its `lhs` already checked against `want`, the type `op` takes.
+    /// `lhs op rhs`, its `lhs` already checked against `want`, the type `op` takes; `op` comes
+    /// with its token's span.
     pub(super) fn arithmetic(
         &mut self,
         span: Span,
-        op: tir::BinaryOp,
+        (op, op_span): (tir::BinaryOp, Span),
         want: Type,
         (l, l_mismatched): (Checked, bool),
         rhs: &ast::Expr,
     ) -> Checked {
-        let (r, r_mismatched) = self.operand(rhs, type_of(&l).and(Some(&want)));
+        let expected = type_of(&l).and(Some(&want));
+        let checked = self.value(rhs, Some(expected.unwrap_or(&UNKNOWN)));
+        // Only a compound assignment's number gets here with a `char` to its right.
+        if want != Type::Bool && type_of(&checked) == Some(&Type::Char) {
+            self.report(DiagnosticKind::ArithmeticOnChar {
+                at: op_span,
+                convert: None,
+            });
+            return Err(Poisoned::error());
+        }
+        let (r, r_mismatched) = self.settled(rhs, checked, expected);
         let kind = l.ok().zip(r.ok()).map(|(l, r)| tir::ExprKind::Binary {
             op,
             lhs: Box::new(l),
@@ -320,7 +525,7 @@ impl Checker {
     /// `lhs == rhs`, or `!=`. The side of lower `rank` is checked first, the left on a tie,
     /// and the other expects its type made optional. A bare `None` beside a value that is not
     /// optional is reported: the answer is fixed. So is a `u8` beside an `i64`, at the side
-    /// checked second.
+    /// checked second, and a `char` beside a `u8` or an `i64`, at the side that is not the `char`.
     fn equal(&mut self, span: Span, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         let swapped = rank(rhs) < rank(lhs);
         let (first, second) = if swapped { (rhs, lhs) } else { (lhs, rhs) };
@@ -337,13 +542,19 @@ impl Checker {
                 .push(DiagnosticKind::NeverNone { value, at: span }.into());
             return Err(Poisoned::error());
         }
+        // The numbers are `i64`, `u8` and `char`: none is compared with another.
+        let number = |ty: &Type| matches!(ty, Type::I64 | Type::U8 | Type::Char);
         if let (Some(want), Some(got)) = (type_of(&checked), type_of(&other))
-            && matches!(
-                (payload(want), payload(got)),
-                (Type::U8, Type::I64) | (Type::I64, Type::U8)
-            )
+            && number(payload(want))
+            && number(payload(got))
+            && payload(want) != payload(got)
         {
-            let d = self.mismatch(second.span, Some(second), payload(want), got);
+            // A number beside a `char` is the one converted; else the second is held to the first.
+            let d = if *payload(got) == Type::Char {
+                self.mismatch(first.span, Some(first), payload(got), want)
+            } else {
+                self.mismatch(second.span, Some(second), payload(want), got)
+            };
             self.diagnostics.push(d);
             return Err(Poisoned::error());
         }
@@ -377,7 +588,7 @@ impl Checker {
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
             // Once an operand is `Error`, the later one is not held to `is`.
             let Some(ty) = type_of(checked) else { break };
-            if matches!(payload(ty), Type::Array(_)) || !ty.is_counted() {
+            if matches!(payload(ty), Type::Array(_) | Type::String) || !ty.is_counted() {
                 let kind = DiagnosticKind::IsNeedsObjects {
                     found: self.type_name(ty),
                     at: side.span,
@@ -528,10 +739,11 @@ impl Checker {
             Some(Type::Never) => return Err(Poisoned::error()),
             Some(ty) => (
                 DiagnosticKind::Mismatch {
-                    want: self.type_name(ty),
+                    want: vec![self.type_name(ty)],
                     got: "None".to_string(),
                     at: span,
-                    convert: None,
+                    other: None,
+                    fix: None,
                 },
                 true,
             ),
@@ -725,16 +937,22 @@ impl Checker {
             self.class_ids.get(&callee.name).copied(),
             self.function_ids.get(&callee.name).copied(),
         );
-        // A broken name poisons every use, a built-in's too. The item's own error is reported;
-        // its arguments may hold more.
-        if let (Some(Declared::Broken), _) | (_, Some(Declared::Broken)) = declared {
+        // A broken name, a constant's included, poisons every use, a built-in's too. The item's
+        // own error is reported; its arguments may hold more.
+        if matches!(
+            declared,
+            (Some(Declared::Broken), _) | (_, Some(Declared::Broken))
+        ) || matches!(self.constants.get(&callee.name), Some(Declared::Broken))
+        {
             self.stray(args);
             return Err(Poisoned::error());
         }
         if callee.name == "print" {
             return self.print(span, args);
         }
-        if let Some(to @ (Type::I64 | Type::U8)) = built_in_type(&callee.name) {
+        if let Some(to @ (Type::I64 | Type::U8 | Type::Char | Type::String)) =
+            built_in_type(&callee.name)
+        {
             return self.convert(span, to, args);
         }
         match declared {
@@ -791,7 +1009,7 @@ impl Checker {
             .function_ids
             .keys()
             .map(String::as_str)
-            .chain(["print", "i64", "u8"])
+            .chain(["print", "i64", "u8", "char", "string"])
             .map(|function| (function, Definition::Function));
         self.report(DiagnosticKind::FunctionNotFound {
             name: callee.name.clone(),
@@ -817,7 +1035,7 @@ impl Checker {
                 checked.ty == *element
                     || matches!(
                         (&value.value.kind, element),
-                        (ExprKind::Int(n), Type::U8) if u8::try_from(*n).is_ok()
+                        (ExprKind::Int { value, .. }, Type::U8) if u8::try_from(*value).is_ok()
                     )
             })
     }
@@ -833,9 +1051,13 @@ impl Checker {
     ) -> Checked {
         // The arguments are not part of an assignment target's chain; `expr` restores the flag.
         let target = std::mem::take(&mut self.in_target);
-        if let Some(ty @ Type::Array(_)) = type_of(&receiver) {
-            let ty = ty.clone();
-            return self.array_method(span, receiver, &ty, method, args);
+        match type_of(&receiver) {
+            Some(ty @ Type::Array(_)) => {
+                let ty = ty.clone();
+                return self.array_method(span, receiver, &ty, method, args);
+            }
+            Some(Type::String) => return self.string_method(span, receiver, method, args),
+            _ => {}
         }
         let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method, target) else {
             self.labels(args);
@@ -878,42 +1100,6 @@ impl Checker {
             }
             (_, ret) => Err(Poisoned::of(ret.filter(|_| !failed))),
         }
-    }
-
-    /// `to(arg)`: `u8(x)` takes an `i64`, `i64(x)` a `u8`. Its argument expects no type, so a
-    /// literal one is an `i64`.
-    fn convert(&mut self, span: Span, to: Type, args: &[ast::Arg]) -> Checked {
-        let labeled = self.labels(args);
-        let [arg] = args else {
-            self.report(DiagnosticKind::ArgumentCount {
-                name: to.to_string(),
-                want: 1,
-                found: args.len(),
-                at: span,
-            });
-            self.stray(args);
-            return Err(Poisoned::error());
-        };
-        let from = if to == Type::U8 { Type::I64 } else { Type::U8 };
-        let checked = self.value(&arg.value, None);
-        let d = match type_of(&checked) {
-            Some(ty) if *ty == to => DiagnosticKind::AlreadyConverted {
-                value: path(&arg.value),
-                ty: self.type_name(&to),
-                at: arg.value.span,
-            }
-            .into(),
-            Some(ty) if *ty != from => self.mismatch(arg.value.span, Some(&arg.value), &from, ty),
-            _ => {
-                let kind = checked
-                    .ok()
-                    .filter(|_| !labeled)
-                    .map(|arg| tir::ExprKind::Convert(Box::new(arg)));
-                return typed(span, to, labeled, kind);
-            }
-        };
-        self.diagnostics.push(d);
-        Err(Poisoned::error())
     }
 
     /// The node `kind` makes of `operands`, in a block after the bindings `spill` makes of them.
@@ -1148,6 +1334,17 @@ impl Checker {
     }
 }
 
+/// The operator whose operands `integers` checks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Operator {
+    /// A comparison chain.
+    Compare,
+    /// `+`, which also joins `string`s; `compound` for a compound assignment's.
+    Plus { compound: bool },
+    /// `- * / %`.
+    Arithmetic,
+}
+
 /// The operator and the type it takes, for all but `==` and `!=`.
 pub(super) fn operator(op: ast::BinaryOp) -> Option<(tir::BinaryOp, Type)> {
     Some(match op {
@@ -1165,12 +1362,12 @@ pub(super) fn operator(op: ast::BinaryOp) -> Option<(tir::BinaryOp, Type)> {
 /// An integer literal, or `+ - * / %` and unary `-` over such operands only (spec rule 2).
 pub(super) fn int_literal(e: &ast::Expr) -> bool {
     match &e.kind {
-        ExprKind::Int(_) => true,
+        ExprKind::Int { .. } => true,
         ExprKind::Unary {
             op: UnaryOp::Neg,
             operand,
         } => int_literal(operand),
-        ExprKind::Binary { op, lhs, rhs } => {
+        ExprKind::Binary { op, lhs, rhs, .. } => {
             operator(*op).is_some_and(|(_, ty)| ty == Type::I64)
                 && int_literal(lhs)
                 && int_literal(rhs)

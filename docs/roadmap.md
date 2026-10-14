@@ -14,7 +14,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 1 | Number crunching: `i64`, `bool`, functions, `if`, `while`, recursion | Fibonacci and a prime counter print correct answers | Done |
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
-| 4 | Strings | A program reverses and compares strings | Planned |
+| 4 | Strings | A program reverses and compares strings | Done |
 | 5 | Input and output | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
@@ -40,8 +40,19 @@ These are adopted. Together they give Sisu a working imperative core.
 - arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
   read and written by index, compared with `==`, and walked with `for x in xs`
   or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
+- `char`, one Unicode scalar value such as `'ä'`, compared by code point and
+  converted with `i64(c)` and `char(n)`
+- `string`: UTF-8 literals with escapes, `+` and `+=`, comparison by bytes,
+  `len()` in bytes, and interpolation such as `"n = {n}"`; `+=` on a string
+  that nothing else holds appends in place, whether it is a local, a `mut`
+  field or an array element
+- text as arrays: `s.chars()` gives a `[char]`, `s.bytes()` a `[u8]`, and
+  `string(cs)` builds a `string` from a `[char]`; each call builds a new value
 - copy-on-write arrays: `let b = a` shares until one of them is written, and a
   counted local's last read moves it instead of copying
+- `let _ = e` and `for _ in ...`, which drop a value without a name;
+  shadowing in the same scope; `0x`, `0b` and `0o` integer literals; block
+  expressions such as `let a = { ... }`; and top-level `const`
 - error messages in the style of `rustc`, pointing at the code, each with a
   stable code that `sisuc --explain` describes, a JSON form, and fixes where
   the checker can offer one
@@ -50,8 +61,9 @@ These are adopted. Together they give Sisu a working imperative core.
 
 Before the rest of milestone 4, every diagnostic gets a stable code, one
 registry for its wording, a tested explanation and a JSON form for tools
-([ADR 0013](adr/0013-diagnostics-have-stable-codes.md)). Milestones keep their numbers. Milestone 4's strings are built on
-top of it, and every later milestone adds its codes the same way.
+([ADR 0013](adr/0013-diagnostics-have-stable-codes.md)). Milestones keep
+their numbers. Milestone 4's strings are built on top of it, and every later
+milestone adds its codes the same way.
 
 ### Decided in milestone 1
 
@@ -91,6 +103,33 @@ These came out of the milestone 2 design and are now part of its spec:
   `.filter(...).map(...).sum()` builds no intermediate array. A
   `filter_some`-style method on `[T?]`, which keeps the present elements,
   comes with them.
+
+### Decided in milestone 4
+
+- A `string` is always valid UTF-8, a value shared until written, with `len()`
+  in bytes and no `s[i]` ([ADR 0014](adr/0014-strings-are-utf-8-values.md)).
+  Text is taken apart with `chars()` and `bytes()`, and `string(cs)` builds a
+  string back from a `[char]`. A `char` is one code point, so grapheme
+  clusters such as `e` plus a combining accent reverse wrongly. That is
+  accepted.
+- `<`, `<=`, `>` and `>=` compare strings by bytes, which for valid UTF-8 is
+  code-point order: `"Zoe" < "anna"` and `"z" < "ä"`. There is no Unicode
+  normalisation and no case folding.
+- `+=` on a string appends in place when nothing else holds it, on a local, a
+  field or an array element. `s = s + t` and `names[i] = names[i] + t` append
+  alike, and a prepend (`"x" + s`) always copies. There is no builder type:
+  `+=` on a string held once is the builder.
+- Interpolation, `"n = {n}"`, is the only way to build text from numbers and
+  `bool`; a `char` also goes through `string([c])`. `string + char` and
+  `string + i64` are errors that point to interpolation.
+- `let mut` replaces `var` (ADR 0011); `let _` and `for _` drop a value
+  without a name; same-scope shadowing is allowed; `0x`, `0b` and `0o`
+  literals; block expressions; top-level `const`; and a list of reserved
+  keywords for later milestones.
+- Left for later: text searching such as `split`, `trim` and `find` (with
+  milestone 5), format specifiers (milestone 6), printing classes, arrays and
+  optionals (milestone 8), and building a `string` from `[u8]`, which needs
+  UTF-8 validation and a failure path (milestone 5's input or milestone 12).
 
 ## Beyond milestone 6
 
@@ -165,11 +204,11 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 
 | Milestone | Add | Why |
 | --- | --- | --- |
-| 4 | Reserve the keywords that later milestones bring: `import` and `pub` (planned for milestone 2, it did not land), `enum`, `match`, `record`, `type`, `weak`, `const`, `test` and `todo` | A program that names a variable `match` would break when that keyword lands |
+| 4 | Reserve the keywords that later milestones bring: `import` and `pub` (planned for milestone 2, it did not land), `enum`, `match`, `record`, `type`, `weak`, `const`, `test` and `todo`. Landed in milestone 4, stage 1 (`E0083`); it also reserves `echo`, `interface`, `extern` and `as`, and `const` became a keyword with top-level constants | A program that names a variable `match` would break when that keyword lands |
 | 4 | `let mut` replaces `var`; a class field is bare, set once by the constructor, or `mut` (ADR 0011). `var` stays reserved, so using it is error `E0013`, "there is no `var` in Sisu", with the help "Sisu declares a variable with `let mut`" (on a field, "a field that can change is marked `mut`"). | Every program and test changes, so it is cheapest before strings and enums add more code |
 | 4 | Top-level `const NAME = expr`, where `expr` uses only literals, operators and other constants; the checker folds it to a value. Planned for milestone 3, it did not land. | Named limits, such as a sieve size, without global variables |
 | 4 | String interpolation `"x = {x}"`. `print(x)` and `"{x}"` go through one internal operation per type that turns a value into text. Milestone 8's `Display` interface replaces that operation, so neither is rewritten. | The biggest single win for real programs |
-| 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. Today `_` is an ordinary name, so a second `let _` in one scope is an error and `_` can be read. | A loop or a call whose value is not needed takes no made-up name |
+| 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. Landed in milestone 4, stage 1: `_` binds nothing, so a second `let _` in one scope is fine and `_` cannot be read. | A loop or a call whose value is not needed takes no made-up name |
 | 4 | Integer literals in hexadecimal, binary and octal: `0xFF`, `0b1010`, `0o17`, with digit separators | Bytes and bit masks, which `u8` brings in milestone 3, read as what they are |
 | 4 | A block as an expression: `let x = {`, then statements on their own lines, then `}`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
 | 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
@@ -266,7 +305,7 @@ so it does not wait for the later goals:
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
-| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`, string builder) | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
+| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`) | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
 
 Order matters in these places:
@@ -308,7 +347,7 @@ settle before work starts.
 
 | Work | Needs | Unblocks |
 | --- | --- | --- |
-| Milestone 4: strings | Decisions: what a string is, same-scope shadowing | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
+| Milestone 4: strings | Done | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
 | Milestone 5: standard streams, arguments, environment | 4 | The word-count tool |
 | Milestone 6: floats | Decision: floats | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
 | Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
@@ -326,17 +365,15 @@ settle before work starts.
 
 ### What can start now
 
-With milestone 3 done, each of these tracks can run beside the others once
+With milestone 4 done, each of these tracks can run beside the others once
 the decisions it needs are settled:
 
 - **Decisions**: every entry in "Open decisions" is design work with no
   code. Settle the shared ones first, because several tracks build on each:
   values with fields, names and namespaces, argument labels, closure syntax,
   and the cycle part of equality and hashing.
-- **The language core**: milestone 4, then 5. Milestone 6 can be built in
-  parallel and land after 4.
-- **Enums**: milestone 7. It does not need strings, floats or I/O.
-  `match` on strings waits for milestone 4.
+- **The language core**: milestone 5. Milestone 6 can be built in parallel.
+- **Enums**: milestone 7. It does not need floats or I/O.
 - **Closures**: `weak` fields, then closures and function types from
   milestone 9. A function type names concrete types, such as
   `(i64) -> bool`, so closures need no generics.
@@ -347,8 +384,8 @@ the decisions it needs are settled:
 - **Small additions** from the table above, each a branch of its own:
   `let mut` replacing `var` (land it first: it touches every test program),
   reserved keywords, `const`, `_`, hexadecimal literals, block expressions
-  and `todo`. `panic("msg")` waits for milestone 4's strings, and `test`
-  blocks for `panic`.
+  and `todo`. All but `todo` landed in milestone 4, stage 1. `panic("msg")`
+  can use milestone 4's strings now, and `test` blocks wait for `panic`.
 - **Tooling**: everything under "Early tooling", and from "Later and stretch
   goals" parser error recovery, the lints whose features exist, linking with
   `lld`, and debug info.
@@ -359,7 +396,7 @@ milestone 4's strings keep one count, so the shared `@sisu_rc.retain` splits
 by kind. Land `weak` fields and strings one after the other, not as two
 rewrites of `codegen/rc.rs` at once.
 
-Once 4 and 7 are done, milestone 8 starts. Once 8 is done, milestone 12 and
+Once 7 is done, milestone 8 starts. Once 8 is done, milestone 12 and
 the Sisu prelude can start, iterator methods once closures are done too, and
 compiler-implemented interfaces once records are done too. The standard
 library comes after them, and concurrency last.
@@ -688,7 +725,7 @@ These do not make code nicer to write, so they wait:
 - A formatter, `sisu fmt`, after milestone 7, once `enum` and `match` have
   fixed most of the syntax. It has one style and no options, as with `gofmt`
   and `zig fmt`. It must keep comments, but the lexer drops them today
-  (`crates/sisuc/src/lexer.rs`). As `gofmt` does, the lexer would record each
+  (`crates/sisuc/src/lexer/`). As `gofmt` does, the lexer would record each
   comment's span, and the formatter would write it back next to the nearest
   syntax-tree node. It keeps single blank lines between statements, found
   from the spans. Formatting twice must change nothing, and the formatted
@@ -772,10 +809,9 @@ These do not make code nicer to write, so they wait:
 
 ## Open decisions
 
-- **Same-scope shadowing.** Milestone 1 allows redeclaring a name only in an
-  inner scope. Rust also allows `let n = n.trim()` in the same scope, which
-  pays off once strings change a value's type. Decide in milestone 4; lifting
-  the error breaks no program.
+- **Same-scope shadowing.** Resolved in milestone 4: allowed. `let n = n.trim()`
+  in the same scope declares a new binding, and the old one stays visible to
+  its own right-hand side.
 - **Generic arguments and `<`.** `f(a < b, c > d)` reads as two comparisons
   or as one generic call. Decide the syntax in milestone 8.
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
@@ -791,21 +827,17 @@ These do not make code nicer to write, so they wait:
   Swift and Kotlin. Decide the form before the first attribute lands, so `@`
   is not taken for something else. Later uses could include `@noinline` and
   `@deprecated("...")`. Tests use `test` blocks, not an attribute.
-- **What a string is.** LLVM sees only bytes, so Sisu decides this itself.
-  Milestone 1 already reads UTF-8 source with ASCII identifiers. Decide before
-  milestone 4:
-  - whether strings are stored as UTF-8;
-  - whether `len()` counts bytes or characters (Unicode scalars);
-  - whether `s[i]` exists at all. Swift has no integer indexing on strings,
-    because it is slow and misleading for text that is not ASCII;
-  - where invalid UTF-8 from input is caught, in the runtime or in generated
-    code (ADR 0009);
-  - whether a string is a value shared until written, as arrays are
-    (ADR 0007);
-  - how a string literal, stored once in the program's read-only data, takes
-    part in reference counting without ever being freed;
-  - its header: one count, as arrays keep, not the split count of a class
-    object with `weak` fields (ADR 0008).
+- **What a string is.** Resolved by
+  [ADR 0014](adr/0014-strings-are-utf-8-values.md): UTF-8, always valid, a
+  value shared until written, `len()` in bytes and no `s[i]`.
+- **Substring views.** A `split` or `trim` that returns views into the parent's
+  bytes would copy nothing, but a view keeps the parent alive. Decide after
+  generics; Swift's separate `Substring` type is the leading candidate.
+  Compatibility cost: if milestone 5's `split` returns `[string]`, a later
+  `Substring` either changes its return type or adds a second method.
+- **Small-string optimisation.** Store short strings inside the variable's
+  slot, as Swift and C++ do. Programs cannot observe it. Decide when a
+  benchmark asks for it.
 - **Floats.** Decide before milestone 6:
   - Literals. The number scanner reads only digits and separators today.
     With floats, `0..n` must still be a range and `1.0` a float. Tuples
@@ -815,7 +847,7 @@ These do not make code nicer to write, so they wait:
   - What NaN, infinity and a division by zero do, checked against ADR 0003
     and ADR 0006: a silent NaN is a wrong answer that does not stop the
     program.
-  - Conversions. They follow `i64(x)` and `u8(x)`, which exist today. A float
+  - Conversions. They follow `i64(x)`, `u8(x)` and `char(x)`, which exist today. A float
     converted to an integer that cannot hold it panics or is rejected, never
     wraps.
 - **Values with fields.** Decide before milestone 7 or records (milestone

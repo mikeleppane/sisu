@@ -270,7 +270,9 @@ number in its series, `E` for errors and `W` for warnings.
 
 The tests in `diagnostic/explanations.rs` fail when a code lacks its
 explanation, its README row or its fixture, or when a Broken program does not
-report exactly its code.
+report exactly its code. They also run every Fixed program, and every Broken
+program with its certain fixes applied, through the checker, so the checker
+must accept any syntax those programs use.
 
 ## Repository layout
 

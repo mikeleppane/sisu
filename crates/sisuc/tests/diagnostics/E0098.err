@@ -1,0 +1,8 @@
+error[E0098]: cannot interpolate `P`
+ --> E0098.sisu:5:13
+  |
+5 |     print("{p}")
+  |             ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0098

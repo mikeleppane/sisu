@@ -1,0 +1,13 @@
+fn iterations() -> i64 { 1000 }
+
+// `s = s + "x"` is the last use of the old `s`, so `+` owns its left operand and appends in place
+// as `s += "x"` does: one copy of the literal, then a reallocation at each doubling to 1024.
+fn main() {
+    let mut s = "a"
+    for i in 0..iterations() {
+        s = s + "x"
+    }
+    print(s.len())                   // 1001 (1 with no iterations)
+    let cs = s.chars()
+    print(cs[cs.len() - 1])          // x (a with no iterations): the last char, read through `chars()`
+}

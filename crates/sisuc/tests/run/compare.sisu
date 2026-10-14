@@ -1,0 +1,47 @@
+// Every comparison operator on `char`, by code point rather than by byte or alphabet, and on
+// `string`, byte by byte, which for UTF-8 is code-point order.
+fn main() {
+    let a = 'a'
+    let z = 'z'
+    let umlaut = 'ä'
+    let emoji = '😀'
+    print(a == a)                    // true
+    print(a != a)                    // false
+    print(a == z)                    // false
+    print(a != z)                    // true
+    print(a < z)                     // true
+    print(z < a)                     // false
+    print(a <= a)                    // true
+    print(z <= a)                    // false
+    print(z > a)                     // true
+    print(a > z)                     // false
+    print(z >= z)                    // true
+    print(a >= z)                    // false
+    print(z < umlaut)                // true: 122 is below 228, so `z` sorts before `ä`
+    print(umlaut < emoji)            // true: 228 is below 128512
+    print(emoji > umlaut)            // true
+    print(emoji >= emoji)            // true
+    print(a < umlaut < emoji)        // true: a chain holds when every link holds
+    print(a < z < umlaut)            // true
+    print(a < umlaut < z)            // false: the second link fails
+    print("abc" == "abc")            // true
+    print("abc" == "abz")            // false
+    print("abc" != "abz")            // true
+    print("abc" != "abc")            // false
+    print("abc" < "abz")             // true
+    print("abz" < "abc")             // false
+    print("abc" <= "abc")            // true
+    print("abz" <= "abc")            // false
+    print("abz" > "abc")             // true
+    print("abc" > "abc")             // false
+    print("abc" >= "abc")            // true
+    print("abc" >= "abz")            // false
+    print("ab" < "abc")              // true: a prefix sorts first
+    print("b" > "abc")               // true: the first byte decides, not the length
+    print("Zoe" < "anna")            // true: upper case sorts before lower case
+    print("z" < "ä")                 // true: `ä` is two bytes, the first above `z`
+    print("\u{E9}" < "e\u{301}")     // false: bytes, not Unicode equivalence; 195 is above 101
+    print("" < "a")                  // true
+    print("a" < "b" < "c")           // true
+    print("a" < "c" < "b")           // false: the second link fails
+}

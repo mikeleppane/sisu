@@ -1,0 +1,19 @@
+error[E0001]: cannot assign to an element of `LIMIT`
+ --> E0001-const-element.sisu:4:5
+  |
+1 | const LIMIT = 100
+  |       ----- declared with `const` here
+...
+4 |     LIMIT[0] = 1
+  |     ^^^^^^^^^^^^
+
+error[E0068]: cannot index `i64`
+ --> E0001-const-element.sisu:4:5
+  |
+4 |     LIMIT[0] = 1
+  |     ^^^^^
+  |
+  = help: only arrays can be indexed
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0068

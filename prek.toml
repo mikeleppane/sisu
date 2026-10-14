@@ -5,10 +5,11 @@
 [[repos]]
 repo = "builtin"
 hooks = [
-  { id = "trailing-whitespace" },
+  # `escapes.out` holds the raw `\t`, `\0` and `\r` that `escapes.sisu` prints.
+  { id = "trailing-whitespace", exclude = '^crates/sisuc/tests/run/escapes\.out$' },
   # `no_trailing_newline.sisu` and `eof-quote.sisu` must not end in a newline, and the stderr snapshots end in one blank line.
-  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/diagnostics/(.*\.err|no_trailing_newline\.sisu|eof-quote\.sisu)$' },
-  { id = "mixed-line-ending" },
+  { id = "end-of-file-fixer", exclude = '^crates/sisuc/tests/(diagnostics/(.*\.err|no_trailing_newline\.sisu|eof-quote\.sisu)|run/escapes\.out)$' },
+  { id = "mixed-line-ending", exclude = '^crates/sisuc/tests/run/escapes\.out$' },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files" },
   { id = "check-toml" },
@@ -48,6 +49,14 @@ name = "unit tests assert codes, not wording"
 language = "system"
 entry = "scripts/check-test-wording.sh"
 types = ["rust"]
+
+# Rust's `{:?}` escapes a value the Rust way; diagnostic text quotes Sisu source.
+[[repos.hooks]]
+id = "registry-no-debug-format"
+name = "diagnostic text does not use {:?}"
+language = "system"
+entry = '''perl -ne 'last if /^#\[cfg\(test\)\]/; if (/:\?\}/) { print "$ARGV:$.: diagnostic text uses {:?}; escape the Sisu way\n"; $bad = 1 } END { exit($bad ? 1 : 0) }' '''
+files = '^crates/sisuc/src/diagnostic/registry\.rs$'
 
 [[repos.hooks]]
 id = "typos"

@@ -1,0 +1,14 @@
+error[E0054]: `"\{\}\"\\\n\u{7}é"` is already `string`
+ --> E0054-escaped.sisu:2:18
+  |
+2 |     print(string("\{\}\"\\\n\u{7}é"))
+  |                  ^^^^^^^^^^^^^^^^^^
+  |
+help: remove the conversion
+  |
+2 -     print(string("\{\}\"\\\n\u{7}é"))
+2 +     print("\{\}\"\\\n\u{7}é")
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0054

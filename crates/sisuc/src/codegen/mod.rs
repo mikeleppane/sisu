@@ -3,6 +3,7 @@
 mod arith;
 mod array;
 mod rc;
+mod string;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -81,9 +82,18 @@ pub(crate) fn compile<'ctx>(
 
     // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
     // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
-    let print_int = declare_print(&module, "sisu_print_int", i64_type.into());
-    let print_bool = declare_print(&module, "sisu_print_bool", context.bool_type().into());
+    let print_int = declare_print(&module, "sisu_print_int", &[i64_type.into()]);
+    let print_bool = declare_print(&module, "sisu_print_bool", &[context.bool_type().into()]);
     print_bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
+    let print_char = declare_print(&module, "sisu_print_char", &[context.i32_type().into()]);
+    // A string crosses into the runtime as its bytes and its length: `sisu_print_str(bytes,
+    // len)` and `sisu_str_compare(a, a_len, b, b_len) -> i64`.
+    let bytes_len: [BasicMetadataTypeEnum; 2] = [ptr_type.into(), i64_type.into()];
+    let print_str = declare_print(&module, "sisu_print_str", &bytes_len);
+    let compare = i64_type.fn_type(&[bytes_len, bytes_len].concat(), false);
+    let str_compare = module.add_function("sisu_str_compare", compare, None);
+    // A pure function of the bytes it reads: `ArgMem` `Ref` (1) and no other location.
+    add_nounwind_memory(&module, str_compare, 0b01);
     // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
     // index, length)` prints a bounds panic and exits.
     let panic = declare_noreturn(&module, "sisu_panic", &[ptr_type.into(), i64_type.into()]);
@@ -104,6 +114,9 @@ pub(crate) fn compile<'ctx>(
         builder: context.create_builder(),
         print_int,
         print_bool,
+        print_char,
+        print_str,
+        str_compare,
         panic,
         panic_bounds,
         alloc,
@@ -169,34 +182,44 @@ fn declare_noreturn<'ctx>(
     function
 }
 
-/// Declares the runtime print function `name`, which takes one `param` and returns nothing.
-/// The runtime is built with `panic = "abort"`, so it never unwinds. A print takes no
-/// pointer, so it reaches no memory of the module: it uses only the runtime's own buffer and
-/// state (inaccessible memory) and can set `errno`. It can also exit the process, so there
-/// is no `willreturn`. Treating the runtime's allocator as inaccessible memory matches LLVM's
+/// Declares the runtime print function `name`, which takes `params` and returns nothing.
+/// The runtime is built with `panic = "abort"`, so it never unwinds. Of the module's memory, a
+/// print reads only what a pointer parameter points to; otherwise it uses only the runtime's
+/// own buffer and state (inaccessible memory) and can set `errno`. It can also exit the
+/// process, so there is no `willreturn`. Treating the runtime's allocator as inaccessible memory matches LLVM's
 /// own annotation of `malloc`. These attributes assume no LTO, no `atexit` handlers and no
 /// module globals that the runtime reaches.
 fn declare_print<'ctx>(
     module: &Module<'ctx>,
     name: &str,
-    param: BasicMetadataTypeEnum<'ctx>,
+    params: &[BasicMetadataTypeEnum<'ctx>],
 ) -> FunctionValue<'ctx> {
     // LLVM 22's `MemoryEffects` encoding (`llvm/Support/ModRef.h`): two bits per location,
     // `Ref` 1 and `Mod` 2, lowest first: `ArgMem`, `InaccessibleMem`, `ErrnoMem`, then
-    // everything else. So this is `ErrnoMem` 3, `InaccessibleMem` 3, `ArgMem` 0, and none for
-    // `Other` and the target locations, globals included.
+    // everything else. So this is `ErrnoMem` 3, `InaccessibleMem` 3, `ArgMem` 0 or `Ref`, and
+    // none for `Other` and the target locations, globals included.
     const MEMORY: u64 = 0b11_11_00;
+    let reads_args = params
+        .iter()
+        .any(|param| matches!(param, BasicMetadataTypeEnum::PointerType(_)));
     let context = module.get_context();
-    let function = module.add_function(name, context.void_type().fn_type(&[param], false), None);
+    let function = module.add_function(name, context.void_type().fn_type(params, false), None);
+    add_nounwind_memory(module, function, MEMORY | u64::from(reads_args));
+    function
+}
+
+/// Marks `function` `nounwind` with the `memory` effects `memory`, encoded as `declare_print`
+/// describes.
+fn add_nounwind_memory(module: &Module<'_>, function: FunctionValue<'_>, memory: u64) {
+    let context = module.get_context();
     function.add_attribute(
         AttributeLoc::Function,
         context.create_enum_attribute(Attribute::get_named_enum_kind_id("nounwind"), 0),
     );
     function.add_attribute(
         AttributeLoc::Function,
-        context.create_enum_attribute(Attribute::get_named_enum_kind_id("memory"), MEMORY),
+        context.create_enum_attribute(Attribute::get_named_enum_kind_id("memory"), memory),
     );
-    function
 }
 
 fn zeroext(context: &Context) -> Attribute {
@@ -228,6 +251,9 @@ struct Codegen<'ctx, 'src> {
     builder: Builder<'ctx>,
     print_int: FunctionValue<'ctx>,
     print_bool: FunctionValue<'ctx>,
+    print_char: FunctionValue<'ctx>,
+    print_str: FunctionValue<'ctx>,
+    str_compare: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
     panic_bounds: FunctionValue<'ctx>,
     alloc: FunctionValue<'ctx>,
@@ -268,9 +294,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::U8 => Some(self.context.i8_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
+            Type::Char => Some(self.context.i32_type().into()),
             Type::Unit | Type::Never => None,
-            // An object or an array is a pointer to its block.
-            Type::Class(_) | Type::Array(_) => {
+            // An object, an array or a string is a pointer to its block.
+            Type::String | Type::Class(_) | Type::Array(_) => {
                 Some(self.context.ptr_type(AddressSpace::default()).into())
             }
             Type::Optional(payload) => match self
@@ -622,6 +649,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 place: place @ Place::Index { .. },
                 value,
             } => self.assign_index(place, value),
+            Stmt::Append { place, value } => self.append(place, value),
             Stmt::Expr(e) => {
                 let value = self.expr(e);
                 self.discard(value, &e.ty);
@@ -644,7 +672,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn equal_expr(&mut self, negated: bool, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let equal = match lhs.ty {
-            Type::I64 | Type::U8 | Type::Bool if negated => {
+            Type::I64 | Type::U8 | Type::Bool | Type::Char if negated => {
                 self.int_compare(IntPredicate::NE, l.into_int_value(), r.into_int_value())
             }
             _ if negated => {
@@ -667,7 +695,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         same
     }
 
-    /// An operand of `==` or `is`.
+    /// An operand, or an argument, which the checker gives a value.
     fn operand(&mut self, e: &Expr) -> BasicValueEnum<'ctx> {
         self.expr(e)
             .expect("the checker should reject a `unit` or `never` operand, so it has a value")
@@ -689,12 +717,19 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
+            ExprKind::Char(c) => self.context.i32_type().const_int(u64::from(*c), false),
+            ExprKind::Str(text) => return Some(self.string_lit(text).into()),
+            ExprKind::Interpolate(parts) => return self.interpolate(parts),
+            ExprKind::Concat { lhs, rhs } => return Some(self.concat_expr(lhs, rhs).into()),
             ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {
                 return Some(self.array_fill(&e.ty, value, len).into());
             }
             ExprKind::Index { base, index } => return Some(self.index(&e.ty, base, index)),
             ExprKind::Len(base) => self.len(base),
+            ExprKind::Chars(base) => return Some(self.chars(base).into()),
+            ExprKind::Bytes(base) => return Some(self.bytes(base).into()),
+            ExprKind::FromChars(base) => return Some(self.string_from_chars(base).into()),
             ExprKind::Sum(base) => self.sum(base, e.span),
             ExprKind::Contains { base, value } => self.contains(base, value),
             ExprKind::Local(local) => {
@@ -704,14 +739,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             ExprKind::Move(local) => return Some(self.move_local(*local)),
             ExprKind::Call { func, args } => {
-                let args: Vec<_> = args
-                    .iter()
-                    .map(|a| {
-                        self.expr(a)
-                            .expect("the checker should reject a `unit` or `never` argument, so each argument has a value")
-                            .into()
-                    })
-                    .collect();
+                let args: Vec<_> = args.iter().map(|a| self.operand(a).into()).collect();
                 return self
                     .builder
                     .build_call(self.functions[func.0], &args, "call")
@@ -904,6 +932,10 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     fn print(&mut self, operand: &Expr) {
+        if operand.ty == Type::String {
+            self.print_string(operand);
+            return;
+        }
         let mut arg = self.value(operand);
         if operand.ty == Type::U8 {
             arg = self
@@ -912,10 +944,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect(POSITIONED);
         }
         let is_bool = operand.ty == Type::Bool;
-        let print = if is_bool {
-            self.print_bool
-        } else {
-            self.print_int
+        let print = match operand.ty {
+            Type::Bool => self.print_bool,
+            Type::Char => self.print_char,
+            _ => self.print_int,
         };
         let call = self
             .builder
@@ -1004,14 +1036,21 @@ impl<'ctx> Codegen<'ctx, '_> {
         .into_int_value()
     }
 
-    /// `a < b <= c` is `a < b && b <= c` with `b` computed once.
+    /// `a < b <= c` is `a < b && b <= c` with `b` computed once. The checker splits a chain of
+    /// strings into pairs.
     fn compare(&mut self, operands: &[Expr], ops: &[CompareOp]) -> IntValue<'ctx> {
+        if operands[0].ty.is_counted() {
+            let ([lhs, rhs], [op]) = (operands, ops) else {
+                unreachable!("the checker should split a comparison chain of strings into pairs")
+            };
+            return self.compare_strings(*op, lhs, rhs);
+        }
         let (last_op, first_ops) = ops
             .split_last()
             .expect("a comparison chain should have at least one operator");
         let function = self.current_function();
         let mut false_from = Vec::new();
-        let signed = operands[0].ty != Type::U8;
+        let signed = !matches!(operands[0].ty, Type::U8 | Type::Char);
         let mut lhs = self.value(&operands[0]);
         for (op, operand) in first_ops.iter().zip(&operands[1..]) {
             let rhs = self.value(operand);

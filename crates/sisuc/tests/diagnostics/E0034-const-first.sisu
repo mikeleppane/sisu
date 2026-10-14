@@ -1,0 +1,5 @@
+const main = 1
+
+fn main() {
+    print(main)
+}

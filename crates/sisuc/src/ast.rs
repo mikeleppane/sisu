@@ -11,9 +11,14 @@ pub(crate) struct Program {
     pub(crate) broken: Vec<Broken>,
     /// Where each comment starts, so that a fix does not delete one as if it were certain.
     pub(crate) comments: Vec<usize>,
+    /// Where each string literal starts, at its opening quote, so that a fix can tell one from
+    /// a literal in parentheses, whose span starts at the `(`.
+    pub(crate) quotes: Vec<usize>,
+    /// Where each line break is, so that a fix does not wrap one in a string literal.
+    pub(crate) breaks: Vec<usize>,
 }
 
-/// A function or class that holds a syntax error, so only its name survives.
+/// A function, class or constant that holds a syntax error, so only its name survives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Broken {
     pub(crate) name: Ident,
@@ -24,12 +29,22 @@ pub(crate) struct Broken {
 pub(crate) enum BrokenKind {
     Function,
     Class,
+    Constant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Item {
     Function(Function),
     Class(Class),
+    Const(Const),
+}
+
+/// `const name: ty = value`, at the top level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Const {
+    pub(crate) name: Ident,
+    pub(crate) ty: Option<TypeExpr>,
+    pub(crate) value: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,8 +156,10 @@ pub(crate) enum StmtKind {
     },
     /// `target op= value`; the checker lowers a name to `target = target op value`, and a
     /// field `a.f` to `Block { let t = a; Assign { t.f, t.f op value } }`.
+    /// `op_span` is the `op=` token's.
     CompoundAssign {
         op: BinaryOp,
+        op_span: Span,
         target: Expr,
         value: Expr,
     },
@@ -168,8 +185,19 @@ pub(crate) struct Expr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExprKind {
-    Int(i64),
+    /// An integer literal: its value and its `text` as written, which a diagnostic quotes.
+    Int {
+        value: i64,
+        text: String,
+    },
     Bool(bool),
+    /// A `char` literal, decoded.
+    Char(char),
+    /// A string literal, or a text piece of an interpolation, decoded.
+    Str(String),
+    /// A string literal with interpolations: its text pieces as `Str`, without empty ones, and
+    /// its expressions, in order.
+    Interpolate(Vec<Expr>),
     Name(String),
     Call {
         callee: Ident,
@@ -194,8 +222,10 @@ pub(crate) enum ExprKind {
         op: UnaryOp,
         operand: Box<Expr>,
     },
+    /// `op_span` is the operator token's.
     Binary {
         op: BinaryOp,
+        op_span: Span,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
@@ -240,6 +270,8 @@ pub(crate) enum ExprKind {
         then_block: Block,
         else_block: Option<Block>,
     },
+    /// `{ ... }` where an expression belongs: its value is its last expression.
+    Block(Block),
 }
 
 /// A call argument; the checker decides where a label belongs.
@@ -346,6 +378,13 @@ impl fmt::Display for Program {
             match item {
                 Item::Function(function) => write!(f, "{function}")?,
                 Item::Class(class) => write!(f, "{class}")?,
+                Item::Const(c) => {
+                    write!(f, "(const {}", c.name.name)?;
+                    if let Some(ty) = &c.ty {
+                        write!(f, " {ty}")?;
+                    }
+                    write!(f, " {})", c.value)?;
+                }
             }
         }
         Ok(())
@@ -438,7 +477,9 @@ impl fmt::Display for Stmt {
             StmtKind::Break => f.write_str("(break)"),
             StmtKind::Continue => f.write_str("(continue)"),
             StmtKind::Assign { target, value } => write!(f, "(= {target} {value})"),
-            StmtKind::CompoundAssign { op, target, value } => {
+            StmtKind::CompoundAssign {
+                op, target, value, ..
+            } => {
                 write!(f, "({op}= {target} {value})")
             }
             StmtKind::Expr(e) => write!(f, "{e}"),
@@ -454,8 +495,15 @@ pub(crate) fn dot(safe: bool) -> &'static str {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ExprKind::Int(n) => write!(f, "{n}"),
+            ExprKind::Int { value, .. } => write!(f, "{value}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
+            ExprKind::Char(c) => write!(f, "{c:?}"),
+            ExprKind::Str(s) => write!(f, "{s:?}"),
+            ExprKind::Interpolate(parts) => {
+                f.write_str("(interp")?;
+                spaced(f, parts)?;
+                f.write_str(")")
+            }
             ExprKind::Name(name) => f.write_str(name),
             ExprKind::Call { callee, args } => {
                 write!(f, "(call {}", callee.name)?;
@@ -478,7 +526,7 @@ impl fmt::Display for Expr {
                 f.write_str(")")
             }
             ExprKind::Unary { op, operand } => write!(f, "({op} {operand})"),
-            ExprKind::Binary { op, lhs, rhs } => write!(f, "({op} {lhs} {rhs})"),
+            ExprKind::Binary { op, lhs, rhs, .. } => write!(f, "({op} {lhs} {rhs})"),
             ExprKind::Coalesce { lhs, rhs } => write!(f, "(?? {lhs} {rhs})"),
             ExprKind::Is { lhs, rhs } => write!(f, "(is {lhs} {rhs})"),
             ExprKind::Compare { operands, ops } => {
@@ -519,6 +567,7 @@ impl fmt::Display for Expr {
                 }
                 f.write_str(")")
             }
+            ExprKind::Block(block) => write!(f, "{block}"),
         }
     }
 }
@@ -555,7 +604,10 @@ mod tests {
     }
 
     fn int(n: i64) -> Expr {
-        expr(ExprKind::Int(n))
+        expr(ExprKind::Int {
+            value: n,
+            text: n.to_string(),
+        })
     }
 
     fn stmt(kind: StmtKind) -> Stmt {
@@ -632,6 +684,7 @@ mod tests {
                     target: name("d"),
                     value: expr(ExprKind::Binary {
                         op: BinaryOp::Add,
+                        op_span: sp(),
                         lhs: Box::new(name("d")),
                         rhs: Box::new(int(1)),
                     }),
@@ -655,6 +708,8 @@ mod tests {
             items: vec![Item::Function(is_prime), Item::Function(second)],
             broken: Vec::new(),
             comments: Vec::new(),
+            quotes: Vec::new(),
+            breaks: Vec::new(),
         };
         assert_eq!(
             program.to_string(),

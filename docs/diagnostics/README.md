@@ -34,7 +34,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0023](E0023.md) | error | range outside `for` |
 | [E0024](E0024.md) | error | chained `==`, `!=` or `is` |
 | [E0025](E0025.md) | error | comparison chain that turns around |
-| [E0026](E0026.md) | error | class or function named like a built-in type |
+| [E0026](E0026.md) | error | item named like a built-in type |
 | [E0027](E0027.md) | error | class that can never be constructed |
 | [E0028](E0028.md) | error | program without `main` |
 | [E0029](E0029.md) | error | `main` with parameters or a return type |
@@ -47,7 +47,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0036](E0036.md) | error | `return` without a value |
 | [E0037](E0037.md) | error | `return` with a value in a function that returns none |
 | [E0038](E0038.md) | error | `break` or `continue` outside a loop |
-| [E0039](E0039.md) | error | name declared twice in one scope |
+| [E0039](E0039.md) | error | parameter name used twice |
 | [E0040](E0040.md) | error | integer literal too large for `u8` |
 | [E0041](E0041.md) | error | `self` outside a method |
 | [E0042](E0042.md) | error | `u8` that is negated |
@@ -83,6 +83,30 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0072](E0072.md) | error | source that is not valid UTF-8 |
 | [E0073](E0073.md) | error | assignment to `self` |
 | [E0074](E0074.md) | error | assignment to a function |
+| [E0075](E0075.md) | error | base prefix in upper case |
+| [E0076](E0076.md) | error | base prefix without digits |
+| [E0077](E0077.md) | error | digit outside the literal's base |
+| [E0078](E0078.md) | error | `mut` on `_` |
+| [E0079](E0079.md) | error | `_` used as a value |
+| [E0080](E0080.md) | error | `_` used as a name |
+| [E0081](E0081.md) | error | block that stands alone as a statement |
+| [E0082](E0082.md) | error | `break` or `continue` in a loop header |
+| [E0083](E0083.md) | error | word reserved for a later version |
+| [E0084](E0084.md) | error | `const` inside a function |
+| [E0085](E0085.md) | error | constant of a type that cannot be folded |
+| [E0086](E0086.md) | error | constant value not known at compile time |
+| [E0087](E0087.md) | error | constant that uses itself or a constant below it |
+| [E0088](E0088.md) | error | constant whose value would panic |
+| [E0089](E0089.md) | error | unknown escape |
+| [E0090](E0090.md) | error | malformed `\u` escape |
+| [E0091](E0091.md) | error | escape that is not a Unicode scalar value |
+| [E0092](E0092.md) | error | `char` literal that is not one code point |
+| [E0093](E0093.md) | error | literal that is not closed |
+| [E0094](E0094.md) | error | arithmetic on `char` |
+| [E0095](E0095.md) | error | `}` in a string |
+| [E0096](E0096.md) | error | empty interpolation |
+| [E0097](E0097.md) | error | comment inside an interpolation |
+| [E0098](E0098.md) | error | value that cannot be interpolated |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 
@@ -176,3 +200,6 @@ the counts, then a line naming the codes seen.
 - The same edit can appear in several diagnostics; for example, two
   assignments to one `let` each offer `let mut`. Apply it once.
 - A diagnostic's fixes are alternatives: apply at most one of them.
+- A fix that would leave the input with more syntax errors than it has is
+  never offered, so applying any one fix keeps the program as parseable as it
+  was.

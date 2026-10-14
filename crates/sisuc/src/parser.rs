@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::ast::{
-    Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Expr, ExprKind, FieldDecl,
+    Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Expr, ExprKind, FieldDecl,
     ForSource, Function, Ident, Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind,
     UnaryOp,
 };
@@ -29,7 +29,7 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         tokens,
         diagnostics,
         comments,
-        swallowed,
+        breaks,
     } = lexed;
     Parser {
         tokens: &tokens,
@@ -37,9 +37,8 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         depth: 0,
         lexer: &diagnostics,
         comments: &comments,
-        swallowed: &swallowed,
     }
-    .program()
+    .program(breaks)
 }
 
 /// The program of `source`, which must lex and parse without a diagnostic.
@@ -124,8 +123,6 @@ struct Parser<'a> {
     lexer: &'a [Diagnostic],
     /// Where each comment starts.
     comments: &'a [usize],
-    /// Where each skip that may have swallowed an item starts.
-    swallowed: &'a [usize],
 }
 
 impl Parser<'_> {
@@ -208,13 +205,17 @@ impl Parser<'_> {
     }
 
     /// "expected <what>, found <the next token>", pointing at the next token.
-    /// A stray `var` always gets its own diagnostic, wherever it appears.
+    /// A stray `var` or reserved word always gets its own diagnostic, wherever it appears.
     fn expected(&self, what: &str) -> Diagnostic {
         let found = self.peek();
         match found.kind {
             TokenKind::Var => DiagnosticKind::Var {
                 at: found.span,
                 field: false,
+            },
+            TokenKind::Reserved(word) => DiagnosticKind::ReservedWord {
+                word,
+                at: found.span,
             },
             _ => DiagnosticKind::Expected {
                 what: what.to_string(),
@@ -238,6 +239,29 @@ impl Parser<'_> {
             }),
             _ => Err(self.expected(what)),
         }
+    }
+
+    /// An `ident` that names a function, class, constant, field or parameter, where `_` is an
+    /// error.
+    fn name(&mut self, what: &str) -> Result<Ident, Diagnostic> {
+        if self.at(&TokenKind::Underscore) {
+            return Err(DiagnosticKind::UnderscoreName {
+                at: self.peek().span,
+            }
+            .into());
+        }
+        self.ident(what)
+    }
+
+    /// The name a `let` or `for` binds, which may be `_`.
+    fn binding(&mut self) -> Result<Ident, Diagnostic> {
+        if self.at(&TokenKind::Underscore) {
+            return Ok(Ident {
+                name: "_".to_string(),
+                span: self.bump().span,
+            });
+        }
+        self.ident("a binding name")
     }
 
     /// The only place that reads a type; later milestones extend it.
@@ -279,7 +303,8 @@ impl Parser<'_> {
         })
     }
 
-    fn program(&mut self) -> Parsed {
+    /// The program, which keeps the lexer's `breaks`.
+    fn program(&mut self, breaks: Vec<usize>) -> Parsed {
         let mut items = Vec::new();
         let mut broken = Vec::new();
         let mut diagnostics = Vec::new();
@@ -329,7 +354,10 @@ impl Parser<'_> {
                 TokenKind::Class => self
                     .class(end)
                     .map(|(class, errors)| (Item::Class(class), errors)),
-                _ => self.checked(end, |p| Err(p.expected("`fn` or `class`"))),
+                TokenKind::Const => {
+                    self.checked(end, |p| Ok((Item::Const(p.constant(end)?), Vec::new())))
+                }
+                _ => self.checked(end, |p| Err(p.expected("`fn`, `class` or `const`"))),
             };
             match parsed {
                 Ok((item, errors)) => {
@@ -357,29 +385,33 @@ impl Parser<'_> {
                 .filter(|d| outside(&d.span().start))
                 .cloned(),
         );
-        // Skipped text outside every item may have held one, so a name lookup cannot be trusted.
-        if self.swallowed.iter().any(outside) {
-            checkable = false;
-        }
         diagnostics.sort_by_key(|d| d.span().start);
         Parsed {
             program: Program {
                 items,
                 broken,
                 comments: self.comments.to_vec(),
+                quotes: self
+                    .tokens
+                    .iter()
+                    .filter(|t| matches!(t.kind, TokenKind::Str(_) | TokenKind::StrHead(_)))
+                    .map(|t| t.span.start)
+                    .collect(),
+                breaks,
             },
             diagnostics,
             checkable,
         }
     }
 
-    /// The name and kind of the item that starts at `start`, when its header is intact: `fn` or
-    /// `class`, then a name, with no lexer diagnostic before the token after the name. `fn to$tal`
-    /// lexes as `fn to tal`, so its name is not `to`.
+    /// The name and kind of the item that starts at `start`, when its header is intact: `fn`,
+    /// `class` or `const`, then a name, with no lexer diagnostic before the token after the name.
+    /// `fn to$tal` lexes as `fn to tal`, so its name is not `to`.
     fn header(&self, start: usize) -> Option<Broken> {
         let kind = match self.tokens[start].kind {
             TokenKind::Fn => BrokenKind::Function,
             TokenKind::Class => BrokenKind::Class,
+            TokenKind::Const => BrokenKind::Constant,
             _ => return None,
         };
         // Neither a keyword nor a name is `Eof`, so the two tokens after the keyword exist.
@@ -401,8 +433,10 @@ impl Parser<'_> {
 
     /// The end, exclusive, of the item or member that starts at `start`: past the `}` that
     /// brings the depth back to where it started, or at a line break at that depth, which comes
-    /// before any `{`. A closer below that depth (a class's `}`) or `Eof` ends it first.
+    /// before any `{`. A closer below that depth (a class's `}`) or `Eof` ends it first. A
+    /// constant is one line, as a statement is, so a `}` in its value does not end it.
     fn item_end(&self, start: usize) -> usize {
+        let line = self.tokens[start].kind == TokenKind::Const;
         let mut depth = 0usize;
         for (i, token) in self.tokens.iter().enumerate().skip(start) {
             match token.kind {
@@ -412,7 +446,7 @@ impl Parser<'_> {
                         return i;
                     }
                     depth -= 1;
-                    if depth == 0 && token.kind == TokenKind::RBrace {
+                    if depth == 0 && token.kind == TokenKind::RBrace && !line {
                         return i + 1;
                     }
                 }
@@ -425,7 +459,7 @@ impl Parser<'_> {
     }
 
     /// The end, exclusive, of the unnamed item that starts at `start`: the next line whose first
-    /// token is `fn` or `class` outside brackets, or `Eof`.
+    /// token is `fn`, `class` or `const` outside brackets, or `Eof`.
     // shortcut: a line break after a token that cannot end a statement (`:`) leaves no `Newline`,
     // so a `fn` after one is not found; the item only runs longer, and the checker is off anyway.
     fn next_line_item(&self, start: usize) -> usize {
@@ -434,7 +468,7 @@ impl Parser<'_> {
             match token.kind {
                 TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
                 TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
-                TokenKind::Fn | TokenKind::Class
+                TokenKind::Fn | TokenKind::Class | TokenKind::Const
                     if i > start && depth == 0 && self.tokens[i - 1].kind == TokenKind::Newline =>
                 {
                     return i;
@@ -447,13 +481,14 @@ impl Parser<'_> {
     }
 
     /// The bytes of the item from `start` to `end`, exclusive. An item that ends past its own `}`,
-    /// or past the line break before the next item, ends there. Any other runs up to the token
-    /// that ends it (a line break, a closer or `Eof`), so that text skipped before it lies in the
-    /// item.
+    /// or past the line break before the next item, ends there. Any other, and a constant, which
+    /// is one line, runs up to the token that ends it (a line break, a closer or `Eof`), so that
+    /// text skipped before it lies in the item.
     fn bytes(&self, start: usize, end: usize) -> Range<usize> {
+        let line = self.tokens[start].kind == TokenKind::Const;
         let last = &self.tokens[end - 1];
         let stop = match (&last.kind, &self.tokens[end].kind) {
-            (TokenKind::RBrace, _) => last.span.end,
+            (TokenKind::RBrace, _) if !line => last.span.end,
             // `Eof` sits just after the last code, before any skipped text.
             (_, TokenKind::Eof) => usize::MAX,
             _ => self.tokens[end].span.start,
@@ -528,7 +563,7 @@ impl Parser<'_> {
         methods: &mut Vec<Range<usize>>,
     ) -> Result<Class, Diagnostic> {
         self.expect(&TokenKind::Class)?;
-        let name = self.ident("a class name")?;
+        let name = self.name("a class name")?;
         self.expect(&TokenKind::LBrace)?;
         let mut members = Vec::new();
         let mut broken_methods = Vec::new();
@@ -578,9 +613,9 @@ impl Parser<'_> {
 
     fn member(&mut self) -> Result<Member, Diagnostic> {
         match self.peek().kind {
-            TokenKind::Ident(_) | TokenKind::Mut => {
+            TokenKind::Ident(_) | TokenKind::Underscore | TokenKind::Mut => {
                 let mutable = self.eat(&TokenKind::Mut).is_some();
-                let name = self.ident("a field name")?;
+                let name = self.name("a field name")?;
                 self.expect(&TokenKind::Colon)?;
                 Ok(Member::Field(FieldDecl {
                     mutable,
@@ -621,7 +656,6 @@ impl Parser<'_> {
             depth: self.depth,
             lexer: self.lexer,
             comments: self.comments,
-            swallowed: self.swallowed,
         };
         let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
@@ -643,10 +677,27 @@ impl Parser<'_> {
         }
     }
 
+    /// `const name: T = value`, which ends the item at `end`.
+    fn constant(&mut self, end: usize) -> Result<Const, Diagnostic> {
+        self.bump();
+        let name = self.name("a constant name")?;
+        let ty = match self.eat(&TokenKind::Colon) {
+            Some(_) => Some(self.parse_type()?),
+            None => None,
+        };
+        self.depth = 0;
+        self.expect(&TokenKind::Eq)?;
+        let value = self.expr()?;
+        if self.pos != end {
+            return Err(self.end_of_line());
+        }
+        Ok(Const { name, ty, value })
+    }
+
     /// `method` is true inside a class body, where `self` may be the first parameter.
     fn function(&mut self, method: bool) -> Result<Function, Diagnostic> {
         let fn_token = self.expect(&TokenKind::Fn)?;
-        let name = self.ident("a function name")?;
+        let name = self.name("a function name")?;
         self.expect(&TokenKind::LParen)?;
         let mut self_param = None;
         let mut params = Vec::new();
@@ -692,7 +743,7 @@ impl Parser<'_> {
                     }
                     continue;
                 }
-                let name = self.ident("a parameter name")?;
+                let name = self.name("a parameter name")?;
                 self.expect(&TokenKind::Colon)?;
                 let ty = self.parse_type()?;
                 self.depth = 0;
@@ -750,6 +801,7 @@ impl Parser<'_> {
         let mut reach = base;
         let kind = match self.peek().kind {
             TokenKind::Let => self.let_stmt()?,
+            TokenKind::Const => return Err(self.local_const()),
             TokenKind::While => {
                 self.bump();
                 if let Some((name, value)) = self.child(base, &mut reach, Self::let_binding)? {
@@ -768,7 +820,7 @@ impl Parser<'_> {
             }
             TokenKind::For => {
                 self.bump();
-                let name = self.ident("a binding name")?;
+                let name = self.binding()?;
                 self.expect(&TokenKind::In)?;
                 // A range is only valid here, so the header reads its two sides itself, counted
                 // like `expr` does.
@@ -810,6 +862,7 @@ impl Parser<'_> {
                 self.bump();
                 StmtKind::Continue
             }
+            TokenKind::LBrace => return Err(DiagnosticKind::BlockAsStatement { at: start }.into()),
             _ => self.expr_or_assign()?,
         };
         // `let_stmt` and `expr_or_assign` leave their own height in `self.depth`.
@@ -881,7 +934,7 @@ impl Parser<'_> {
         let mut reach = base;
         self.bump();
         let mutable = self.eat(&TokenKind::Mut).map(|t| t.span);
-        let name = self.ident("a binding name")?;
+        let name = self.binding()?;
         let ty = match self.eat(&TokenKind::Colon) {
             Some(_) => Some(self.child(base, &mut reach, Self::parse_type)?),
             None => None,
@@ -889,6 +942,18 @@ impl Parser<'_> {
         self.expect(&TokenKind::Eq)?;
         let init = self.child(base, &mut reach, Self::expr)?;
         self.depth = reach;
+        // Reported last, and only where the statement ends, so that the fix leaves a `let` that
+        // parses: past a stray token, the block reports that token's own error.
+        if let Some(keyword) = mutable
+            && name.name == "_"
+            && (self.at(&TokenKind::Newline) || self.at(&TokenKind::RBrace))
+        {
+            return Err(DiagnosticKind::MutOnUnderscore {
+                at: name.span,
+                keyword,
+            }
+            .into());
+        }
         Ok(StmtKind::Let {
             mutable,
             name,
@@ -897,8 +962,25 @@ impl Parser<'_> {
         })
     }
 
+    /// The error of a `const` statement. It is reported only once the statement parses as a `let`
+    /// and ends the line, so that its fix leaves a `let` that parses; before that, the first
+    /// error in it is reported.
+    fn local_const(&mut self) -> Diagnostic {
+        let at = self.peek().span;
+        if let Err(error) = self.let_stmt() {
+            return error;
+        }
+        if !self.at(&TokenKind::Newline) && !self.at(&TokenKind::RBrace) {
+            return self.end_of_line();
+        }
+        DiagnosticKind::ConstInFunction { at }.into()
+    }
+
     /// An expression statement, or an assignment when an assignment operator follows.
     fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
+        if self.at(&TokenKind::Underscore) {
+            return Err(self.underscore_statement());
+        }
         let base = self.depth;
         let mut reach = base;
         let target = self.child(base, &mut reach, Self::expr)?;
@@ -920,13 +1002,32 @@ impl Parser<'_> {
         if goes_through_safe_access(&target) {
             return Err(DiagnosticKind::AssignThroughSafeAccess { at: target.span }.into());
         }
-        self.bump();
+        let op_span = self.bump().span;
         let value = self.child(base, &mut reach, Self::expr)?;
         self.depth = reach;
         Ok(match op {
             None => StmtKind::Assign { target, value },
-            Some(op) => StmtKind::CompoundAssign { op, target, value },
+            Some(op) => StmtKind::CompoundAssign {
+                op,
+                op_span,
+                target,
+                value,
+            },
         })
+    }
+
+    /// The error of a statement that starts with `_`. A plain `_ = e` whose value parses and ends
+    /// the line gets the fix `let _ = e`; a value that fails to parse reports its own error.
+    fn underscore_statement(&mut self) -> Diagnostic {
+        let at = self.bump().span;
+        let mut bind = false;
+        if self.eat(&TokenKind::Eq).is_some() {
+            if let Err(error) = self.expr() {
+                return error;
+            }
+            bind = matches!(self.peek().kind, TokenKind::Newline | TokenKind::RBrace);
+        }
+        DiagnosticKind::UnderscoreValue { at, bind }.into()
     }
 
     fn expr(&mut self) -> Result<Expr, Diagnostic> {
@@ -960,7 +1061,7 @@ impl Parser<'_> {
                 // The operator is the parent of everything parsed so far: one level more.
                 let wrapped = self.depth + 1;
                 self.reach(wrapped)?;
-                self.bump();
+                let op_span = self.bump().span;
                 self.depth = base + 1;
                 // `??` is right-associative: its right side starts at its own level.
                 let rhs = self.binary(if matches!(op, Infix::Coalesce) {
@@ -976,6 +1077,7 @@ impl Parser<'_> {
                     kind: match op {
                         Infix::Binary(op) => ExprKind::Binary {
                             op,
+                            op_span,
                             lhs: lhs_box,
                             rhs: rhs_box,
                         },
@@ -1048,10 +1150,16 @@ impl Parser<'_> {
         let start = self.bump().span;
         if matches!(op, UnaryOp::Neg) && self.at_min_literal() {
             // `i64::MIN` has no positive twin, so `-9223372036854775808` is one literal.
+            let TokenKind::Int { text, .. } = self.peek().kind.clone() else {
+                unreachable!("`at_min_literal` saw an `Int`")
+            };
             let literal = self.bump().span;
             return Ok(Expr {
                 span: start.to(literal),
-                kind: ExprKind::Int(i64::MIN),
+                kind: ExprKind::Int {
+                    value: i64::MIN,
+                    text: format!("-{text}"),
+                },
             });
         }
         let operand = self.unary()?;
@@ -1068,7 +1176,13 @@ impl Parser<'_> {
     /// `?.` or `[` would apply to the literal before the `-` does, so that literal is too large.
     fn at_min_literal(&self) -> bool {
         // `Int` is never `Eof`, so the token after it exists.
-        self.at(&TokenKind::Int(MIN_MAGNITUDE)) && !starts_postfix(&self.tokens[self.pos + 1].kind)
+        matches!(
+            self.peek().kind,
+            TokenKind::Int {
+                value: MIN_MAGNITUDE,
+                ..
+            }
+        ) && !starts_postfix(&self.tokens[self.pos + 1].kind)
     }
 
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
@@ -1166,15 +1280,27 @@ impl Parser<'_> {
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.peek().clone();
         let kind = match token.kind {
-            TokenKind::Int(n) => {
+            TokenKind::Int { value, text } => {
                 // `MIN_MAGNITUDE` fits only as the operand of a `-`, which `unary` takes first.
-                let n = i64::try_from(n).map_err(|_| literal_too_large(token.span))?;
+                let value = i64::try_from(value).map_err(|_| literal_too_large(token.span))?;
                 self.bump();
-                ExprKind::Int(n)
+                ExprKind::Int { value, text }
             }
             TokenKind::True | TokenKind::False => {
                 self.bump();
                 ExprKind::Bool(token.kind == TokenKind::True)
+            }
+            TokenKind::Char(c) => {
+                self.bump();
+                ExprKind::Char(c)
+            }
+            TokenKind::Str(s) => {
+                self.bump();
+                ExprKind::Str(s)
+            }
+            TokenKind::StrHead(head) => {
+                self.bump();
+                return self.interpolation(token.span, head);
             }
             TokenKind::SelfKw => {
                 self.bump();
@@ -1216,11 +1342,58 @@ impl Parser<'_> {
                 return self.array(token.span);
             }
             TokenKind::If => return self.if_expr(),
+            TokenKind::LBrace => {
+                let block = self.block()?;
+                return Ok(Expr {
+                    span: block.span,
+                    kind: ExprKind::Block(block),
+                });
+            }
+            TokenKind::Underscore => {
+                return Err(DiagnosticKind::UnderscoreValue {
+                    at: token.span,
+                    bind: false,
+                }
+                .into());
+            }
             _ => return Err(self.expected("an expression")),
         };
         Ok(Expr {
             kind,
             span: token.span,
+        })
+    }
+
+    /// The rest of a string literal with interpolations, after its `StrHead` at `start` with the
+    /// text `head`: each expression, and the text after it, up to the `StrTail`.
+    fn interpolation(&mut self, start: Span, head: String) -> Result<Expr, Diagnostic> {
+        let text = |value: String, span| {
+            (!value.is_empty()).then_some(Expr {
+                kind: ExprKind::Str(value),
+                span,
+            })
+        };
+        let base = self.depth;
+        let mut reach = base;
+        let mut parts: Vec<Expr> = text(head, start).into_iter().collect();
+        let end = loop {
+            parts.push(self.child(base, &mut reach, Self::expr)?);
+            let token = self.peek().clone();
+            match token.kind {
+                TokenKind::StrMiddle(value) => parts.extend(text(value, token.span)),
+                TokenKind::StrTail(value) => {
+                    parts.extend(text(value, token.span));
+                    self.bump();
+                    break token.span;
+                }
+                _ => return Err(self.expected("`}`")),
+            }
+            self.bump();
+        };
+        self.depth = reach;
+        Ok(Expr {
+            kind: ExprKind::Interpolate(parts),
+            span: start.to(end),
         })
     }
 
@@ -1428,6 +1601,15 @@ mod tests {
         }
     }
 
+    /// A `char` literal where an expression ends is the unexpected token.
+    #[test]
+    fn char_is_an_unexpected_token() {
+        assert_eq!(
+            parse_err("fn main() {\n    let b = 'x' 'y'\n}"),
+            (Code::Expected, 2, 17)
+        );
+    }
+
     /// A `-` applied directly to 2^63 is the one literal `i64::MIN`, with the `-` in its span.
     #[test]
     fn minus_min_magnitude_is_one_literal() {
@@ -1447,6 +1629,19 @@ mod tests {
         assert_eq!((sum.span.start, sum.span.end), (12, 36));
     }
 
+    /// The magnitude of `i64::MIN` is `i64::MIN` after a `-` in any base, and too large without.
+    #[test]
+    fn min_magnitude_in_hex() {
+        assert_eq!(
+            body("fn main() { -0x8000_0000_0000_0000 }"),
+            "(block -9223372036854775808)"
+        );
+        assert_eq!(
+            parse_err("fn main() { 0x8000_0000_0000_0000 }"),
+            (Code::IntegerTooLarge, 1, 13)
+        );
+    }
+
     /// Anywhere else 2^63 is the one "too large" error, at the literal. The lexer rejects larger.
     #[test]
     fn min_magnitude_elsewhere_is_too_large() {
@@ -1461,6 +1656,32 @@ mod tests {
         ] {
             assert_eq!(parse_err(src), (Code::IntegerTooLarge, 1, col), "{src}");
         }
+    }
+
+    #[test]
+    fn interpolation_s_expression() {
+        assert_eq!(
+            expr(r#"print("a{x}b{ "c" + y }")"#),
+            r#"(call print (interp "a" x "b" (+ "c" y)))"#
+        );
+        // Empty text pieces are dropped.
+        assert_eq!(expr(r#"print("{x}{y}")"#), "(call print (interp x y))");
+    }
+
+    /// An interpolation holds one expression, which ends at its `}`.
+    #[test]
+    fn interpolation_errors() {
+        for (src, col) in [(r#""{x y}""#, 17), (r#""{x +}""#, 18)] {
+            assert_eq!(expr_err(src), (Code::Expected, 1, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn char_s_expression() {
+        assert_eq!(
+            body("fn main() {\n    let c = 'ä'\n    let n = '\\n'\n}"),
+            "(block (let c 'ä') (let n '\\n'))"
+        );
     }
 
     #[test]
@@ -1705,6 +1926,31 @@ mod tests {
     }
 
     #[test]
+    fn block_expression_positions() {
+        let rows = [
+            ("let a = { 1 }", "(let a (block 1))"),
+            ("f({ 1 })", "(call f (block 1))"),
+            ("1 + { 2 }", "(+ 1 (block 2))"),
+            ("if { c } { }", "(if (block c) (block))"),
+            ("while { c } { }", "(while (block c) (block))"),
+            ("for x in { xs } { }", "(for x (block xs) (block))"),
+        ];
+        for (src, expected) in rows {
+            assert_eq!(expr(src), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn block_statement() {
+        for (src, line, col) in [
+            ("fn main() {\n    { 1 }\n}", 2, 5),
+            ("fn main() {\n    if c { {1} }\n}", 2, 12),
+        ] {
+            assert_eq!(parse_err(src), (Code::BlockAsStatement, line, col), "{src}");
+        }
+    }
+
+    #[test]
     fn compound_assignment_spans() {
         let tree = first_fn("fn main() { x += 1 }");
         let stmt = &tree.body.stmts[0];
@@ -1788,6 +2034,158 @@ mod tests {
         for src in ["1 + 2 = 3", "f()[0] = 1"] {
             assert_eq!(expr_err(src), (Code::AssignToExpression, 1, 13), "{src}");
         }
+    }
+
+    #[test]
+    fn underscore_errors() {
+        for (src, code, line, col) in [
+            (
+                "fn main() {\n    let mut _ = 1\n}",
+                Code::MutOnUnderscore,
+                2,
+                13,
+            ),
+            ("fn main() {\n    print(_)\n}", Code::UnderscoreValue, 2, 11),
+            ("fn main() {\n    _ = f()\n}", Code::UnderscoreValue, 2, 5),
+            ("fn main() {\n    _ += 1\n}", Code::UnderscoreValue, 2, 5),
+            ("fn _() {}", Code::UnderscoreName, 1, 4),
+            ("class _ {}", Code::UnderscoreName, 1, 7),
+            ("class C {\n    _: i64\n}", Code::UnderscoreName, 2, 5),
+            ("class C {\n    mut _: i64\n}", Code::UnderscoreName, 2, 9),
+            ("fn f(_: i64) {}", Code::UnderscoreName, 1, 6),
+            ("fn f(a: i64, _: i64) {}", Code::UnderscoreName, 1, 14),
+            ("fn main() {\n    if let _ = e {}\n}", Code::Expected, 2, 12),
+            (
+                "fn main() {\n    while let _ = e {}\n}",
+                Code::Expected,
+                2,
+                15,
+            ),
+        ] {
+            assert_eq!(parse_err(src), (code, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn const_items() {
+        for (src, want) in [
+            ("const A = 1", "(const A 1)"),
+            ("const B: u8 = 240", "(const B u8 240)"),
+            // A constant is one line, so a `}` in its value does not end it.
+            (
+                "const C = if true { 1 } else { 2 }",
+                "(const C (if true (block 1) (block 2)))",
+            ),
+        ] {
+            assert_eq!(program(src), want, "{src}");
+        }
+        for (src, code, line, col) in [
+            ("fn f() { const C = 1 }", Code::ConstInFunction, 1, 10),
+            (
+                "fn f() {\n    const C: u8 = 1\n}",
+                Code::ConstInFunction,
+                2,
+                5,
+            ),
+            ("const _ = 1", Code::UnderscoreName, 1, 7),
+            ("const A = 1 2", Code::Expected, 1, 13),
+            ("const A 1", Code::Expected, 1, 9),
+            ("class C {\n    const A = 1\n}", Code::Expected, 2, 5),
+            // A `const` statement that does not parse as a `let`, or does not end its line,
+            // reports that error first, so the fix to `let` is offered only when it parses.
+            ("fn f() { const C }", Code::Expected, 1, 18),
+            ("fn f() { const C = 1 2 }", Code::Expected, 1, 22),
+        ] {
+            assert_eq!(parse_err(src), (code, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn const_statement_fix_leaves_a_let_that_parses() {
+        for (src, want) in [
+            ("fn f() { const C = 1 }", "fn f() { let C = 1 }"),
+            ("fn f() { const mut C = 1 }", "fn f() { let mut C = 1 }"),
+            ("fn f() { const _: u8 = 1 }", "fn f() { let _: u8 = 1 }"),
+        ] {
+            let fixed = fixed(src);
+            assert_eq!(fixed, want);
+            assert!(parsed(&fixed).diagnostics.is_empty(), "{fixed}");
+        }
+    }
+
+    #[test]
+    fn underscore_binds_after_let_and_for() {
+        for src in [
+            "fn main() { let _ = 1 }",
+            "fn main() { let _: i64 = 1 }",
+            "fn main() { for _ in 0..3 {} }",
+            "fn main() { for _ in xs {} }",
+        ] {
+            assert!(parsed(src).diagnostics.is_empty(), "{src}");
+        }
+    }
+
+    #[test]
+    fn mut_on_underscore_fix_leaves_a_let_that_parses() {
+        for (src, want) in [
+            ("fn main() { let mut _ = 1 }", "fn main() { let _ = 1 }"),
+            (
+                "fn main() { let mut _: i64 = 1 }",
+                "fn main() { let _: i64 = 1 }",
+            ),
+        ] {
+            let fixed = fixed(src);
+            assert_eq!(fixed, want);
+            assert!(parsed(&fixed).diagnostics.is_empty(), "{fixed}");
+        }
+        // A `let` that does not parse, or does not end its line, reports its own error first and
+        // offers no fix: applying one would leave the same error behind.
+        assert_eq!(
+            parse_err("fn main() { let mut _ }"),
+            (Code::Expected, 1, 23)
+        );
+        assert_eq!(
+            parse_err("fn main() { let mut _ = 1 2 }"),
+            (Code::Expected, 1, 27)
+        );
+        assert_eq!(
+            parse_err("fn main() { let mut _ = 1; }"),
+            (Code::Semicolon, 1, 26)
+        );
+        // The fixed source reports the same error, four columns (`mut `) earlier.
+        assert_eq!(
+            parse_err("fn main() { let _ = 1 2 }"),
+            (Code::Expected, 1, 23)
+        );
+        assert_eq!(
+            parse_err("fn main() { let _ = 1; }"),
+            (Code::Semicolon, 1, 22)
+        );
+    }
+
+    #[test]
+    fn assigning_to_underscore_offers_let_only_when_the_value_parses() {
+        for (src, want) in [
+            ("fn main() { _ = f() }", "fn main() { let _ = f() }"),
+            ("fn main() {\n    _ = 1\n}", "fn main() {\n    let _ = 1\n}"),
+        ] {
+            let fixed = fixed(src);
+            assert_eq!(fixed, want);
+            assert!(parsed(&fixed).diagnostics.is_empty(), "{fixed}");
+        }
+        for src in [
+            "fn main() { _ += 1 }",
+            "fn main() { _[0] = 1 }",
+            "fn main() { _ == 1 }",
+            "fn main() { _ = 1; }",
+            "fn main() { _ = 1 2 }",
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::UnderscoreValue, "{src}");
+            assert!(fix_edits(&d).is_none(), "{src}");
+        }
+        // The value's own error comes first.
+        assert_eq!(parse_err("fn main() { _ = 1 + }"), (Code::Expected, 1, 21));
     }
 
     #[test]
@@ -2163,6 +2561,25 @@ mod tests {
             assert!(d.help().is_some());
             assert_eq!(fix_edits(d), None);
         }
+    }
+
+    #[test]
+    fn reserved_errors() {
+        // One row per place that wants a name or an expression.
+        for (src, line, col) in [
+            ("fn main() {\n    let match = 1\n}", 2, 9),
+            ("class C {\n    enum: i64\n}", 2, 5),
+            ("fn main() {\n    print(todo)\n}", 2, 11),
+            ("fn main() {\n    print(p.type)\n}", 2, 13),
+            ("import x", 1, 1),
+        ] {
+            assert_eq!(parse_err(src), (Code::ReservedWord, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn mut_before_a_reserved_word_is_still_reported() {
+        assert_eq!(parse_err("fn f(mut type: i64) {}"), (Code::Expected, 1, 6));
     }
 
     #[test]

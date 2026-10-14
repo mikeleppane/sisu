@@ -54,3 +54,14 @@ parses. It may reveal diagnostics it was hiding.
   A milestone spec lists its diagnostics by name and never picks a number.
 - `docs/diagnostics/<CODE>.md` holds one explanation per code. A README in
   that directory has the code list and the JSON shape.
+
+## Amendment, 2026-10-13: keep diagnostics cheap
+
+- **A fix is optional.** Offer one only when the edit is obvious and simple.
+  Otherwise give help text. A spec lists diagnostics by rule and names a fix
+  only where it earns its place.
+- **The compiler drops a broken fix.** Before a fix is reported, it is applied
+  and the result is lexed and parsed. A fix that fails is dropped, so call
+  sites need no special cases for parentheses, comments or line breaks.
+- **A new code only when its explanation would differ.** Otherwise the rule
+  becomes a new form of an existing code, with its own facts and message.

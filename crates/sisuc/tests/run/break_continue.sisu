@@ -25,19 +25,13 @@ fn main() {
         a += 1
     }
     print(pairs)
-    let mut c = 0
-    while if c >= 3 { break } else { c < 10 } {
-        c += 1
-    }
-    print(c)
     let mut k = 0
     let mut t = 0
-    while if k < 3 { k += 1
-        continue } else { k < 5 } {
+    while k < 5 {
         k += 1
-        t += 10
+        let v = if k == 2 { continue } else { k }
+        t += v
     }
-    print(k)
     print(t)
     let mut x = 0
     let mut s = 0

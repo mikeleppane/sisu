@@ -5,8 +5,13 @@ use crate::diagnostic::{Code, Fix};
 use crate::parser::parse_ok;
 
 mod arrays;
+mod chars;
+mod constants;
 mod for_loops;
+mod patterns;
 mod places;
+mod shadowing;
+mod strings;
 mod u8;
 
 fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
@@ -206,12 +211,10 @@ fn unknown_function() {
 }
 
 #[test]
-fn redeclare_in_block() {
-    diagnostic(
+fn shadow_in_block() {
+    contains(
         "fn main() {\n    let x = 1\n    let x = 2\n}",
-        Code::AlreadyDeclared,
-        (3, 9, "x"),
-        &[(2, 9)],
+        &["(let x#0 1)", "(let x#1 2)"],
     );
 }
 
@@ -222,6 +225,16 @@ fn repeated_param() {
         Code::AlreadyDeclared,
         (1, 14, "a"),
         &[(1, 6)],
+    );
+}
+
+/// A repeated parameter is poisoned: only the repetition is reported, not an assignment to it
+/// nor a use of it.
+#[test]
+fn repeated_param_is_poisoned() {
+    codes(
+        "fn f(a: i64, a: i64) {\n    a = 1\n    print(a + true)\n}\nfn main() {}",
+        &[(Code::AlreadyDeclared, (1, 14))],
     );
 }
 
@@ -308,28 +321,6 @@ fn duplicate_call_resolves_to_first() {
         "fn f(a: i64) -> i64 { a }\nfn f(b: bool) -> bool { b }\nfn main() {\n    print(f(1))\n}",
         &[(Code::DefinedTwice, (2, 4))],
     );
-}
-
-/// A redeclared name is poisoned: only the redeclaration is reported, not the uses after it nor
-/// the first binding.
-#[test]
-fn redeclared_name_is_poisoned() {
-    for (src, at) in [
-        ("let x = 1\n    let x = true\n    print(x + 1)", (3, 9)),
-        ("let x = 1\n    let mut x = 2\n    x = 3", (3, 13)),
-        ("let x = 1\n    let mut x = 2\n    print(x)", (3, 13)),
-        ("let mut x = 1\n    let x = 2\n    x = 3", (3, 9)),
-        ("let mut x = 1\n    let x = 2\n    print(x)", (3, 9)),
-        (
-            "let x = 1\n    let x: bool = true\n    let b: bool = x\n    print(b)",
-            (3, 9),
-        ),
-    ] {
-        codes(
-            &format!("fn main() {{\n    {src}\n}}"),
-            &[(Code::AlreadyDeclared, at)],
-        );
-    }
 }
 
 #[test]
@@ -586,6 +577,95 @@ fn break_after_while_let() {
         "fn f(n: i64?) {\n    while let x = n {}\n    break\n}\nfn main() {}",
         &[(Code::JumpOutsideLoop, (3, 5))],
     );
+}
+
+#[test]
+fn block_value_and_type() {
+    contains(
+        "fn main() {\n    let a: u8 = { let w = 2\n 3 }\n}",
+        &["(block (let w#0 2) 3u8)"],
+    );
+    codes(
+        "fn main() {\n    let u = { print(1) }\n}",
+        &[(Code::NoValue, (2, 13))],
+    );
+}
+
+#[test]
+fn block_scope_ends() {
+    let printed = lowered(
+        "fn main() {\n    let y = 1\n    let x = { let y = 2\n y }\n    print(y)\n    print(x)\n}",
+    );
+    assert!(printed.contains("(print y#0) (print x#2)"), "{printed}");
+}
+
+#[test]
+fn block_joins_never() {
+    clean(
+        "fn f(c: bool) -> i64 {\n    let x = { if c { return 1 } else { 2 } }\n    x\n}\nfn main() {}",
+    );
+}
+
+#[test]
+fn block_ending_in_never() {
+    // A `never` block has no value to bind, as an `if` whose branches both return has none.
+    for init in ["{ return 1 }", "if c { return 1 } else { return 2 }"] {
+        let src =
+            format!("fn f(c: bool) -> i64 {{\n    let x: i64 = {init}\n    x\n}}\nfn main() {{}}");
+        codes(&src, &[(Code::NoValue, (2, 18))]);
+    }
+}
+
+#[test]
+fn break_in_header() {
+    // Each row: source, the keyword's position and text, the loop keyword's position and text.
+    for (src, jump, lp) in [
+        (
+            "fn main() {\n    while { break } { }\n}",
+            (2, 13, "break"),
+            (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    while { continue\n true } { }\n}",
+            (2, 13, "continue"),
+            (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    while let x = { break } { }\n}",
+            (2, 21, "break"),
+            (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    while let x = { continue } { }\n}",
+            (2, 21, "continue"),
+            (2, 5, "while"),
+        ),
+        (
+            "fn main() {\n    for x in { break\n [1] } { }\n}",
+            (2, 16, "break"),
+            (2, 5, "for"),
+        ),
+        (
+            "fn main() {\n    for x in { continue\n [1] } { }\n}",
+            (2, 16, "continue"),
+            (2, 5, "for"),
+        ),
+        // The inner loop is the one whose header holds the jump.
+        (
+            "fn main() {\n    while true {\n        for x in { continue\n [1] } { }\n    }\n}",
+            (3, 20, "continue"),
+            (3, 9, "for"),
+        ),
+    ] {
+        let d = diagnostic(src, Code::JumpInLoopHeader, jump, &[(lp.0, lp.1)]);
+        let span = d.secondary()[0].0;
+        assert_eq!(&src[span.start..span.end], lp.2, "{src}");
+    }
+}
+
+#[test]
+fn break_in_loop_inside_header() {
+    clean("fn main() {\n    while { while true { break }\n true } { break }\n}");
 }
 
 #[test]
@@ -874,6 +954,11 @@ fn block_after_return_is_never() {
 #[test]
 fn neg_needs_i64() {
     codes("fn main() { print(-true) }", &[(Code::Mismatch, (1, 20))]);
+    // An unknown name is reported once: the minus adds nothing beside it.
+    codes(
+        "fn main() { print(-nope) }",
+        &[(Code::BindingNotFound, (1, 20))],
+    );
 }
 
 #[test]
@@ -2306,20 +2391,6 @@ fn none_beside_unit_or_never_needs_a_type() {
                 "fn g() {{}}\nfn f(c: bool) {{\n    {value}\n    print(1)\n}}\nfn main() {{}}"
             ),
             &[(Code::CannotInfer, (3, col))],
-        );
-    }
-}
-
-/// The `if let` and `while let` binding belongs to the scope of its block, so the block
-/// cannot declare the name again.
-#[test]
-fn unwrapping_block_cannot_redeclare_the_binding() {
-    for (head, x, col) in [("if let", 12, 24), ("while let", 15, 27)] {
-        diagnostic(
-            &format!("{T}fn f(n: T?) {{\n    {head} x = n {{ let x = 1 }}\n}}\nfn main() {{}}"),
-            Code::AlreadyDeclared,
-            (6, col, "x"),
-            &[(6, x)],
         );
     }
 }

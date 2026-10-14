@@ -1,7 +1,7 @@
 //! Assignment: places, which root may be written, the temps of compound operators, and spills.
 
 use super::expr::{literal_type, local, operator};
-use super::{BindingKind, Checker, Poisoned, UNKNOWN, block_expr, type_of};
+use super::{BindingKind, Checked, Checker, Declared, Poisoned, UNKNOWN, block_expr, type_of};
 use crate::ast;
 use crate::diagnostic::{DiagnosticKind, Immutable, Span};
 use crate::tir::{self, ExprKind, Type};
@@ -50,6 +50,16 @@ impl Checker {
     ) -> Result<tir::Stmt, Poisoned> {
         let place = self.place(span, target, false);
         let value = self.expect(value, place.ty.as_ref());
+        self.assigned(span, place, value)
+    }
+
+    /// The write of the checked `value` to the checked `place`.
+    fn assigned(
+        &mut self,
+        span: Span,
+        place: CheckedPlace,
+        value: Checked,
+    ) -> Result<tir::Stmt, Poisoned> {
         match (place.path, value) {
             (Some(path), Ok(value)) if place.writable => {
                 Ok(self.write(span, path.root, path.operands, value))
@@ -61,11 +71,12 @@ impl Checker {
     /// `x op= e` is `x = x op e`. On any other place, each of its operands is bound to a fresh
     /// local first, in source order, so it runs once: `p[e] op= v` is
     /// `Block { let t = e; Assign { p[t], p[t] op v } }`. The root binding is never copied.
-    /// `op` takes `u8`s when the place holds a `u8`, else `i64`s.
+    /// `op` takes `u8`s when the place holds a `u8`, else `i64`s; `+=` on a `string` joins. `op`
+    /// comes with its token's span.
     pub(super) fn compound_assign(
         &mut self,
         span: Span,
-        op: ast::BinaryOp,
+        (op, op_span): (ast::BinaryOp, Span),
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
@@ -75,16 +86,34 @@ impl Checker {
             if self.lookup(name).is_none() {
                 return self.assign(span, target, value);
             }
-            // The `op` spans the statement.
-            let value = ast::Expr {
+            // A `char` has no arithmetic, and a rewrite of the statement would break the
+            // assignment: `target` stands for the value, which `assign` accepts.
+            if self.lookup(name).is_some_and(|b| b.ty == Some(Type::Char)) {
+                self.char_compound(op_span, value);
+                return self.assign(span, target, target);
+            }
+            // `assign` of `target op value`, whose `op` spans the statement.
+            let place = self.place(span, target, false);
+            let want = place.ty.as_ref();
+            let checked = self.binary(
+                span,
+                (op, op_span),
+                target,
+                value,
+                Some(want.unwrap_or(&UNKNOWN)),
+                true,
+            );
+            let expanded = ast::Expr {
                 kind: ast::ExprKind::Binary {
                     op,
+                    op_span,
                     lhs: Box::new(target.clone()),
                     rhs: Box::new(value.clone()),
                 },
                 span,
             };
-            return self.assign(span, target, &value);
+            let (checked, _) = self.settled(&expanded, checked, want);
+            return self.assigned(span, place, checked);
         }
         let place = self.place(span, target, false);
         let Some(ty) = place.ty else {
@@ -92,6 +121,10 @@ impl Checker {
             let _ = self.expr(value, Some(&UNKNOWN));
             return Err(unit());
         };
+        if ty == Type::Char {
+            self.char_compound(op_span, value);
+            return Err(unit());
+        }
         let (op, _) = operator(op).expect(
             "the parser should produce only arithmetic operators for a compound assignment",
         );
@@ -118,10 +151,26 @@ impl Checker {
         };
         let read = match &path {
             Some((root, temps)) => Ok(self.read(build(*root, reads(temps)), target.span)),
-            None => Err(Poisoned::typed(ty)),
+            None => Err(Poisoned::typed(ty.clone())),
         };
-        let read = self.against(target, read, Some(&want));
-        let value = self.arithmetic(span, op, want, read, value);
+        let value = if ty == Type::String && op == tir::BinaryOp::Add {
+            let checked = self.value(value, Some(&ty));
+            let got = type_of(&checked).filter(|got| **got != ty).cloned();
+            let (value, mismatched) = match got {
+                // As in `binary`: the place is the `string` that the value is joined to.
+                // A rejected expected type leaves no type, so `got` is the value's own.
+                Some(got) => {
+                    let d = self.concat_mismatch(value, &got, &[target, value], true);
+                    self.diagnostics.push(d);
+                    (Err(Poisoned::error()), true)
+                }
+                _ => self.settled(value, checked, Some(&ty)),
+            };
+            self.concat(span, read, value, mismatched)
+        } else {
+            let read = self.against(target, read, Some(&want));
+            self.arithmetic(span, (op, op_span), want, read, value)
+        };
         let (Some((root, temps)), Ok(value), true) = (path, value, place.writable) else {
             return Err(unit());
         };
@@ -130,13 +179,47 @@ impl Checker {
         Ok(tir::Stmt::Expr(block_expr(lets, None, Type::Unit, span)))
     }
 
+    /// Reports the compound assignment, at its operator `op_span`, to a `char` place, with no
+    /// fix, and checks `value` for its own mistakes.
+    fn char_compound(&mut self, op_span: Span, value: &ast::Expr) {
+        self.report(DiagnosticKind::ArithmeticOnChar {
+            at: op_span,
+            convert: None,
+        });
+        // Only its diagnostics matter.
+        let _ = self.expr(value, Some(&UNKNOWN));
+    }
+
+    /// The constant `name` as the root of a place that `span` assigns, reported, if `name` names
+    /// one. The value is still checked against the constant's type. A broken constant poisons
+    /// the assignment without a diagnostic.
+    fn constant_place(&mut self, span: Span, name: &str, element: bool) -> Option<CheckedPlace> {
+        let Declared::Known(constant) = self.constants.get(name)? else {
+            return Some(CheckedPlace::failed());
+        };
+        let (declared, ty) = (constant.span, constant.ty.clone());
+        self.report(DiagnosticKind::AssignToImmutable {
+            name: name.to_string(),
+            at: span,
+            element,
+            cause: Immutable::Constant { declared },
+        });
+        Some(CheckedPlace {
+            path: None,
+            ty,
+            writable: false,
+        })
+    }
+
     /// The place `target` names, which `span` assigns. `element` when it is the base of an
     /// index, so the write replaces an element of it.
     fn place(&mut self, span: Span, target: &ast::Expr, element: bool) -> CheckedPlace {
         match &target.kind {
             ast::ExprKind::Name(name) => {
                 let Some(b) = self.lookup(name) else {
-                    if self.function_ids.contains_key(name) {
+                    if let Some(place) = self.constant_place(span, name, element) {
+                        return place;
+                    } else if self.function_ids.contains_key(name) {
                         self.report(DiagnosticKind::AssignToFunction {
                             name: name.clone(),
                             at: target.span,
@@ -154,9 +237,13 @@ impl Checker {
                 };
                 b.reassigned |= b.kind == BindingKind::Var;
                 let (local, ty, kind, declared) = (b.local, b.ty.clone(), b.kind, b.span);
+                let redeclared = b.shadows_mut;
                 let cause = match kind {
                     BindingKind::Var => None,
-                    BindingKind::Let => Some(Immutable::Let { declared }),
+                    BindingKind::Let => Some(Immutable::Let {
+                        declared,
+                        redeclared,
+                    }),
                     BindingKind::Param => Some(Immutable::Param { declared }),
                     BindingKind::Unwrapped(keyword) => {
                         Some(Immutable::Unwrapped { keyword, declared })
@@ -231,7 +318,9 @@ impl Checker {
     }
 
     /// `Assign { place, value }`, the place built from `root` and `operands`, after `spill`
-    /// binds what it must of the operands and the value.
+    /// binds what it must of the operands and the value. A field or element place whose value
+    /// is `P + t`, `P` reading the place and `t` unable to exit, is `Append { place, t }`
+    /// instead; nothing in it can exit, so nothing spills.
     fn write(
         &mut self,
         span: Span,
@@ -244,9 +333,15 @@ impl Checker {
         let value = operands
             .pop()
             .expect("`spill` should return one operand per input");
-        let assign = tir::Stmt::Assign {
-            place: build(root, operands),
-            value,
+        let place = build(root, operands);
+        // `!rhs.exits()` is defence: `concat` already spills an rhs that can exit, so this never
+        // sees one (`places::does_not_recognise`'s `(if c { return } ...)` row covers the spill).
+        let append = !matches!(place, tir::Place::Local(_))
+            && matches!(&value.kind, ExprKind::Concat { lhs, rhs }
+                if !rhs.exits() && same_place(&place, lhs));
+        let assign = match value.kind {
+            ExprKind::Concat { rhs, .. } if append => tir::Stmt::Append { place, value: *rhs },
+            _ => tir::Stmt::Assign { place, value },
         };
         if stmts.is_empty() {
             return assign;
@@ -282,6 +377,52 @@ impl Checker {
             }
         };
         tir::Expr { kind, ty, span }
+    }
+}
+
+/// Whether `read` reads `place`: the same root local, the same fields, and index
+/// expressions that are the same local or the same integer literal.
+fn same_place(place: &tir::Place, read: &tir::Expr) -> bool {
+    match (place, &read.kind) {
+        (tir::Place::Local(local), ExprKind::Local(read)) => local == read,
+        (
+            tir::Place::Field { base, index },
+            ExprKind::Field {
+                base: read,
+                index: field,
+            },
+        ) => index == field && same_read(base, read),
+        (
+            tir::Place::Index { base, index },
+            ExprKind::Index {
+                base: read,
+                index: at,
+            },
+        ) => same_index(index, at) && same_place(base, read),
+        _ => false,
+    }
+}
+
+/// Whether `a` and `b` read the same place, as `same_place` decides.
+fn same_read(a: &tir::Expr, b: &tir::Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Local(a), ExprKind::Local(b)) => a == b,
+        (ExprKind::Field { base: a, index: i }, ExprKind::Field { base: b, index: j }) => {
+            i == j && same_read(a, b)
+        }
+        (ExprKind::Index { base: a, index: i }, ExprKind::Index { base: b, index: j }) => {
+            same_index(i, j) && same_read(a, b)
+        }
+        _ => false,
+    }
+}
+
+/// Whether two indexes are the same local or the same integer literal.
+fn same_index(a: &tir::Expr, b: &tir::Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Local(a), ExprKind::Local(b)) => a == b,
+        (ExprKind::Int(a), ExprKind::Int(b)) => a == b,
+        _ => false,
     }
 }
 

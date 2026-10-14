@@ -1,0 +1,27 @@
+warning[W0002]: `total` is never reassigned
+ --> E0001-shadow.sisu:2:13
+  |
+2 |     let mut total = 0
+  |             ^^^^^
+  |
+help: declare it with `let`
+  |
+2 -     let mut total = 0
+2 +     let total = 0
+  |
+
+error[E0001]: cannot assign to `total`
+ --> E0001-shadow.sisu:4:5
+  |
+3 |     let total = total
+  |         ----- `total` is redeclared here with `let`
+4 |     total += 1
+  |     ^^^^^^^^^^ cannot assign twice
+  |
+help: declare it with `let mut`
+  |
+3 |     let mut total = total
+  |         +++
+
+sisuc: 1 error, 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001, W0002

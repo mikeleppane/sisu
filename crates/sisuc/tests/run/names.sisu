@@ -1,0 +1,21 @@
+// Insertion sort by `<`, which compares strings by byte order: every uppercase ASCII letter sorts
+// before every lowercase one, and `Ä` (bytes 195 132) sorts after all of ASCII.
+fn main() {
+    let mut names = ["Mikko", "anna", "Zoe", "Ärni", "Bob"]
+    let mut i = 1
+    while i < names.len() {
+        let key = names[i]
+        let mut j = i
+        while j > 0 && key < names[j - 1] {
+            names[j] = names[j - 1]
+            j -= 1
+        }
+        names[j] = key
+        i += 1
+    }
+    let mut k = 0
+    while k < names.len() {
+        print("{k + 1}. {names[k]}")  // 1. Bob, 2. Mikko, 3. Zoe, 4. anna, 5. Ärni
+        k += 1
+    }
+}

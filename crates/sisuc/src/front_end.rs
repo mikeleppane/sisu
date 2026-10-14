@@ -42,6 +42,33 @@ pub(crate) fn front_end(source: &str) -> (Option<tir::Program>, Vec<Diagnostic>)
     (program, diagnostics)
 }
 
+/// `diagnostics` without each fix that leaves `source` lexing or parsing worse than it does:
+/// whatever the rule behind a fix, a fix that is shown never breaks the syntax.
+pub(crate) fn sound_fixes(source: &str, diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
+    let before = syntax_errors(source);
+    let mut sound = diagnostics.to_vec();
+    for d in &mut sound {
+        d.retain_fixes(|fix| syntax_errors(&fix.apply(source)) <= before);
+    }
+    sound
+}
+
+/// How badly `source` fails to lex or to parse: a lexer error, which stops the parser, is worse
+/// than any number of parser errors.
+fn syntax_errors(source: &str) -> (bool, usize) {
+    match lexer::lex(source) {
+        Err(_) => (true, 0),
+        Ok(lexed) => {
+            let parsed = parser::parse(lexed);
+            let errors = parsed.diagnostics.iter();
+            (
+                false,
+                errors.filter(|d| d.severity() == Severity::Error).count(),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +82,40 @@ mod tests {
             .iter()
             .map(|d| (d.code(), line_col(src, d.span().start)))
             .collect()
+    }
+
+    /// Whether each fix of `d` is kept by `sound_fixes` over `src`.
+    fn kept(src: &str, d: &Diagnostic) -> Vec<bool> {
+        let sound = sound_fixes(src, std::slice::from_ref(d));
+        let kept = sound[0].fixes();
+        d.fixes().iter().map(|f| kept.contains(f)).collect()
+    }
+
+    /// A fix that leaves the source lexing and parsing is shown; one that breaks either is not,
+    /// whatever its diagnostic. A fix of a syntax error is held only to not making things worse.
+    #[test]
+    fn a_fix_that_breaks_the_syntax_is_dropped() {
+        let src = "fn f(s: string, n: i64) {\n    print(s + n)\n}\nfn main() {}\n";
+        let [d] = <[Diagnostic; 1]>::try_from(front_end(src).1).expect("one diagnostic");
+        assert_eq!(kept(src, &d), [true]);
+        // A `\\` before the `(` of `print(` does not lex.
+        let at = Span::new(35, 36);
+        assert_eq!(&src[at.start..at.end], "(");
+        assert_eq!(
+            kept(src, &DiagnosticKind::BraceInString { at }.into()),
+            [false]
+        );
+        // Two lexer errors: the fix of the first leaves the second, which is no worse.
+        let src = "fn main() {\n    print(\"}\")\n    print(\"}\")\n}\n";
+        let [d] = <[Diagnostic; 1]>::try_from(front_end(src).1).expect("one diagnostic");
+        assert_eq!(kept(src, &d), [true]);
+        // Two parser errors: likewise.
+        let src = "fn main() {\n    let mut _ = 1\n}\nfn g() {\n    let mut _ = 2\n}\n";
+        let ds = front_end(src).1;
+        assert_eq!(ds.len(), 2, "{ds:?}");
+        for d in &ds {
+            assert_eq!(kept(src, d), [true]);
+        }
     }
 
     /// The spec's `a.sisu`.
@@ -87,7 +148,7 @@ fn main() {
 
     #[test]
     fn lexer_error_hides_its_parse_error() {
-        let src = "fn main() {\n    let n: i64 = \"three\"\n}\n";
+        let src = "fn main() {\n    let n: i64 = $\n}\n";
         assert_eq!(codes(src), [(Code::UnexpectedCharacter, (2, 18))]);
     }
 
@@ -103,18 +164,20 @@ fn main() {
         );
     }
 
+    /// An unclosed string breaks `main`, so the lexer's error stands for it and `totl` goes
+    /// unreported.
     #[test]
     fn spec_sample_with_quote() {
         let src = SAMPLE.replace(
             "let xs = [1, 2, 3]\n",
-            "let xs = [1, 2, 3]\n    let n: i64 = \"three\"\n",
+            "let xs = [1, 2, 3]\n    let n: i64 = \"three\n",
         );
         assert_eq!(
             codes(&src),
             [
                 (Code::MethodAsFunction, (3, 17)),
                 (Code::AssignToImmutable, (4, 9)),
-                (Code::UnexpectedCharacter, (11, 18))
+                (Code::LiteralNotClosed, (11, 18))
             ]
         );
     }
@@ -218,6 +281,134 @@ fn main() {
         assert_eq!(codes(src), [(Code::Expected, (2, 9))]);
         let src = "class i64 {\n    x y\n}\nfn main() {\n    let n: i64 = true\n}\n";
         assert_eq!(codes(src), [(Code::Expected, (2, 7))]);
+        // A broken constant poisons a call of its name too, whose arguments are still checked.
+        let src = "const print = 1 2\nfn main() {\n    print(1, 2)\n    print(nope)\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (1, 17)), (Code::BindingNotFound, (4, 11))]
+        );
+        let src = "const i64 = 1 2\nfn main() {\n    let n = i64(true, 1)\n}\n";
+        assert_eq!(codes(src), [(Code::Expected, (1, 15))]);
+    }
+
+    /// A constant runs to the end of its line, so text skipped after its value is its own: the
+    /// constant is broken, and the items after it are still checked.
+    #[test]
+    fn skipped_text_after_a_constant_lies_in_it() {
+        for (skipped, code) in [
+            ("$", Code::UnexpectedCharacter),
+            ("\"const", Code::LiteralNotClosed),
+        ] {
+            let src = format!(
+                "const A = {{ 1 }} {skipped}\nconst B: u8 = 300\nfn main() {{\n    print(A)\n    let b: bool = 1\n}}\n"
+            );
+            assert_eq!(
+                codes(&src),
+                [
+                    (code, (1, 17)),
+                    (Code::IntegerDoesNotFit, (2, 15)),
+                    (Code::Mismatch, (5, 19))
+                ],
+                "{src}"
+            );
+        }
+    }
+
+    /// A broken constant is declared, so its uses are poisoned; it poisons a function of the same
+    /// name, and a broken function poisons a constant of the same name.
+    #[test]
+    fn broken_constant_poisons_its_uses() {
+        for (src, at) in [
+            (
+                "const A = 1 2\nfn main() {\n    let b: bool = A\n    A = 2\n}\n",
+                (1, 13),
+            ),
+            (
+                "const A = 1 2\nfn A() {}\nfn main() {\n    A(1)\n}\n",
+                (1, 13),
+            ),
+            (
+                "fn A(x) {}\nconst A = 1\nfn main() {\n    let b: bool = A\n    A = 2\n}\n",
+                (1, 7),
+            ),
+        ] {
+            assert_eq!(codes(src), [(Code::Expected, at)], "{src}");
+        }
+        // A line that starts with `const` ends the unnamed item before it.
+        let src = "def f()\nconst A = 1 2\nfn main() {}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (1, 1)), (Code::Expected, (2, 13))]
+        );
+    }
+
+    /// The fix of a `const` statement leaves a program that passes the whole front end.
+    #[test]
+    fn const_statement_fix_passes_the_front_end() {
+        let src = "fn main() {\n    const n = 1\n    print(n)\n}\n";
+        let ds = front_end(src).1;
+        let [d] = ds.as_slice() else {
+            panic!("expected one diagnostic, got {ds:?}");
+        };
+        assert_eq!(d.code(), Code::ConstInFunction);
+        assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+        let fixed = apply_fix(src, d);
+        assert!(front_end(&fixed).1.is_empty(), "{fixed}");
+    }
+
+    /// The fix of a `}` in a string leaves a program that passes the whole front end, after an
+    /// escaped backslash, after an interpolation and in a string inside one.
+    #[test]
+    fn brace_in_string_fix_passes_the_front_end() {
+        for text in [r#""}""#, r#""\\}""#, r#""{n}}""#, r#""{ "}" }""#] {
+            let src = format!("fn main() {{\n    let n = 1\n    print({text})\n}}\n");
+            let ds = front_end(&src).1;
+            let [d] = ds.as_slice() else {
+                panic!("expected one diagnostic, got {ds:?}");
+            };
+            assert_eq!(d.code(), Code::BraceInString, "{src}");
+            assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+            let fixed = apply_fix(&src, d);
+            assert!(front_end(&fixed).1.is_empty(), "{fixed}");
+        }
+    }
+
+    /// A bracket left open in an interpolation that is not closed does not stop the lexer, so a
+    /// later function is still checked.
+    #[test]
+    fn unclosed_interpolation_keeps_later_items() {
+        let src = "fn main() {\n    let s = \"a{ f(x\n}\nfn g() {\n    let b: bool = 1\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::LiteralNotClosed, (2, 13)), (Code::Mismatch, (5, 19))]
+        );
+    }
+
+    /// A literal cut at its line end leaves one token, whichever segment the cut ends: its
+    /// first, one resumed after a `}`, or a literal nested in an interpolation. So the error in
+    /// the literal is reported, its function ends at its `}`, and the next function is checked.
+    #[test]
+    fn cut_literal_leaves_one_token() {
+        for (literal, escape) in [
+            ("\"a\\q", 15),
+            ("\"a{x}b\\q", 19),
+            ("\"a{x}b{y}c\\q", 23),
+            ("\"a{x}b\\q{y", 19),
+            ("\"a{ \"b\\q", 19),
+            ("\"a{ \"b{x}c\\q", 23),
+        ] {
+            let src = format!(
+                "fn main() {{\n    let s = {literal}\n}}\nfn g() {{\n    let b: bool = 1\n}}\n"
+            );
+            assert_eq!(
+                codes(&src),
+                [
+                    (Code::UnknownEscape, (2, escape)),
+                    (Code::Mismatch, (5, 19))
+                ],
+                "{literal}"
+            );
+        }
     }
 
     #[test]
@@ -226,31 +417,34 @@ fn main() {
         assert_eq!(codes(src), [(Code::Expected, (1, 1))]);
     }
 
-    /// Skipped text outside every item that holds `fn` or `class` may have swallowed an item, so
-    /// no name lookup can be trusted.
+    /// A string that is not closed outside every item is an unnamed item, so the checker does
+    /// not run: the string may have swallowed an item, and no name lookup can be trusted.
     #[test]
-    fn swallowed_item_stops_the_checker() {
-        for src in [
-            "\"fn helper() {}\nfn main() {\n    helper()\n}\n",
-            "\"class Helper {}\nfn helper() -> Helper {\n    return Helper()\n}\nfn main() {}\n",
-            "\"fn main() {}\n",
+    fn unclosed_string_outside_items_stops_the_checker() {
+        for (src, at) in [
+            ("\"fn helper() {}\nfn main() {\n    helper()\n}\n", (1, 1)),
+            (
+                "\"class Helper {}\nfn helper() -> Helper {\n    return Helper()\n}\nfn main() {}\n",
+                (1, 1),
+            ),
+            ("\"fn main() {}\n", (1, 1)),
+            ("\"const A = 1\nfn main() {\n    print(A)\n}\n", (1, 1)),
+            (
+                "fn f() {} \"a note\nfn main() {\n    let b: bool = 1\n}\n",
+                (1, 11),
+            ),
         ] {
-            assert_eq!(codes(src), [(Code::UnexpectedCharacter, (1, 1))], "{src}");
+            assert_eq!(codes(src), [(Code::LiteralNotClosed, at)], "{src}");
         }
-        // Skipped text without either word keeps the checker on.
-        for src in [
-            "fn f() {} $\nfn main() {\n    let b: bool = 1\n}\n",
-            "fn f() {} \"a note\nfn main() {\n    let b: bool = 1\n}\n",
-        ] {
-            assert_eq!(
-                codes(src),
-                [
-                    (Code::UnexpectedCharacter, (1, 11)),
-                    (Code::Mismatch, (3, 19))
-                ],
-                "{src}"
-            );
-        }
+        // Skipped text keeps the checker on.
+        let src = "fn f() {} $\nfn main() {\n    let b: bool = 1\n}\n";
+        assert_eq!(
+            codes(src),
+            [
+                (Code::UnexpectedCharacter, (1, 11)),
+                (Code::Mismatch, (3, 19))
+            ]
+        );
     }
 
     /// Text skipped at the start of a top-level line lies in the unnamed segment after it, whose
@@ -376,7 +570,7 @@ fn main() {
             [(Code::Expected, (1, 1)), (Code::Expected, (3, 9))]
         );
         // `fn` within a line does not start an item.
-        let src = "pub fn main() {\n    let = 1\n}\n";
+        let src = "export fn main() {\n    let = 1\n}\n";
         assert_eq!(codes(src), [(Code::Expected, (1, 1))]);
         assert_eq!(
             codes("fn main() {}\nstruct P {}\n"),
@@ -386,13 +580,13 @@ fn main() {
 
     #[test]
     fn lexer_error_after_a_nested_block() {
-        let src = "fn f() {\n    if true {\n    }\n    let n: i64 = \"three\"\n}\nfn main() {}\n";
+        let src = "fn f() {\n    if true {\n    }\n    let n: i64 = $\n}\nfn main() {}\n";
         assert_eq!(codes(src), [(Code::UnexpectedCharacter, (4, 18))]);
     }
 
     #[test]
     fn lexer_error_breaks_only_its_method() {
-        let src = "class C {\n    n: i64\n    fn m(self) {\n        let n: i64 = \"three\"\n    }\n}\nfn main() {\n    let c = C(n: true)\n}\n";
+        let src = "class C {\n    n: i64\n    fn m(self) {\n        let n: i64 = $\n    }\n}\nfn main() {\n    let c = C(n: true)\n}\n";
         assert_eq!(
             codes(src),
             [

@@ -1,0 +1,6 @@
+const PERIMETER = SIDE * 4
+const SIDE = 10
+
+fn main() {
+    print(PERIMETER)
+}
