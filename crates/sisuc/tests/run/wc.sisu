@@ -1,0 +1,17 @@
+// Counts the words on standard input, one line at a time. wc.in holds:
+//   line 1  `one two<TAB>three`        3 words
+//   line 2  `four <TAB> five`          2 words
+//   line 3  empty                      0 words
+//   line 4  `six seven<CR><LF>`        2 words (the line ending is removed)
+//   line 5  `häst 😀`                  2 words
+//   line 6  `nine<NBSP>ten`            2 words (U+00A0 is white space)
+//   line 7  `ele<0xFF>ven`             1 word (0xFF becomes U+FFFD, not white space)
+//   line 8  `last line`, no newline    2 words
+// The total is 3 + 2 + 0 + 2 + 2 + 2 + 1 + 2 = 14.
+fn main() {
+    let mut words = 0
+    while let line = read_line() {
+        words += line.words().len()
+    }
+    print(words)    // 14
+}
