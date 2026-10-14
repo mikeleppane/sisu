@@ -296,6 +296,9 @@ fn is_code(text: &str) -> bool {
     bytes.len() == 5 && matches!(bytes[0], b'E' | b'W') && bytes[1..].iter().all(u8::is_ascii_digit)
 }
 
+/// The extensions of the expectation files that a run-mode case directory may hold.
+pub(crate) const RUN_EXPECTATIONS: [&str; 3] = ["out", "err", "in"];
+
 /// Passes for a `.sisu` file, and for a file whose extension is one of `expectations` (the
 /// files the directory's mode reads) beside a `.sisu` of the same name; panics on any other
 /// file, naming it. It also panics, naming it, on any hidden entry beside `path`: the harness

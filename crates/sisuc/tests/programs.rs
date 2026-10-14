@@ -1363,7 +1363,7 @@ fn stray_file_type_fails() {
         "stray_file_type_fails",
         &[("notes.sisu", PRINTS_1), ("notes.txt", "")],
     );
-    support::orphan_check(&dir.join("notes.txt"), &["out", "err"]);
+    support::orphan_check(&dir.join("notes.txt"), &support::RUN_EXPECTATIONS);
 }
 
 /// A `.json` beside a `run` case is never read, so it fails like an orphan.
@@ -1374,7 +1374,7 @@ fn expectation_of_another_mode_fails() {
         "expectation_of_another_mode_fails",
         &[("a.sisu", PRINTS_1), ("a.out", "1\n"), ("a.json", "")],
     );
-    support::orphan_check(&dir.join("a.json"), &["out", "err"]);
+    support::orphan_check(&dir.join("a.json"), &support::RUN_EXPECTATIONS);
 }
 
 /// The harness never lists a hidden file, so the check of a listed file beside it fails.

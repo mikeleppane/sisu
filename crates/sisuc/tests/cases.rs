@@ -42,7 +42,7 @@ fn run_fail(path: &Path) -> datatest_stable::Result<()> {
     reason = "datatest-stable accepts only test functions that return a `Result`"
 )]
 fn run_orphans(path: &Path) -> datatest_stable::Result<()> {
-    support::orphan_check(path, &["out", "err", "in"]);
+    support::orphan_check(path, &support::RUN_EXPECTATIONS);
     Ok(())
 }
 
@@ -51,7 +51,7 @@ fn run_orphans(path: &Path) -> datatest_stable::Result<()> {
     reason = "datatest-stable accepts only test functions that return a `Result`"
 )]
 fn run_fail_orphans(path: &Path) -> datatest_stable::Result<()> {
-    support::orphan_check(path, &["out", "err", "in"]);
+    support::orphan_check(path, &support::RUN_EXPECTATIONS);
     Ok(())
 }
 
