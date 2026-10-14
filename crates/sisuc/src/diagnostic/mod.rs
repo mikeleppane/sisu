@@ -145,6 +145,28 @@ impl Diagnostic {
     pub(crate) fn retain_fixes(&mut self, keep: impl FnMut(&Fix) -> bool) {
         self.fixes.retain(keep);
     }
+
+    /// A diagnostic at `span`, with each of `secondary`, and one fix of `edits` unless there is
+    /// none: spans that no rule makes, for the tests of the span checks.
+    #[cfg(test)]
+    pub(crate) fn for_test(span: Span, secondary: &[Span], edits: &[(Span, &str)]) -> Diagnostic {
+        let mut d = Diagnostic::coded(Code::InvalidUtf8, span, "");
+        d.secondary = secondary.iter().map(|&s| (s, String::new())).collect();
+        if !edits.is_empty() {
+            d.fixes.push(Fix {
+                message: String::new(),
+                certain: false,
+                edits: edits
+                    .iter()
+                    .map(|&(span, replacement)| Edit {
+                        span,
+                        replacement: replacement.to_string(),
+                    })
+                    .collect(),
+            });
+        }
+        d
+    }
 }
 
 impl Fix {

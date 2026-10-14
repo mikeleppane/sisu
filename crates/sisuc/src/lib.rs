@@ -5,6 +5,7 @@ mod check;
 mod codegen;
 mod diagnostic;
 mod front_end;
+mod fuzz;
 mod last_use;
 mod lexer;
 mod link;
@@ -20,14 +21,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use diagnostic::Code;
+use diagnostic::{Code, Diagnostic};
 use inkwell::context::Context;
 use report::{Format, Reporter};
 use tir::Program;
 
+pub use fuzz::front_end as fuzz_front_end;
+
 const USAGE: &str = "usage: sisuc [--format text|json] ([-O2] [--rc-checks] <input.sisu> <output> | [-O2] --emit ir <input.sisu> | --emit tokens|ast|tir|ir-raw <input.sisu> | --check <input.sisu>) | sisuc --explain <code>";
 
-/// The reporter `main` writes stderr through.
+/// The reporter `cli` writes stderr through.
 type Report = Reporter<Stderr>;
 
 /// What the command line asks for.
@@ -198,13 +201,20 @@ fn explain(reporter: &mut Report, code: &str) -> ExitCode {
     }
 }
 
+/// Reads the bytes of `input`, or reports why it cannot.
+fn read_bytes(reporter: &mut Report, input: &Path) -> Option<Vec<u8>> {
+    fs::read(input)
+        .inspect_err(|e| {
+            reporter.tool_error(&format!("cannot read {}: {e}", input.to_string_lossy()));
+        })
+        .ok()
+}
+
 /// Reads `input`, or reports why it cannot. Text that is not UTF-8 is a diagnostic at its first
 /// invalid byte, rendered over the valid text before it, so the renderer never sees bad UTF-8.
 fn read(reporter: &mut Report, input: &Path) -> Option<String> {
     let path = input.to_string_lossy();
-    let bytes = fs::read(input)
-        .inspect_err(|e| reporter.tool_error(&format!("cannot read {path}: {e}")))
-        .ok()?;
+    let bytes = read_bytes(reporter, input)?;
     front_end::decode(bytes)
         .inspect_err(|e| {
             let (shown, d) = &**e;
@@ -313,12 +323,48 @@ fn emit_ir_raw(reporter: &mut Report, path: &str, source: &str) -> ExitCode {
 
 /// Lexes, parses and checks `input`; reports every diagnostic. Fails if any is an error.
 fn run_check(reporter: &mut Report, input: &Path) -> ExitCode {
-    let Some(source) = read(reporter, input) else {
+    let Some(bytes) = read_bytes(reporter, input) else {
         return ExitCode::FAILURE;
     };
-    match front_end(reporter, &input.to_string_lossy(), &source) {
-        Some(_) => ExitCode::SUCCESS,
-        None => ExitCode::FAILURE,
+    if check_bytes(reporter, &input.to_string_lossy(), bytes).passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// What `sisuc --check` reported for one source.
+pub(crate) struct Checked {
+    /// The text the diagnostics point into: the source, or for bytes that are not UTF-8,
+    /// the replacement text `decode` returns.
+    pub(crate) source: String,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    /// No diagnostic is an error, and the bytes are UTF-8.
+    pub(crate) passed: bool,
+}
+
+/// Decodes `bytes`, runs the front end on the source, and reports every diagnostic as read
+/// from `path`. Bytes that are not UTF-8 are the one `InvalidUtf8` diagnostic instead.
+pub(crate) fn check_bytes<W: Write>(
+    reporter: &mut Reporter<W>,
+    path: &str,
+    bytes: Vec<u8>,
+) -> Checked {
+    let (source, diagnostics, passed) = match front_end::decode(bytes) {
+        Ok(source) => {
+            let (program, diagnostics) = front_end::front_end(&source);
+            (source, diagnostics, program.is_some())
+        }
+        Err(e) => {
+            let (shown, d) = *e;
+            (shown, vec![d], false)
+        }
+    };
+    reporter.diagnostics(path, &source, &diagnostics);
+    Checked {
+        source,
+        diagnostics,
+        passed,
     }
 }
 
