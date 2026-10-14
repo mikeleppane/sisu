@@ -811,17 +811,7 @@ fn print_declarations_carry_attributes() {
         ("sisu_eprint_str", reads),
         ("sisu_str_compare", "memory(argmem: read)"),
     ] {
-        let declaration = ir
-            .lines()
-            .find(|line| line.starts_with("declare ") && line.contains(&format!("@{name}(")))
-            .unwrap_or_else(|| panic!("no declaration of {name} in\n{ir}"));
-        let (_, group) = declaration
-            .rsplit_once(" #")
-            .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
-        let attributes = ir
-            .lines()
-            .find(|line| line.starts_with(&format!("attributes #{group} = ")))
-            .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"));
+        let attributes = attributes(&ir, name);
         for wanted in ["nounwind", memory] {
             assert!(attributes.contains(wanted), "{name}: {attributes}");
         }
@@ -829,8 +819,23 @@ fn print_declarations_carry_attributes() {
     }
 }
 
+/// The attribute group line of the declaration of `name` in `ir`.
+fn attributes<'a>(ir: &'a str, name: &str) -> &'a str {
+    let declaration = ir
+        .lines()
+        .find(|line| line.starts_with("declare ") && line.contains(&format!("@{name}(")))
+        .unwrap_or_else(|| panic!("no declaration of {name} in\n{ir}"));
+    let (_, group) = declaration
+        .rsplit_once(" #")
+        .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
+    ir.lines()
+        .find(|line| line.starts_with(&format!("attributes #{group} = ")))
+        .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"))
+}
+
 /// `sisu_read_line` never unwinds, and carries no `memory` attribute: the call overwrites the
-/// line an earlier call returned, so LLVM must not move a read of those bytes past it.
+/// line an earlier call returned, so LLVM must not move a read of those bytes past it. It may
+/// exit (a failed read panics), so it is not `willreturn` either.
 #[test]
 fn read_line_declaration_has_no_memory_attribute() {
     let context = Context::create();
@@ -840,19 +845,10 @@ fn read_line_declaration_has_no_memory_attribute() {
     )
     .print_to_string()
     .to_string();
-    let declaration = ir
-        .lines()
-        .find(|line| line.starts_with("declare ") && line.contains("@sisu_read_line("))
-        .unwrap_or_else(|| panic!("no declaration of sisu_read_line in\n{ir}"));
-    let (_, group) = declaration
-        .rsplit_once(" #")
-        .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
-    let attributes = ir
-        .lines()
-        .find(|line| line.starts_with(&format!("attributes #{group} = ")))
-        .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"));
+    let attributes = attributes(&ir, "sisu_read_line");
     assert!(attributes.contains("nounwind"), "{attributes}");
     assert!(!attributes.contains("memory("), "{attributes}");
+    assert!(!attributes.contains("willreturn"), "{attributes}");
 }
 
 /// `xs.len()` and `o.n` on a local neither retain nor release the base: the local keeps it

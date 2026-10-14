@@ -88,10 +88,13 @@ fn output_with_stdin(command: &mut Command, stdin: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|error| {
-            panic!(
-                "{} does not start (Valgrind installs with `apt install valgrind`): {error}",
-                command.get_program().display()
-            )
+            let program = command.get_program();
+            let hint = if program == "valgrind" {
+                " (Valgrind installs with `apt install valgrind`)"
+            } else {
+                ""
+            };
+            panic!("{} does not start{hint}: {error}", program.display())
         });
     let mut pipe = child.stdin.take().expect("stdin should be piped");
     thread::scope(|scope| {
