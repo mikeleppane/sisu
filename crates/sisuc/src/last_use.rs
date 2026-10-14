@@ -13,7 +13,8 @@
 //! - Assigning an element evaluates a field root's base, then the indexes from the root
 //!   outwards, then the value, then uses the root local without moving it. An `Append` to a
 //!   field or an element evaluates as the assignment to it does.
-//! - `Return` leaves nothing live, `Break` takes the loop's exit set, `Continue` its head set.
+//! - `Return` and `Panic` leave nothing live, `Break` takes the loop's exit set, `Continue`
+//!   its head set.
 //! - `&&`, `||` and each step of a comparison chain have an edge that skips the rest.
 
 use std::mem;
@@ -199,6 +200,10 @@ impl Walk {
                 if let Some(value) = value {
                     self.expr(value);
                 }
+            }
+            ExprKind::Panic(message) => {
+                self.live.fill(false);
+                self.expr(message);
             }
             ExprKind::Block(block) => self.block(block),
         }
@@ -392,6 +397,14 @@ mod tests {
     fn read_before_return() {
         let printed = marked(
             "fn f(xs: [i64], c: bool) -> i64 {\n    if c {\n        return xs.len()\n    }\n    xs.len()\n}",
+        );
+        assert_eq!(printed.matches("(move xs#0)").count(), 2, "{printed}");
+    }
+
+    #[test]
+    fn read_before_panic() {
+        let printed = marked(
+            "fn f(xs: [i64], c: bool) -> i64 {\n    if c {\n        panic(\"{xs.len()}\")\n    }\n    xs.len()\n}",
         );
         assert_eq!(printed.matches("(move xs#0)").count(), 2, "{printed}");
     }

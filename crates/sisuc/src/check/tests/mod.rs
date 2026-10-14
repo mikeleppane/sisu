@@ -10,6 +10,7 @@ mod constants;
 mod for_loops;
 mod patterns;
 mod places;
+mod prelude;
 mod shadowing;
 mod strings;
 mod u8;
@@ -140,16 +141,6 @@ fn duplicate_function() {
         Code::DefinedTwice,
         (2, 4, "main"),
         &[(1, 4)],
-    );
-}
-
-#[test]
-fn print_is_built_in() {
-    diagnostic(
-        "fn print() {}\nfn main() {}",
-        Code::DefinedTwice,
-        (1, 4, "print"),
-        &[],
     );
 }
 
@@ -1210,16 +1201,6 @@ fn class_defined_twice() {
         .map(|(span, _)| at(src, *span))
         .collect();
     assert_eq!(secondary, [(1, 7)]);
-}
-
-#[test]
-fn class_named_print() {
-    diagnostic(
-        "class print {}\nfn main() {}",
-        Code::DefinedTwice,
-        (1, 7, "print"),
-        &[],
-    );
 }
 
 #[test]
@@ -2572,9 +2553,8 @@ fn coalesce_left_not_optional() {
 
 #[test]
 fn coalesce_never() {
-    codes(
+    clean(
         "fn f(x: i64?, c: bool) -> i64 {\n    x ?? if c { return 0 } else { return 1 }\n}\nfn main() {}",
-        &[(Code::NoValue, (2, 10))],
     );
 }
 
@@ -2971,7 +2951,12 @@ fn missing_function_suggests_the_closest() {
 
 #[test]
 fn missing_function_suggests_a_class_a_builtin_or_a_conversion() {
-    for (name, candidate) in [("prnt", "print"), ("i6", "i64"), ("u", "u8")] {
+    for (name, candidate) in [
+        ("prnt", "print"),
+        ("pnic", "panic"),
+        ("i6", "i64"),
+        ("u", "u8"),
+    ] {
         let src = format!(
             "class Tree {{\n    value: i64\n}}\nfn main() {{\n    let t = 1\n    {name}(t)\n}}"
         );

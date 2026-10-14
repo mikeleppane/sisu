@@ -70,6 +70,22 @@ fn emit_tokens_char() {
 }
 
 #[test]
+fn emit_tokens_todo() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("emit_tokens_todo.sisu"), "todo\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_todo.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1:1 Todo todo\n1:5 Newline\n1:5 Eof\n"
+    );
+}
+
+#[test]
 fn emit_tokens_strings() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(

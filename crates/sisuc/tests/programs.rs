@@ -528,6 +528,22 @@ fn prints_then_a_panic_flush_stdout_before_the_panic_line() {
     }
 }
 
+/// A `panic` call flushes the buffered `print` lines before its panic line, as a run-time
+/// panic does.
+#[test]
+fn prints_then_panic_call_flushes_stdout_first() {
+    let source = "fn main() {\n    print(1)\n    print(true)\n    panic(\"x\")\n}\n";
+    for o2 in [false, true] {
+        let (status, merged) =
+            run_with_merged_output(&compile_tmp("prints_then_panic_call", source, o2));
+        assert_eq!(status.code(), Some(101), "{status:?}");
+        assert_eq!(
+            merged, "1\ntrue\nsisu: panic at prints_then_panic_call.sisu:4:5: x\n",
+            "{merged}"
+        );
+    }
+}
+
 /// Output is buffered: only the final flush at the end of `main` fails, and it ends the
 /// program with the one panic line, not a second error when the process exits.
 #[test]

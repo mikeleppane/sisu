@@ -1,0 +1,9 @@
+fn render(page: i64) -> string {
+    todo("render {page}")
+}
+
+fn main() {
+    let page = 3
+    print(1) // 1
+    print(render(page))
+}

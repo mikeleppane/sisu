@@ -1,0 +1,5 @@
+fn main() {
+    let n: i64? = None
+    print(1) // 1
+    print(n ?? panic("no number"))
+}

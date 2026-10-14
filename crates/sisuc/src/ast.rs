@@ -204,6 +204,12 @@ pub(crate) enum ExprKind {
         callee: Ident,
         args: Vec<Arg>,
     },
+    /// `todo` or `todo(args)`; bare `todo` has no args. `keyword` is the `todo` token's span,
+    /// which parentheses around the expression do not widen.
+    Todo {
+        keyword: Span,
+        args: Vec<Arg>,
+    },
     SelfValue,
     NoneLit,
     /// `safe` is `base?.name`.
@@ -508,6 +514,11 @@ impl fmt::Display for Expr {
             ExprKind::Name(name) => f.write_str(name.as_str()),
             ExprKind::Call { callee, args } => {
                 write!(f, "(call {}", callee.name)?;
+                spaced(f, args)?;
+                f.write_str(")")
+            }
+            ExprKind::Todo { args, .. } => {
+                f.write_str("(todo")?;
                 spaced(f, args)?;
                 f.write_str(")")
             }

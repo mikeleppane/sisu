@@ -211,6 +211,39 @@ pub unsafe extern "C" fn sisu_panic(msg: *const u8, len: usize) -> ! {
     ))
 }
 
+/// Prints `sisu: panic at <at>: <msg>` to standard error and exits with code 101. Generated
+/// code calls this for a `panic(msg)` call; `at` is its source location.
+///
+/// # Safety
+///
+/// `at` and `at_len`, and `msg` and `msg_len`, each meet the contract of `msg` and `len` for
+/// [`sisu_panic`].
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name and passes raw pointers"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_panic_message(
+    at: *const u8,
+    at_len: usize,
+    msg: *const u8,
+    msg_len: usize,
+) -> ! {
+    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
+    // `from_raw_parts` requires for each `u8` slice.
+    let (at, msg) = unsafe {
+        (
+            std::slice::from_raw_parts(at, at_len),
+            std::slice::from_raw_parts(msg, msg_len),
+        )
+    };
+    exit_with_panic(format_args!(
+        "sisu: panic at {}: {}",
+        String::from_utf8_lossy(at),
+        String::from_utf8_lossy(msg)
+    ))
+}
+
 /// Prints `sisu: panic at <msg>: index <index> out of bounds for length <length>` to
 /// standard error and exits with code 101. Generated code calls this for a failed array
 /// index check; `msg` is the source location of the index expression.

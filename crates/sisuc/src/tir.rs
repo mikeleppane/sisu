@@ -149,6 +149,8 @@ pub(crate) enum ExprKind {
     /// `u8(e)`, `i64(e)` or `char(e)`: `e` converted to the node's own type.
     Convert(Box<Expr>),
     Print(Box<Expr>),
+    /// `panic(message)`, of type `never`; its span starts where the panic reports.
+    Panic(Box<Expr>),
     /// `[a, b]`.
     ArrayLit(Vec<Expr>),
     /// `[value; len]`.
@@ -264,6 +266,8 @@ impl Expr {
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
             | ExprKind::Print(operand)
+            // A panic ends the process, so nothing before it needs binding for a release.
+            | ExprKind::Panic(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
             ExprKind::Binary { lhs, rhs, .. }
             | ExprKind::Concat { lhs, rhs }
@@ -437,6 +441,7 @@ impl Printer<'_> {
             ExprKind::Wrap(operand) => self.unary(f, "wrap", operand),
             ExprKind::Convert(operand) => self.unary(f, &expr.ty.to_string(), operand),
             ExprKind::Print(operand) => self.unary(f, "print", operand),
+            ExprKind::Panic(message) => self.unary(f, "panic", message),
             ExprKind::ArrayLit(elements) => {
                 f.write_str("(array")?;
                 self.each(f, elements)?;
@@ -1054,6 +1059,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prints_panic() {
+        // fn f() { panic("x") }
+        let message = expr(ExprKind::Str("x".into()), Type::String);
+        let panic = expr(ExprKind::Panic(Box::new(message)), Type::Never);
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(vec![Stmt::Expr(panic)]),
+            }],
+        };
+        assert_eq!(program.to_string(), r#"(fn f () unit (block (panic "x")))"#);
+    }
+
     fn block_expr(stmts: Vec<Stmt>, value: Option<Expr>) -> Expr {
         let block = Block {
             stmts,
@@ -1133,6 +1156,10 @@ mod tests {
             rhs: Box::new(expr(ExprKind::Return(None), Type::Never)),
         };
         assert!(expr(is, Type::Bool).exits());
+        // A panic ends the process: only a `return` in its message exits.
+        let panic = |message| expr(ExprKind::Panic(Box::new(message)), Type::Never);
+        assert!(!panic(expr(ExprKind::Str("x".into()), Type::String)).exits());
+        assert!(panic(expr(ExprKind::Return(None), Type::Never)).exits());
         // An `if`, a comparison chain and a print with no jump in them.
         assert!(!if_stmt.exits());
         assert!(!block_expr(vec![Stmt::Expr(if_stmt)], Some(int(1))).exits());

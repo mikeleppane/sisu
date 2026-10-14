@@ -41,6 +41,7 @@ codes! {
     AssignToImmutable = "E0001",
     UnreachableCode = "W0001",
     NeverReassigned = "W0002",
+    TodoLeft = "W0003",
     LeadingBinaryMinus = "E0002",
     UnclosedBracket = "E0003",
     BraceOnNewLine = "E0004",
@@ -138,6 +139,7 @@ codes! {
     EmptyInterpolation = "E0096",
     CommentInInterpolation = "E0097",
     CannotInterpolate = "E0098",
+    TodoForm = "E0099",
 }
 
 impl Code {
@@ -534,6 +536,11 @@ pub(crate) enum DiagnosticKind {
         help: Option<InterpolateHelp>,
         at: Span,
     },
+    /// The `todo` at `at`, which panics when it runs.
+    TodoLeft { at: Span },
+    /// A `todo` written as Rust's `todo!` or as `todo()`: `at` is the first extra token, and
+    /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`.
+    TodoForm { at: Span, delete: Span },
 }
 
 /// What a literal that is not closed is the literal of.
@@ -631,7 +638,7 @@ pub(crate) enum Earlier {
         kind: Definition,
         owner: Option<String>,
     },
-    /// In the language: `print`.
+    /// In the language: a prelude function, such as `print`.
     BuiltIn,
 }
 
@@ -659,6 +666,8 @@ pub(crate) enum MismatchFix {
         call: Span,
         arg: Span,
     },
+    /// A value that interpolation prints, on one line, as the literal `"{value}"`.
+    WrapInString(Span),
 }
 
 /// An operand of a `+` that interpolation joins: where it is written, and whether it is a
@@ -838,6 +847,8 @@ impl DiagnosticKind {
             DiagnosticKind::EmptyInterpolation { .. } => Code::EmptyInterpolation,
             DiagnosticKind::CommentInInterpolation { .. } => Code::CommentInInterpolation,
             DiagnosticKind::CannotInterpolate { .. } => Code::CannotInterpolate,
+            DiagnosticKind::TodoLeft { .. } => Code::TodoLeft,
+            DiagnosticKind::TodoForm { .. } => Code::TodoForm,
         }
     }
 }
@@ -1247,6 +1258,20 @@ impl From<DiagnosticKind> for Diagnostic {
                             },
                             Edit {
                                 span: Span::new(arg.end, call.end),
+                                replacement: "}\"".to_string(),
+                            },
+                        ],
+                    }),
+                    Some(MismatchFix::WrapInString(value)) => d.with_fix(Fix {
+                        message: "use interpolation".to_string(),
+                        certain: true,
+                        edits: vec![
+                            Edit {
+                                span: Span::new(value.start, value.start),
+                                replacement: "\"{".to_string(),
+                            },
+                            Edit {
+                                span: Span::new(value.end, value.end),
                                 replacement: "}\"".to_string(),
                             },
                         ],
@@ -1762,6 +1787,22 @@ impl From<DiagnosticKind> for Diagnostic {
                     None => d,
                 }
             }
+            DiagnosticKind::TodoLeft { at } => {
+                Diagnostic::coded(code, at, "`todo` panics when it runs")
+            }
+            DiagnosticKind::TodoForm { at, delete } => Diagnostic::coded(
+                code,
+                at,
+                "`todo` takes one message in parentheses, or none",
+            )
+            .with_fix(Fix {
+                message: "remove it".to_string(),
+                certain: true,
+                edits: vec![Edit {
+                    span: delete,
+                    replacement: String::new(),
+                }],
+            }),
         }
     }
 }

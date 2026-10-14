@@ -1,0 +1,8 @@
+warning[W0003]: `todo` panics when it runs
+ --> W0003-message.sisu:2:5
+  |
+2 |     todo("why")
+  |     ^^^^
+
+sisuc: 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: W0003

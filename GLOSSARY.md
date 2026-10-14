@@ -41,6 +41,9 @@ The program stopping at runtime with `sisu: panic at <file>:<line>:<col>:
 no location: `sisu: panic: <message>`.
 _Avoid_: trap, crash, abort
 
+**Prelude**:
+The names visible in every file without an import.
+
 **RC check**:
 A check that a program built with `sisuc --rc-checks` makes on its reference
 counts: no retain or release of a count below 1, and no object still

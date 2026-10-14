@@ -1,0 +1,5 @@
+fn main() {
+    let n = 7
+    print(1) // 1
+    panic("bad {n}")
+}
