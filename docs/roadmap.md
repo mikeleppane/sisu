@@ -333,6 +333,29 @@ Order matters in these places:
   (ADR 0009). Opening, reading and writing files waits for `Result` in
   milestone 12, so no I/O signature changes later.
 
+### The growing proof program
+
+Status: agreed 2026-10-14. Each milestone's proof program is a few dozen
+lines, too small to show what goes wrong at size: error handling that
+nests, awkward module boundaries, missing collection methods, slow builds.
+So from milestone 7 on, one program grows with the language: Sisu's own
+lexer, written in Sisu, and later its parser. It turns the self-hosting
+stretch goal into steps.
+
+- Milestone 7 starts it, with tokens as an enum and the lexer over the
+  `chars()` of its input, read from standard input (milestone 5).
+- From then on, a milestone is done only when the program uses its feature
+  where the feature fits: generics and interfaces (8), closures and iterator
+  methods (9), records (10), modules (11) and `Result` for lexer errors (12).
+  A feature that reads badly in the program is changed while its milestone
+  is still open.
+- The check is built in: for each `.sisu` file in the compiler's tests that
+  lexes without errors, the program prints the same tokens as
+  `sisuc --emit tokens`. The parser, once it exists, is checked against
+  `--emit ast` the same way.
+- Milestone 7's spec settles where the program lives and how the tests run
+  it.
+
 ## Dependencies and parallel work
 
 A milestone's number names it; its prerequisites, not its number, fix when
@@ -472,7 +495,11 @@ Each is small once its milestone's main feature exists:
   derive macros, not user code generation.
 - Milestone 10: a copy of a record with some fields changed,
   `Point(..p, y: 0)`, as Gleam writes it and as Kotlin's `copy(y = 0)` does.
-  Label shorthand, `area(width:, height:)`, passes the local variables of the
+  It also builds a labeled enum variant from a bound one, which is how a
+  payload changes (see "Values with fields"):
+  `if let p: Page = doc { doc = Page(..p, title: "New title") }`. The pattern
+  that binds the whole payload is settled with "Argument labels". Label
+  shorthand, `area(width:, height:)`, passes the local variables of the
   same names.
 - Milestone 10: default parameters, as in Kotlin. Only trailing parameters
   take a default, and a named argument can skip one. The default expression
@@ -767,7 +794,75 @@ These do not make code nicer to write, so they wait:
 - Doc comments, `///` before a declaration. The lexer drops comments today,
   so they wait for the formatter, which must keep comments anyway, and for
   the language server, which can show them.
-- Self-hosting: the Sisu lexer and parser written in Sisu.
+- Self-hosting: the Sisu lexer and parser written in Sisu. They start as
+  the growing proof program from milestone 7 (see "The growing proof
+  program"); a compiler written in Sisu stays a stretch goal.
+
+## Gaps before production
+
+Status: proposal, 2026-10-14. Milestones 1 to 12 give Sisu a complete
+language, but not one ready for production use. Nothing in this section has
+a milestone or a done-when test yet. Some items appear above under "Later and
+stretch goals" with no date. Each gap gets a milestone once a definition of
+1.0 says it is needed.
+
+- **Target domain.** The roadmap does not say what Sisu is for. Command-line
+  tools and scripts need a fast `sisu run`, a standard library for files,
+  processes, regular expressions and JSON, and builds for several platforms.
+  Network services need sockets, many connections per thread, and a panic
+  that ends one task instead of the program. The answer orders every gap
+  below, so decide it first.
+- **A language reference.** Milestone specs are not published, so the
+  compiler and its tests define the language today. Users and tool authors
+  need a reference that says what a program means, apart from what `sisuc`
+  happens to do.
+- **A stability promise.** Nothing says which programs keep compiling from
+  one version to the next, how a feature is deprecated, or whether Sisu has
+  editions as Rust does. Sisu has no users yet, so this costs little now and
+  much later.
+- **C FFI.** It is a stretch goal above. Without it, Sisu cannot call SQLite,
+  a TLS library or an OS API that the runtime does not wrap. Under ADR 0009
+  each OS feature is runtime code in Rust, which does not scale to a full
+  standard library. WebAssembly in a browser is the same design with
+  another host: there is no standard output, so a program imports JavaScript
+  functions and exports its own through the `extern fn` that C uses, not a
+  second mechanism.
+- **Standard library scope.** Milestone 11 names `List` and `Map`, and
+  milestone 12 brings files. Time, processes, directories, networking,
+  regular expressions and JSON are not planned.
+- **Platforms.** Sisu builds only for x86-64 Linux. ARM64 Linux and macOS
+  are under "Early tooling", untested, and Windows is a stretch goal.
+  WebAssembly with WASI (`wasm32-wasip1`), run by `wasmtime`, is the cheapest
+  new target: LLVM 22 in `.llvm/22` has the backend, and reference counting
+  needs nothing from the host. It needs cross-compiling (`--target`, a
+  stretch goal above), a runtime built for the target without its Unix
+  `SIGPIPE` handling, linking with `wasm-ld` in place of `cc`, and the test
+  cases run under `wasmtime`. One task per OS thread (ADR 0010) does not
+  carry over, because WASI threads are experimental.
+- **Debug info and crash reports.** A panic prints its file and line but no
+  stack trace, and `gdb` cannot step through Sisu source (DWARF is a stretch
+  goal). Recursion that runs out of stack dies with `SIGSEGV`, exit code 139,
+  not with a panic that names the line.
+- **A language server.** It is a stretch goal above. It needs a parser that
+  recovers inside a body, where today the parser reports one error per item
+  (ADR 0013), and a checker that can rerun after one file changes. Both are
+  expensive to add to a batch compiler later, so the front end should be
+  shaped for them before modules (milestone 11) arrive.
+- **Packages.** "Deliberately avoided" defers a registry and lets path and
+  Git dependencies come first. A manifest (`sisu.toml`) and dependency
+  resolution have no design.
+- **Number types.** Sisu has `i64` and `u8`, and milestone 6 adds a float.
+  The C FFI, binary file formats and hashing need `i32`, `u32`, `u64` and
+  `f32`. "Integer widths and wrapping" in "Open decisions" covers only part of
+  this.
+- **Fuzzing the compiler.** Mutation testing measures the tests. Nothing
+  feeds generated programs to the parser, checker and codegen to find
+  crashes or wrong code.
+
+The first step is a definition of 1.0, recorded as an ADR: the target
+domain, the platforms, the stability promise, the tools it requires (a
+language server, `sisu fmt`, `sisu test`, debug info), C FFI and the minimum
+standard library. The milestones after 12 then follow from it.
 
 ## Deliberately avoided
 
@@ -819,6 +914,38 @@ These do not make code nicer to write, so they wait:
   its own right-hand side.
 - **Generic arguments and `<`.** `f(a < b, c > d)` reads as two comparisons
   or as one generic call. Decide the syntax in milestone 8.
+- **Interfaces as types.** Agreed 2026-10-14; milestone 8's spec confirms
+  it. An interface is a generic bound, `T: Drawable`, dispatched statically
+  after monomorphization. A list of different types that share an interface,
+  such as a file and an in-memory buffer used as one `Writer`, needs an
+  interface value as well:
+  - The type is written `any Drawable`, so the box and the indirect call show
+    where they cost, as Swift's `any P` and Rust's `dyn Trait` do. A bare
+    interface name used as a type is an error whose help offers
+    `T: Drawable` or `any Drawable`. `any` is a keyword only before a type,
+    so `xs.any(...)` stays a method name. The relationship is called
+    conformance: "`Point` does not conform to `Drawable`".
+  - An `any` value is two words: a pointer to the data and a table of its
+    methods, which also holds the drop code and ADR 0010's copy code. A class
+    object is pointed at directly. A record, an enum or a number is boxed on
+    the heap first, as Go does. An interface with a generic method, or with a
+    method that returns its own type, can be a bound but not an `any` type,
+    as Rust's dyn-compatibility rule says.
+  - An interface names the types its methods use with associated types, as
+    Rust and Swift do, not with type parameters (`Iterator<T>`). A type then
+    has one iterator, so `for x in it` always knows the type of `x`:
+
+    ```
+    interface Iterator {
+        type Item
+        fn next(mut self) -> Item?
+    }
+    ```
+
+  - A type declares its interfaces after its name, `record Point: Hash {`,
+    as milestone 10 writes them. Implementing an interface for a type
+    declared elsewhere, as Rust's `impl` blocks and Swift's extensions do,
+    waits. Adding it later breaks no program.
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
   `a.plus(b)` or `a.value + b.value`, the same boilerplate Rust newtypes
   carry. An opt-in such as Haskell's `deriving` would let a newtype keep its
@@ -856,14 +983,31 @@ These do not make code nicer to write, so they wait:
   - Conversions. They follow `i64(x)`, `u8(x)` and `char(x)`, which exist today. A float
     converted to an integer that cannot hold it panics or is rejected, never
     wraps.
-- **Values with fields.** Decide before milestone 7 or records (milestone
-  10), whichever starts first, because both build on it:
+- **Values with fields.** Agreed 2026-10-14; the spec of milestone 7 or of
+  records (milestone 10), whichever starts first, confirms it, because both
+  build on it:
   - Records and tuples are values with their fields inline: the newtype
-    promise (milestone 10) and ADR 0007 need that. Decide whether an enum is
-    the same, with its payload inline, or a heap object, which would make a
-    second layout.
-  - How a variant that holds its own enum, such as `Add(Expr, Expr)`, gets
-    its indirection, as Swift's `indirect` does.
+    promise (milestone 10) and ADR 0007 need that. An enum is the same: a tag
+    and room for its largest payload, as in Rust and Swift. A heap object
+    would make a second layout, and every `i64?`, an inline `{ i1, i64 }`
+    pair today, would allocate once it becomes `Option<i64>` in milestone 8.
+    An enum with one empty variant and one that holds a class, a string or
+    an array uses the null pointer as its tag, as `T?` does today.
+  - A payload cannot change in place. A pattern such as `Circle(r)` binds a
+    copy, not a reference, so `let mut e` changes only by a new value:
+    `e = Circle(2.0)`. Payloads have no place to assign to, because the
+    variant is known only at run time, and Sisu has no references (ADR 0007
+    keeps `inout` out). The copy is shallow: a string, an array or a class in
+    a payload is a pointer and a count. To change one field without
+    restating the others, milestone 10's update syntax covers labeled
+    variants as well as records.
+  - A variant that holds its own enum, such as `Add(Expr, Expr)`, gets its
+    indirection without a keyword, unlike Swift's `indirect`. The compiler
+    boxes exactly the payload fields whose type leads back to the enum. The
+    box is counted and never changes, since a payload cannot change, so no
+    program can tell it is there. A record that contains itself stays an
+    error whose help says to use a class (milestone 10): its fields can
+    change, so a box would need copy-on-write.
   - The copy and release code for a value whose fields hold references.
     Build it once for every value with fields, so enums, records and tuples
     share it and arrays of them release their elements.
@@ -905,6 +1049,26 @@ These do not make code nicer to write, so they wait:
   the object it captures is a cycle that a `weak` field cannot break
   (ADR 0008). Decide how a closure captures one name weakly, as Swift's
   `[weak self]` does, and what the closure sees once the object is gone.
+- **Recovering from a panic.** Decide with the concurrency design, and
+  before milestone 12's file handles. Today a panic ends the process with
+  exit code 101: right for a command-line tool, wrong for a server, where
+  one request that overflows an `i64` ends every other connection. The
+  candidates:
+  - Never recover, and let a supervisor such as systemd restart the
+    process, as with Zig's panics and Swift's `fatalError`.
+  - A panic ends only its task, and `join` returns `Result<T, Panic>`, as an
+    Erlang process dies alone. ADR 0010 makes this safe: a task shares no
+    objects, so a dying task leaves no other task's data half changed. It
+    needs a way to leave the task's frames (LLVM unwinding, or a heap per
+    task freed whole), and the runtime must know which task owns each file
+    handle so it can close them. Milestone 12 would have to record that
+    owner, which is expensive to add to file handles later.
+  - A `catch` inside a task, as Rust's `catch_unwind` and Go's `recover`
+    do. Code after the catch can see class objects left half changed, and
+    it is a second way to handle errors beside `Result`.
+
+  Milestone 6's `test` blocks do not wait for this: running each test in a
+  child process isolates its panic with no runtime support.
 - **Nested optionals.** Decide before milestone 8. Milestone 2 rejects
   `T??` and treats an optional of an optional as the same optional. The
   library `Option<Option<T>>` nests: a `Map<K, V?>` lookup returns one. Decide
