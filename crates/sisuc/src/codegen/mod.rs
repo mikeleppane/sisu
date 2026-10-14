@@ -5,8 +5,8 @@ mod array;
 mod rc;
 mod string;
 
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
@@ -124,7 +124,7 @@ pub(crate) fn compile<'ctx>(
         rc_retain,
         rc_fault,
         program,
-        helpers: RefCell::new(HashMap::new()),
+        helpers: RefCell::new(FxHashMap::default()),
         pending: RefCell::new(Vec::new()),
         target_data,
         path,
@@ -264,7 +264,7 @@ struct Codegen<'ctx, 'src> {
     rc_fault: Option<FunctionValue<'ctx>>,
     program: &'src Program,
     /// The helpers declared so far, by kind and counted type; see `rc::helper`.
-    helpers: RefCell<HashMap<(Helper, Type), FunctionValue<'ctx>>>,
+    helpers: RefCell<FxHashMap<(Helper, Type), FunctionValue<'ctx>>>,
     /// The helpers declared but not yet defined; `define_helpers` empties it.
     pending: RefCell<Vec<(Helper, Type)>>,
     /// The target's layout: the sizes and alignments of classes.

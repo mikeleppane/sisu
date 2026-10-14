@@ -45,10 +45,13 @@ pub(crate) fn front_end(source: &str) -> (Option<tir::Program>, Vec<Diagnostic>)
 /// `diagnostics` without each fix that leaves `source` lexing or parsing worse than it does:
 /// whatever the rule behind a fix, a fix that is shown never breaks the syntax.
 pub(crate) fn sound_fixes(source: &str, diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
-    let before = syntax_errors(source);
     let mut sound = diagnostics.to_vec();
-    for d in &mut sound {
-        d.retain_fixes(|fix| syntax_errors(&fix.apply(source)) <= before);
+    // Judging a fix lexes and parses `source` again, so skip that when no diagnostic has one.
+    if sound.iter().any(|d| !d.fixes().is_empty()) {
+        let before = syntax_errors(source);
+        for d in &mut sound {
+            d.retain_fixes(|fix| syntax_errors(&fix.apply(source)) <= before);
+        }
     }
     sound
 }

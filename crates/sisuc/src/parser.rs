@@ -9,6 +9,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Join, LetField, SemicolonPlace, Span};
 use crate::lexer::{Lexed, MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
+use crate::symbol::Symbol;
 
 /// What the parser makes of a lexed source.
 #[derive(Debug)]
@@ -125,14 +126,14 @@ struct Parser<'a> {
     comments: &'a [usize],
 }
 
-impl Parser<'_> {
-    fn peek(&self) -> &Token {
+impl<'a> Parser<'a> {
+    fn peek(&self) -> &'a Token {
         // `Eof` is last and never consumed, so `pos` stays in range.
         &self.tokens[self.pos]
     }
 
-    fn bump(&mut self) -> Token {
-        let token = self.peek().clone();
+    fn bump(&mut self) -> &'a Token {
+        let token = self.peek();
         if token.kind != TokenKind::Eof {
             self.pos += 1;
         }
@@ -144,7 +145,7 @@ impl Parser<'_> {
     }
 
     /// Consumes the next token if it is `kind`.
-    fn eat(&mut self, kind: &TokenKind) -> Option<Token> {
+    fn eat(&mut self, kind: &TokenKind) -> Option<&'a Token> {
         self.at(kind).then(|| self.bump())
     }
 
@@ -226,13 +227,13 @@ impl Parser<'_> {
         .into()
     }
 
-    fn expect(&mut self, kind: &TokenKind) -> Result<Token, Diagnostic> {
+    fn expect(&mut self, kind: &TokenKind) -> Result<&'a Token, Diagnostic> {
         self.eat(kind)
             .ok_or_else(|| self.expected(&kind.describe()))
     }
 
     fn ident(&mut self, what: &str) -> Result<Ident, Diagnostic> {
-        match self.peek().kind.clone() {
+        match self.peek().kind {
             TokenKind::Ident(name) => Ok(Ident {
                 name,
                 span: self.bump().span,
@@ -257,7 +258,7 @@ impl Parser<'_> {
     fn binding(&mut self) -> Result<Ident, Diagnostic> {
         if self.at(&TokenKind::Underscore) {
             return Ok(Ident {
-                name: "_".to_string(),
+                name: Symbol::intern("_"),
                 span: self.bump().span,
             });
         }
@@ -424,7 +425,7 @@ impl Parser<'_> {
         }
         Some(Broken {
             name: Ident {
-                name: name.clone(),
+                name: *name,
                 span: self.tokens[start + 1].span,
             },
             kind,
@@ -722,7 +723,7 @@ impl Parser<'_> {
                         }
                         TokenKind::Ident(name) => {
                             return Err(DiagnosticKind::MutParameter {
-                                name: name.clone(),
+                                name: name.to_string(),
                                 at: self.peek().span,
                             }
                             .into());
@@ -945,7 +946,7 @@ impl Parser<'_> {
         // Reported last, and only where the statement ends, so that the fix leaves a `let` that
         // parses: past a stray token, the block reports that token's own error.
         if let Some(keyword) = mutable
-            && name.name == "_"
+            && name.name.as_str() == "_"
             && (self.at(&TokenKind::Newline) || self.at(&TokenKind::RBrace))
         {
             return Err(DiagnosticKind::MutOnUnderscore {
@@ -2732,7 +2733,7 @@ mod tests {
         assert!(parsed.checkable);
         assert_eq!(parsed.diagnostics.len(), 3, "{:?}", parsed.diagnostics);
         let ident = |name: &str, start| Ident {
-            name: name.to_string(),
+            name: Symbol::intern(name),
             span: Span::new(start, start + 1),
         };
         assert_eq!(

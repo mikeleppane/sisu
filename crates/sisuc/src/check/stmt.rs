@@ -1,6 +1,6 @@
 //! Statements, blocks and scopes.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::array::optional_array;
 use super::expr::local;
@@ -9,6 +9,7 @@ use super::{
 };
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
+use crate::symbol::Symbol;
 use crate::tir::{self, ExprKind, Type};
 
 impl Checker {
@@ -16,7 +17,7 @@ impl Checker {
     /// there is none). Warns "unreachable code" on the first statement after a `never` one.
     /// Every statement is checked, also after one fails. `expected` is for the block's value.
     pub(super) fn block(&mut self, block: &ast::Block, expected: Option<&Type>) -> CheckedBlock {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(FxHashMap::default());
         self.scoped_block(block, expected)
     }
 
@@ -103,7 +104,7 @@ impl Checker {
                 };
                 // `let _ = e` binds nothing: the value is an expression statement, which
                 // codegen releases at once.
-                if name.name == "_" {
+                if name.name.as_str() == "_" {
                     return init.map(tir::Stmt::Expr).map_err(|_| unit());
                 }
                 // The initializer's type, which a failed one keeps only while it is still
@@ -416,8 +417,8 @@ impl Checker {
         block: &ast::Block,
         expected: Option<&Type>,
     ) -> (tir::LocalId, CheckedBlock) {
-        self.scopes.push(HashMap::new());
-        let bind = if name.name == "_" {
+        self.scopes.push(FxHashMap::default());
+        let bind = if name.name.as_str() == "_" {
             self.fresh(ty.unwrap_or(Type::Unit))
         } else {
             self.declare(name, ty, BindingKind::Unwrapped(keyword), None)
@@ -487,12 +488,12 @@ impl Checker {
     ) -> tir::LocalId {
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
-            name: Some(name.name.clone()),
+            name: Some(name.name.to_string()),
             // An `Error` local never reaches `tir`: the error behind it stops the program.
             ty: ty.clone().unwrap_or(Type::Unit),
             mutable: kind == BindingKind::Var,
         });
-        let shadows_mut = self.lookup(&name.name).is_some_and(|b| b.keyword.is_some());
+        let shadows_mut = self.lookup(name.name).is_some_and(|b| b.keyword.is_some());
         let scope = self
             .scopes
             .last_mut()
@@ -511,7 +512,7 @@ impl Checker {
         {
             self.diagnostics.push(
                 DiagnosticKind::AlreadyDeclared {
-                    name: name.name.clone(),
+                    name: name.name.to_string(),
                     at: name.span,
                     first: first.span,
                 }
@@ -526,8 +527,8 @@ impl Checker {
             };
         }
         // Nothing can reassign the binding it replaces from here on.
-        if let Some(old) = scope.insert(name.name.clone(), binding) {
-            self.never_reassigned(name.name.clone(), &old);
+        if let Some(old) = scope.insert(name.name, binding) {
+            self.never_reassigned(name.name, &old);
         }
         local
     }
@@ -545,23 +546,23 @@ impl Checker {
 
     /// Warns when `b`, which `name` can no longer reach, is a `let mut` that was never
     /// reassigned.
-    fn never_reassigned(&mut self, name: String, b: &Binding) {
+    fn never_reassigned(&mut self, name: Symbol, b: &Binding) {
         if let Some(keyword) = b.keyword
             && !b.reassigned
         {
             self.report(DiagnosticKind::NeverReassigned {
-                name,
+                name: name.to_string(),
                 at: b.span,
                 keyword,
             });
         }
     }
 
-    pub(super) fn lookup(&mut self, name: &str) -> Option<&mut Binding> {
+    pub(super) fn lookup(&mut self, name: Symbol) -> Option<&mut Binding> {
         self.scopes
             .iter_mut()
             .rev()
-            .find_map(|scope| scope.get_mut(name))
+            .find_map(|scope| scope.get_mut(&name))
     }
 }
 

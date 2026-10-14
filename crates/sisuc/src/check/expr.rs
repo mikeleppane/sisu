@@ -8,6 +8,7 @@ use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
 use crate::diagnostic::{
     CharArithmetic, Definition, Diagnostic, DiagnosticKind, Literal, Span, Unwrap, suggestion,
 };
+use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 
 impl Checker {
@@ -69,7 +70,7 @@ impl Checker {
             ExprKind::ArrayFill { value, len } => self.array_fill(e.span, value, len, expected),
             ExprKind::Index { base, index } => self.index(e.span, base, index),
             ExprKind::NoneLit => self.none(e.span, expected),
-            ExprKind::Name(name) => self.name(e.span, name),
+            ExprKind::Name(name) => self.name(e.span, *name),
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
             ExprKind::SelfValue => {
                 let Some(class) = self.self_class else {
@@ -146,7 +147,7 @@ impl Checker {
     }
 
     /// A read of `name`: a local, a constant, or an unknown name, which is reported.
-    fn name(&mut self, span: Span, name: &str) -> Checked {
+    fn name(&mut self, span: Span, name: Symbol) -> Checked {
         match self.lookup(name) {
             Some(Binding {
                 local,
@@ -947,11 +948,11 @@ impl Checker {
             self.stray(args);
             return Err(Poisoned::error());
         }
-        if callee.name == "print" {
+        if callee.name.as_str() == "print" {
             return self.print(span, args);
         }
         if let Some(to @ (Type::I64 | Type::U8 | Type::Char | Type::String)) =
-            built_in_type(&callee.name)
+            built_in_type(callee.name.as_str())
         {
             return self.convert(span, to, args);
         }
@@ -992,7 +993,7 @@ impl Checker {
                             .iter()
                             .any(|c| deleted.iter().any(|d| d.contains(c)));
                     self.report(DiagnosticKind::MethodAsFunction {
-                        name: callee.name.clone(),
+                        name: callee.name.to_string(),
                         at: callee.span,
                         receiver: first.value.span,
                         next,
@@ -1008,13 +1009,13 @@ impl Checker {
         let functions = self
             .function_ids
             .keys()
-            .map(String::as_str)
+            .map(|function| function.as_str())
             .chain(["print", "i64", "u8", "char", "string"])
             .map(|function| (function, Definition::Function));
         self.report(DiagnosticKind::FunctionNotFound {
-            name: callee.name.clone(),
+            name: callee.name.to_string(),
             at: callee.span,
-            suggestion: suggestion(&callee.name, functions.chain(self.class_names())),
+            suggestion: suggestion(callee.name.as_str(), functions.chain(self.class_names())),
         });
         // No `labels`: the name may have meant a class, whose constructor takes them.
         self.stray(rest);
@@ -1136,17 +1137,17 @@ impl Checker {
     /// is reported; every argument is still checked for its own.
     fn construct(&mut self, span: Span, class: tir::ClassId, args: &[ast::Arg]) -> Checked {
         let info = &self.classes[class.0];
-        let name = info.name.name.clone();
-        let fields: Vec<(String, Option<Type>)> = info
+        let name = info.name.name.as_str();
+        let fields: Vec<(Symbol, Option<Type>)> = info
             .fields
             .iter()
-            .map(|f| (f.name.name.clone(), f.ty.clone()))
+            .map(|f| (f.name.name, f.ty.clone()))
             .collect();
-        let names: Vec<_> = fields.iter().map(|(f, _)| f.clone()).collect();
+        let names: Vec<_> = fields.iter().map(|(f, _)| *f).collect();
         let mut failed = false;
         let mut checked = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
-            if !failed && let Some(d) = misplaced(&name, &names, i, arg) {
+            if !failed && let Some(d) = misplaced(name, &names, i, arg) {
                 self.diagnostics.push(d);
                 failed = true;
             }
@@ -1160,8 +1161,8 @@ impl Checker {
         }
         if !failed && let Some(missing) = names.get(args.len()) {
             self.report(DiagnosticKind::MissingField {
-                field: missing.clone(),
-                fields: names,
+                field: missing.to_string(),
+                fields: names.iter().map(ToString::to_string).collect(),
                 at: span,
             });
             failed = true;
@@ -1212,7 +1213,7 @@ impl Checker {
     ) -> Option<(tir::ClassId, usize)> {
         let ty = base?;
         let method = |owner, certain: bool| DiagnosticKind::MethodNotField {
-            name: name.name.clone(),
+            name: name.name.to_string(),
             owner,
             at: name.span,
             call: (!target).then_some(certain),
@@ -1236,7 +1237,9 @@ impl Checker {
                     }
                 }
             }
-            Type::Array(_) if name.name == "len" => method(self.type_name(ty), true).into(),
+            Type::Array(_) if name.name.as_str() == "len" => {
+                method(self.type_name(ty), true).into()
+            }
             Type::Optional(_) => may_be_none(receiver, name, !target && !self.in_target),
             _ => no_member(Definition::Field, self.type_name(ty), name, []),
         };
@@ -1266,13 +1269,13 @@ impl Checker {
                 }
                 if info.fields.iter().any(|f| f.name.name == name.name) {
                     DiagnosticKind::FieldNotMethod {
-                        name: name.name.clone(),
+                        name: name.name.to_string(),
                         owner: self.type_name(ty),
                         at: name.span,
                     }
                     .into()
                 } else {
-                    let methods = info.methods.keys().map(String::as_str);
+                    let methods = info.methods.keys().map(|method| method.as_str());
                     no_member(Definition::Method, self.type_name(ty), name, methods)
                 }
             }
@@ -1470,7 +1473,7 @@ fn may_be_none(receiver: &ast::Expr, name: &ast::Ident, fix: bool) -> Diagnostic
 /// A name, `self`, or a chain of `.` and `?.` fields over one, as written.
 pub(super) fn path(e: &ast::Expr) -> Option<String> {
     match &e.kind {
-        ExprKind::Name(name) => Some(name.clone()),
+        ExprKind::Name(name) => Some(name.to_string()),
         ExprKind::SelfValue => Some("self".to_owned()),
         ExprKind::Field { base, name, safe } => {
             Some(format!("{}{}{}", path(base)?, ast::dot(*safe), name.name))
@@ -1504,15 +1507,18 @@ pub(super) fn no_member<'a>(
     DiagnosticKind::NoMember {
         owner,
         kind,
-        name: name.name.clone(),
+        name: name.name.to_string(),
         at: name.span,
-        suggestion: suggestion(&name.name, members.into_iter().map(|member| (member, kind))),
+        suggestion: suggestion(
+            name.name.as_str(),
+            members.into_iter().map(|member| (member, kind)),
+        ),
     }
     .into()
 }
 
 /// The mistake in argument `i` of a constructor of `class`, whose fields are `fields`, if any.
-fn misplaced(class: &str, fields: &[String], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
+fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
     let Some(field) = fields.get(i) else {
         let start = arg.label.as_ref().map_or(arg.value.span, |l| l.span).start;
         return Some(
@@ -1527,7 +1533,7 @@ fn misplaced(class: &str, fields: &[String], i: usize, arg: &ast::Arg) -> Option
     let Some(label) = &arg.label else {
         return Some(
             DiagnosticKind::ArgumentNeedsLabel {
-                field: field.clone(),
+                field: field.to_string(),
                 at: arg.value.span,
             }
             .into(),
@@ -1538,9 +1544,9 @@ fn misplaced(class: &str, fields: &[String], i: usize, arg: &ast::Arg) -> Option
     } else if fields.contains(&label.name) {
         Some(
             DiagnosticKind::FieldOutOfOrder {
-                field: field.clone(),
-                found: label.name.clone(),
-                fields: fields.to_vec(),
+                field: field.to_string(),
+                found: label.name.to_string(),
+                fields: fields.iter().map(ToString::to_string).collect(),
                 at: label.span,
             }
             .into(),
@@ -1550,7 +1556,7 @@ fn misplaced(class: &str, fields: &[String], i: usize, arg: &ast::Arg) -> Option
             Definition::Field,
             class.to_string(),
             label,
-            fields.iter().map(String::as_str),
+            fields.iter().map(|field| field.as_str()),
         ))
     }
 }

@@ -1,11 +1,12 @@
 //! Top-level constants: the gate on what a value may hold, and folding it as run time would.
 //! Each use of a constant lowers to its literal, so `tir` and codegen never see a constant.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::{Checked, Checker, Declared, Poisoned, type_of};
 use crate::ast::{self, ExprKind};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Panic, Span};
+use crate::symbol::Symbol;
 use crate::tir::{self, BinaryOp, CompareOp, Type, UnaryOp};
 
 /// A folded constant's value; the variant fixes the type.
@@ -164,7 +165,7 @@ impl Checker {
         let Ok(checked) = checked else {
             return (ty, None);
         };
-        match evaluate(&checked, &mut HashMap::new()) {
+        match evaluate(&checked, &mut FxHashMap::default()) {
             Ok(value) => (ty, Some(value)),
             Err(d) => {
                 self.diagnostics.push(d);
@@ -201,8 +202,8 @@ impl Checker {
                     }
                 };
                 self.report(DiagnosticKind::ConstantOrder {
-                    name: name.clone(),
-                    user: user.name.clone(),
+                    name: name.to_string(),
+                    user: user.name.to_string(),
                     at: e.span,
                     declared,
                     itself: *name == user.name,
@@ -218,8 +219,8 @@ impl Checker {
 
     /// A use of `name` at `span` if it names a constant: its literal, or, if folding failed,
     /// `Poisoned` of its `ty`, with no diagnostic.
-    pub(super) fn constant_use(&self, name: &str, span: Span) -> Option<Checked> {
-        Some(match self.constants.get(name)? {
+    pub(super) fn constant_use(&self, name: Symbol, span: Span) -> Option<Checked> {
+        Some(match self.constants.get(&name)? {
             Declared::Known(ConstInfo {
                 value: Some(value), ..
             }) => Ok(value.lower(span)),
@@ -232,7 +233,7 @@ impl Checker {
 /// Runs a block of a `string` chain: its `let`s, then its comparison.
 fn evaluate_block(
     block: &tir::Block,
-    locals: &mut HashMap<tir::LocalId, Constant>,
+    locals: &mut FxHashMap<tir::LocalId, Constant>,
 ) -> Result<Constant, Diagnostic> {
     for stmt in &block.stmts {
         let tir::Stmt::Let { local, init } = stmt else {
@@ -253,7 +254,7 @@ fn evaluate_block(
 /// `locals` holds the values of the locals that a `string` chain binds.
 fn evaluate(
     e: &tir::Expr,
-    locals: &mut HashMap<tir::LocalId, Constant>,
+    locals: &mut FxHashMap<tir::LocalId, Constant>,
 ) -> Result<Constant, Diagnostic> {
     let panic =
         |panic| -> Diagnostic { DiagnosticKind::ConstantPanics { panic, at: e.span }.into() };
