@@ -1227,6 +1227,19 @@ fn o2_calls_marker_rejects_a_caller_with_parameters() {
     );
 }
 
+/// `down(0)` folds to a constant, so a count of 0 holds and proves nothing; it is rejected.
+#[test]
+fn o2_calls_marker_rejects_a_count_of_zero() {
+    let dir = o2_case(
+        "o2_calls_marker_rejects_a_count_of_zero",
+        "main down 0",
+        "fn main() {\n    print(down(0))\n}\n",
+        "0\n",
+    );
+    let message = panic_message(|| support::run(&dir.join("a.sisu"), false));
+    assert!(message.contains("proves no call boundary"), "{message}");
+}
+
 /// A case has one argument list, so a second `// args:` line is a mistake.
 #[test]
 #[should_panic(expected = "more than one `// args:` line")]

@@ -389,7 +389,8 @@ fn case_dir(source: &Path) -> PathBuf {
 
 /// The marker a `tests/run` case puts on its own line to prove a call boundary: with
 /// `// o2-calls: <caller> <callee> <count>`, the `-O2` IR of `<caller>` holds exactly `<count>`
-/// calls to `<callee>`, so the inliner kept the calls the case relies on. Every function but
+/// calls to `<callee>`, so the inliner kept the calls the case relies on. A count of 0 is
+/// rejected, because it holds when every call is gone. Every function but
 /// the C `main` is internal, so `-O2` would inline a caller with one call site and the caller
 /// would vanish from the IR. The check therefore builds once per distinct caller, with
 /// `SISU_KEEP_FUNCTIONS` set to that caller alone, which marks it `noinline` for
@@ -466,6 +467,13 @@ fn o2_calls(path: &Path) {
                 path.display()
             )
         });
+        // A count of 0 holds when the optimizer removed every call, so it proves no call boundary.
+        assert!(
+            count > 0,
+            "{}: `{O2_CALLS} {outer} {callee} 0` proves no call boundary; change the case so \
+             -O2 keeps a call, and count it",
+            path.display()
+        );
         if !built.iter().any(|(caller, _)| *caller == outer) {
             built.push((outer, o2_ir(path, outer)));
         }
