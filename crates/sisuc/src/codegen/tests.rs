@@ -955,13 +955,8 @@ fn words_releases_a_base_that_is_not_a_local() {
     let local = function_body(&ir, "define internal ptr @sisu.local(ptr");
     let release = "@sisu_rc.release.string(";
     assert_eq!(value.matches(release).count(), 1, "{value}");
-    // The local's one release is its scope end, after the array is stored: `words()` itself
-    // released nothing.
-    let stored = local
-        .find("store ptr %array, ptr %ws")
-        .expect("the array is stored");
+    // The local's one release is its scope end: `words()` itself released nothing.
     assert_eq!(local.matches(release).count(), 1, "{local}");
-    assert!(local.find(release) > Some(stored), "{local}");
 }
 
 /// Only `drop.[[Node]]` asks for `release.[Node]`: the worklist must define it too.

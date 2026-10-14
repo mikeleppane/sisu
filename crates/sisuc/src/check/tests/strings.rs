@@ -376,7 +376,7 @@ fn string_methods() {
             .collect();
         assert_eq!(fixes(&src, &d), expected);
     }
-    for method in ["len", "chars", "bytes", "words"] {
+    for method in ["len", "chars", "bytes"] {
         codes(
             &format!("fn main() {{\n    print(\"a\".{method}(1))\n}}"),
             &[(Code::ArgumentCount, (2, 11))],

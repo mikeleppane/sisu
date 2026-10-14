@@ -410,9 +410,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (string, borrowed) = self.borrow_pointer(base);
         let i64_type = self.context.i64_type();
         let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
-        let count = self
-            .call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01)
-            .into_int_value();
+        let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01);
         let array = self.alloc_array(&Type::String, count, None);
         // `count_loop` gives its body only the index, so the offset where the last word ended,
         // and the start of the word just found, live in slots.
@@ -426,9 +424,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.load(i64_type.into(), from).into(),
                 start.into(),
             ];
-            let end = self
-                .call_word_function("sisu_word_next", &args, 0b11)
-                .into_int_value();
+            let end = self.call_word_function("sisu_word_next", &args, 0b11);
             let first = self.load(i64_type.into(), start).into_int_value();
             let word_len = self
                 .builder
@@ -446,15 +442,15 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// A call of the runtime's `name`, which returns an `i64`: `sisu_words_count(bytes, len)`
-    /// or `sisu_word_next(bytes, len, from, start)`. Declared on first use, `nounwind` and with
-    /// the `memory` effects `memory`: it reads the memory behind its arguments, and the second
-    /// also writes `start`.
+    /// or `sisu_word_next(bytes, len, from, start)`. Declared on first use, `nounwind`, with the
+    /// `memory` attribute value `memory`: the first only reads the memory behind its arguments,
+    /// and the second also writes `start`.
     fn call_word_function(
         &self,
         name: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
         memory: u64,
-    ) -> BasicValueEnum<'ctx> {
+    ) -> IntValue<'ctx> {
         let function = self.module.get_function(name).unwrap_or_else(|| {
             let (ptr_type, i64_type) = (
                 self.context.ptr_type(AddressSpace::default()).into(),
@@ -478,6 +474,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .try_as_basic_value()
             .basic()
             .expect("a `sisu_word*` function should return an `i64`, as the runtime declares it")
+            .into_int_value()
     }
 
     /// `FromChars`: sizes the string by `sisu_utf8_len`, allocates it, and has

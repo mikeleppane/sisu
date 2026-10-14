@@ -510,7 +510,7 @@ mod tests {
         }
     }
 
-    /// With no word left, `sisu_word_next` gives the end of the text.
+    /// With no word left, `sisu_word_next` gives the end of the text as both start and end.
     #[test]
     fn word_next_without_a_word_is_the_end() {
         let text = "ab  ";
@@ -518,7 +518,7 @@ mod tests {
         // SAFETY: `text` is valid UTF-8, 2 is a character boundary, and `start` is writable.
         #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
         let end = unsafe { sisu_word_next(text.as_ptr(), text.len(), 2, &raw mut start) };
-        assert_eq!(end, text.len());
+        assert_eq!((start, end), (text.len(), text.len()));
     }
 
     fn compare(a: &[u8], b: &[u8]) -> i64 {
