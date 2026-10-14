@@ -764,6 +764,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Len(base) => self.len(base),
             ExprKind::Chars(base) => return Some(self.chars(base).into()),
             ExprKind::Bytes(base) => return Some(self.bytes(base).into()),
+            ExprKind::Words(base) => return Some(self.words(base).into()),
             ExprKind::FromChars(base) => return Some(self.string_from_chars(base).into()),
             ExprKind::Sum(base) => self.sum(base, e.span),
             ExprKind::Contains { base, value } => self.contains(base, value),

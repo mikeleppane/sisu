@@ -833,6 +833,29 @@ fn attributes<'a>(ir: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"))
 }
 
+/// `sisu_words_count` only reads the string it is given; `sisu_word_next` also writes the
+/// start slot. Neither unwinds, and neither is declared when no `words()` is called.
+#[test]
+fn words_declarations_carry_memory_effects() {
+    let context = Context::create();
+    let ir = compiled(&context, "fn main() {\n    let a = \"a b\".words()\n}")
+        .print_to_string()
+        .to_string();
+    for (name, memory) in [
+        ("sisu_words_count", "memory(argmem: read)"),
+        ("sisu_word_next", "memory(argmem: readwrite)"),
+    ] {
+        let attributes = attributes(&ir, name);
+        for wanted in ["nounwind", memory] {
+            assert!(attributes.contains(wanted), "{name}: {attributes}");
+        }
+    }
+    let plain = compiled(&context, "fn main() {}")
+        .print_to_string()
+        .to_string();
+    assert!(!plain.contains("sisu_word"), "{plain}");
+}
+
 /// `sisu_read_line` never unwinds, and carries no `memory` attribute: the call overwrites the
 /// line an earlier call returned, so LLVM must not move a read of those bytes past it. It may
 /// exit (a failed read panics), so it is not `willreturn` either.
@@ -914,6 +937,31 @@ fn len_and_field_of_a_value_release_the_base() {
         let body = function_body(&ir, header);
         assert!(body.contains(release), "no {release:?} in\n{body}");
     }
+}
+
+/// `words()` of a string that is not a local releases it, once the words are copied out; of a
+/// local it leaves the string to its owner.
+#[test]
+fn words_releases_a_base_that_is_not_a_local() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn make() -> string { \"a \" + \"b\" }\nfn value() -> [string] { make().words() }\n\
+         fn local(s: string) -> string {\n    let ws = s.words()\n    s\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let value = function_body(&ir, "define internal ptr @sisu.value()");
+    let local = function_body(&ir, "define internal ptr @sisu.local(ptr");
+    let release = "@sisu_rc.release.string(";
+    assert_eq!(value.matches(release).count(), 1, "{value}");
+    // The local's one release is its scope end, after the array is stored: `words()` itself
+    // released nothing.
+    let stored = local
+        .find("store ptr %array, ptr %ws")
+        .expect("the array is stored");
+    assert_eq!(local.matches(release).count(), 1, "{local}");
+    assert!(local.find(release) > Some(stored), "{local}");
 }
 
 /// Only `drop.[[Node]]` asks for `release.[Node]`: the worklist must define it too.

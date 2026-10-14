@@ -242,6 +242,57 @@ pub unsafe extern "C" fn sisu_utf8_encode(chars: *const u32, n: usize, out: *mut
     }
 }
 
+/// How many words the `len` bytes at `bytes` hold, which is the length of the `[string]` that
+/// `words()` returns. A word is a run of characters that are not `White_Space`. This validates
+/// the whole buffer once; `sisu_word_next` then trusts it.
+///
+/// # Safety
+///
+/// `bytes` is not null and `len` bytes at it are readable. They are valid UTF-8; if they are
+/// not, the program aborts.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_words_count(bytes: *const u8, len: usize) -> usize {
+    // SAFETY: the caller promises `len` readable bytes at `bytes`.
+    unsafe { utf8(bytes, len) }.split_whitespace().count()
+}
+
+/// The first word at or after byte `from` of the `len` bytes at `bytes`: writes its start to
+/// `start` and returns its end. When no word is left, both are `len`. It decodes only from
+/// `from` to the end of the word, so `words()` does linear work in all.
+///
+/// # Safety
+///
+/// `bytes` is not null and `len` bytes at it are readable and valid UTF-8, which generated
+/// code knows by calling `sisu_words_count` on them first; this does not check. `from` is at
+/// most `len` and on a character boundary, as 0 and the end of an earlier word are. `start` is
+/// writable.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_word_next(
+    bytes: *const u8,
+    len: usize,
+    from: usize,
+    start: *mut usize,
+) -> usize {
+    // SAFETY: the caller promises `len` readable bytes at `bytes`, valid UTF-8 as
+    // `sisu_words_count` checked.
+    let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len)) };
+    let rest = &text[from..];
+    let skipped = rest.len() - rest.trim_start().len();
+    let word = &rest[skipped..];
+    let word_len = word.find(char::is_whitespace).unwrap_or(word.len());
+    // SAFETY: the caller promises `start` is writable.
+    unsafe { start.write(from + skipped) };
+    from + skipped + word_len
+}
+
 /// Prints the `len` bytes at `bytes` and a newline to standard output. Sisu's `print` calls
 /// this for a `string` argument. It writes the bytes as they are, zero bytes included.
 ///
@@ -310,7 +361,8 @@ mod tests {
 
     use super::{
         repair, sisu_str_compare, sisu_utf8_count, sisu_utf8_decode, sisu_utf8_encode,
-        sisu_utf8_len, sisu_write_bool, sisu_write_char, sisu_write_int,
+        sisu_utf8_len, sisu_word_next, sisu_words_count, sisu_write_bool, sisu_write_char,
+        sisu_write_int,
     };
 
     /// `i64::MIN` fills the 20 bytes that an `i64` may take; the others take fewer.
@@ -417,6 +469,56 @@ mod tests {
             )
         };
         assert_eq!((count, len), (0, 0));
+    }
+
+    /// The words of `text`, found as generated code finds them: counted once, then one
+    /// `sisu_word_next` call each, from where the last word ended.
+    fn words(text: &str) -> Vec<&str> {
+        let (bytes, len) = (text.as_ptr(), text.len());
+        // SAFETY: `text` is valid UTF-8 and readable for its length.
+        #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+        let count = unsafe { sisu_words_count(bytes, len) };
+        let (mut found, mut from) = (Vec::new(), 0);
+        for _ in 0..count {
+            let mut start = 0;
+            // SAFETY: `text` is valid UTF-8, `from` is 0 or the end of a word, which is a
+            // character boundary, and `start` is writable.
+            #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+            let end = unsafe { sisu_word_next(bytes, len, from, &raw mut start) };
+            found.push(&text[start..end]);
+            from = end;
+        }
+        found
+    }
+
+    /// Whitespace is the Unicode `White_Space` property: a no-break space and an ideographic
+    /// space split words, and the replacement character does not.
+    #[test]
+    fn words_split_on_white_space() {
+        let rows: [(&str, &[&str]); 8] = [
+            ("", &[]),
+            ("  \t\n", &[]),
+            (" a  b ", &["a", "b"]),
+            ("a\tb\nc", &["a", "b", "c"]),
+            ("a\u{A0}b", &["a", "b"]),
+            ("a\u{3000}b", &["a", "b"]),
+            ("\u{FFFD}a b\u{FFFD}", &["\u{FFFD}a", "b\u{FFFD}"]),
+            ("häst😀", &["häst😀"]),
+        ];
+        for (text, want) in rows {
+            assert_eq!(words(text), want, "{text:?}");
+        }
+    }
+
+    /// With no word left, `sisu_word_next` gives the end of the text.
+    #[test]
+    fn word_next_without_a_word_is_the_end() {
+        let text = "ab  ";
+        let mut start = 0;
+        // SAFETY: `text` is valid UTF-8, 2 is a character boundary, and `start` is writable.
+        #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+        let end = unsafe { sisu_word_next(text.as_ptr(), text.len(), 2, &raw mut start) };
+        assert_eq!(end, text.len());
     }
 
     fn compare(a: &[u8], b: &[u8]) -> i64 {

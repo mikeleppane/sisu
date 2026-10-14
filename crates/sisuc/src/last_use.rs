@@ -128,6 +128,7 @@ impl Walk {
             | ExprKind::Len(operand)
             | ExprKind::Chars(operand)
             | ExprKind::Bytes(operand)
+            | ExprKind::Words(operand)
             | ExprKind::FromChars(operand)
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)

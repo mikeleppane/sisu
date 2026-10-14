@@ -1,5 +1,6 @@
 //! `string`: interpolation, `+` that joins two, a chain of comparisons over them, `len()`,
-//! `chars()` and `bytes()`, and the guess to interpolate a value that `+` or `string(x)` meets.
+//! `chars()`, `bytes()` and `words()`, and the guess to interpolate a value that `+` or
+//! `string(x)` meets.
 //! Conversions: `i64(x)`, `u8(x)` and `char(x)` between the scalar types, and `string(cs)` from
 //! a `[char]`.
 
@@ -176,7 +177,7 @@ impl Checker {
         block_expr(lets, Some(rest), Type::Bool, span)
     }
 
-    /// `receiver.method(args)` on a `string`: `len()`, `chars()` and `bytes()`.
+    /// `receiver.method(args)` on a `string`: `len()`, `chars()`, `bytes()` and `words()`.
     pub(super) fn string_method(
         &mut self,
         span: Span,
@@ -188,9 +189,15 @@ impl Checker {
             "len" => (Type::I64, tir::ExprKind::Len),
             "chars" => (Type::Array(Box::new(Type::Char)), tir::ExprKind::Chars),
             "bytes" => (Type::Array(Box::new(Type::U8)), tir::ExprKind::Bytes),
+            "words" => (Type::Array(Box::new(Type::String)), tir::ExprKind::Words),
             _ => {
                 let owner = self.type_name(&Type::String);
-                let d = no_member(Definition::Method, owner, method, ["len", "chars", "bytes"]);
+                let d = no_member(
+                    Definition::Method,
+                    owner,
+                    method,
+                    ["len", "chars", "bytes", "words"],
+                );
                 return self.rejected(d, args);
             }
         };

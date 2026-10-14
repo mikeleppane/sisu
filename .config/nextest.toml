@@ -49,6 +49,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = "binary(programs) & (test(stdin_larger_than_a_pipe) | test(program_exiting_before_its_input_ends))"
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Each word once rescanned the line from its start, so a long line was quadratic and this test
+# hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'binary(programs) & test(words_is_linear)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 [[profile.default.scripts]]
 filter = "package(sisuc) & kind(test)"
 setup = "build-runtime"

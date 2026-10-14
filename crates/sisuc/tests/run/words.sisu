@@ -1,0 +1,32 @@
+// `words()`: the runs of characters between white space, each a new string. A no-break space
+// separates words; an empty or blank string has none; `?.` gives an optional array. The last
+// string of `main` is built at run time, so Valgrind checks the receiver's release too.
+fn show(s: string) {
+    let ws = s.words()
+    print("{ws.len()}")
+    for w in ws {
+        print("[{w}]")
+    }
+}
+
+fn show_optional(s: string?) {
+    if let ws = s?.words() {
+        print("{ws.len()}")
+        for w in ws {
+            print("[{w}]")
+        }
+    } else {
+        print("none")
+    }
+}
+
+fn main() {
+    show("  one two\tthree  ")     // 3, [one], [two], [three]
+    show("")                       // 0
+    show("a\u{A0}b")               // 2, [a], [b]
+    show(" x" + "y ")              // 1, [xy]
+    show_optional("p " + "q")      // 2, [p], [q]
+    show_optional(None)            // none
+    let n = ("a " + "b").words().len()
+    print(n)                       // 2
+}

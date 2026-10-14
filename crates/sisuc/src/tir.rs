@@ -192,6 +192,9 @@ pub(crate) enum ExprKind {
     Chars(Box<Expr>),
     /// `base.bytes()`: the UTF-8 bytes of the string `base`, as a new `[u8]`.
     Bytes(Box<Expr>),
+    /// `base.words()`: the runs of non-white-space characters of the string `base`, as a new
+    /// `[string]`.
+    Words(Box<Expr>),
     /// `string(base)`: a new string that encodes the `[char]` `base`.
     FromChars(Box<Expr>),
     /// `base.sum()`, on an `[i64]`.
@@ -285,6 +288,7 @@ impl Expr {
             | ExprKind::Len(operand)
             | ExprKind::Chars(operand)
             | ExprKind::Bytes(operand)
+            | ExprKind::Words(operand)
             | ExprKind::FromChars(operand)
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
@@ -477,6 +481,7 @@ impl Printer<'_> {
             ExprKind::Len(base) => self.unary(f, "len", base),
             ExprKind::Chars(base) => self.unary(f, "chars", base),
             ExprKind::Bytes(base) => self.unary(f, "bytes", base),
+            ExprKind::Words(base) => self.unary(f, "words", base),
             ExprKind::FromChars(base) => self.unary(f, "string", base),
             ExprKind::Sum(base) => self.unary(f, "sum", base),
             ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
@@ -1002,6 +1007,27 @@ mod tests {
     }
 
     #[test]
+    fn prints_words() {
+        // fn f(s: string) { s.words() }
+        let s = Box::new(expr(ExprKind::Local(LocalId(0)), Type::String));
+        let words = expr(ExprKind::Words(s), Type::Array(Box::new(Type::String)));
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0)],
+                ret: Type::Unit,
+                locals: vec![param("s", Type::String)],
+                body: block(vec![Stmt::Expr(words)]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            "(fn f ((s#0 string)) unit (block (words s#0)))"
+        );
+    }
+
+    #[test]
     fn prints_strings() {
         // fn f(s: string) { print("a\"\n" + s) }
         let lit = expr(ExprKind::Str("a\"\n".into()), Type::String);
@@ -1233,6 +1259,15 @@ mod tests {
         let panic = |message| expr(ExprKind::Panic(Box::new(message)), Type::Never);
         assert!(!panic(expr(ExprKind::Str("x".into()), Type::String)).exits());
         assert!(panic(expr(ExprKind::Return(None), Type::Never)).exits());
+        // A `return` in the string that `words()` splits.
+        let words = |base| {
+            expr(
+                ExprKind::Words(Box::new(base)),
+                Type::Array(Box::new(Type::String)),
+            )
+        };
+        assert!(words(expr(ExprKind::Return(None), Type::Never)).exits());
+        assert!(!words(local(0)).exits());
         // An `if`, a comparison chain and a print with no jump in them.
         assert!(!if_stmt.exits());
         assert!(!block_expr(vec![Stmt::Expr(if_stmt)], Some(int(1))).exits());

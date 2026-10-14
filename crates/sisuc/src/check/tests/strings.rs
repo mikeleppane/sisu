@@ -358,7 +358,7 @@ fn string_is() {
     }
 }
 
-/// `len()`, `chars()` and `bytes()` are the methods; a near miss offers one of them.
+/// `len()`, `chars()`, `bytes()` and `words()` are the methods; a near miss offers one of them.
 #[test]
 fn string_methods() {
     for (method, fix) in [
@@ -366,6 +366,7 @@ fn string_methods() {
         ("lem", Some("len")),
         ("char", Some("chars")),
         ("byte", Some("bytes")),
+        ("word", Some("words")),
     ] {
         let src = format!("fn main() {{\n    \"a\".{method}()\n}}");
         let d = diagnostic(&src, Code::NoMember, (2, 9, method), &[]);
@@ -375,7 +376,7 @@ fn string_methods() {
             .collect();
         assert_eq!(fixes(&src, &d), expected);
     }
-    for method in ["len", "chars", "bytes"] {
+    for method in ["len", "chars", "bytes", "words"] {
         codes(
             &format!("fn main() {{\n    print(\"a\".{method}(1))\n}}"),
             &[(Code::ArgumentCount, (2, 11))],
@@ -395,6 +396,33 @@ fn chars_and_bytes_are_arrays() {
     codes(
         "fn f(s: string) { print(s.chars().sum()) }\nfn main() {}",
         &[(Code::SumNeedsI64, (1, 35))],
+    );
+}
+
+/// `words()` is a `[string]`, so the array methods apply to it.
+#[test]
+fn words_lowers() {
+    contains(
+        "fn f(s: string) {\n    let ws: [string] = s.words()\n    print(s.words().len())\n}\nfn main() {}",
+        &["(words s#0)", "(len (words s#0))"],
+    );
+}
+
+/// `s.words(1)` is a wrong argument count.
+#[test]
+fn words_takes_no_arguments() {
+    codes(
+        "fn f(s: string) { print(s.words(1).len()) }\nfn main() {}",
+        &[(Code::ArgumentCount, (1, 25))],
+    );
+}
+
+/// `?.` gives an optional array.
+#[test]
+fn safe_words() {
+    contains(
+        "fn f(s: string?) {\n    let ws: [string]? = s?.words()\n}\nfn main() {}",
+        &["(words "],
     );
 }
 
