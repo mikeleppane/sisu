@@ -82,7 +82,7 @@ impl Checker {
         };
         let message = self.message(&arg.value);
         // A message that failed is the failure of this rule, so the call is `Error`.
-        let failed = labeled || !matches!(type_of(&message), Some(Type::String));
+        let failed = labeled || message.is_err();
         let kind = message
             .ok()
             .filter(|_| !labeled)

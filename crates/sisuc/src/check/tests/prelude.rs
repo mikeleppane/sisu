@@ -99,6 +99,10 @@ fn panic_with_a_broken_message_is_an_error() {
             "let x = panic(missing)",
             &[(Code::BindingNotFound, (3, 19))][..],
         ),
+        (
+            "let x = panic(\"{missing}\")",
+            &[(Code::BindingNotFound, (3, 21))],
+        ),
         ("let x = panic(panic(\"x\"))", &[(Code::NoValue, (3, 19))]),
         ("let x = panic(1)", &[(Code::Mismatch, (3, 19))]),
         ("g(panic(1))", &[(Code::Mismatch, (3, 13))]),
