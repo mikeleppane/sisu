@@ -161,14 +161,27 @@ fn main_with_params() {
     );
 }
 
+/// `main` takes no parameters or one `[string]` of any name, and returns no value. A type that
+/// does not resolve is reported once, as unknown, and not again as a wrong signature.
 #[test]
-fn main_with_return_type() {
-    diagnostic(
-        "fn main() -> i64 { 0 }",
-        Code::MainSignature,
-        (1, 4, "main"),
-        &[],
-    );
+fn main_signatures() {
+    let signature = (Code::MainSignature, (1, 4));
+    for (src, expected) in [
+        ("fn main() {}", vec![]),
+        ("fn main(args: [string]) {}", vec![]),
+        ("fn main(xs: [string]) {}", vec![]),
+        ("fn main(argc: i64, argv: [string]) {}", vec![signature]),
+        ("fn main() -> i64 { 0 }", vec![signature]),
+        ("fn main(args: [i64]) {}", vec![signature]),
+        ("fn main(args: [string]?) {}", vec![signature]),
+        (
+            "fn main(args: [Bogus]) {}",
+            vec![(Code::UnknownType, (1, 16))],
+        ),
+        ("fn main() -> Bogus {}", vec![(Code::UnknownType, (1, 14))]),
+    ] {
+        codes(src, &expected);
+    }
 }
 
 #[test]

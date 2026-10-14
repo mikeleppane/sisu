@@ -81,6 +81,14 @@ leave the `.in`, `.out` and `.err` files of these directories alone, so a
 that is large or generated, such as a line longer than the runtime's input
 buffer, goes in a `programs.rs` test instead.
 
+A `run/` or `run-fail/` case that takes arguments gives them in a marker line,
+`// args: <arg> <arg> ...`, at the start of a line. Every run of the case gets
+them, as it gets the `.in` file. The harness splits the line on ASCII spaces
+and drops empty pieces, with no quoting, so `// args:` alone gives none, as
+no marker does. A case has one such line at most; a second fails the case. An
+argument that holds a space, or that is not valid UTF-8, goes in a
+`programs.rs` test instead, which can pass any bytes.
+
 A `run/` case that writes to standard error on purpose, with `eprint`, has a
 `<name>.err` beside it. The plain, `-O2` and `--rc-checks` runs must all write
 exactly that to stderr. Without the file, stderr must stay empty. The Valgrind
@@ -103,7 +111,8 @@ calls to `<callee>` in the body of `<caller>` after `-O2`. It fails with "no
 function named" if `<caller>` or `<callee>` does not exist, and with
 "takes parameters" if `<caller>` has any: kept as a function of its own, such
 a caller could hold a call that its real call sites decide away, so mark a
-caller without parameters, such as `main`. The check measures the marked caller
+caller without parameters, such as `main`. `main(args)` is the exception:
+only the C `main` calls it, with arguments known at run time. The check measures the marked caller
 as a standalone function. In a real build the caller is inlined, and a call to a
 callee that LLVM infers as `memory(none)` or `readonly` can then be merged with an
 identical call at the call site. So mark calls to callees that write memory, as

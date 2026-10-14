@@ -1,6 +1,6 @@
 //! Helpers shared by the end-to-end test binaries.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -33,15 +33,21 @@ pub(crate) fn compile(dir: &Path, name: &str, exe: &Path, flags: &[&str]) {
     );
 }
 
-/// What a case's programs run with: its standard input.
+/// The marker line that gives a case's arguments: `// args: <arg> <arg> ...`.
+const ARGS: &str = "// args:";
+
+/// What a case's programs run with: its standard input and its arguments.
 #[derive(Default)]
 pub(crate) struct Invocation {
     stdin: Vec<u8>,
+    args: Vec<OsString>,
 }
 
 impl Invocation {
     /// The invocation of the case `path`: its standard input is `<name>.in`, or empty when the
-    /// case has none.
+    /// case has none. Its arguments are those of its `ARGS` line, split on ASCII spaces with
+    /// empty pieces dropped, so an argument cannot hold a space; none without the line. A case
+    /// has one such line at most.
     pub(crate) fn of(path: &Path) -> Invocation {
         let in_path = path.with_extension("in");
         let stdin = match fs::read(&in_path) {
@@ -49,16 +55,30 @@ impl Invocation {
             Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
             Err(error) => panic!("{}: {error}", in_path.display()),
         };
-        Invocation::new(stdin)
+        let source = fs::read_to_string(path).expect("reads the case");
+        let mut markers = source.lines().filter_map(|line| line.strip_prefix(ARGS));
+        let args = markers.next().map_or_else(Vec::new, |marker| {
+            marker
+                .split(' ')
+                .filter(|arg| !arg.is_empty())
+                .map(OsString::from)
+                .collect()
+        });
+        assert!(
+            markers.next().is_none(),
+            "{}: more than one `{ARGS}` line",
+            path.display()
+        );
+        Invocation::new(stdin, args)
     }
 
-    /// An invocation with `stdin` as its standard input.
-    pub(crate) fn new(stdin: Vec<u8>) -> Invocation {
-        Invocation { stdin }
+    /// An invocation with `stdin` as its standard input and `args` as its arguments.
+    pub(crate) fn new(stdin: Vec<u8>, args: Vec<OsString>) -> Invocation {
+        Invocation { stdin, args }
     }
 
-    /// Runs `exe` with this standard input; with `valgrind`, under Valgrind, where any leak or
-    /// memory error makes it exit 1.
+    /// Runs `exe` with this standard input and these arguments; with `valgrind`, under
+    /// Valgrind, where any leak or memory error makes it exit 1.
     pub(crate) fn run(&self, exe: &Path, valgrind: bool) -> Output {
         let mut command = if valgrind {
             let mut command = Command::new("valgrind");
@@ -73,6 +93,7 @@ impl Invocation {
         } else {
             Command::new(exe)
         };
+        command.args(&self.args);
         output_with_stdin(&mut command, &self.stdin)
     }
 }
@@ -114,7 +135,8 @@ fn output_with_stdin(command: &mut Command, stdin: &[u8]) -> Output {
 /// Stderr is empty, unless `<name>.err` exists: then the stderr of the plain, `-O2` and
 /// `--rc-checks` runs is that file. The Valgrind runs' stderr holds Valgrind's own log, so it is
 /// never compared.
-/// Every run reads `<name>.in` on its standard input, or empty input without one.
+/// Every run reads `<name>.in` on its standard input, or empty input without one, and gets the
+/// arguments of the case's `// args:` line.
 /// Each `// o2-calls:` marker in the case must hold in the `-O2` IR (see `O2_CALLS`).
 /// With `bless`, rewrites `<name>.out`, and `<name>.err` when it exists, instead, after every
 /// other check passed.
@@ -193,7 +215,7 @@ pub(crate) fn run(path: &Path, bless: bool) {
 }
 
 /// Checks a `tests/run-fail` case: both builds exit 101, agree, and print `<name>.out` on stdout
-/// and `<name>.err` on stderr, reading `<name>.in` on stdin as a `tests/run` case does. With
+/// and `<name>.err` on stderr, with the standard input and arguments of a `tests/run` case. With
 /// `bless`, rewrites both files instead. No Valgrind: a panic exits without releasing.
 pub(crate) fn run_fail(path: &Path, bless: bool) {
     let invocation = Invocation::of(path);
@@ -374,7 +396,8 @@ fn case_dir(source: &Path) -> PathBuf {
 /// `sisuc --emit ir` and nothing else, and counts in that build. One caller at a time, so that
 /// keeping one caller does not also keep a callee that another marker names as its caller. A
 /// caller that takes parameters is rejected: kept as a function of its own, it could hold a
-/// call that its real call sites decide away.
+/// call that its real call sites decide away. `main(args)` is the exception: only the C `main`
+/// calls it, with arguments known at run time.
 const O2_CALLS: &str = "// o2-calls:";
 
 /// The text of the function `name` in `ir`, from its header line to its closing brace, if `ir`
@@ -461,7 +484,8 @@ fn o2_calls(path: &Path) {
             .and_then(|text| text.lines().next())
             .expect("the caller is in the IR");
         assert!(
-            header.contains(&format!("@sisu.{outer}()")),
+            header.contains(&format!("@sisu.{outer}()"))
+                || (outer == "main" && header.contains("@sisu.main(ptr")),
             "{}: o2-calls caller `{outer}` takes parameters; its call sites can decide the \
              call, so mark a caller without parameters",
             path.display()

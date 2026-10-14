@@ -1,0 +1,19 @@
+// args: a b
+// o2-calls: main extend 0
+// `main` passes `args` on. `extend` copies it before it changes it, so each level owns a new
+// array, and every copy and every string is released. At `-O2`, `extend`'s tail call becomes a
+// loop inlined into `main`, so no call is left; the plain build makes every call.
+fn extend(xs: [string], n: i64) -> [string] {
+    if n == 0 || xs.len() == 0 {
+        return xs
+    }
+    let mut ys = xs
+    ys[0] += "!"
+    return extend(ys, n - 1)
+}
+
+fn main(args: [string]) {
+    for a in extend(args, args.len()) {
+        print(a)        // a!!, b
+    }
+}

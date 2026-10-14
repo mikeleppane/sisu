@@ -37,7 +37,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0026](E0026.md) | error | item named like a built-in type |
 | [E0027](E0027.md) | error | class that can never be constructed |
 | [E0028](E0028.md) | error | program without `main` |
-| [E0029](E0029.md) | error | `main` with parameters or a return type |
+| [E0029](E0029.md) | error | `main` with a wrong signature |
 | [E0030](E0030.md) | error | type that does not exist |
 | [E0031](E0031.md) | error | function body without the value it returns |
 | [E0032](E0032.md) | error | value of the wrong type |

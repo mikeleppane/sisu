@@ -550,21 +550,40 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
-    /// `define i32 @main()`, which the C startup code calls: runs `sisu.main`, flushes standard
-    /// output, returns 0.
+    /// `define i32 @main(i32 %argc, ptr %argv)`, which the C startup code calls: runs
+    /// `sisu.main`, passing it `args` when it takes them, flushes standard output, returns 0.
+    /// `sisu.main` owns `args` and releases it, as any counted parameter.
     fn c_main(&self) {
         let i32_type = self.context.i32_type();
-        let main = self
-            .module
-            .add_function("main", i32_type.fn_type(&[], false), None);
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let main = self.module.add_function(
+            "main",
+            i32_type.fn_type(&[i32_type.into(), ptr_type.into()], false),
+            None,
+        );
         self.builder
             .position_at_end(self.context.append_basic_block(main, "entry"));
         let sisu_main = self
             .module
             .get_function("sisu.main")
             .expect("the checker should reject a program without a `main` function");
+        let [count, strings] = [(0, "argc"), (1, "argv")].map(|(n, name)| {
+            let param = main
+                .get_nth_param(n)
+                .expect("the C `main` should take `argc` and `argv`, as declared above");
+            param.set_name(name);
+            param
+        });
+        let passed = if sisu_main.count_params() == 0 {
+            Vec::new()
+        } else {
+            vec![
+                self.args(count.into_int_value(), strings.into_pointer_value())
+                    .into(),
+            ]
+        };
         self.builder
-            .build_call(sisu_main, &[], "")
+            .build_call(sisu_main, &passed, "")
             .expect(POSITIONED);
         let void = self.context.void_type().fn_type(&[], false);
         // `print` buffers; this delivers what is left, or panics if standard output fails.

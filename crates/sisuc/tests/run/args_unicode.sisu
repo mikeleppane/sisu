@@ -1,0 +1,8 @@
+// args: häst 😀
+// Non-ASCII arguments come through whole.
+fn main(args: [string]) {
+    print(args.len())   // 2
+    for a in args {
+        print(a)        // häst, 😀
+    }
+}

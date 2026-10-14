@@ -263,7 +263,7 @@ pub(crate) enum DiagnosticKind {
     },
     /// A program with no `main`.
     NoMain,
-    /// A `main` at `at` that takes parameters or returns a value.
+    /// A `main` at `at` that takes anything but nothing or one `[string]`, or returns a value.
     MainSignature { at: Span },
     /// The type `name`, at `at`, which is not built in and names no class.
     UnknownType {
@@ -1159,7 +1159,11 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, Span::new(0, 0), "no `main` function")
             }
             DiagnosticKind::MainSignature { at } => {
-                Diagnostic::coded(code, at, "`main` takes no parameters and returns no value")
+                Diagnostic::coded(
+                code,
+                at,
+                "`main` takes no parameters, or one `[string]`, and returns no value",
+            )
             }
             DiagnosticKind::UnknownType {
                 name,

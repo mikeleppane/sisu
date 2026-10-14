@@ -640,7 +640,7 @@ fn rc_checks_guard_retain_release_and_exit() {
     assert_count_checked(unique, 1, &|t| {
         t.starts_with("icmp eq i64 ") && t.ends_with(", 1")
     });
-    let main = function_body(&ir, "define i32 @main()");
+    let main = function_body(&ir, "define i32 @main(i32 %argc, ptr %argv)");
     let (_, after_check) = main
         .split_once("call void @sisu_rc_check_exit()")
         .unwrap_or_else(|| panic!("no exit check in\n{main}"));
@@ -654,7 +654,7 @@ fn main_flushes_stdout_before_the_exit_check_and_the_return() {
         let ir = compiled_with(&context, FIB, rc_checks)
             .print_to_string()
             .to_string();
-        let main = function_body(&ir, "define i32 @main()");
+        let main = function_body(&ir, "define i32 @main(i32 %argc, ptr %argv)");
         let flush = main
             .find("call void @sisu_flush_stdout()")
             .unwrap_or_else(|| panic!("no flush in\n{main}"));
@@ -709,7 +709,7 @@ fn user_function_names_are_prefixed() {
     for wanted in [
         "define internal i64 @sisu.fib(i64",
         "define internal void @sisu.main()",
-        "define i32 @main()",
+        "define i32 @main(i32 %argc, ptr %argv)",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
@@ -872,6 +872,28 @@ fn read_line_declaration_has_no_memory_attribute() {
     assert!(attributes.contains("nounwind"), "{attributes}");
     assert!(!attributes.contains("memory("), "{attributes}");
     assert!(!attributes.contains("willreturn"), "{attributes}");
+}
+
+/// `sisu_args_len` reads no memory. `sisu_arg` has no `memory` attribute, for
+/// `sisu_read_line`'s reason: a call can overwrite the bytes an earlier call returned. Neither
+/// unwinds, and neither is declared when `main` takes no `args`.
+#[test]
+fn args_declarations_carry_memory_effects() {
+    let context = Context::create();
+    let ir = compiled(&context, "fn main(args: [string]) {}")
+        .print_to_string()
+        .to_string();
+    let attributes_len = attributes(&ir, "sisu_args_len");
+    for wanted in ["nounwind", "memory(none)"] {
+        assert!(attributes_len.contains(wanted), "{attributes_len}");
+    }
+    let attributes_arg = attributes(&ir, "sisu_arg");
+    assert!(attributes_arg.contains("nounwind"), "{attributes_arg}");
+    assert!(!attributes_arg.contains("memory("), "{attributes_arg}");
+    let plain = compiled(&context, "fn main() {}")
+        .print_to_string()
+        .to_string();
+    assert!(!plain.contains("sisu_arg"), "{plain}");
 }
 
 /// `xs.len()` and `o.n` on a local neither retain nor release the base: the local keeps it
