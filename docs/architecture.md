@@ -128,7 +128,8 @@ to panic and to allocate and free objects, arrays and strings:
 `sisu_write_char`, which interpolation calls, and
 `sisu_utf8_count`, `sisu_utf8_decode`, `sisu_utf8_len` and `sisu_utf8_encode`,
 which `chars()` and `string(cs)` call, and `sisu_words_count` and
-`sisu_word_next`, which `words()` calls. `stdin.rs` holds `sisu_read_line`,
+`sisu_word_next`, which `words()` calls; `s.words().len()` calls only
+`sisu_words_count`. `stdin.rs` holds `sisu_read_line`,
 which `read_line()` calls. `args.rs` holds `sisu_args_len` and `sisu_arg`,
 which the generated `main` calls to build `args` when `sisu.main` takes it.
 `print(x)` and `"{x}"` share one formatter per

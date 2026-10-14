@@ -56,7 +56,7 @@ Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 | [fib](../bench/fib) | Computes `fib(40)` by naive recursion | Function calls and integer arithmetic |
 | [sieve](../bench/sieve) | Counts the primes up to 50 000 000 with a sieve of Eratosthenes | Array indexing in a tight loop |
 | [binary_trees](../bench/binary_trees) | The [binary-trees](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/binarytrees.html) program of the Benchmarks Game, depth 18 | Allocating and freeing many small objects |
-| [wc](../bench/wc) | Counts the lines and words of 4 000 000 lines (159 MB) on standard input | Reading lines, splitting them into words and freeing the strings |
+| [wc](../bench/wc) | Counts the lines and words of 4 000 000 lines (159 MB) on standard input | Reading lines and counting the words in each |
 
 [`input.awk`](../bench/wc/input.awk) writes the input of wc: ASCII words
 separated by spaces and tabs, from a fixed seed, so every run reads the same
@@ -122,20 +122,24 @@ load, subtract and store when it is released. ADR 0005 accepts that cost.
 
 ## Where wc spends its time
 
-Callgrind counted 1.71 billion instructions for the first 400 000 lines of
-the input. No table above times wc yet: rerun `scripts/bench.sh` on an idle
-machine to add one.
+Callgrind counted 0.72 billion instructions for the first 400 000 lines of
+the input, down from 1.71 billion before the changes below. No table above
+times wc yet: rerun `scripts/bench.sh` on an idle machine to add one.
 
-- **Every word becomes a string.** `line.words().len()` builds the whole
-  `[string]` to count it: one allocation for the array and one for each word,
-  each copied and then released. `malloc`, `free` and `sisu_alloc` take a
-  third of the instructions. C's `strtok` and Rust's `split_whitespace` count
-  the words without copying them.
-- **The words are found twice.** `sisu_words_count` sizes the array and
-  `sisu_word_next` finds each word again, both decoding every character to
-  test it against Unicode white space: 39% of the instructions together.
-- **The line's UTF-8 is checked twice.** `read_line` repairs the line, and
-  `sisu_words_count` checks it again before it counts.
+- **The words are counted, not built.** Codegen compiles
+  `line.words().len()` to one `sisu_words_count` call, because the
+  `[string]` would be released as soon as its length is read. C, Rust and
+  Java count the same way. Go's `strings.Fields` and Python's `split()`
+  build the list of words, and so does Sisu when a program keeps the
+  `[string]` in a local. That copies each word into a new string.
+- **Finding white space is most of what is left.** The word scanner,
+  `run_end`, takes 48% of the instructions. It tests an ASCII byte directly
+  and decodes only the other characters, to test them against Unicode white
+  space.
+- **The line is still copied and checked.** `read_line` repairs the line's
+  UTF-8 and copies it into a new string. With `malloc` and `free`, that is
+  most of the other half. `sisu_words_count` trusts the string's UTF-8,
+  which ADR 0014 guarantees, and checks it only in a debug build.
 
 ## Running them
 
