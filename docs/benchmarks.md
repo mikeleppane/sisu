@@ -56,9 +56,11 @@ Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 | [fib](../bench/fib) | Computes `fib(40)` by naive recursion | Function calls and integer arithmetic |
 | [sieve](../bench/sieve) | Counts the primes up to 50 000 000 with a sieve of Eratosthenes | Array indexing in a tight loop |
 | [binary_trees](../bench/binary_trees) | The [binary-trees](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/binarytrees.html) program of the Benchmarks Game, depth 18 | Allocating and freeing many small objects |
+| [wc](../bench/wc) | Counts the lines and words of 4 000 000 lines (159 MB) on standard input | Reading lines, splitting them into words and freeing the strings |
 
-Benchmarks that need floats, strings or input come with the milestones that
-add them.
+[`input.awk`](../bench/wc/input.awk) writes the input of wc: ASCII words
+separated by spaces and tabs, from a fixed seed, so every run reads the same
+bytes. Benchmarks that need floats come with milestone 6.
 
 ## What the numbers mean
 
@@ -118,6 +120,23 @@ the program's IR (`sisuc -O2 --emit ir`) and the result timed.
 What remains is the counting itself: a store when an object is made, and a
 load, subtract and store when it is released. ADR 0005 accepts that cost.
 
+## Where wc spends its time
+
+Callgrind counted 1.71 billion instructions for the first 400 000 lines of
+the input. No table above times wc yet: rerun `scripts/bench.sh` on an idle
+machine to add one.
+
+- **Every word becomes a string.** `line.words().len()` builds the whole
+  `[string]` to count it: one allocation for the array and one for each word,
+  each copied and then released. `malloc`, `free` and `sisu_alloc` take a
+  third of the instructions. C's `strtok` and Rust's `split_whitespace` count
+  the words without copying them.
+- **The words are found twice.** `sisu_words_count` sizes the array and
+  `sisu_word_next` finds each word again, both decoding every character to
+  test it against Unicode white space: 39% of the instructions together.
+- **The line's UTF-8 is checked twice.** `read_line` repairs the line, and
+  `sisu_words_count` checks it again before it counts.
+
 ## Running them
 
 ```sh
@@ -139,7 +158,9 @@ a change to `sisuc` or the runtime should move them.
 To add a benchmark, add a directory under `bench/` with `main.sisu` and, for
 each language, `main.c`, `main.rs`, `main.go`, `Main.java` and `main.py`, all
 printing the same output. Then add its name to the default list in
-`scripts/bench.sh`.
+`scripts/bench.sh`. A benchmark that reads standard input also gets an
+`input.awk`: the script writes its output to `target/bench/<name>/input` once,
+again only when `input.awk` is newer, and feeds that file to every run.
 
 CodSpeed tracks Sisu against itself on every pull request that touches the
 code; see [Coverage and performance](development.md#coverage-and-performance).
