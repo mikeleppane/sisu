@@ -48,6 +48,10 @@ These are adopted. Together they give Sisu a working imperative core.
   field or an array element
 - text as arrays: `s.chars()` gives a `[char]`, `s.bytes()` a `[u8]`, and
   `string(cs)` builds a `string` from a `[char]`; each call builds a new value
+- `eprint(x)`, which prints like `print` but to standard error; `read_line()`,
+  a `string?` that is the next line of standard input without its line break,
+  or `None` at the end of the input; and `s.words()`, a `[string]` of the runs
+  between white space
 - `panic("why")`, which stops the program with a message, and the keyword
   `todo`, which does the same and warns at compile time; either may stand on
   the right of `??`, as in `name ?? panic("no name")`
