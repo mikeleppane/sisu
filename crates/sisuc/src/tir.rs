@@ -172,6 +172,8 @@ pub(crate) enum ExprKind {
     },
     /// `panic(message)`, of type `never`; its span starts where the panic reports.
     Panic(Box<Expr>),
+    /// `read_line()`, of type `string?`.
+    ReadLine,
     /// `[a, b]`.
     ArrayLit(Vec<Expr>),
     /// `[value; len]`.
@@ -269,6 +271,7 @@ impl Expr {
             | ExprKind::Char(_)
             | ExprKind::Str(_)
             | ExprKind::None
+            | ExprKind::ReadLine
             | ExprKind::Local(_)
             | ExprKind::Move(_) => false,
             ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
@@ -463,6 +466,7 @@ impl Printer<'_> {
             ExprKind::Convert(operand) => self.unary(f, &expr.ty.to_string(), operand),
             ExprKind::Print { stream, operand } => self.unary(f, stream.name(), operand),
             ExprKind::Panic(message) => self.unary(f, "panic", message),
+            ExprKind::ReadLine => f.write_str("(read_line)"),
             ExprKind::ArrayLit(elements) => {
                 f.write_str("(array")?;
                 self.each(f, elements)?;
@@ -978,6 +982,23 @@ mod tests {
             }],
         };
         assert_eq!(program.to_string(), "(fn f () unit (block (eprint 1)))");
+    }
+
+    #[test]
+    fn prints_read_line() {
+        // fn f() { read_line() }
+        let read_line = expr(ExprKind::ReadLine, Type::Optional(Box::new(Type::String)));
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(vec![Stmt::Expr(read_line)]),
+            }],
+        };
+        assert_eq!(program.to_string(), "(fn f () unit (block (read_line)))");
     }
 
     #[test]

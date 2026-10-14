@@ -1,6 +1,7 @@
 //! Printing, writing and comparing text: `char`s, and strings as bytes with a length. Each
 //! type has one formatter, which both `print` and interpolation use.
 
+use std::borrow::Cow;
 use std::io::Write;
 
 /// The longest text of an `i64`: `-9223372036854775808`.
@@ -12,6 +13,15 @@ pub(crate) fn int_text(value: i64, buffer: &mut [u8; INT_BYTES]) -> &[u8] {
     write!(rest, "{value}").expect("20 bytes should hold every `i64`");
     let len = INT_BYTES - rest.len();
     &buffer[..len]
+}
+
+/// `bytes` as valid UTF-8: borrowed when it is already, else with each maximal subpart of an
+/// ill-formed sequence replaced by one `U+FFFD`, as `String::from_utf8_lossy` does.
+pub(crate) fn repair(bytes: &[u8]) -> Cow<'_, [u8]> {
+    match String::from_utf8_lossy(bytes) {
+        Cow::Borrowed(_) => Cow::Borrowed(bytes),
+        Cow::Owned(text) => Cow::Owned(text.into_bytes()),
+    }
 }
 
 /// `true` or `false`.
@@ -296,9 +306,11 @@ pub unsafe extern "C" fn sisu_str_compare(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::{
-        sisu_str_compare, sisu_utf8_count, sisu_utf8_decode, sisu_utf8_encode, sisu_utf8_len,
-        sisu_write_bool, sisu_write_char, sisu_write_int,
+        repair, sisu_str_compare, sisu_utf8_count, sisu_utf8_decode, sisu_utf8_encode,
+        sisu_utf8_len, sisu_write_bool, sisu_write_char, sisu_write_int,
     };
 
     /// `i64::MIN` fills the 20 bytes that an `i64` may take; the others take fewer.
@@ -339,6 +351,22 @@ mod tests {
             let len = unsafe { sisu_write_char(u32::from(c), out.as_mut_ptr()) };
             assert_eq!(&out[..len], c.to_string().as_bytes());
         }
+    }
+
+    /// Each maximal subpart of an ill-formed sequence becomes one `U+FFFD`, and valid UTF-8 is
+    /// borrowed as it is.
+    #[test]
+    fn repair_maximal_subparts() {
+        let rows: [(&[u8], &str); 4] = [
+            (b"a\xFF\xFFb", "a\u{FFFD}\u{FFFD}b"),
+            (b"\xE2\x82", "\u{FFFD}"),
+            (b"\xE2\x82A", "\u{FFFD}A"),
+            ("häst".as_bytes(), "häst"),
+        ];
+        for (bytes, want) in rows {
+            assert_eq!(*repair(bytes), *want.as_bytes(), "{bytes:?}");
+        }
+        assert!(matches!(repair("häst".as_bytes()), Cow::Borrowed(_)));
     }
 
     /// `"aä€😀"`: one code point of each UTF-8 width.

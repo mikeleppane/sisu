@@ -1,4 +1,4 @@
-//! The prelude: `print`, `eprint` and `panic`, the names no top-level item can take, and `todo`.
+//! The prelude: `print`, `eprint`, `panic` and `read_line`, the names no top-level item can take, and `todo`.
 
 use super::*;
 
@@ -170,10 +170,44 @@ fn eprint_argument_errors() {
     }
 }
 
+#[test]
+fn read_line_lowers() {
+    let (program, ds) = checked("fn main() {\n    let s = read_line()\n}");
+    assert!(ds.is_empty(), "{ds:?}");
+    let program = program.expect("no errors");
+    assert!(program.to_string().contains("(read_line)"), "{program}");
+    assert_eq!(
+        program.functions[0].locals[0].ty,
+        Type::Optional(Box::new(Type::String))
+    );
+}
+
+#[test]
+fn read_line_argument_count() {
+    codes(&body("", "read_line(1)"), &[(Code::ArgumentCount, (2, 5))]);
+}
+
+/// A name from another language, near a prelude name or on its alias list, gets the
+/// unknown-function code with the prelude name as its fix.
+#[test]
+fn renamed_functions() {
+    for (call, fixed) in [
+        ("println(1)", "print(1)"),
+        ("eprintln(1)", "eprint(1)"),
+        ("readLine()", "read_line()"),
+        ("readln()", "read_line()"),
+        ("input()", "read_line()"),
+    ] {
+        let src = body("", call);
+        codes(&src, &[(Code::FunctionNotFound, (2, 5))]);
+        assert_eq!(applied(&src, &diags(&src)[0]), body("", fixed));
+    }
+}
+
 /// No top-level function, class or constant takes a prelude name.
 #[test]
 fn prelude_defined_twice() {
-    for name in ["panic", "print", "eprint"] {
+    for name in ["panic", "print", "eprint", "read_line"] {
         for (item, col) in [
             (format!("fn {name}() {{}}"), 4),
             (format!("class {name} {{}}"), 7),

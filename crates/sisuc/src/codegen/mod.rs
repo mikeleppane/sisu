@@ -2,6 +2,7 @@
 
 mod arith;
 mod array;
+mod io;
 mod rc;
 mod string;
 
@@ -843,6 +844,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.panic_string(message, e.span);
                 return None;
             }
+            ExprKind::ReadLine => return Some(self.read_line().into()),
         };
         Some(value.into())
     }

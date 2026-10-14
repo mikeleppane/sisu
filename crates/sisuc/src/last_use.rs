@@ -113,6 +113,7 @@ impl Walk {
             | ExprKind::Char(_)
             | ExprKind::Str(_)
             | ExprKind::None
+            | ExprKind::ReadLine
             | ExprKind::Local(_)
             | ExprKind::Move(_) => {}
             ExprKind::Call { args, .. }

@@ -829,6 +829,32 @@ fn print_declarations_carry_attributes() {
     }
 }
 
+/// `sisu_read_line` never unwinds, and carries no `memory` attribute: the call overwrites the
+/// line an earlier call returned, so LLVM must not move a read of those bytes past it.
+#[test]
+fn read_line_declaration_has_no_memory_attribute() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn main() {\n    let a = read_line()\n    let b = read_line()\n}",
+    )
+    .print_to_string()
+    .to_string();
+    let declaration = ir
+        .lines()
+        .find(|line| line.starts_with("declare ") && line.contains("@sisu_read_line("))
+        .unwrap_or_else(|| panic!("no declaration of sisu_read_line in\n{ir}"));
+    let (_, group) = declaration
+        .rsplit_once(" #")
+        .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
+    let attributes = ir
+        .lines()
+        .find(|line| line.starts_with(&format!("attributes #{group} = ")))
+        .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"));
+    assert!(attributes.contains("nounwind"), "{attributes}");
+    assert!(!attributes.contains("memory("), "{attributes}");
+}
+
 /// `xs.len()` and `o.n` on a local neither retain nor release the base: the local keeps it
 /// alive. A counted field read still retains the field.
 #[test]

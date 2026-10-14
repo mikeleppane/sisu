@@ -1,0 +1,5 @@
+// Without input, `read_line` is `None`, and the program panics.
+fn main() {
+    let name = read_line() ?? panic("no input")
+    print("hello {name}")       // not reached
+}

@@ -263,6 +263,20 @@ impl<'ctx> Codegen<'ctx, '_> {
         result
     }
 
+    /// A new string holding a copy of the `len` bytes at `bytes`, which are valid UTF-8.
+    pub(super) fn string_from_bytes(
+        &self,
+        bytes: PointerValue<'ctx>,
+        len: IntValue<'ctx>,
+    ) -> PointerValue<'ctx> {
+        let string = self.new_string(len);
+        self.builder
+            .build_memcpy(self.string_field(string, BYTES), 1, bytes, 1, len)
+            .expect("an alignment of 1 should be a power of two");
+        self.store(self.string_field(string, LEN), len.into());
+        string
+    }
+
     /// A new block with count 1 and capacity `cap`, whose length is not yet stored.
     fn new_string(&self, cap: IntValue<'ctx>) -> PointerValue<'ctx> {
         let layout = self.string_layout();

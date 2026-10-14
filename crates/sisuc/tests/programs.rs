@@ -80,7 +80,7 @@ fn allocs_in(valgrind_stderr: &str) -> u64 {
 /// Runs `exe` under Valgrind and returns its stdout and `allocs_in` of its stderr. Valgrind runs
 /// without `-q`, which prints the heap summary.
 fn heap_allocs(exe: &Path) -> (String, u64) {
-    let out = support::valgrind(exe);
+    let out = support::Invocation::default().run(exe, true);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{}: {stderr}", exe.display());
     (
@@ -653,6 +653,114 @@ fn eprint_is_not_held_behind_stdout() {
     }
 }
 
+/// Prints each line of its input.
+const ECHO: &str =
+    "fn main() {\n    while let line = read_line() {\n        print(line)\n    }\n}\n";
+
+/// Lines of `line <i>` of growing width, each ending in `\n`, up to `total` bytes in all.
+fn generated_lines(total: usize) -> Vec<u8> {
+    let mut input = Vec::new();
+    for i in 0.. {
+        let line = format!("line {}\n", "x".repeat(i % 100));
+        if input.len() + line.len() > total {
+            return input;
+        }
+        input.extend_from_slice(line.as_bytes());
+    }
+    unreachable!("the range never ends")
+}
+
+/// An invalid byte in a line comes back as the three bytes of `U+FFFD`, which a `.out` file,
+/// read through `from_utf8_lossy`, cannot tell from the raw byte.
+#[test]
+fn read_line_repairs_byte_for_byte() {
+    for o2 in [false, true] {
+        let exe = compile_tmp("echo_repair", ECHO, o2);
+        let out = support::Invocation::new(b"a\xFFb\n".to_vec()).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(out.stdout, b"a\xEF\xBF\xBDb\n");
+    }
+}
+
+/// A line longer than the runtime's 8 KiB input buffer, input of several buffers, and a `€`
+/// whose bytes straddle the first buffer's end all come back whole, with no memory error.
+#[test]
+fn read_line_refills_its_buffer() {
+    let mut first = "a".repeat(8191) + "€";
+    first += &"b".repeat(20_000 - first.len());
+    let mut input = first.into_bytes();
+    input.push(b'\n');
+    input.extend(generated_lines(40_000 - input.len()));
+    assert_eq!(&input[8191..8194], "€".as_bytes());
+    for o2 in [false, true] {
+        let exe = compile_tmp("echo_refill", ECHO, o2);
+        let out = support::Invocation::new(input.clone()).run(&exe, true);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+        assert!(out.stdout == input, "{stderr}");
+    }
+}
+
+/// More input than a pipe holds reaches the program while the harness reads its output, so
+/// neither side waits on the other.
+#[test]
+fn stdin_larger_than_a_pipe() {
+    let input = generated_lines(1 << 20);
+    for o2 in [false, true] {
+        let exe = compile_tmp("echo_large", ECHO, o2);
+        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert!(out.stdout == input, "{} bytes out", out.stdout.len());
+    }
+}
+
+/// A program that exits before it reads all its input ends normally; the harness ignores
+/// the failed write of the rest.
+#[test]
+fn program_exiting_before_its_input_ends() {
+    let source = "fn main() {\n    print(read_line() ?? \"none\")\n}\n";
+    let input = generated_lines(1 << 20);
+    for o2 in [false, true] {
+        let exe = compile_tmp("read_one_line", source, o2);
+        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "line \n");
+    }
+}
+
+/// A failed read (`EISDIR`) is a panic with no location.
+#[test]
+fn read_line_from_a_directory_panics() {
+    let source = "fn main() {\n    print(read_line() ?? \"none\")\n}\n";
+    for o2 in [false, true] {
+        let dir = File::open(env!("CARGO_TARGET_TMPDIR")).expect("opens the directory");
+        let out = Command::new(compile_tmp("read_directory", source, o2))
+            .stdin(Stdio::from(dir))
+            .output()
+            .expect("the program starts");
+        assert_panics(
+            &out,
+            "",
+            "sisu: panic: standard input could not be read: Is a directory (os error 21)\n",
+        );
+    }
+}
+
+/// A closed standard input is the end of input.
+#[test]
+fn read_line_from_a_closed_stdin_is_none() {
+    let source = "fn main() {\n    print(read_line() ?? \"none\")\n}\n";
+    for o2 in [false, true] {
+        let out = Command::new("sh")
+            .args(["-c", r#"exec "$0" <&-"#])
+            .arg(compile_tmp("read_closed_fd", source, o2))
+            .output()
+            .expect("sh starts");
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "none\n");
+    }
+}
+
 /// An `--rc-checks` program that leaks exits 102 and still delivers what it printed.
 #[test]
 fn rc_checks_exit_flushes_stdout() {
@@ -738,7 +846,7 @@ fn valgrind_reports_a_cycle() {
     let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
-    let checked = support::valgrind(&exe);
+    let checked = support::Invocation::default().run(&exe, true);
     let stderr = String::from_utf8_lossy(&checked.stderr);
     assert_eq!(checked.status.code(), Some(1), "{stderr}");
     // A loss record, not the summary line, which also prints `definitely lost: 0 bytes`.

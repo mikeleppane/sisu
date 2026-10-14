@@ -1,5 +1,6 @@
 //! The Sisu runtime: functions that compiled Sisu programs call over the C ABI.
 
+pub mod stdin;
 pub mod text;
 
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error, realloc};
