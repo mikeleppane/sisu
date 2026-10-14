@@ -6,13 +6,16 @@
 
 use inkwell::attributes::AttributeLoc;
 use inkwell::module::Linkage;
-use inkwell::types::StructType;
-use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::types::{BasicMetadataTypeEnum, StructType};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, param};
-use super::{Codegen, POSITIONED, zeroext};
-use crate::tir::{CompareOp, Expr, Place, Type};
+use super::{Codegen, POSITIONED, add_nounwind_memory, zeroext};
+use crate::diagnostic::Span;
+use crate::tir::{CompareOp, Expr, Place, Stream, Type};
 
 /// A string block's header, from the target's data layout. A block with capacity `cap` is
 /// `size + cap` bytes, aligned to `align`.
@@ -262,6 +265,20 @@ impl<'ctx> Codegen<'ctx, '_> {
         result
     }
 
+    /// A new string holding a copy of the `len` bytes at `bytes`, which are valid UTF-8.
+    pub(super) fn string_from_bytes(
+        &self,
+        bytes: PointerValue<'ctx>,
+        len: IntValue<'ctx>,
+    ) -> PointerValue<'ctx> {
+        let string = self.new_string(len);
+        self.builder
+            .build_memcpy(self.string_field(string, BYTES), 1, bytes, 1, len)
+            .expect("an alignment of 1 should be a power of two");
+        self.store(self.string_field(string, LEN), len.into());
+        string
+    }
+
     /// A new block with count 1 and capacity `cap`, whose length is not yet stored.
     fn new_string(&self, cap: IntValue<'ctx>) -> PointerValue<'ctx> {
         let layout = self.string_layout();
@@ -384,6 +401,80 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.release(string.into(), &base.ty);
         }
         array
+    }
+
+    /// `Words`: counts the words with `sisu_words_count`, which also checks the whole string,
+    /// allocates the `[string]`, and fills each element from a `sisu_word_next` call that starts
+    /// where the last word ended, so the work is linear. The string is released after.
+    pub(super) fn words(&mut self, base: &Expr) -> PointerValue<'ctx> {
+        let (string, borrowed) = self.borrow_pointer(base);
+        let i64_type = self.context.i64_type();
+        let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
+        let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01);
+        let array = self.alloc_array(&Type::String, count, None);
+        // `count_loop` gives its body only the index, so the offset where the last word ended,
+        // and the start of the word just found, live in slots.
+        let from = self.entry_alloca(i64_type.into(), "from");
+        let start = self.entry_alloca(i64_type.into(), "start");
+        self.store(from, i64_type.const_zero().into());
+        self.count_loop(count, |index| {
+            let args = [
+                bytes.into(),
+                len.into(),
+                self.load(i64_type.into(), from).into(),
+                start.into(),
+            ];
+            let end = self.call_word_function("sisu_word_next", &args, 0b11);
+            let first = self.load(i64_type.into(), start).into_int_value();
+            let word_len = self
+                .builder
+                .build_int_nuw_sub(end, first, "word_len")
+                .expect(POSITIONED);
+            let word = self.string_from_bytes(self.string_byte(string, first), word_len);
+            let slot = self.element_ptr(&Type::String, array, index);
+            self.store(slot, word.into());
+            self.store(from, end.into());
+        });
+        if !borrowed {
+            self.release(string.into(), &base.ty);
+        }
+        array
+    }
+
+    /// A call of the runtime's `name`, which returns an `i64`: `sisu_words_count(bytes, len)`
+    /// or `sisu_word_next(bytes, len, from, start)`. Declared on first use, `nounwind`, with the
+    /// `memory` attribute value `memory`: the first only reads the memory behind its arguments,
+    /// and the second also writes `start`.
+    fn call_word_function(
+        &self,
+        name: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        memory: u64,
+    ) -> IntValue<'ctx> {
+        let function = self.module.get_function(name).unwrap_or_else(|| {
+            let (ptr_type, i64_type) = (
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.i64_type().into(),
+            );
+            // `sisu_words_count` takes the first two of these, `sisu_word_next` all four.
+            let params: [BasicMetadataTypeEnum; 4] = [ptr_type, i64_type, i64_type, ptr_type];
+            let function = self.module.add_function(
+                name,
+                self.context
+                    .i64_type()
+                    .fn_type(&params[..args.len()], false),
+                None,
+            );
+            add_nounwind_memory(&self.module, function, memory);
+            function
+        });
+        self.builder
+            .build_call(function, args, "word")
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("a `sisu_word*` function should return an `i64`, as the runtime declares it")
+            .into_int_value()
     }
 
     /// `FromChars`: sizes the string by `sisu_utf8_len`, allocates it, and has
@@ -525,17 +616,43 @@ impl<'ctx> Codegen<'ctx, '_> {
         holds
     }
 
-    /// `print` of a string: `sisu_print_str(bytes, len)`, then the release.
-    pub(super) fn print_string(&mut self, operand: &Expr) {
+    /// `print` or `eprint` of a string: `sisu_print_str(bytes, len)`, or `sisu_eprint_str`, then
+    /// the release.
+    pub(super) fn print_string(&mut self, stream: Stream, operand: &Expr) {
         let string = self.operand(operand).into_pointer_value();
         self.call(
-            self.print_str,
+            self.printers[stream.index()].str,
             &[
                 self.string_field(string, BYTES).into(),
                 self.string_len(string).into(),
             ],
         );
         self.release(string.into(), &operand.ty);
+    }
+
+    /// `panic(message)` at `span`: `sisu_panic_message(at, at_len, bytes, len)`, then
+    /// `unreachable`. The message is not released: the process exits.
+    pub(super) fn panic_string(&mut self, message: &Expr, span: Span) {
+        let string = self.operand(message).into_pointer_value();
+        let at = self.location(span);
+        let at_ptr = self
+            .builder
+            .build_global_string_ptr(&at, "panic.at")
+            .expect(POSITIONED);
+        let at_len = self.context.i64_type().const_int(
+            u64::try_from(at.len()).expect("a location should be shorter than 2^64 bytes"),
+            false,
+        );
+        self.call(
+            self.panic_message,
+            &[
+                at_ptr.as_pointer_value().into(),
+                at_len.into(),
+                self.string_field(string, BYTES).into(),
+                self.string_len(string).into(),
+            ],
+        );
+        self.builder.build_unreachable().expect(POSITIONED);
     }
 
     /// The body of `@sisu_rc.drop.string` or `@sisu_rc.eq.string`.

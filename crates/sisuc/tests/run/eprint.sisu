@@ -1,0 +1,13 @@
+// `eprint` writes to standard error, which the case's `.err` pins; `print` writes to standard
+// output, which `.out` pins. Each type and an interpolation, with a heap string.
+fn main() {
+    let n = 4
+    print(1)                  // stdout: 1
+    eprint(2)                 // stderr: 2
+    eprint(u8(3))             // stderr: 3
+    eprint(true)              // stderr: true
+    eprint('ä')               // stderr: ä
+    eprint("a" + "b")         // stderr: ab
+    eprint("n = {n}")         // stderr: n = 4
+    print(5)                  // stdout: 5
+}

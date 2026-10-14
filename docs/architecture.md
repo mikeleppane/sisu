@@ -58,7 +58,9 @@ become `if let`, and `x += 1` becomes `x = x + 1`. A `+=` on a string field
 or element, or an assignment that adds to its own field or element place,
 becomes an `Append`. A local keeps `Assign` with `Concat` and appends in place
 through `concat`'s count-1 path. It folds each top-level `const` to a literal
-and replaces every use of its name with that literal. It reports every error
+and replaces every use of its name with that literal. A call to a prelude
+function such as `print` or `panic` has its own rule, and `panic(msg)` and
+`todo` become a `Panic` node of type `never`. It reports every error
 in one run: an expression that already failed gets the poison type, so one
 mistake produces one diagnostic. A program with no errors comes out as the
 typed tree, `tir`, which is all that codegen reads.
@@ -74,9 +76,13 @@ driver runs it after the checker finds no errors.
 [inkwell](https://github.com/TheDan64/inkwell) bindings. Each Sisu function
 becomes an LLVM function named `sisu.<name>`, and each method one named
 `sisu.<Class>.<method>`. Codegen also emits a `main` with the C signature,
-which the C startup code calls and which runs `sisu.main`. Integer overflow
+which the C startup code calls and which runs `sisu.main`, passing it `args`,
+a `[string]` built from `argc` and `argv`, when `sisu.main` takes that
+parameter. Integer overflow
 and division by zero call `sisu_panic` instead of wrapping
-([ADR 0003](adr/0003-arithmetic-panics.md)).
+([ADR 0003](adr/0003-arithmetic-panics.md)). A `Panic` node, which `panic`
+and `todo` lower to, calls `sisu_panic_message` with its location and
+message, then ends the block with `unreachable`.
 
 Objects live on the heap, with a reference count in front of their fields
 ([ADR 0005](adr/0005-reference-counting.md)). Codegen emits the helpers that
@@ -112,18 +118,25 @@ startup code and libc and writes the executable. The temporary file is
 removed whether or not the link succeeds.
 
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
-into every program. Generated code calls it to print values, to panic and to
-allocate and free objects, arrays and strings: `sisu_print_int`,
-`sisu_print_bool`, `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_bounds`,
+into every program. Generated code calls it to print values, to read lines,
+to panic and to allocate and free objects, arrays and strings:
+`sisu_print_int`, `sisu_print_bool`, `sisu_eprint_int`, `sisu_eprint_bool`,
+`sisu_flush_stdout`, `sisu_panic`, `sisu_panic_message`, `sisu_panic_bounds`,
 `sisu_alloc`, `sisu_realloc` and `sisu_free`. Text lives in `text.rs`:
-`sisu_print_char`, `sisu_print_str`, `sisu_str_compare`, and `sisu_write_int`,
-`sisu_write_bool` and `sisu_write_char`, which interpolation calls, and
+`sisu_print_char`, `sisu_print_str`, `sisu_eprint_char`, `sisu_eprint_str`,
+`sisu_str_compare`, and `sisu_write_int`, `sisu_write_bool` and
+`sisu_write_char`, which interpolation calls, and
 `sisu_utf8_count`, `sisu_utf8_decode`, `sisu_utf8_len` and `sisu_utf8_encode`,
-which `chars()` and `string(cs)` call. `print(x)` and `"{x}"` share one
-formatter per type. The print functions write into a buffer that the runtime
-owns, and `main` calls `sisu_flush_stdout` before it returns. The runtime counts
-the blocks that are allocated and not yet freed. A program built with
-`--rc-checks` calls `sisu_rc_fault` when a count check fails, and
+which `chars()` and `string(cs)` call, and `sisu_words_count` and
+`sisu_word_next`, which `words()` calls. `stdin.rs` holds `sisu_read_line`,
+which `read_line()` calls. `args.rs` holds `sisu_args_len` and `sisu_arg`,
+which the generated `main` calls to build `args` when `sisu.main` takes it.
+`print(x)` and `"{x}"` share one formatter per
+type. The `sisu_print_*` functions write into a buffer that the runtime owns,
+and `main` calls `sisu_flush_stdout` before it returns. The `sisu_eprint_*`
+functions write each value at once, in one write to standard error. The
+runtime counts the blocks that are allocated and not yet freed. A program
+built with `--rc-checks` calls `sisu_rc_fault` when a count check fails, and
 `sisu_rc_check_exit` at a normal exit, which fails when that number is not
 zero. Both exit with code 102.
 
@@ -151,11 +164,16 @@ change to the pipeline:
 1. Edit the JSON.
 2. From `docs/architecture`, render it with archify's command-line tool,
    where `<archify>` is your archify checkout, or the directory of the
-   `archify` agent skill when it is installed:
+   `archify` agent skill when it is installed (`~/.agents/skills/archify`):
    `node <archify>/bin/archify.mjs finalize architecture sisu-pipeline.json
    sisu-pipeline.html --quality showcase`. The HTML lands next to the JSON.
-3. Open the HTML, and save **Export → SVG · Light** and **Export → SVG ·
-   Dark** over `sisu-pipeline-light.svg` and `sisu-pipeline-dark.svg`.
+   With `ARCHIFY_CHROME` set to a Chrome or Chromium binary, `finalize`
+   also runs archify's browser check.
+3. Export both SVGs over `sisu-pipeline-light.svg` and
+   `sisu-pipeline-dark.svg`: run `ARCHIFY_CHROME=<chrome> node
+   export-svgs.mjs`, which clicks the viewer's **Export → SVG · Light** and
+   **Export → SVG · Dark** in headless Chrome. Without Chrome, open the HTML
+   and use those two menu items by hand.
 
 The rendered HTML is not committed. It is over the 500 KB limit of the
 `check-added-large-files` hook, and the JSON regenerates it.

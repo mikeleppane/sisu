@@ -1,5 +1,6 @@
 //! `string`: interpolation, `+` that joins two, a chain of comparisons over them, `len()`,
-//! `chars()` and `bytes()`, and the guess to interpolate a value that `+` or `string(x)` meets.
+//! `chars()`, `bytes()` and `words()`, and the guess to interpolate a value that `+` or
+//! `string(x)` meets.
 //! Conversions: `i64(x)`, `u8(x)` and `char(x)` between the scalar types, and `string(cs)` from
 //! a `[char]`.
 
@@ -94,11 +95,7 @@ impl Checker {
         };
         let between = lhs.span.end..rhs.span.start;
         let commented = self.comments.iter().any(|c| between.contains(c));
-        // A comment inside an operand ends at a line break, so this also keeps one out of `{}`.
-        let lines = operands.iter().any(|e| {
-            let next = self.breaks.partition_point(|&b| b < e.span.start);
-            self.breaks.get(next).is_some_and(|&b| b < e.span.end)
-        });
+        let lines = operands.iter().any(|e| !self.one_line(e.span));
         // A literal in parentheses starts at its `(`, and is wrapped whole like any other value.
         let operand = |e: &ast::Expr| Operand {
             span: e.span,
@@ -122,6 +119,13 @@ impl Checker {
             }),
         }
         .into()
+    }
+
+    /// Whether `span` holds no line break, which a string literal cannot hold. A comment inside
+    /// it would end at one, so it holds no comment either, and fits inside `{}`.
+    pub(super) fn one_line(&self, span: Span) -> bool {
+        let next = self.breaks.partition_point(|&b| b < span.start);
+        self.breaks.get(next).is_none_or(|&b| b >= span.end)
     }
 
     /// A chain over the `string`s `operands`, which codegen compares two at a time. Two make
@@ -173,7 +177,7 @@ impl Checker {
         block_expr(lets, Some(rest), Type::Bool, span)
     }
 
-    /// `receiver.method(args)` on a `string`: `len()`, `chars()` and `bytes()`.
+    /// `receiver.method(args)` on a `string`: `len()`, `chars()`, `bytes()` and `words()`.
     pub(super) fn string_method(
         &mut self,
         span: Span,
@@ -185,9 +189,15 @@ impl Checker {
             "len" => (Type::I64, tir::ExprKind::Len),
             "chars" => (Type::Array(Box::new(Type::Char)), tir::ExprKind::Chars),
             "bytes" => (Type::Array(Box::new(Type::U8)), tir::ExprKind::Bytes),
+            "words" => (Type::Array(Box::new(Type::String)), tir::ExprKind::Words),
             _ => {
                 let owner = self.type_name(&Type::String);
-                let d = no_member(Definition::Method, owner, method, ["len", "chars", "bytes"]);
+                let d = no_member(
+                    Definition::Method,
+                    owner,
+                    method,
+                    ["len", "chars", "bytes", "words"],
+                );
                 return self.rejected(d, args);
             }
         };
@@ -352,6 +362,7 @@ fn single_term(e: &ast::Expr) -> bool {
         | ExprKind::SelfValue
         | ExprKind::NoneLit
         | ExprKind::Call { .. }
+        | ExprKind::Todo { .. }
         | ExprKind::Field { .. }
         | ExprKind::MethodCall { .. }
         | ExprKind::Index { .. }

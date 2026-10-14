@@ -169,8 +169,9 @@ editors and agents, and marks each fix as certain or a guess.
 
 Sisu has no releases and runs on x86-64 Linux only. Today it compiles
 functions, `i64`, `u8`, `bool` and `char`, classes with methods, optionals,
-arrays, and strings with `+`, `+=`, interpolation and `chars()`.
-Input and output come next, then floats. After that the
+arrays, and strings with `+`, `+=`, interpolation and `chars()`. Programs
+read standard input with `read_line()`, write standard error with `eprint`,
+take `main(args)` and stop with `panic`. Floats come next. After that the
 [roadmap](docs/roadmap.md) proposes enums with `match`, generics, closures,
 records, modules with a standard library, and `Result` with `?`.
 

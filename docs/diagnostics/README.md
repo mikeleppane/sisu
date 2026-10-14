@@ -37,7 +37,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0026](E0026.md) | error | item named like a built-in type |
 | [E0027](E0027.md) | error | class that can never be constructed |
 | [E0028](E0028.md) | error | program without `main` |
-| [E0029](E0029.md) | error | `main` with parameters or a return type |
+| [E0029](E0029.md) | error | `main` with a wrong signature |
 | [E0030](E0030.md) | error | type that does not exist |
 | [E0031](E0031.md) | error | function body without the value it returns |
 | [E0032](E0032.md) | error | value of the wrong type |
@@ -67,9 +67,9 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0056](E0056.md) | error | constructor without every field |
 | [E0057](E0057.md) | error | method read as a field |
 | [E0058](E0058.md) | error | field called as a method |
-| [E0059](E0059.md) | error | `print` of something it cannot print |
-| [E0060](E0060.md) | error | `print` of an array |
-| [E0061](E0061.md) | error | `print` of an expression that never finishes |
+| [E0059](E0059.md) | error | `print` or `eprint` of something it cannot print |
+| [E0060](E0060.md) | error | `print` or `eprint` of an array |
+| [E0061](E0061.md) | error | `print` or `eprint` of an expression that never finishes |
 | [E0062](E0062.md) | error | optional used as if it were present |
 | [E0063](E0063.md) | error | field or method that does not exist |
 | [E0064](E0064.md) | error | constructor with more arguments than fields |
@@ -107,16 +107,19 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0096](E0096.md) | error | empty interpolation |
 | [E0097](E0097.md) | error | comment inside an interpolation |
 | [E0098](E0098.md) | error | value that cannot be interpolated |
+| [E0099](E0099.md) | error | `todo` written another way |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
+| [W0003](W0003.md) | warning | `todo` left in the program |
 
 ## Explanations
 
 Each explanation has the same shape: a `# <CODE>: <title>` line, one
 paragraph that states the rule, then `## Why`, `## Broken` and `## Fixed`,
 and an optional `## Related`. The Broken program reports exactly its code;
-the Fixed program reports nothing. Tests compile both, and apply every
-certain fix to the Broken program.
+the Fixed program reports nothing. E0099 is the one exception: its Fixed
+program keeps the `todo` its fix leaves, so it reports W0003. Tests compile
+both, and apply every certain fix to the Broken program.
 
 ## Numbers
 

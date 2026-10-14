@@ -38,8 +38,9 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         depth: 0,
         lexer: &diagnostics,
         comments: &comments,
+        breaks: &breaks,
     }
-    .program(breaks)
+    .program()
 }
 
 /// The program of `source`, which must lex and parse without a diagnostic.
@@ -124,6 +125,8 @@ struct Parser<'a> {
     lexer: &'a [Diagnostic],
     /// Where each comment starts.
     comments: &'a [usize],
+    /// Where each line break is.
+    breaks: &'a [usize],
 }
 
 impl<'a> Parser<'a> {
@@ -305,7 +308,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The program, which keeps the lexer's `breaks`.
-    fn program(&mut self, breaks: Vec<usize>) -> Parsed {
+    fn program(&mut self) -> Parsed {
         let mut items = Vec::new();
         let mut broken = Vec::new();
         let mut diagnostics = Vec::new();
@@ -398,7 +401,7 @@ impl<'a> Parser<'a> {
                     .filter(|t| matches!(t.kind, TokenKind::Str(_) | TokenKind::StrHead(_)))
                     .map(|t| t.span.start)
                     .collect(),
-                breaks,
+                breaks: self.breaks.to_vec(),
             },
             diagnostics,
             checkable,
@@ -657,6 +660,7 @@ impl<'a> Parser<'a> {
             depth: self.depth,
             lexer: self.lexer,
             comments: self.comments,
+            breaks: self.breaks,
         };
         let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
@@ -1328,6 +1332,7 @@ impl<'a> Parser<'a> {
                 }
                 ExprKind::Name(name)
             }
+            TokenKind::Todo => return self.todo(),
             TokenKind::LParen => {
                 self.bump();
                 let inner = self.expr()?;
@@ -1363,6 +1368,47 @@ impl<'a> Parser<'a> {
             kind,
             span: token.span,
         })
+    }
+
+    /// `todo` or `todo(args)`. Rust's `todo!` and `todo!(...)`, with the `!` on the keyword's
+    /// line, and an empty `todo()`, are reported with the fix that deletes what is extra.
+    fn todo(&mut self) -> Result<Expr, Diagnostic> {
+        let keyword = self.bump().span;
+        let (tokens, pos) = (self.tokens, self.pos);
+        let next = |n: usize| &tokens[(pos + n).min(tokens.len() - 1)];
+        // Only a `!` on the keyword's line is Rust's `todo!`: inside brackets, where no `Newline`
+        // token ends the line, one on a later line is the next token's business.
+        // `breaks` is sorted, so the lookup is a binary search, and only a `!` pays for it.
+        let same_line = matches!(next(0).kind, TokenKind::Bang) && {
+            let at = self.breaks.partition_point(|&b| b < keyword.end);
+            self.breaks.get(at).is_none_or(|&b| b >= next(0).span.start)
+        };
+        let (at, delete) = match (&next(0).kind, &next(1).kind, &next(2).kind) {
+            (TokenKind::Bang, TokenKind::LParen, TokenKind::RParen) if same_line => {
+                (next(0).span, next(0).span.to(next(2).span))
+            }
+            (TokenKind::Bang, ..) if same_line => (next(0).span, next(0).span),
+            (TokenKind::LParen, TokenKind::RParen, _) => {
+                (next(0).span, next(0).span.to(next(1).span))
+            }
+            (TokenKind::LParen, ..) => {
+                let (args, close) = self.args()?;
+                return Ok(Expr {
+                    kind: ExprKind::Todo { keyword, args },
+                    span: keyword.to(close),
+                });
+            }
+            _ => {
+                return Ok(Expr {
+                    kind: ExprKind::Todo {
+                        keyword,
+                        args: Vec::new(),
+                    },
+                    span: keyword,
+                });
+            }
+        };
+        Err(DiagnosticKind::TodoForm { at, delete }.into())
     }
 
     /// The rest of a string literal with interpolations, after its `StrHead` at `start` with the
@@ -2570,11 +2616,103 @@ mod tests {
         for (src, line, col) in [
             ("fn main() {\n    let match = 1\n}", 2, 9),
             ("class C {\n    enum: i64\n}", 2, 5),
-            ("fn main() {\n    print(todo)\n}", 2, 11),
+            ("fn main() {\n    print(echo)\n}", 2, 11),
             ("fn main() {\n    print(p.type)\n}", 2, 13),
             ("import x", 1, 1),
         ] {
             assert_eq!(parse_err(src), (Code::ReservedWord, line, col), "{src}");
+        }
+    }
+
+    /// `todo` is a keyword, so where a name goes it is reported as any other keyword is.
+    #[test]
+    fn todo_is_not_a_name() {
+        for (src, line, col) in [
+            ("fn main() {\n    let todo = 1\n}", 2, 9),
+            ("fn todo() {}", 1, 4),
+            ("class todo {}", 1, 7),
+        ] {
+            assert_eq!(parse_err(src), (Code::Expected, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn todo_forms() {
+        for (expr, expected) in [
+            ("todo", "(todo)"),
+            ("todo(\"why\")", "(todo \"why\")"),
+            ("todo(\"a\", \"b\")", "(todo \"a\" \"b\")"),
+        ] {
+            let src = format!("fn main() {{\n    {expr}\n}}");
+            assert_eq!(body(&src), format!("(block {expected})"), "{src}");
+        }
+        // A `todo` that ends the file has fewer than three tokens after it.
+        parse_ok("fn main() {}\nconst X = todo");
+        // The arguments are a call's, with its errors.
+        assert_eq!(
+            parse_err("fn main() {\n    todo(1 2)\n}"),
+            (Code::Expected, 2, 12)
+        );
+    }
+
+    /// Each other way of writing `todo`: the error's position, and the line its fix makes.
+    #[test]
+    fn todo_misspelled() {
+        for (line, col, after) in [
+            ("todo()", 9, "todo"),
+            ("todo!", 9, "todo"),
+            ("todo!(\"why\")", 9, "todo(\"why\")"),
+            ("todo!()", 9, "todo"),
+            ("(todo!)", 10, "(todo)"),
+            ("(todo!(\"why\"))", 10, "(todo(\"why\"))"),
+        ] {
+            let src = format!("fn main() {{\n    {line}\n}}");
+            assert_eq!(parse_err(&src), (Code::TodoForm, 2, col), "{src}");
+            assert_eq!(fixed(&src), format!("fn main() {{\n    {after}\n}}"));
+        }
+    }
+
+    /// The line check looks only at the breaks between the keyword and the `!`, however many
+    /// breaks come before the keyword.
+    #[test]
+    fn todo_bang_after_many_lines() {
+        let src = "fn main() {\n\n\n\n    todo!\n}";
+        assert_eq!(parse_err(src), (Code::TodoForm, 5, 9), "{src}");
+    }
+
+    /// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
+    /// update the override there. Each `todo!` once scanned the file's line breaks, so many of
+    /// them were quadratic.
+    #[test]
+    fn many_todo_bangs_parse_in_linear_time() {
+        const ITEMS: usize = 100_000;
+        let parsed = parsed(&"fn f() {\n    todo!\n}\n".repeat(ITEMS));
+        assert_eq!(parsed.diagnostics.len(), ITEMS);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .all(|d| d.code() == Code::TodoForm)
+        );
+    }
+
+    /// Inside parentheses no line break ends `todo`, so it takes the message on the next line.
+    /// Outside them the break ends it (`todo_ends_at_the_line` in the checker's tests).
+    #[test]
+    fn todo_takes_a_message_on_the_next_line_in_parentheses() {
+        assert_eq!(
+            body("fn main() {\n    (todo\n     (\"why\"))\n}"),
+            "(block (todo \"why\"))"
+        );
+    }
+
+    /// A `!` on a later line is not part of `todo`, even inside parentheses, where no line break
+    /// ends it: the `todo` is bare, and the `!` is where its `)` should be.
+    #[test]
+    fn todo_bang_on_the_next_line() {
+        for rest in ["!", "!()", "!(\"why\")"] {
+            let src = format!("fn main() {{\n    (todo\n     {rest})\n}}");
+            assert_eq!(parse_err(&src), (Code::Expected, 3, 6), "{src}");
         }
     }
 

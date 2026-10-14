@@ -210,10 +210,20 @@ fn broken_examples_produce_exactly_their_code() {
     }
 }
 
+/// The codes of `source`, a fixed program of `code`'s explanation. The fix of a `todo` written
+/// another way leaves a `todo`, which always warns, so that warning does not count there.
+fn fixed_codes(code: Code, source: &str) -> Vec<Code> {
+    let mut found = codes(source);
+    if code == Code::TodoForm {
+        found.retain(|&c| c != Code::TodoLeft);
+    }
+    found
+}
+
 #[test]
 fn fixed_examples_check_clean() {
     for &code in Code::ALL {
-        assert_eq!(codes(&explanation(code).fixed), [], "{code:?}");
+        assert_eq!(fixed_codes(code, &explanation(code).fixed), [], "{code:?}");
     }
 }
 
@@ -224,7 +234,7 @@ fn certain_fixes_make_broken_examples_clean() {
     for &code in Code::ALL {
         if let Some((result, count)) = fixed(&explanation(code).broken, code) {
             assert!(count > 0, "{code:?}: no fix was applied");
-            assert_eq!(codes(&result), [], "{code:?}:\n{result}");
+            assert_eq!(fixed_codes(code, &result), [], "{code:?}:\n{result}");
             applied += count;
         }
     }

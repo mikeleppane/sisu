@@ -119,6 +119,39 @@ pub(crate) struct Expr {
     pub(crate) span: Span,
 }
 
+/// The stream a `print` writes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Stdout,
+    Stderr,
+}
+
+impl Stream {
+    /// The runtime's symbol prefix for the stream's print functions.
+    pub(crate) fn symbol_prefix(self) -> &'static str {
+        match self {
+            Stream::Stdout => "sisu_print",
+            Stream::Stderr => "sisu_eprint",
+        }
+    }
+
+    /// The stream's place in an array that holds one entry for each stream.
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Stream::Stdout => 0,
+            Stream::Stderr => 1,
+        }
+    }
+
+    /// The prelude function that writes to the stream.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Stream::Stdout => "print",
+            Stream::Stderr => "eprint",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum ExprKind {
     Int(i64),
@@ -148,7 +181,15 @@ pub(crate) enum ExprKind {
     Wrap(Box<Expr>),
     /// `u8(e)`, `i64(e)` or `char(e)`: `e` converted to the node's own type.
     Convert(Box<Expr>),
-    Print(Box<Expr>),
+    /// `print(operand)` or `eprint(operand)`.
+    Print {
+        stream: Stream,
+        operand: Box<Expr>,
+    },
+    /// `panic(message)`, of type `never`; its span starts where the panic reports.
+    Panic(Box<Expr>),
+    /// `read_line()`, of type `string?`.
+    ReadLine,
     /// `[a, b]`.
     ArrayLit(Vec<Expr>),
     /// `[value; len]`.
@@ -167,6 +208,9 @@ pub(crate) enum ExprKind {
     Chars(Box<Expr>),
     /// `base.bytes()`: the UTF-8 bytes of the string `base`, as a new `[u8]`.
     Bytes(Box<Expr>),
+    /// `base.words()`: the runs of non-white-space characters of the string `base`, as a new
+    /// `[string]`.
+    Words(Box<Expr>),
     /// `string(base)`: a new string that encodes the `[char]` `base`.
     FromChars(Box<Expr>),
     /// `base.sum()`, on an `[i64]`.
@@ -246,6 +290,7 @@ impl Expr {
             | ExprKind::Char(_)
             | ExprKind::Str(_)
             | ExprKind::None
+            | ExprKind::ReadLine
             | ExprKind::Local(_)
             | ExprKind::Move(_) => false,
             ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
@@ -259,11 +304,14 @@ impl Expr {
             | ExprKind::Len(operand)
             | ExprKind::Chars(operand)
             | ExprKind::Bytes(operand)
+            | ExprKind::Words(operand)
             | ExprKind::FromChars(operand)
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
-            | ExprKind::Print(operand)
+            | ExprKind::Print { operand, .. }
+            // A panic ends the process, so nothing before it needs binding for a release.
+            | ExprKind::Panic(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
             ExprKind::Binary { lhs, rhs, .. }
             | ExprKind::Concat { lhs, rhs }
@@ -436,7 +484,9 @@ impl Printer<'_> {
             ExprKind::Field { base, index } => self.field(f, base, *index),
             ExprKind::Wrap(operand) => self.unary(f, "wrap", operand),
             ExprKind::Convert(operand) => self.unary(f, &expr.ty.to_string(), operand),
-            ExprKind::Print(operand) => self.unary(f, "print", operand),
+            ExprKind::Print { stream, operand } => self.unary(f, stream.name(), operand),
+            ExprKind::Panic(message) => self.unary(f, "panic", message),
+            ExprKind::ReadLine => f.write_str("(read_line)"),
             ExprKind::ArrayLit(elements) => {
                 f.write_str("(array")?;
                 self.each(f, elements)?;
@@ -447,6 +497,7 @@ impl Printer<'_> {
             ExprKind::Len(base) => self.unary(f, "len", base),
             ExprKind::Chars(base) => self.unary(f, "chars", base),
             ExprKind::Bytes(base) => self.unary(f, "bytes", base),
+            ExprKind::Words(base) => self.unary(f, "words", base),
             ExprKind::FromChars(base) => self.unary(f, "string", base),
             ExprKind::Sum(base) => self.unary(f, "sum", base),
             ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
@@ -665,6 +716,17 @@ mod tests {
         }
     }
 
+    /// `print(operand)`.
+    fn print_of(operand: Expr) -> Expr {
+        expr(
+            ExprKind::Print {
+                stream: Stream::Stdout,
+                operand: Box::new(operand),
+            },
+            Type::Unit,
+        )
+    }
+
     fn int(n: i64) -> Expr {
         expr(ExprKind::Int(n), Type::I64)
     }
@@ -698,7 +760,7 @@ mod tests {
             },
             Type::Bool,
         );
-        let print = expr(ExprKind::Print(Box::new(chain)), Type::Unit);
+        let print = print_of(chain);
         let if_stmt = expr(
             ExprKind::If {
                 cond: Box::new(x_ne_2),
@@ -903,7 +965,7 @@ mod tests {
             Type::I64,
         );
         let to_char = expr(ExprKind::Convert(Box::new(int(228))), Type::Char);
-        let print = |arg| Stmt::Expr(expr(ExprKind::Print(Box::new(arg)), Type::Unit));
+        let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
             functions: vec![Function {
@@ -921,6 +983,67 @@ mod tests {
     }
 
     #[test]
+    fn eprints_to_standard_error() {
+        // fn f() { eprint(1) }
+        let eprint = expr(
+            ExprKind::Print {
+                stream: Stream::Stderr,
+                operand: Box::new(int(1)),
+            },
+            Type::Unit,
+        );
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(vec![Stmt::Expr(eprint)]),
+            }],
+        };
+        assert_eq!(program.to_string(), "(fn f () unit (block (eprint 1)))");
+    }
+
+    #[test]
+    fn prints_read_line() {
+        // fn f() { read_line() }
+        let read_line = expr(ExprKind::ReadLine, Type::Optional(Box::new(Type::String)));
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(vec![Stmt::Expr(read_line)]),
+            }],
+        };
+        assert_eq!(program.to_string(), "(fn f () unit (block (read_line)))");
+    }
+
+    #[test]
+    fn prints_words() {
+        // fn f(s: string) { s.words() }
+        let s = Box::new(expr(ExprKind::Local(LocalId(0)), Type::String));
+        let words = expr(ExprKind::Words(s), Type::Array(Box::new(Type::String)));
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0)],
+                ret: Type::Unit,
+                locals: vec![param("s", Type::String)],
+                body: block(vec![Stmt::Expr(words)]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            "(fn f ((s#0 string)) unit (block (words s#0)))"
+        );
+    }
+
+    #[test]
     fn prints_strings() {
         // fn f(s: string) { print("a\"\n" + s) }
         let lit = expr(ExprKind::Str("a\"\n".into()), Type::String);
@@ -929,10 +1052,7 @@ mod tests {
             lhs: Box::new(lit),
             rhs: Box::new(s),
         };
-        let print = expr(
-            ExprKind::Print(Box::new(expr(concat, Type::String))),
-            Type::Unit,
-        );
+        let print = print_of(expr(concat, Type::String));
         let program = Program {
             classes: vec![],
             functions: vec![Function {
@@ -958,7 +1078,7 @@ mod tests {
             expr(ExprKind::Local(LocalId(1)), Type::I64),
         ];
         let interp = expr(ExprKind::Interpolate(parts), Type::String);
-        let print = expr(ExprKind::Print(Box::new(interp)), Type::Unit);
+        let print = print_of(interp);
         let program = Program {
             classes: vec![],
             functions: vec![Function {
@@ -986,7 +1106,7 @@ mod tests {
             ))
         };
         let bytes = expr(ExprKind::Bytes(s()), Type::Array(Box::new(Type::U8)));
-        let print = |arg| Stmt::Expr(expr(ExprKind::Print(Box::new(arg)), Type::Unit));
+        let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
             functions: vec![Function {
@@ -1052,6 +1172,24 @@ mod tests {
             program.to_string(),
             r#"(fn f () unit (block (let mut names#0 (array "a")) (append (index names#0 0) "x")))"#
         );
+    }
+
+    #[test]
+    fn prints_panic() {
+        // fn f() { panic("x") }
+        let message = expr(ExprKind::Str("x".into()), Type::String);
+        let panic = expr(ExprKind::Panic(Box::new(message)), Type::Never);
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(vec![Stmt::Expr(panic)]),
+            }],
+        };
+        assert_eq!(program.to_string(), r#"(fn f () unit (block (panic "x")))"#);
     }
 
     fn block_expr(stmts: Vec<Stmt>, value: Option<Expr>) -> Expr {
@@ -1133,6 +1271,19 @@ mod tests {
             rhs: Box::new(expr(ExprKind::Return(None), Type::Never)),
         };
         assert!(expr(is, Type::Bool).exits());
+        // A panic ends the process: only a `return` in its message exits.
+        let panic = |message| expr(ExprKind::Panic(Box::new(message)), Type::Never);
+        assert!(!panic(expr(ExprKind::Str("x".into()), Type::String)).exits());
+        assert!(panic(expr(ExprKind::Return(None), Type::Never)).exits());
+        // A `return` in the string that `words()` splits.
+        let words = |base| {
+            expr(
+                ExprKind::Words(Box::new(base)),
+                Type::Array(Box::new(Type::String)),
+            )
+        };
+        assert!(words(expr(ExprKind::Return(None), Type::Never)).exits());
+        assert!(!words(local(0)).exits());
         // An `if`, a comparison chain and a print with no jump in them.
         assert!(!if_stmt.exits());
         assert!(!block_expr(vec![Stmt::Expr(if_stmt)], Some(int(1))).exits());

@@ -53,7 +53,7 @@ The end-to-end cases are files. The `cases` test binary runs one test per
 
 | Directory | The program must | Expected output |
 | --- | --- | --- |
-| `run/` | exit 0 with empty stderr, in a plain and an `-O2` build, both also under Valgrind, and in a `--rc-checks` build | `<name>.out`: stdout |
+| `run/` | exit 0 with empty stderr unless there is a `<name>.err`, in a plain and an `-O2` build, both also under Valgrind, and in a `--rc-checks` build | `<name>.out`: stdout; optional `<name>.err`: stderr |
 | `run-fail/` | panic with exit code 101, the same in a plain and an `-O2` build | `<name>.out`: stdout; `<name>.err`: stderr |
 | `diagnostics/` | report diagnostics under `sisuc --check`, exiting 1 if one is an error and 0 if all are warnings; a case named `<CODE>.sisu` or `<CODE>-<case>.sisu` reports that code | `<name>.err`: the diagnostics; `<name>.json`: the same under `--format json` |
 
@@ -68,14 +68,38 @@ $ SISU_BLESS=1 cargo nextest run -E 'binary(cases)'
 
 `SISU_BLESS=1` rewrites the expected files of cases that pass every other
 check, and only those. It never creates a file. Any other file in these
-directories fails the run: a `.out`, `.err` or `.json` without its `.sisu`, an
-expected file that the directory's mode does not read, or a hidden file.
+directories fails the run: a `.out`, `.err`, `.in` or `.json` without its
+`.sisu`, an expected file that the directory's mode does not read, or a hidden
+file.
+
+A `run/` or `run-fail/` case that reads standard input has a `<name>.in` beside
+it, which every run of the case gets on its standard input: plain, `-O2`, both
+Valgrind runs and `--rc-checks`. Without the file, standard input is empty.
+Write the file with `printf` or a script, byte for byte: the formatting hooks
+leave the `.in`, `.out` and `.err` files of these directories alone, so a
+`\r\n`, a lone `\r` or a last line without a newline stays as written. Input
+that is large or generated, such as a line longer than the runtime's input
+buffer, goes in a `programs.rs` test instead.
+
+A `run/` or `run-fail/` case that takes arguments gives them in a marker line,
+`// args: <arg> <arg> ...`, at the start of a line. Every run of the case gets
+them, as it gets the `.in` file. The harness splits the line on ASCII spaces
+and drops empty pieces, with no quoting, so `// args:` alone gives none, as
+no marker does. A case has one such line at most; a second fails the case. An
+argument that holds a space, or that is not valid UTF-8, goes in a
+`programs.rs` test instead, which can pass any bytes.
+
+A `run/` case that writes to standard error on purpose, with `eprint`, has a
+`<name>.err` beside it. The plain, `-O2` and `--rc-checks` runs must all write
+exactly that to stderr. Without the file, stderr must stay empty. The Valgrind
+runs' stderr holds Valgrind's own log, so they check only stdout and the exit
+code. To add the file to a case, `touch` it like any expected file.
 
 A `run/` case whose output depends on a value crossing a real call says so
 with a marker line, `// o2-calls: <caller> <callee> <count>`. The test then
 checks that the `-O2` IR of `<caller>` holds exactly `<count>` calls to
 `<callee>`, because the inliner can fold a call away and keep the output
-the same. Every function except the C `main` is internal, so `-O2` would
+the same. A count of 0 is rejected: it holds when every call is gone. Every function except the C `main` is internal, so `-O2` would
 inline a caller with one call site and the caller would vanish from the IR.
 The check therefore runs `sisuc -O2 --emit ir` once for each distinct
 `<caller>`, with the environment variable `SISU_KEEP_FUNCTIONS` set to that
@@ -87,14 +111,16 @@ calls to `<callee>` in the body of `<caller>` after `-O2`. It fails with "no
 function named" if `<caller>` or `<callee>` does not exist, and with
 "takes parameters" if `<caller>` has any: kept as a function of its own, such
 a caller could hold a call that its real call sites decide away, so mark a
-caller without parameters, such as `main`. The check measures the marked caller
-as a standalone function. In a real build the caller is inlined, and a call to a
-callee that LLVM infers as `memory(none)` or `readonly` can then be merged with an
-identical call at the call site. So mark calls to callees that write memory, as
-every current marker does. The old external-linkage check measured the standalone
-caller the same way. Interprocedural constant propagation also runs on internal
-functions, so a callee that keeps its calls recurses to a depth that the call sites
-do not fix; see `handover.sisu`.
+caller without parameters, such as `main`. `main(args)` is the exception:
+only the C `main` calls it, with arguments known at run time. The check
+measures the marked caller as a standalone function. In a real build the
+caller is inlined, and a call to a callee that LLVM infers as `memory(none)`
+or `readonly` can then be merged with an identical call at the call site. So
+mark calls to callees that write memory, as every current marker does. The
+old external-linkage check measured the standalone caller the same way.
+Interprocedural constant propagation also runs on internal functions, so a
+callee that keeps its calls recurses to a depth that the call sites do not
+fix; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack
 tests in `programs.rs` run.
 

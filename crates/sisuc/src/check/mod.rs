@@ -5,6 +5,7 @@ mod array;
 mod constant;
 mod expr;
 mod place;
+mod prelude;
 mod stmt;
 mod string;
 
@@ -18,6 +19,7 @@ use crate::diagnostic::{
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 use constant::ConstInfo;
+use prelude::PRELUDE;
 
 /// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
 /// still known (an `if` with one failed branch takes the other's), else it is the poison
@@ -363,7 +365,7 @@ impl Checker {
         kind: Definition,
         name: &ast::Ident,
     ) -> bool {
-        if name.name.as_str() == "print" {
+        if PRELUDE.contains(&name.name.as_str()) {
             self.report(defined_twice(kind, name, Earlier::BuiltIn));
             return false;
         }
@@ -517,8 +519,9 @@ impl Checker {
         seen
     }
 
-    /// Reports a missing `main`, or one with parameters or a return type. A `main` rejected as
-    /// defined twice is not missing: its error is reported already.
+    /// Reports a missing `main`, or one that takes anything but nothing or one `[string]`, or
+    /// that returns a value. A `main` rejected as defined twice is not missing, and a type in
+    /// its signature that did not resolve is not wrong: each error is reported already.
     fn check_main(&mut self, declared: &[(&ast::Function, Option<tir::ClassId>)]) {
         match self.function_ids.get(&Symbol::intern("main")) {
             None if declared
@@ -527,9 +530,15 @@ impl Checker {
             None => self.report(DiagnosticKind::NoMain),
             Some(Declared::Broken) => {}
             Some(Declared::Known(id)) => {
-                let main = declared[id.0].0;
-                if !main.params.is_empty() || main.ret.is_some() {
-                    self.report(DiagnosticKind::MainSignature { at: main.name.span });
+                let Signature { params, ret, .. } = &self.signatures[id.0];
+                if params.iter().any(Option::is_none) || ret.is_none() {
+                    return;
+                }
+                let args = Some(Type::Array(Box::new(Type::String)));
+                let takes = params.is_empty() || *params == [args];
+                if !takes || *ret != Some(Type::Unit) {
+                    let at = declared[id.0].0.name.span;
+                    self.report(DiagnosticKind::MainSignature { at });
                 }
             }
         }

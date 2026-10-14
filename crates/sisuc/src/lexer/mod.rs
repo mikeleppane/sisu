@@ -39,6 +39,7 @@ pub(crate) enum TokenKind {
     /// A word that a later milestone gives meaning. The milestone that does so gives it its own
     /// variant and removes it from `keyword_or_ident`.
     Reserved(&'static str),
+    Todo,
     If,
     Else,
     While,
@@ -116,6 +117,7 @@ impl TokenKind {
             TokenKind::Mut => "Mut",
             TokenKind::Var => "Var",
             TokenKind::Reserved(_) => "Reserved",
+            TokenKind::Todo => "Todo",
             TokenKind::If => "If",
             TokenKind::Else => "Else",
             TokenKind::While => "While",
@@ -186,6 +188,7 @@ impl TokenKind {
             TokenKind::Mut => "mut",
             TokenKind::Var => "var",
             TokenKind::Reserved(word) => word,
+            TokenKind::Todo => "todo",
             TokenKind::If => "if",
             TokenKind::Else => "else",
             TokenKind::While => "while",
@@ -609,7 +612,7 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 fn can_end_statement(token: Option<&Token>) -> bool {
     use TokenKind::{
         Break, Char, Continue, False, Ident, Int, NoneKw, Question, RBrace, RBracket, RParen,
-        Return, SelfKw, Str, StrTail, True, Underscore,
+        Return, SelfKw, Str, StrTail, Todo, True, Underscore,
     };
     token.is_some_and(|t| {
         matches!(
@@ -623,6 +626,7 @@ fn can_end_statement(token: Option<&Token>) -> bool {
                 | True
                 | False
                 | Return
+                | Todo
                 | Break
                 | Continue
                 | NoneKw
@@ -816,7 +820,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "type" => TokenKind::Reserved("type"),
         "weak" => TokenKind::Reserved("weak"),
         "test" => TokenKind::Reserved("test"),
-        "todo" => TokenKind::Reserved("todo"),
+        "todo" => TokenKind::Todo,
         "echo" => TokenKind::Reserved("echo"),
         "interface" => TokenKind::Reserved("interface"),
         "extern" => TokenKind::Reserved("extern"),
@@ -1015,7 +1019,6 @@ mod tests {
             "type",
             "weak",
             "test",
-            "todo",
             "echo",
             "interface",
             "extern",
@@ -1033,6 +1036,12 @@ mod tests {
             kinds(&format!("{} matches type_ pubx ask", words.join(" "))),
             expected
         );
+    }
+
+    #[test]
+    fn todo_token() {
+        use TokenKind::{Eof, Newline, Todo};
+        assert_eq!(all_kinds("todo\ntodo"), [Todo, Newline, Todo, Newline, Eof]);
     }
 
     #[test]

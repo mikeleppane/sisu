@@ -41,6 +41,7 @@ codes! {
     AssignToImmutable = "E0001",
     UnreachableCode = "W0001",
     NeverReassigned = "W0002",
+    TodoLeft = "W0003",
     LeadingBinaryMinus = "E0002",
     UnclosedBracket = "E0003",
     BraceOnNewLine = "E0004",
@@ -138,6 +139,7 @@ codes! {
     EmptyInterpolation = "E0096",
     CommentInInterpolation = "E0097",
     CannotInterpolate = "E0098",
+    TodoForm = "E0099",
 }
 
 impl Code {
@@ -261,7 +263,7 @@ pub(crate) enum DiagnosticKind {
     },
     /// A program with no `main`.
     NoMain,
-    /// A `main` at `at` that takes parameters or returns a value.
+    /// A `main` at `at` that takes anything but nothing or one `[string]`, or returns a value.
     MainSignature { at: Span },
     /// The type `name`, at `at`, which is not built in and names no class.
     UnknownType {
@@ -400,17 +402,22 @@ pub(crate) enum DiagnosticKind {
         owner: String,
         at: Span,
     },
-    /// A `print` at `at` with no argument, several, or one it cannot print. `class` is the class
-    /// of an object argument, and `at` is then that argument.
-    PrintArgument { at: Span, class: Option<String> },
-    /// The argument at `at` of a `print`, of the array type `ty` or an optional of one.
+    /// A call of `function` (`print` or `eprint`) at `at` with no argument, several, or one it
+    /// cannot print. `class` is the class of an object argument, and `at` is then that argument.
+    PrintArgument {
+        function: &'static str,
+        at: Span,
+        class: Option<String>,
+    },
+    /// The argument at `at` of a call of `function`, of the array type `ty` or an optional of one.
     PrintArray {
+        function: &'static str,
         ty: String,
         optional: bool,
         at: Span,
     },
-    /// The argument at `at` of a `print`, which never finishes.
-    PrintNever { at: Span },
+    /// The argument at `at` of a call of `function`, which never finishes.
+    PrintNever { function: &'static str, at: Span },
     /// The optional at `at` that a member, an index or a `for` uses as a value. `value` is its
     /// path as written, when it has one. `access` is the `.` before the member, and any space or
     /// comment around it, when a `?.` can take its place.
@@ -534,6 +541,11 @@ pub(crate) enum DiagnosticKind {
         help: Option<InterpolateHelp>,
         at: Span,
     },
+    /// The `todo` at `at`, which panics when it runs.
+    TodoLeft { at: Span },
+    /// A `todo` written as Rust's `todo!` or as `todo()`: `at` is the first extra token, and
+    /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`.
+    TodoForm { at: Span, delete: Span },
 }
 
 /// What a literal that is not closed is the literal of.
@@ -631,7 +643,7 @@ pub(crate) enum Earlier {
         kind: Definition,
         owner: Option<String>,
     },
-    /// In the language: `print`.
+    /// In the language: a prelude function, such as `print`.
     BuiltIn,
 }
 
@@ -659,6 +671,8 @@ pub(crate) enum MismatchFix {
         call: Span,
         arg: Span,
     },
+    /// A value that interpolation prints, on one line, as the literal `"{value}"`.
+    WrapInString(Span),
 }
 
 /// An operand of a `+` that interpolation joins: where it is written, and whether it is a
@@ -838,6 +852,8 @@ impl DiagnosticKind {
             DiagnosticKind::EmptyInterpolation { .. } => Code::EmptyInterpolation,
             DiagnosticKind::CommentInInterpolation { .. } => Code::CommentInInterpolation,
             DiagnosticKind::CannotInterpolate { .. } => Code::CannotInterpolate,
+            DiagnosticKind::TodoLeft { .. } => Code::TodoLeft,
+            DiagnosticKind::TodoForm { .. } => Code::TodoForm,
         }
     }
 }
@@ -1143,7 +1159,11 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, Span::new(0, 0), "no `main` function")
             }
             DiagnosticKind::MainSignature { at } => {
-                Diagnostic::coded(code, at, "`main` takes no parameters and returns no value")
+                Diagnostic::coded(
+                    code,
+                    at,
+                    "`main` takes no parameters, or one `[string]`, and returns no value",
+                )
             }
             DiagnosticKind::UnknownType {
                 name,
@@ -1247,6 +1267,20 @@ impl From<DiagnosticKind> for Diagnostic {
                             },
                             Edit {
                                 span: Span::new(arg.end, call.end),
+                                replacement: "}\"".to_string(),
+                            },
+                        ],
+                    }),
+                    Some(MismatchFix::WrapInString(value)) => d.with_fix(Fix {
+                        message: "use interpolation".to_string(),
+                        certain: true,
+                        edits: vec![
+                            Edit {
+                                span: Span::new(value.start, value.start),
+                                replacement: "\"{".to_string(),
+                            },
+                            Edit {
+                                span: Span::new(value.end, value.end),
                                 replacement: "}\"".to_string(),
                             },
                         ],
@@ -1468,25 +1502,38 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 format!("`{name}` is a field of `{owner}`, not a method"),
             ),
-            DiagnosticKind::PrintArgument { at, class } => {
-                let takes = "`print` takes one `i64`, `u8`, `bool`, `char` or `string`";
+            DiagnosticKind::PrintArgument {
+                function,
+                at,
+                class,
+            } => {
+                let takes = format!("`{function}` takes one `i64`, `u8`, `bool`, `char` or `string`");
                 match class {
-                    Some(class) => Diagnostic::coded(code, at, format!("cannot print `{class}`"))
-                        .with_help(takes),
+                    Some(class) => {
+                        Diagnostic::coded(code, at, format!("cannot {function} `{class}`"))
+                            .with_help(takes)
+                    }
                     None => Diagnostic::coded(code, at, takes),
                 }
             }
-            DiagnosticKind::PrintArray { ty, optional, at } => {
+            DiagnosticKind::PrintArray {
+                function,
+                ty,
+                optional,
+                at,
+            } => {
                 let help = if optional {
-                    "unwrap it with `if let`, then print each element in a `for` loop"
+                    format!("unwrap it with `if let`, then {function} each element in a `for` loop")
                 } else {
-                    "print each element in a `for` loop"
+                    format!("{function} each element in a `for` loop")
                 };
-                Diagnostic::coded(code, at, format!("cannot print `{ty}`")).with_help(help)
+                Diagnostic::coded(code, at, format!("cannot {function} `{ty}`")).with_help(help)
             }
-            DiagnosticKind::PrintNever { at } => {
-                Diagnostic::coded(code, at, "`print` never runs: its argument never finishes")
-            }
+            DiagnosticKind::PrintNever { function, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{function}` never runs: its argument never finishes"),
+            ),
             DiagnosticKind::MayBeNone { value, at, access } => {
                 let d = Diagnostic::coded(code, at, format!("{} may be `None`", named(value)));
                 match access {
@@ -1762,6 +1809,22 @@ impl From<DiagnosticKind> for Diagnostic {
                     None => d,
                 }
             }
+            DiagnosticKind::TodoLeft { at } => {
+                Diagnostic::coded(code, at, "`todo` panics when it runs")
+            }
+            DiagnosticKind::TodoForm { at, delete } => Diagnostic::coded(
+                code,
+                at,
+                "`todo` takes one message in parentheses, or none",
+            )
+            .with_fix(Fix {
+                message: "remove it".to_string(),
+                certain: true,
+                edits: vec![Edit {
+                    span: delete,
+                    replacement: String::new(),
+                }],
+            }),
         }
     }
 }

@@ -37,9 +37,12 @@ any type.
 
 **Panic**:
 The program stopping at runtime with `sisu: panic at <file>:<line>:<col>:
-<message>` on stderr and exit code 101. A failed write to standard output has
-no location: `sisu: panic: <message>`.
+<message>` on stderr and exit code 101. A failed write to standard output or
+read from standard input has no location: `sisu: panic: <message>`.
 _Avoid_: trap, crash, abort
+
+**Prelude**:
+The names visible in every file without an import.
 
 **RC check**:
 A check that a program built with `sisuc --rc-checks` makes on its reference

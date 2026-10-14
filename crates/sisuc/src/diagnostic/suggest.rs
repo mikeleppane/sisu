@@ -25,6 +25,15 @@ pub(crate) fn suggestion<'a>(
     })
 }
 
+/// The prelude function that another language's name for it means, for a name too far from it
+/// for `closest`: `readln` and `input` are `read_line`.
+pub(crate) fn alias(name: &str) -> Option<&'static str> {
+    match name {
+        "readln" | "input" => Some("read_line"),
+        _ => None,
+    }
+}
+
 /// The candidate nearest to `name`: within `max(1, len / 3)` edits of it, or equal to it
 /// ignoring ASCII case. A tie goes to the alphabetically first. `name` itself never qualifies.
 pub(crate) fn closest<'a>(

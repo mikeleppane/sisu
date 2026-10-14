@@ -31,10 +31,28 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(many_unclosed_strings_lex_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Each `todo!` once scanned the file's line breaks, so many of them were quadratic and this test
+# hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_todo_bangs_parse_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # Each `u8` parameter around a join would check it twice over, so nested joins would be
 # exponential and this test would hang instead of failing.
 [[profile.default.overrides]]
 filter = 'test(nested_joins_check_in_quadratic_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# A harness that writes all of standard input before it reads the output would fill both pipes
+# and hang on these tests instead of failing them.
+[[profile.default.overrides]]
+filter = "binary(programs) & (test(stdin_larger_than_a_pipe) | test(program_exiting_before_its_input_ends))"
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# Each word once rescanned the line from its start, so a long line was quadratic and this test
+# hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'binary(programs) & test(words_is_linear)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
 [[profile.default.scripts]]
@@ -47,7 +65,7 @@ valgrind = { max-threads = 4 }
 
 # The `bless_` and `same_name_in_two_modes` fixtures call `support::run`, which runs Valgrind.
 [[profile.default.overrides]]
-filter = "binary(programs) & (test(allocation_counts) | test(valgrind_reports_a_cycle) | test(/^bless_/) | test(same_name_in_two_modes))"
+filter = "binary(programs) & (test(allocation_counts) | test(valgrind_reports_a_cycle) | test(read_line_refills_its_buffer) | test(/^bless_/) | test(same_name_in_two_modes))"
 test-group = "valgrind"
 
 # Each case compiles twice and runs under Valgrind; a hang is killed after three minutes. The

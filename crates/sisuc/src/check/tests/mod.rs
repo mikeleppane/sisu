@@ -10,6 +10,7 @@ mod constants;
 mod for_loops;
 mod patterns;
 mod places;
+mod prelude;
 mod shadowing;
 mod strings;
 mod u8;
@@ -144,40 +145,34 @@ fn duplicate_function() {
 }
 
 #[test]
-fn print_is_built_in() {
-    diagnostic(
-        "fn print() {}\nfn main() {}",
-        Code::DefinedTwice,
-        (1, 4, "print"),
-        &[],
-    );
-}
-
-#[test]
 fn missing_main() {
     let src = "fn f() {}";
     diagnostic(src, Code::NoMain, (1, 1, ""), &[]);
     assert_eq!(diags(src)[0].span(), Span::new(0, 0));
 }
 
+/// `main` takes no parameters or one `[string]` of any name, and returns no value. A type that
+/// does not resolve is reported once, as unknown, and not again as a wrong signature.
 #[test]
-fn main_with_params() {
-    diagnostic(
-        "fn main(x: i64) {}",
-        Code::MainSignature,
-        (1, 4, "main"),
-        &[],
-    );
-}
-
-#[test]
-fn main_with_return_type() {
-    diagnostic(
-        "fn main() -> i64 { 0 }",
-        Code::MainSignature,
-        (1, 4, "main"),
-        &[],
-    );
+fn main_signatures() {
+    let signature = (Code::MainSignature, (1, 4));
+    for (src, expected) in [
+        ("fn main() {}", vec![]),
+        ("fn main(args: [string]) {}", vec![]),
+        ("fn main(xs: [string]) {}", vec![]),
+        ("fn main(argc: i64, argv: [string]) {}", vec![signature]),
+        ("fn main() -> i64 { 0 }", vec![signature]),
+        ("fn main(args: [i64]) {}", vec![signature]),
+        ("fn main(x: i64) {}", vec![signature]),
+        ("fn main(args: [string]?) {}", vec![signature]),
+        (
+            "fn main(args: [Bogus]) {}",
+            vec![(Code::UnknownType, (1, 16))],
+        ),
+        ("fn main() -> Bogus {}", vec![(Code::UnknownType, (1, 14))]),
+    ] {
+        codes(src, &expected);
+    }
 }
 
 #[test]
@@ -1210,16 +1205,6 @@ fn class_defined_twice() {
         .map(|(span, _)| at(src, *span))
         .collect();
     assert_eq!(secondary, [(1, 7)]);
-}
-
-#[test]
-fn class_named_print() {
-    diagnostic(
-        "class print {}\nfn main() {}",
-        Code::DefinedTwice,
-        (1, 7, "print"),
-        &[],
-    );
 }
 
 #[test]
@@ -2572,9 +2557,8 @@ fn coalesce_left_not_optional() {
 
 #[test]
 fn coalesce_never() {
-    codes(
+    clean(
         "fn f(x: i64?, c: bool) -> i64 {\n    x ?? if c { return 0 } else { return 1 }\n}\nfn main() {}",
-        &[(Code::NoValue, (2, 10))],
     );
 }
 
@@ -2971,7 +2955,12 @@ fn missing_function_suggests_the_closest() {
 
 #[test]
 fn missing_function_suggests_a_class_a_builtin_or_a_conversion() {
-    for (name, candidate) in [("prnt", "print"), ("i6", "i64"), ("u", "u8")] {
+    for (name, candidate) in [
+        ("prnt", "print"),
+        ("pnic", "panic"),
+        ("i6", "i64"),
+        ("u", "u8"),
+    ] {
         let src = format!(
             "class Tree {{\n    value: i64\n}}\nfn main() {{\n    let t = 1\n    {name}(t)\n}}"
         );
