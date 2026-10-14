@@ -99,7 +99,7 @@ A `run/` case whose output depends on a value crossing a real call says so
 with a marker line, `// o2-calls: <caller> <callee> <count>`. The test then
 checks that the `-O2` IR of `<caller>` holds exactly `<count>` calls to
 `<callee>`, because the inliner can fold a call away and keep the output
-the same. Every function except the C `main` is internal, so `-O2` would
+the same. A count of 0 is rejected: it holds when every call is gone. Every function except the C `main` is internal, so `-O2` would
 inline a caller with one call site and the caller would vanish from the IR.
 The check therefore runs `sisuc -O2 --emit ir` once for each distinct
 `<caller>`, with the environment variable `SISU_KEEP_FUNCTIONS` set to that
