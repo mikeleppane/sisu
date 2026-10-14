@@ -12,7 +12,7 @@ pub(crate) use registry::{
     InterpolateHelp, Join, LetField, Literal, LiteralKind, MismatchFix, Operand, Panic,
     SemicolonPlace, Unwrap,
 };
-pub(crate) use suggest::{Suggestion, suggestion};
+pub(crate) use suggest::{Suggestion, alias, suggestion};
 
 /// A byte range of the source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

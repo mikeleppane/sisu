@@ -1,0 +1,8 @@
+error[E0059]: `eprint` takes one `i64`, `u8`, `bool`, `char` or `string`
+ --> E0059-eprint.sisu:2:5
+  |
+2 |     eprint()
+  |     ^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0059

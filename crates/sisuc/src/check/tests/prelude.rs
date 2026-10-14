@@ -1,4 +1,4 @@
-//! The prelude: `print` and `panic`, the names no top-level item can take, and `todo`.
+//! The prelude: `print`, `eprint`, `panic` and `read_line`, the names no top-level item can take, and `todo`.
 
 use super::*;
 
@@ -142,10 +142,72 @@ fn coalesce_unit_is_not_a_value() {
     );
 }
 
+/// `eprint` is `print` to standard error: the same operand rules, and a node of its own.
+#[test]
+fn eprint_lowers() {
+    let (program, ds) = checked("fn main() {\n    eprint(1)\n}");
+    assert!(ds.is_empty(), "{ds:?}");
+    let program = program.expect("no errors");
+    assert!(program.to_string().contains("(eprint 1)"), "{program}");
+}
+
+/// `eprint`'s argument errors are `print`'s: in each row, the body, the code, and where it is
+/// reported (the call for a count, the argument otherwise).
+#[test]
+fn eprint_argument_errors() {
+    let class = "class P {\n    x: i64\n}\n";
+    for (statement, code, pos) in [
+        ("eprint()", Code::PrintArgument, (5, 5)),
+        ("eprint(1, 2)", Code::PrintArgument, (5, 5)),
+        ("eprint(P(x: 1))", Code::PrintArgument, (5, 12)),
+        ("eprint([1])", Code::PrintArray, (5, 12)),
+        ("eprint(panic(\"x\"))", Code::PrintNever, (5, 12)),
+    ] {
+        codes(
+            &format!("{class}fn main() {{\n    {statement}\n}}"),
+            &[(code, pos)],
+        );
+    }
+}
+
+#[test]
+fn read_line_lowers() {
+    let (program, ds) = checked("fn main() {\n    let s = read_line()\n}");
+    assert!(ds.is_empty(), "{ds:?}");
+    let program = program.expect("no errors");
+    assert!(program.to_string().contains("(read_line)"), "{program}");
+    assert_eq!(
+        program.functions[0].locals[0].ty,
+        Type::Optional(Box::new(Type::String))
+    );
+}
+
+#[test]
+fn read_line_argument_count() {
+    codes(&body("", "read_line(1)"), &[(Code::ArgumentCount, (2, 5))]);
+}
+
+/// A name from another language, near a prelude name or on its alias list, gets the
+/// unknown-function code with the prelude name as its fix.
+#[test]
+fn renamed_functions() {
+    for (call, fixed) in [
+        ("println(1)", "print(1)"),
+        ("eprintln(1)", "eprint(1)"),
+        ("readLine()", "read_line()"),
+        ("readln()", "read_line()"),
+        ("input()", "read_line()"),
+    ] {
+        let src = body("", call);
+        codes(&src, &[(Code::FunctionNotFound, (2, 5))]);
+        assert_eq!(applied(&src, &diags(&src)[0]), body("", fixed));
+    }
+}
+
 /// No top-level function, class or constant takes a prelude name.
 #[test]
 fn prelude_defined_twice() {
-    for name in ["panic", "print"] {
+    for name in ["panic", "print", "eprint", "read_line"] {
         for (item, col) in [
             (format!("fn {name}() {{}}"), 4),
             (format!("class {name} {{}}"), 7),

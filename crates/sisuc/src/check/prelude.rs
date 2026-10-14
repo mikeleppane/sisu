@@ -1,16 +1,16 @@
-//! The prelude: the functions every file sees without an import, `print` and `panic`. No
-//! top-level function, class or constant takes one of their names. `todo`, a keyword that
-//! panics as `panic` does, is checked here too.
+//! The prelude: the functions every file sees without an import, `print`, `eprint`, `panic`
+//! and `read_line`. No top-level function, class or constant takes one of their names. `todo`, a
+//! keyword that panics as `panic` does, is checked here too.
 
 use super::array::pair;
 use super::expr::typed;
 use super::{Checked, Checker, Poisoned, payload, type_of};
 use crate::ast;
 use crate::diagnostic::{DiagnosticKind, MismatchFix, Span};
-use crate::tir::{self, Type};
+use crate::tir::{self, Stream, Type};
 
 /// The prelude's names.
-pub(super) const PRELUDE: [&str; 2] = ["print", "panic"];
+pub(super) const PRELUDE: [&str; 4] = ["print", "eprint", "panic", "read_line"];
 
 impl Checker {
     /// A call of the prelude function `callee`; `None` when `callee` names none.
@@ -21,17 +21,22 @@ impl Checker {
         args: &[ast::Arg],
     ) -> Option<Checked> {
         match callee.name.as_str() {
-            "print" => Some(self.print(span, args)),
+            "print" => Some(self.print(span, args, Stream::Stdout)),
+            "eprint" => Some(self.print(span, args, Stream::Stderr)),
             // The panic is the callee's, not the parentheses' around the call.
             "panic" => Some(self.panic(Span::new(callee.span.start, span.end), args)),
+            "read_line" => Some(self.read_line(span, args)),
             _ => None,
         }
     }
 
-    fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
+    /// `print(x)` or `eprint(x)`, by `stream`.
+    fn print(&mut self, span: Span, args: &[ast::Arg], stream: Stream) -> Checked {
+        let function = stream.name();
         // Not `value()`: a `unit` argument needs this code, not "expression has no value".
         let wrong = || {
             DiagnosticKind::PrintArgument {
+                function,
                 at: span,
                 class: None,
             }
@@ -46,23 +51,32 @@ impl Checker {
         let checked = self.expr(&arg.value, None);
         let error = match type_of(&checked) {
             Some(ty) if matches!(payload(ty), Type::Array(_)) => DiagnosticKind::PrintArray {
+                function,
                 ty: self.type_name(ty),
                 optional: matches!(ty, Type::Optional(_)),
                 at: arg.value.span,
             }
             .into(),
             Some(ty @ Type::Class(_)) => DiagnosticKind::PrintArgument {
+                function,
                 at: arg.value.span,
                 class: Some(self.type_name(ty)),
             }
             .into(),
             Some(Type::Unit | Type::Optional(_)) => wrong(),
-            Some(Type::Never) => DiagnosticKind::PrintNever { at: arg.value.span }.into(),
+            Some(Type::Never) => DiagnosticKind::PrintNever {
+                function,
+                at: arg.value.span,
+            }
+            .into(),
             _ => {
                 let kind = checked
                     .ok()
                     .filter(|_| !labeled)
-                    .map(|arg| tir::ExprKind::Print(Box::new(arg)));
+                    .map(|operand| tir::ExprKind::Print {
+                        stream,
+                        operand: Box::new(operand),
+                    });
                 return typed(span, Type::Unit, labeled, kind);
             }
         };
@@ -74,7 +88,7 @@ impl Checker {
     fn panic(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
         let labeled = self.labels(args);
         let [arg] = args else {
-            return self.message_count("panic", span, args);
+            return self.argument_count("panic", 1, span, args);
         };
         let message = self.message(&arg.value);
         panics(span, labeled, message)
@@ -100,16 +114,31 @@ impl Checker {
                     tir::ExprKind::Concat { lhs, rhs }
                 })
             }),
-            _ => return self.message_count("todo", span, args),
+            _ => return self.argument_count("todo", 1, span, args),
         };
         panics(keyword, labeled, message)
     }
 
-    /// `name`'s count error: it takes one message, and `args` is not one.
-    fn message_count(&mut self, name: &str, span: Span, args: &[ast::Arg]) -> Checked {
+    /// `read_line()`, of type `string?`; it takes no arguments.
+    fn read_line(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
+        if !args.is_empty() {
+            return self.argument_count("read_line", 0, span, args);
+        }
+        let ty = Type::Optional(Box::new(Type::String));
+        typed(span, ty, false, Some(tir::ExprKind::ReadLine))
+    }
+
+    /// `name`'s count error: it takes `want` arguments, and `args` is not that many.
+    fn argument_count(
+        &mut self,
+        name: &str,
+        want: usize,
+        span: Span,
+        args: &[ast::Arg],
+    ) -> Checked {
         self.report(DiagnosticKind::ArgumentCount {
             name: name.to_string(),
-            want: 1,
+            want,
             found: args.len(),
             at: span,
         });

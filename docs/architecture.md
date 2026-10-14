@@ -113,19 +113,23 @@ startup code and libc and writes the executable. The temporary file is
 removed whether or not the link succeeds.
 
 **Runtime** (`crates/runtime`). A Rust static library with a C ABI, linked
-into every program. Generated code calls it to print values, to panic and to
-allocate and free objects, arrays and strings: `sisu_print_int`,
-`sisu_print_bool`, `sisu_flush_stdout`, `sisu_panic`, `sisu_panic_message`,
-`sisu_panic_bounds`,
+into every program. Generated code calls it to print values, to read lines,
+to panic and to allocate and free objects, arrays and strings:
+`sisu_print_int`, `sisu_print_bool`, `sisu_eprint_int`, `sisu_eprint_bool`,
+`sisu_flush_stdout`, `sisu_panic`, `sisu_panic_message`, `sisu_panic_bounds`,
 `sisu_alloc`, `sisu_realloc` and `sisu_free`. Text lives in `text.rs`:
-`sisu_print_char`, `sisu_print_str`, `sisu_str_compare`, and `sisu_write_int`,
-`sisu_write_bool` and `sisu_write_char`, which interpolation calls, and
+`sisu_print_char`, `sisu_print_str`, `sisu_eprint_char`, `sisu_eprint_str`,
+`sisu_str_compare`, and `sisu_write_int`, `sisu_write_bool` and
+`sisu_write_char`, which interpolation calls, and
 `sisu_utf8_count`, `sisu_utf8_decode`, `sisu_utf8_len` and `sisu_utf8_encode`,
-which `chars()` and `string(cs)` call. `print(x)` and `"{x}"` share one
-formatter per type. The print functions write into a buffer that the runtime
-owns, and `main` calls `sisu_flush_stdout` before it returns. The runtime counts
-the blocks that are allocated and not yet freed. A program built with
-`--rc-checks` calls `sisu_rc_fault` when a count check fails, and
+which `chars()` and `string(cs)` call, and `sisu_words_count` and
+`sisu_word_next`, which `words()` calls. `stdin.rs` holds `sisu_read_line`,
+which `read_line()` calls. `print(x)` and `"{x}"` share one formatter per
+type. The `sisu_print_*` functions write into a buffer that the runtime owns,
+and `main` calls `sisu_flush_stdout` before it returns. The `sisu_eprint_*`
+functions write each value at once, in one write to standard error. The
+runtime counts the blocks that are allocated and not yet freed. A program
+built with `--rc-checks` calls `sisu_rc_fault` when a count check fails, and
 `sisu_rc_check_exit` at a normal exit, which fails when that number is not
 zero. Both exit with code 102.
 

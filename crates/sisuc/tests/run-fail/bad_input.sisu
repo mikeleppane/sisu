@@ -1,0 +1,6 @@
+// The panic message holds the line read from the case's `.in`.
+fn main() {
+    let line = read_line() ?? "none"
+    print(line)                 // x
+    panic("bad input: {line}")
+}

@@ -113,6 +113,7 @@ impl Walk {
             | ExprKind::Char(_)
             | ExprKind::Str(_)
             | ExprKind::None
+            | ExprKind::ReadLine
             | ExprKind::Local(_)
             | ExprKind::Move(_) => {}
             ExprKind::Call { args, .. }
@@ -127,11 +128,12 @@ impl Walk {
             | ExprKind::Len(operand)
             | ExprKind::Chars(operand)
             | ExprKind::Bytes(operand)
+            | ExprKind::Words(operand)
             | ExprKind::FromChars(operand)
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
-            | ExprKind::Print(operand)
+            | ExprKind::Print { operand, .. }
             | ExprKind::Unary { operand, .. } => self.expr(operand),
             ExprKind::Binary {
                 op: BinaryOp::And | BinaryOp::Or,

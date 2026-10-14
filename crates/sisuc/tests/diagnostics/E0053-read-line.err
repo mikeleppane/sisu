@@ -1,0 +1,8 @@
+error[E0053]: `read_line` takes 0 arguments, found 1
+ --> E0053-read-line.sisu:2:16
+  |
+2 |     let line = read_line(1)
+  |                ^^^^^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0053

@@ -53,7 +53,7 @@ The end-to-end cases are files. The `cases` test binary runs one test per
 
 | Directory | The program must | Expected output |
 | --- | --- | --- |
-| `run/` | exit 0 with empty stderr, in a plain and an `-O2` build, both also under Valgrind, and in a `--rc-checks` build | `<name>.out`: stdout |
+| `run/` | exit 0 with empty stderr unless there is a `<name>.err`, in a plain and an `-O2` build, both also under Valgrind, and in a `--rc-checks` build | `<name>.out`: stdout; optional `<name>.err`: stderr |
 | `run-fail/` | panic with exit code 101, the same in a plain and an `-O2` build | `<name>.out`: stdout; `<name>.err`: stderr |
 | `diagnostics/` | report diagnostics under `sisuc --check`, exiting 1 if one is an error and 0 if all are warnings; a case named `<CODE>.sisu` or `<CODE>-<case>.sisu` reports that code | `<name>.err`: the diagnostics; `<name>.json`: the same under `--format json` |
 
@@ -68,8 +68,24 @@ $ SISU_BLESS=1 cargo nextest run -E 'binary(cases)'
 
 `SISU_BLESS=1` rewrites the expected files of cases that pass every other
 check, and only those. It never creates a file. Any other file in these
-directories fails the run: a `.out`, `.err` or `.json` without its `.sisu`, an
-expected file that the directory's mode does not read, or a hidden file.
+directories fails the run: a `.out`, `.err`, `.in` or `.json` without its
+`.sisu`, an expected file that the directory's mode does not read, or a hidden
+file.
+
+A `run/` or `run-fail/` case that reads standard input has a `<name>.in` beside
+it, which every run of the case gets on its standard input: plain, `-O2`, both
+Valgrind runs and `--rc-checks`. Without the file, standard input is empty.
+Write the file with `printf` or a script, byte for byte: the formatting hooks
+leave the `.in`, `.out` and `.err` files of these directories alone, so a
+`\r\n`, a lone `\r` or a last line without a newline stays as written. Input
+that is large or generated, such as a line longer than the runtime's input
+buffer, goes in a `programs.rs` test instead.
+
+A `run/` case that writes to standard error on purpose, with `eprint`, has a
+`<name>.err` beside it. The plain, `-O2` and `--rc-checks` runs must all write
+exactly that to stderr. Without the file, stderr must stay empty. The Valgrind
+runs' stderr holds Valgrind's own log, so they check only stdout and the exit
+code. To add the file to a case, `touch` it like any expected file.
 
 A `run/` case whose output depends on a value crossing a real call says so
 with a marker line, `// o2-calls: <caller> <callee> <count>`. The test then

@@ -1,6 +1,7 @@
 //! Printing, writing and comparing text: `char`s, and strings as bytes with a length. Each
 //! type has one formatter, which both `print` and interpolation use.
 
+use std::borrow::Cow;
 use std::io::Write;
 
 /// The longest text of an `i64`: `-9223372036854775808`.
@@ -12,6 +13,15 @@ pub(crate) fn int_text(value: i64, buffer: &mut [u8; INT_BYTES]) -> &[u8] {
     write!(rest, "{value}").expect("20 bytes should hold every `i64`");
     let len = INT_BYTES - rest.len();
     &buffer[..len]
+}
+
+/// `bytes` as valid UTF-8: borrowed when it is already, else with each maximal subpart of an
+/// ill-formed sequence replaced by one `U+FFFD`, as `String::from_utf8_lossy` does.
+pub(crate) fn repair(bytes: &[u8]) -> Cow<'_, [u8]> {
+    match String::from_utf8_lossy(bytes) {
+        Cow::Borrowed(_) => Cow::Borrowed(bytes),
+        Cow::Owned(text) => Cow::Owned(text.into_bytes()),
+    }
 }
 
 /// `true` or `false`.
@@ -37,6 +47,17 @@ fn char_text(c: u32, buffer: &mut [u8; 4]) -> &[u8] {
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_char(c: u32) {
     crate::print_bytes(char_text(c, &mut [0; 4]));
+}
+
+/// Writes the `char` with scalar value `c` and a newline to standard error. Sisu's `eprint`
+/// calls this for a `char` argument.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_eprint_char(c: u32) {
+    crate::eprint_bytes(char_text(c, &mut [0; 4]));
 }
 
 /// Copies `text` to `out` and returns its length.
@@ -221,6 +242,57 @@ pub unsafe extern "C" fn sisu_utf8_encode(chars: *const u32, n: usize, out: *mut
     }
 }
 
+/// How many words the `len` bytes at `bytes` hold, which is the length of the `[string]` that
+/// `words()` returns. A word is a run of characters that are not `White_Space`. This validates
+/// the whole buffer once; `sisu_word_next` then trusts it.
+///
+/// # Safety
+///
+/// `bytes` is not null and `len` bytes at it are readable. They are valid UTF-8; if they are
+/// not, the program aborts.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_words_count(bytes: *const u8, len: usize) -> usize {
+    // SAFETY: the caller promises `len` readable bytes at `bytes`.
+    unsafe { utf8(bytes, len) }.split_whitespace().count()
+}
+
+/// The first word at or after byte `from` of the `len` bytes at `bytes`: writes its start to
+/// `start` and returns its end. When no word is left, both are `len`. It decodes only from
+/// `from` to the end of the word, so `words()` does linear work in all.
+///
+/// # Safety
+///
+/// `bytes` is not null and `len` bytes at it are readable and valid UTF-8, which generated
+/// code knows by calling `sisu_words_count` on them first; this does not check. `from` is at
+/// most `len` and on a character boundary, as 0 and the end of an earlier word are. `start` is
+/// writable.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_word_next(
+    bytes: *const u8,
+    len: usize,
+    from: usize,
+    start: *mut usize,
+) -> usize {
+    // SAFETY: the caller promises `len` readable bytes at `bytes`, valid UTF-8 as
+    // `sisu_words_count` checked.
+    let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes, len)) };
+    let rest = &text[from..];
+    let skipped = rest.len() - rest.trim_start().len();
+    let word = &rest[skipped..];
+    let word_len = word.find(char::is_whitespace).unwrap_or(word.len());
+    // SAFETY: the caller promises `start` is writable.
+    unsafe { start.write(from + skipped) };
+    from + skipped + word_len
+}
+
 /// Prints the `len` bytes at `bytes` and a newline to standard output. Sisu's `print` calls
 /// this for a `string` argument. It writes the bytes as they are, zero bytes included.
 ///
@@ -236,6 +308,23 @@ pub unsafe extern "C" fn sisu_print_str(bytes: *const u8, len: usize) {
     // SAFETY: the caller promises `len` readable bytes at `bytes`; a string's bytes pointer
     // is never null, even for the empty string.
     crate::print_bytes(unsafe { std::slice::from_raw_parts(bytes, len) });
+}
+
+/// Writes the `len` bytes at `bytes` and a newline to standard error. Sisu's `eprint` calls this
+/// for a `string` argument. It writes the bytes as they are, zero bytes included.
+///
+/// # Safety
+///
+/// `bytes` is not null and `len` bytes at it are readable; valid UTF-8 is not required.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_eprint_str(bytes: *const u8, len: usize) {
+    // SAFETY: the caller promises `len` readable bytes at `bytes`; a string's bytes pointer
+    // is never null, even for the empty string.
+    crate::eprint_bytes(unsafe { std::slice::from_raw_parts(bytes, len) });
 }
 
 /// Compares the `a_len` bytes at `a` with the `b_len` bytes at `b`, as byte slices' `Ord`
@@ -268,9 +357,12 @@ pub unsafe extern "C" fn sisu_str_compare(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::{
-        sisu_str_compare, sisu_utf8_count, sisu_utf8_decode, sisu_utf8_encode, sisu_utf8_len,
-        sisu_write_bool, sisu_write_char, sisu_write_int,
+        repair, sisu_str_compare, sisu_utf8_count, sisu_utf8_decode, sisu_utf8_encode,
+        sisu_utf8_len, sisu_word_next, sisu_words_count, sisu_write_bool, sisu_write_char,
+        sisu_write_int,
     };
 
     /// `i64::MIN` fills the 20 bytes that an `i64` may take; the others take fewer.
@@ -311,6 +403,22 @@ mod tests {
             let len = unsafe { sisu_write_char(u32::from(c), out.as_mut_ptr()) };
             assert_eq!(&out[..len], c.to_string().as_bytes());
         }
+    }
+
+    /// Each maximal subpart of an ill-formed sequence becomes one `U+FFFD`, and valid UTF-8 is
+    /// borrowed as it is.
+    #[test]
+    fn repair_maximal_subparts() {
+        let rows: [(&[u8], &str); 4] = [
+            (b"a\xFF\xFFb", "a\u{FFFD}\u{FFFD}b"),
+            (b"\xE2\x82", "\u{FFFD}"),
+            (b"\xE2\x82A", "\u{FFFD}A"),
+            ("häst".as_bytes(), "häst"),
+        ];
+        for (bytes, want) in rows {
+            assert_eq!(*repair(bytes), *want.as_bytes(), "{bytes:?}");
+        }
+        assert!(matches!(repair("häst".as_bytes()), Cow::Borrowed(_)));
     }
 
     /// `"aä€😀"`: one code point of each UTF-8 width.
@@ -361,6 +469,56 @@ mod tests {
             )
         };
         assert_eq!((count, len), (0, 0));
+    }
+
+    /// The words of `text`, found as generated code finds them: counted once, then one
+    /// `sisu_word_next` call each, from where the last word ended.
+    fn words(text: &str) -> Vec<&str> {
+        let (bytes, len) = (text.as_ptr(), text.len());
+        // SAFETY: `text` is valid UTF-8 and readable for its length.
+        #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+        let count = unsafe { sisu_words_count(bytes, len) };
+        let (mut found, mut from) = (Vec::new(), 0);
+        for _ in 0..count {
+            let mut start = 0;
+            // SAFETY: `text` is valid UTF-8, `from` is 0 or the end of a word, which is a
+            // character boundary, and `start` is writable.
+            #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+            let end = unsafe { sisu_word_next(bytes, len, from, &raw mut start) };
+            found.push(&text[start..end]);
+            from = end;
+        }
+        found
+    }
+
+    /// Whitespace is the Unicode `White_Space` property: a no-break space and an ideographic
+    /// space split words, and the replacement character does not.
+    #[test]
+    fn words_split_on_white_space() {
+        let rows: [(&str, &[&str]); 8] = [
+            ("", &[]),
+            ("  \t\n", &[]),
+            (" a  b ", &["a", "b"]),
+            ("a\tb\nc", &["a", "b", "c"]),
+            ("a\u{A0}b", &["a", "b"]),
+            ("a\u{3000}b", &["a", "b"]),
+            ("\u{FFFD}a b\u{FFFD}", &["\u{FFFD}a", "b\u{FFFD}"]),
+            ("häst😀", &["häst😀"]),
+        ];
+        for (text, want) in rows {
+            assert_eq!(words(text), want, "{text:?}");
+        }
+    }
+
+    /// With no word left, `sisu_word_next` gives the end of the text as both start and end.
+    #[test]
+    fn word_next_without_a_word_is_the_end() {
+        let text = "ab  ";
+        let mut start = 0;
+        // SAFETY: `text` is valid UTF-8, 2 is a character boundary, and `start` is writable.
+        #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+        let end = unsafe { sisu_word_next(text.as_ptr(), text.len(), 2, &raw mut start) };
+        assert_eq!((start, end), (text.len(), text.len()));
     }
 
     fn compare(a: &[u8], b: &[u8]) -> i64 {

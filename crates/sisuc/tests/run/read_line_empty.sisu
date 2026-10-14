@@ -1,0 +1,4 @@
+// Without input, the first `read_line` is the end of input.
+fn main() {
+    print(read_line() ?? "none") // none
+}

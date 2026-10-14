@@ -7,7 +7,8 @@ use super::{
 };
 use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
 use crate::diagnostic::{
-    CharArithmetic, Definition, Diagnostic, DiagnosticKind, Literal, Span, Unwrap, suggestion,
+    CharArithmetic, Definition, Diagnostic, DiagnosticKind, Literal, Span, Suggestion, Unwrap,
+    alias, suggestion,
 };
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
@@ -1031,10 +1032,17 @@ impl Checker {
             .chain(PRELUDE)
             .chain(["i64", "u8", "char", "string"])
             .map(|function| (function, Definition::Function));
+        let suggestion = match alias(name) {
+            Some(prelude) => Some(Suggestion {
+                kind: Definition::Function,
+                name: prelude.to_string(),
+            }),
+            None => suggestion(name, functions.chain(self.class_names())),
+        };
         self.report(DiagnosticKind::FunctionNotFound {
             name: callee.name.to_string(),
             at: callee.span,
-            suggestion: suggestion(callee.name.as_str(), functions.chain(self.class_names())),
+            suggestion,
         });
         // No `labels`: the name may have meant a class, whose constructor takes them.
         self.stray(rest);

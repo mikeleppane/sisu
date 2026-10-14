@@ -80,7 +80,7 @@ fn allocs_in(valgrind_stderr: &str) -> u64 {
 /// Runs `exe` under Valgrind and returns its stdout and `allocs_in` of its stderr. Valgrind runs
 /// without `-q`, which prints the heap summary.
 fn heap_allocs(exe: &Path) -> (String, u64) {
-    let out = support::valgrind(exe);
+    let out = support::Invocation::default().run(exe, true);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{}: {stderr}", exe.display());
     (
@@ -579,6 +579,202 @@ fn print_to_a_closed_stdout_is_dropped() {
     }
 }
 
+/// A closed standard error drops what `eprint` writes and the program exits 0.
+#[test]
+fn eprint_to_a_closed_stderr_is_dropped() {
+    let source = "fn main() {\n    print(1)\n    eprint(2)\n    print(3)\n}\n";
+    for o2 in [false, true] {
+        let out = Command::new("sh")
+            .args(["-c", r#"exec "$0" 2>&-"#])
+            .arg(compile_tmp("eprint_closed_fd", source, o2))
+            .output()
+            .expect("sh starts");
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n3\n");
+    }
+}
+
+/// A `panic` with a closed standard error still flushes standard output and exits 101.
+#[test]
+fn panic_with_a_closed_stderr_exits_101() {
+    let source = "fn main() {\n    print(1)\n    panic(\"x\")\n}\n";
+    for o2 in [false, true] {
+        let out = Command::new("sh")
+            .args(["-c", r#"exec "$0" 2>&-"#])
+            .arg(compile_tmp("panic_closed_fd", source, o2))
+            .output()
+            .expect("sh starts");
+        assert_eq!(out.status.code(), Some(101), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+    }
+}
+
+/// Standard error with no reader keeps the default SIGPIPE action: the program dies by
+/// signal 13, as it does for `print` on standard output.
+#[test]
+fn eprint_into_a_closed_stderr_pipe_dies_by_sigpipe() {
+    let source = "fn main() {\n    eprint(1)\n}\n";
+    for o2 in [false, true] {
+        let status = Command::new(compile_tmp("eprint_closed_pipe", source, o2))
+            .stderr(broken_pipe())
+            .status()
+            .expect("the program starts");
+        assert_eq!(status.signal(), Some(13), "{status:?}");
+    }
+}
+
+/// A failed write to standard error (`ENOSPC`) is ignored: the program goes on and exits 0.
+#[test]
+fn eprint_to_a_full_stderr_exits_0() {
+    let source = "fn main() {\n    eprint(1)\n    print(2)\n}\n";
+    for o2 in [false, true] {
+        let full = File::options()
+            .write(true)
+            .open("/dev/full")
+            .expect("/dev/full exists on Linux");
+        let out = Command::new(compile_tmp("eprint_full", source, o2))
+            .stderr(full)
+            .output()
+            .expect("the program starts");
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n");
+    }
+}
+
+/// `eprint` does not flush standard output first: on one pipe the `eprint` line comes before an
+/// earlier `print` line, which waits for the exit.
+#[test]
+fn eprint_is_not_held_behind_stdout() {
+    let source = "fn main() {\n    print(1)\n    eprint(2)\n}\n";
+    for o2 in [false, true] {
+        let (status, merged) = run_with_merged_output(&compile_tmp("eprint_order", source, o2));
+        assert_eq!(status.code(), Some(0), "{status:?}");
+        assert_eq!(merged, "2\n1\n");
+    }
+}
+
+/// Prints each line of its input.
+const ECHO: &str =
+    "fn main() {\n    while let line = read_line() {\n        print(line)\n    }\n}\n";
+
+/// Lines of `line <i>` of growing width, each ending in `\n`, up to `total` bytes in all.
+fn generated_lines(total: usize) -> Vec<u8> {
+    let mut input = Vec::new();
+    for i in 0.. {
+        let line = format!("line {}\n", "x".repeat(i % 100));
+        if input.len() + line.len() > total {
+            return input;
+        }
+        input.extend_from_slice(line.as_bytes());
+    }
+    unreachable!("the range never ends")
+}
+
+/// An invalid byte in a line comes back as the three bytes of `U+FFFD`, which a `.out` file,
+/// read through `from_utf8_lossy`, cannot tell from the raw byte.
+#[test]
+fn read_line_repairs_byte_for_byte() {
+    for o2 in [false, true] {
+        let exe = compile_tmp("echo_repair", ECHO, o2);
+        let out = support::Invocation::new(b"a\xFFb\n".to_vec()).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(out.stdout, b"a\xEF\xBF\xBDb\n");
+    }
+}
+
+/// A line longer than the runtime's 8 KiB input buffer, input of several buffers, and a `€`
+/// whose bytes straddle the first buffer's end all come back whole, with no memory error.
+#[test]
+fn read_line_refills_its_buffer() {
+    let mut first = "a".repeat(8191) + "€";
+    first += &"b".repeat(20_000 - first.len());
+    let mut input = first.into_bytes();
+    input.push(b'\n');
+    input.extend(generated_lines(40_000 - input.len()));
+    assert_eq!(&input[8191..8194], "€".as_bytes());
+    for o2 in [false, true] {
+        let exe = compile_tmp("echo_refill", ECHO, o2);
+        let out = support::Invocation::new(input.clone()).run(&exe, true);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+        assert!(out.stdout == input, "{stderr}");
+    }
+}
+
+/// A line of 2 MiB holds a million words, each found from where the last one ended. A split
+/// that rescanned from the start of the line would take far longer than the test's timeout.
+#[test]
+fn words_is_linear() {
+    let source = "fn main() {\n    if let line = read_line() {\n        print(line.words().len())\n    }\n}\n";
+    let input = "a ".repeat(1 << 20).into_bytes();
+    for o2 in [false, true] {
+        let exe = compile_tmp("words_linear", source, o2);
+        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1048576\n");
+    }
+}
+
+/// More input than a pipe holds reaches the program while the harness reads its output, so
+/// neither side waits on the other.
+#[test]
+fn stdin_larger_than_a_pipe() {
+    let input = generated_lines(1 << 20);
+    for o2 in [false, true] {
+        let exe = compile_tmp("echo_large", ECHO, o2);
+        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert!(out.stdout == input, "{} bytes out", out.stdout.len());
+    }
+}
+
+/// A program that exits before it reads all its input ends normally; the harness ignores
+/// the failed write of the rest.
+#[test]
+fn program_exiting_before_its_input_ends() {
+    let source = "fn main() {\n    print(read_line() ?? \"none\")\n}\n";
+    let input = generated_lines(1 << 20);
+    for o2 in [false, true] {
+        let exe = compile_tmp("read_one_line", source, o2);
+        let out = support::Invocation::new(input.clone()).run(&exe, false);
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "line \n");
+    }
+}
+
+/// A failed read (`EISDIR`) is a panic with no location.
+#[test]
+fn read_line_from_a_directory_panics() {
+    let source = "fn main() {\n    print(read_line() ?? \"none\")\n}\n";
+    for o2 in [false, true] {
+        let dir = File::open(env!("CARGO_TARGET_TMPDIR")).expect("opens the directory");
+        let out = Command::new(compile_tmp("read_directory", source, o2))
+            .stdin(Stdio::from(dir))
+            .output()
+            .expect("the program starts");
+        assert_panics(
+            &out,
+            "",
+            "sisu: panic: standard input could not be read: Is a directory (os error 21)\n",
+        );
+    }
+}
+
+/// A closed standard input is the end of input.
+#[test]
+fn read_line_from_a_closed_stdin_is_none() {
+    let source = "fn main() {\n    print(read_line() ?? \"none\")\n}\n";
+    for o2 in [false, true] {
+        let out = Command::new("sh")
+            .args(["-c", r#"exec "$0" <&-"#])
+            .arg(compile_tmp("read_closed_fd", source, o2))
+            .output()
+            .expect("sh starts");
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "none\n");
+    }
+}
+
 /// An `--rc-checks` program that leaks exits 102 and still delivers what it printed.
 #[test]
 fn rc_checks_exit_flushes_stdout() {
@@ -664,7 +860,7 @@ fn valgrind_reports_a_cycle() {
     let out = Command::new(&exe).output().expect("the program starts");
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
-    let checked = support::valgrind(&exe);
+    let checked = support::Invocation::default().run(&exe, true);
     let stderr = String::from_utf8_lossy(&checked.stderr);
     assert_eq!(checked.status.code(), Some(1), "{stderr}");
     // A loss record, not the summary line, which also prints `definitely lost: 0 bytes`.
@@ -1119,6 +1315,40 @@ fn bless_rewrites_an_existing_out() {
     support::run(&source, false);
 }
 
+/// A program that prints `1` and writes `2` to standard error.
+const PRINTS_1_EPRINTS_2: &str = "fn main() {\n    print(1)\n    eprint(2)\n}\n";
+
+/// A `run` case that writes to standard error needs its `.err`: a wrong one fails and stays as it
+/// was, bless rewrites it, and the run then passes. Without one the stderr must be empty.
+#[test]
+fn run_err_lifecycle() {
+    let dir = fixture(
+        "run_err_lifecycle",
+        &[
+            ("a.sisu", PRINTS_1_EPRINTS_2),
+            ("a.out", "1\n"),
+            ("a.err", "wrong\n"),
+            ("b.sisu", PRINTS_1_EPRINTS_2),
+            ("b.out", "1\n"),
+        ],
+    );
+    let source = dir.join("a.sisu");
+    let message = panic_message(|| support::run(&source, false));
+    assert!(message.contains("SISU_BLESS=1"), "{message}");
+    assert_eq!(
+        fs::read_to_string(dir.join("a.err")).expect("reads a.err"),
+        "wrong\n"
+    );
+    support::run(&source, true);
+    assert_eq!(
+        fs::read_to_string(dir.join("a.err")).expect("reads a.err"),
+        "2\n"
+    );
+    support::run(&source, false);
+    let message = panic_message(|| support::run(&dir.join("b.sisu"), false));
+    assert!(message.contains("has no `.err` file"), "{message}");
+}
+
 #[test]
 #[should_panic(expected = "ghost.out")]
 fn orphan_out_fails() {
@@ -1133,18 +1363,18 @@ fn stray_file_type_fails() {
         "stray_file_type_fails",
         &[("notes.sisu", PRINTS_1), ("notes.txt", "")],
     );
-    support::orphan_check(&dir.join("notes.txt"), &["out", "err"]);
+    support::orphan_check(&dir.join("notes.txt"), &support::RUN_EXPECTATIONS);
 }
 
-/// A `.err` beside a `run` case is never read, so it fails like an orphan.
+/// A `.json` beside a `run` case is never read, so it fails like an orphan.
 #[test]
-#[should_panic(expected = "a.err")]
+#[should_panic(expected = "a.json")]
 fn expectation_of_another_mode_fails() {
     let dir = fixture(
         "expectation_of_another_mode_fails",
-        &[("a.sisu", PRINTS_1), ("a.out", "1\n"), ("a.err", "")],
+        &[("a.sisu", PRINTS_1), ("a.out", "1\n"), ("a.json", "")],
     );
-    support::orphan_check(&dir.join("a.err"), &["out"]);
+    support::orphan_check(&dir.join("a.json"), &support::RUN_EXPECTATIONS);
 }
 
 /// The harness never lists a hidden file, so the check of a listed file beside it fails.

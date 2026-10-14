@@ -239,7 +239,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Runs `body` for each index from 0 up to `len`, which is not negative. `body` may leave
     /// the builder in another block; the loop goes on from there.
-    fn count_loop(&self, len: IntValue<'ctx>, mut body: impl FnMut(IntValue<'ctx>)) {
+    pub(super) fn count_loop(&self, len: IntValue<'ctx>, mut body: impl FnMut(IntValue<'ctx>)) {
         let function = self.current_function();
         let before = self.current_block();
         let head = self.context.append_basic_block(function, "array.head");

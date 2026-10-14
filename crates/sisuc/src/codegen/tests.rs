@@ -106,6 +106,29 @@ fn print_bool_passes_a_zero_extended_i1() {
     }
 }
 
+/// `eprint` calls the runtime's standard error functions, one for each operand type, and
+/// `print` still calls the standard output ones.
+#[test]
+fn eprint_calls_the_stderr_functions() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn main() {\n    eprint(1)\n    eprint(true)\n    eprint('a')\n    eprint(\"s\")\n    print(2)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "call void @sisu_eprint_int(",
+        "call void @sisu_eprint_bool(i1 zeroext",
+        "call void @sisu_eprint_char(",
+        "call void @sisu_eprint_str(",
+        "call void @sisu_print_int(",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+    assert!(!ir.contains("call void @sisu_print_str("), "{ir}");
+}
+
 /// Interpolation passes a `bool` to the runtime as `print` does.
 #[test]
 fn write_bool_passes_a_zero_extended_i1() {
@@ -782,24 +805,73 @@ fn print_declarations_carry_attributes() {
         ("sisu_print_int", own),
         ("sisu_print_bool", own),
         ("sisu_print_str", reads),
+        ("sisu_eprint_int", own),
+        ("sisu_eprint_bool", own),
+        ("sisu_eprint_char", own),
+        ("sisu_eprint_str", reads),
         ("sisu_str_compare", "memory(argmem: read)"),
     ] {
-        let declaration = ir
-            .lines()
-            .find(|line| line.starts_with("declare ") && line.contains(&format!("@{name}(")))
-            .unwrap_or_else(|| panic!("no declaration of {name} in\n{ir}"));
-        let (_, group) = declaration
-            .rsplit_once(" #")
-            .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
-        let attributes = ir
-            .lines()
-            .find(|line| line.starts_with(&format!("attributes #{group} = ")))
-            .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"));
+        let attributes = attributes(&ir, name);
         for wanted in ["nounwind", memory] {
             assert!(attributes.contains(wanted), "{name}: {attributes}");
         }
         assert!(!attributes.contains("willreturn"), "{name}: {attributes}");
     }
+}
+
+/// The attribute group line of the declaration of `name` in `ir`.
+fn attributes<'a>(ir: &'a str, name: &str) -> &'a str {
+    let declaration = ir
+        .lines()
+        .find(|line| line.starts_with("declare ") && line.contains(&format!("@{name}(")))
+        .unwrap_or_else(|| panic!("no declaration of {name} in\n{ir}"));
+    let (_, group) = declaration
+        .rsplit_once(" #")
+        .unwrap_or_else(|| panic!("{declaration:?} has no attribute group"));
+    ir.lines()
+        .find(|line| line.starts_with(&format!("attributes #{group} = ")))
+        .unwrap_or_else(|| panic!("no attribute group #{group} in\n{ir}"))
+}
+
+/// `sisu_words_count` only reads the string it is given; `sisu_word_next` also writes the
+/// start slot. Neither unwinds, and neither is declared when no `words()` is called.
+#[test]
+fn words_declarations_carry_memory_effects() {
+    let context = Context::create();
+    let ir = compiled(&context, "fn main() {\n    let a = \"a b\".words()\n}")
+        .print_to_string()
+        .to_string();
+    for (name, memory) in [
+        ("sisu_words_count", "memory(argmem: read)"),
+        ("sisu_word_next", "memory(argmem: readwrite)"),
+    ] {
+        let attributes = attributes(&ir, name);
+        for wanted in ["nounwind", memory] {
+            assert!(attributes.contains(wanted), "{name}: {attributes}");
+        }
+    }
+    let plain = compiled(&context, "fn main() {}")
+        .print_to_string()
+        .to_string();
+    assert!(!plain.contains("sisu_word"), "{plain}");
+}
+
+/// `sisu_read_line` never unwinds, and carries no `memory` attribute: the call overwrites the
+/// line an earlier call returned, so LLVM must not move a read of those bytes past it. It may
+/// exit (a failed read panics), so it is not `willreturn` either.
+#[test]
+fn read_line_declaration_has_no_memory_attribute() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn main() {\n    let a = read_line()\n    let b = read_line()\n}",
+    )
+    .print_to_string()
+    .to_string();
+    let attributes = attributes(&ir, "sisu_read_line");
+    assert!(attributes.contains("nounwind"), "{attributes}");
+    assert!(!attributes.contains("memory("), "{attributes}");
+    assert!(!attributes.contains("willreturn"), "{attributes}");
 }
 
 /// `xs.len()` and `o.n` on a local neither retain nor release the base: the local keeps it
@@ -865,6 +937,26 @@ fn len_and_field_of_a_value_release_the_base() {
         let body = function_body(&ir, header);
         assert!(body.contains(release), "no {release:?} in\n{body}");
     }
+}
+
+/// `words()` of a string that is not a local releases it, once the words are copied out; of a
+/// local it leaves the string to its owner.
+#[test]
+fn words_releases_a_base_that_is_not_a_local() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn make() -> string { \"a \" + \"b\" }\nfn value() -> [string] { make().words() }\n\
+         fn local(s: string) -> string {\n    let ws = s.words()\n    s\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let value = function_body(&ir, "define internal ptr @sisu.value()");
+    let local = function_body(&ir, "define internal ptr @sisu.local(ptr");
+    let release = "@sisu_rc.release.string(";
+    assert_eq!(value.matches(release).count(), 1, "{value}");
+    // The local's one release is its scope end: `words()` itself released nothing.
+    assert_eq!(local.matches(release).count(), 1, "{local}");
 }
 
 /// Only `drop.[[Node]]` asks for `release.[Node]`: the worklist must define it too.

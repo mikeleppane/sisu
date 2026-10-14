@@ -2,6 +2,7 @@
 
 mod arith;
 mod array;
+mod io;
 mod rc;
 mod string;
 
@@ -27,8 +28,8 @@ use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 use self::rc::Helper;
 use crate::diagnostic::{LineIndex, Span};
 use crate::tir::{
-    Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt, Type,
-    UnaryOp,
+    Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt, Stream,
+    Type, UnaryOp,
 };
 
 /// The `expect` message for a builder call: codegen positions the builder before it emits code.
@@ -80,16 +81,12 @@ pub(crate) fn compile<'ctx>(
         Some(Linkage::Internal),
     );
 
-    // The runtime's print functions. `zeroext` keeps the C `bool` ABI: the callee may read
-    // all 8 bits of the argument, so the caller must extend the `i1` with zeros.
-    let print_int = declare_print(&module, "sisu_print_int", &[i64_type.into()]);
-    let print_bool = declare_print(&module, "sisu_print_bool", &[context.bool_type().into()]);
-    print_bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
-    let print_char = declare_print(&module, "sisu_print_char", &[context.i32_type().into()]);
     // A string crosses into the runtime as its bytes and its length: `sisu_print_str(bytes,
-    // len)` and `sisu_str_compare(a, a_len, b, b_len) -> i64`.
+    // len)`, `sisu_eprint_str(bytes, len)` and `sisu_str_compare(a, a_len, b, b_len) -> i64`.
     let bytes_len: [BasicMetadataTypeEnum; 2] = [ptr_type.into(), i64_type.into()];
-    let print_str = declare_print(&module, "sisu_print_str", &bytes_len);
+    // The runtime's print functions, one set for each `Stream`; `Stream::index` indexes them.
+    let printers = [Stream::Stdout, Stream::Stderr]
+        .map(|stream| declare_printers(context, &module, stream.symbol_prefix(), &bytes_len));
     let compare = i64_type.fn_type(&[bytes_len, bytes_len].concat(), false);
     let str_compare = module.add_function("sisu_str_compare", compare, None);
     // A pure function of the bytes it reads: `ArgMem` `Ref` (1) and no other location.
@@ -109,10 +106,7 @@ pub(crate) fn compile<'ctx>(
         context,
         module,
         builder: context.create_builder(),
-        print_int,
-        print_bool,
-        print_char,
-        print_str,
+        printers,
         str_compare,
         panic,
         panic_bounds,
@@ -178,6 +172,46 @@ fn declare_noreturn<'ctx>(
         context.create_enum_attribute(Attribute::get_named_enum_kind_id("noreturn"), 0),
     );
     function
+}
+
+/// The runtime's print functions for one stream, by operand type.
+#[derive(Clone, Copy)]
+struct Printers<'ctx> {
+    int: FunctionValue<'ctx>,
+    bool: FunctionValue<'ctx>,
+    char: FunctionValue<'ctx>,
+    str: FunctionValue<'ctx>,
+}
+
+/// `<prefix>_int`, `_bool`, `_char` and `_str`, which takes the string's `bytes_len`. `zeroext`
+/// keeps the C `bool` ABI: the callee may read all 8 bits of the argument, so the caller must
+/// extend the `i1` with zeros.
+fn declare_printers<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    prefix: &str,
+    bytes_len: &[BasicMetadataTypeEnum<'ctx>],
+) -> Printers<'ctx> {
+    let bool = declare_print(
+        module,
+        &format!("{prefix}_bool"),
+        &[context.bool_type().into()],
+    );
+    bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
+    Printers {
+        int: declare_print(
+            module,
+            &format!("{prefix}_int"),
+            &[context.i64_type().into()],
+        ),
+        bool,
+        char: declare_print(
+            module,
+            &format!("{prefix}_char"),
+            &[context.i32_type().into()],
+        ),
+        str: declare_print(module, &format!("{prefix}_str"), bytes_len),
+    }
 }
 
 /// Declares the runtime print function `name`, which takes `params` and returns nothing.
@@ -247,10 +281,8 @@ struct Codegen<'ctx, 'src> {
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
-    print_int: FunctionValue<'ctx>,
-    print_bool: FunctionValue<'ctx>,
-    print_char: FunctionValue<'ctx>,
-    print_str: FunctionValue<'ctx>,
+    /// The runtime's print functions, indexed by `Stream`.
+    printers: [Printers<'ctx>; 2],
     str_compare: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
     panic_bounds: FunctionValue<'ctx>,
@@ -732,6 +764,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Len(base) => self.len(base),
             ExprKind::Chars(base) => return Some(self.chars(base).into()),
             ExprKind::Bytes(base) => return Some(self.bytes(base).into()),
+            ExprKind::Words(base) => return Some(self.words(base).into()),
             ExprKind::FromChars(base) => return Some(self.string_from_chars(base).into()),
             ExprKind::Sum(base) => self.sum(base, e.span),
             ExprKind::Contains { base, value } => self.contains(base, value),
@@ -750,8 +783,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .try_as_basic_value()
                     .basic();
             }
-            ExprKind::Print(operand) => {
-                self.print(operand);
+            ExprKind::Print { stream, operand } => {
+                self.print(*stream, operand);
                 return None;
             }
             ExprKind::Unary { op, operand } => {
@@ -812,6 +845,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.panic_string(message, e.span);
                 return None;
             }
+            ExprKind::ReadLine => return Some(self.read_line().into()),
         };
         Some(value.into())
     }
@@ -938,9 +972,9 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder.position_at_end(end);
     }
 
-    fn print(&mut self, operand: &Expr) {
+    fn print(&mut self, stream: Stream, operand: &Expr) {
         if operand.ty == Type::String {
-            self.print_string(operand);
+            self.print_string(stream, operand);
             return;
         }
         let mut arg = self.value(operand);
@@ -951,10 +985,11 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect(POSITIONED);
         }
         let is_bool = operand.ty == Type::Bool;
+        let printers = self.printers[stream.index()];
         let print = match operand.ty {
-            Type::Bool => self.print_bool,
-            Type::Char => self.print_char,
-            _ => self.print_int,
+            Type::Bool => printers.bool,
+            Type::Char => printers.char,
+            _ => printers.int,
         };
         let call = self
             .builder

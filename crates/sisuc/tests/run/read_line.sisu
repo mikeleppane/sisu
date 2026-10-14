@@ -1,0 +1,10 @@
+// Each line comes back without its `\n` or `\r\n`; a lone `\r`, a zero byte and an empty line
+// stay, an invalid byte becomes `�`, and a last line without a newline still comes back. The
+// first line is kept while the later reads reuse the runtime's buffer, and printed last.
+fn main() {
+    let first = read_line()
+    while let line = read_line() {
+        print("[{line}]")       // [plain], [cr\rinside], [], [nul\0byte], [bad�byte], [last]
+    }
+    print(first ?? "none")      // first
+}

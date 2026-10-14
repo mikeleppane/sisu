@@ -2,8 +2,10 @@
 
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
 
 /// `sisuc <flags> <input> <output>`, run from `dir`, after asserting the runtime archive exists.
 pub(crate) fn sisuc(dir: &Path, input: &str, output: &Path, flags: &[&str]) -> Command {
@@ -31,24 +33,91 @@ pub(crate) fn compile(dir: &Path, name: &str, exe: &Path, flags: &[&str]) {
     );
 }
 
-/// Runs `exe` under Valgrind; any leak or memory error makes it exit 1.
-pub(crate) fn valgrind(exe: &Path) -> Output {
-    Command::new("valgrind")
-        .args([
-            "--leak-check=full",
-            "--errors-for-leak-kinds=definite,indirect,possible",
-            "--error-exitcode=1",
-        ])
-        .arg(exe)
-        .output()
-        .expect("valgrind is required: install it with `apt install valgrind`")
+/// What a case's programs run with: its standard input.
+#[derive(Default)]
+pub(crate) struct Invocation {
+    stdin: Vec<u8>,
 }
 
-/// Checks a `tests/run` case: both builds differ, exit 0 with empty stderr, agree on stdout, and
+impl Invocation {
+    /// The invocation of the case `path`: its standard input is `<name>.in`, or empty when the
+    /// case has none.
+    pub(crate) fn of(path: &Path) -> Invocation {
+        let in_path = path.with_extension("in");
+        let stdin = match fs::read(&in_path) {
+            Ok(stdin) => stdin,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("{}: {error}", in_path.display()),
+        };
+        Invocation::new(stdin)
+    }
+
+    /// An invocation with `stdin` as its standard input.
+    pub(crate) fn new(stdin: Vec<u8>) -> Invocation {
+        Invocation { stdin }
+    }
+
+    /// Runs `exe` with this standard input; with `valgrind`, under Valgrind, where any leak or
+    /// memory error makes it exit 1.
+    pub(crate) fn run(&self, exe: &Path, valgrind: bool) -> Output {
+        let mut command = if valgrind {
+            let mut command = Command::new("valgrind");
+            command
+                .args([
+                    "--leak-check=full",
+                    "--errors-for-leak-kinds=definite,indirect,possible",
+                    "--error-exitcode=1",
+                ])
+                .arg(exe);
+            command
+        } else {
+            Command::new(exe)
+        };
+        output_with_stdin(&mut command, &self.stdin)
+    }
+}
+
+/// Runs `command` with `stdin` written to its standard input, and collects its output. A
+/// thread writes the input while this one reads the output, so neither pipe can fill up and
+/// stall the other. A program that exits before it reads all its input makes the write fail
+/// with `BrokenPipe`, which is ignored.
+fn output_with_stdin(command: &mut Command, stdin: &[u8]) -> Output {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| {
+            let program = command.get_program();
+            let hint = if program == "valgrind" {
+                " (Valgrind installs with `apt install valgrind`)"
+            } else {
+                ""
+            };
+            panic!("{} does not start{hint}: {error}", program.display())
+        });
+    let mut pipe = child.stdin.take().expect("stdin should be piped");
+    thread::scope(|scope| {
+        // The pipe drops when the write ends, so the program sees the end of its input.
+        let writer = scope.spawn(move || {
+            let _ = pipe.write_all(stdin);
+        });
+        let output = child.wait_with_output().expect("the program should run");
+        writer.join().expect("the stdin writer should not panic");
+        output
+    })
+}
+
+/// Checks a `tests/run` case: both builds differ, exit 0, agree on stdout and on stderr, and
 /// print the same under Valgrind, which finds no leak or memory error, and in a `--rc-checks`
 /// build, which finds no count fault or live object at exit; then that stdout is `<name>.out`.
+/// Stderr is empty, unless `<name>.err` exists: then the stderr of the plain, `-O2` and
+/// `--rc-checks` runs is that file. The Valgrind runs' stderr holds Valgrind's own log, so it is
+/// never compared.
+/// Every run reads `<name>.in` on its standard input, or empty input without one.
 /// Each `// o2-calls:` marker in the case must hold in the `-O2` IR (see `O2_CALLS`).
-/// With `bless`, rewrites `<name>.out` instead, after every other check passed.
+/// With `bless`, rewrites `<name>.out`, and `<name>.err` when it exists, instead, after every
+/// other check passed.
 pub(crate) fn run(path: &Path, bless: bool) {
     let [o0, o2, rc] = build(path, [O0, O2, RC_CHECKS]);
     assert!(
@@ -58,8 +127,11 @@ pub(crate) fn run(path: &Path, bless: bool) {
         path.display()
     );
     o2_calls(path);
+    let invocation = Invocation::of(path);
+    let err_path = path.with_extension("err");
+    let expects_stderr = err_path.exists();
     let [out0, out2] = [&o0, &o2].map(|exe| {
-        let out = Command::new(exe).output().expect("the program starts");
+        let out = invocation.run(exe, false);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(
             out.status.code(),
@@ -68,12 +140,20 @@ pub(crate) fn run(path: &Path, bless: bool) {
             exe.display(),
             out.status
         );
-        assert_eq!(stderr, "", "{}", exe.display());
+        if !expects_stderr {
+            assert_eq!(
+                stderr,
+                "",
+                "{}: writes to stderr, and the case has no `.err` file",
+                exe.display()
+            );
+        }
         out
     });
     let stdout = agreed(path, "stdout", &out0.stdout, &out2.stdout);
+    let stderr = agreed(path, "stderr", &out0.stderr, &out2.stderr);
     for exe in [o0, o2] {
-        let checked = valgrind(&exe);
+        let checked = invocation.run(&exe, true);
         let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
         assert_eq!(
             checked.status.code(),
@@ -88,7 +168,7 @@ pub(crate) fn run(path: &Path, bless: bool) {
             exe.display()
         );
     }
-    let checked = Command::new(&rc).output().expect("the program starts");
+    let checked = invocation.run(&rc, false);
     let rc_stderr = String::from_utf8_lossy(&checked.stderr);
     assert_eq!(
         checked.status.code(),
@@ -97,7 +177,7 @@ pub(crate) fn run(path: &Path, bless: bool) {
         rc.display(),
         checked.status
     );
-    assert_eq!(rc_stderr, "", "{}", rc.display());
+    assert_eq!(rc_stderr, stderr, "{}", rc.display());
     assert_eq!(
         String::from_utf8_lossy(&checked.stdout),
         stdout,
@@ -105,15 +185,20 @@ pub(crate) fn run(path: &Path, bless: bool) {
         rc.display()
     );
     // Last, so that a run failing any check above writes nothing.
-    expect_files(&[(path.with_extension("out"), stdout)], bless);
+    let mut files = vec![(path.with_extension("out"), stdout)];
+    if expects_stderr {
+        files.push((err_path, stderr));
+    }
+    expect_files(&files, bless);
 }
 
 /// Checks a `tests/run-fail` case: both builds exit 101, agree, and print `<name>.out` on stdout
-/// and `<name>.err` on stderr. With `bless`, rewrites both files instead. No Valgrind: a panic
-/// exits without releasing.
+/// and `<name>.err` on stderr, reading `<name>.in` on stdin as a `tests/run` case does. With
+/// `bless`, rewrites both files instead. No Valgrind: a panic exits without releasing.
 pub(crate) fn run_fail(path: &Path, bless: bool) {
+    let invocation = Invocation::of(path);
     let [out0, out2] = build(path, [O0, O2]).map(|exe| {
-        let out = Command::new(&exe).output().expect("the program starts");
+        let out = invocation.run(&exe, false);
         assert_eq!(
             out.status.code(),
             Some(101),
@@ -210,6 +295,9 @@ fn is_code(text: &str) -> bool {
     let bytes = text.as_bytes();
     bytes.len() == 5 && matches!(bytes[0], b'E' | b'W') && bytes[1..].iter().all(u8::is_ascii_digit)
 }
+
+/// The extensions of the expectation files that a run-mode case directory may hold.
+pub(crate) const RUN_EXPECTATIONS: [&str; 3] = ["out", "err", "in"];
 
 /// Passes for a `.sisu` file, and for a file whose extension is one of `expectations` (the
 /// files the directory's mode reads) beside a `.sisu` of the same name; panics on any other

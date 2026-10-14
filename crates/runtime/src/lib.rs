@@ -1,5 +1,6 @@
 //! The Sisu runtime: functions that compiled Sisu programs call over the C ABI.
 
+pub mod stdin;
 pub mod text;
 
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error, realloc};
@@ -37,6 +38,28 @@ pub extern "C" fn sisu_print_int(value: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_print_bool(value: bool) {
     print_bytes(text::bool_text(value));
+}
+
+/// Writes `value` and a newline to standard error. Sisu's `eprint` calls this for an `i64`
+/// argument.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_eprint_int(value: i64) {
+    eprint_bytes(text::int_text(value, &mut [0; 20]));
+}
+
+/// Writes `true` or `false` and a newline to standard error. Sisu's `eprint` calls this for a
+/// `bool` argument.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_eprint_bool(value: bool) {
+    eprint_bytes(text::bool_text(value));
 }
 
 /// Bytes `print` collects before it writes them out, when standard output is not a terminal.
@@ -158,6 +181,17 @@ fn print_bytes(bytes: &[u8]) {
     if let Err(error) = result {
         stdout_panic(&error);
     }
+}
+
+/// Writes `bytes` and a newline to standard error with one `write_all`, so a line up to
+/// `PIPE_BUF` is not split by another writer. Nothing waits in a buffer between calls, and the
+/// result is ignored: a closed or failing standard error drops the line, as it does a panic's.
+/// A pipe with no reader still kills the program with SIGPIPE.
+fn eprint_bytes(bytes: &[u8]) {
+    let mut line = Vec::with_capacity(bytes.len() + 1);
+    line.extend_from_slice(bytes);
+    line.push(b'\n');
+    let _ = std::io::stderr().write_all(&line);
 }
 
 fn stdout_panic(error: &std::io::Error) -> ! {
@@ -444,16 +478,18 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_flush_stdout,
-        sisu_free, sisu_panic_bounds, sisu_print_bool, sisu_print_int, sisu_rc_check_exit,
-        sisu_rc_fault, sisu_realloc,
+        BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_eprint_bool,
+        sisu_eprint_int, sisu_flush_stdout, sisu_free, sisu_panic_bounds, sisu_print_bool,
+        sisu_print_int, sisu_rc_check_exit, sisu_rc_fault, sisu_realloc,
     };
+    use crate::text::{sisu_eprint_char, sisu_eprint_str};
     use std::os::fd::AsRawFd;
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
 
     const ABORT_CASE_VAR: &str = "SISU_RUNTIME_ABORT_CASE";
     const PANIC_BOUNDS_VAR: &str = "SISU_RUNTIME_PANIC_BOUNDS";
+    const EPRINT_VAR: &str = "SISU_RUNTIME_EPRINT";
     const RC_CASE_VAR: &str = "SISU_RUNTIME_RC_CASE";
     const SIGABRT: i32 = 6;
 
@@ -564,6 +600,38 @@ mod tests {
         let msg = "f.sisu:3:7";
         // SAFETY: `msg` is non-null, readable for `msg.len()` bytes, and not written to.
         unsafe { sisu_panic_bounds(msg.as_ptr(), msg.len(), 7, 5) };
+    }
+
+    /// Child entry point for `eprint_writes_each_type_and_a_newline`; a no-op unless the parent
+    /// set the env var, so the parent can read the child's standard error.
+    #[expect(unsafe_code, reason = "the test calls an unsafe extern function")]
+    #[test]
+    fn eprint_child() {
+        if std::env::var(EPRINT_VAR).is_err() {
+            return;
+        }
+        sisu_eprint_int(-42);
+        sisu_eprint_bool(true);
+        sisu_eprint_char(u32::from('ä'));
+        let text = b"a\0b";
+        // SAFETY: `text` is non-null and readable for `text.len()` bytes.
+        unsafe { sisu_eprint_str(text.as_ptr(), text.len()) };
+        // SAFETY: an empty slice's pointer is non-null and no byte of it is read.
+        unsafe { sisu_eprint_str([].as_ptr(), 0) };
+    }
+
+    /// Each `sisu_eprint_*` writes its text and a newline to standard error, a zero byte
+    /// included.
+    #[test]
+    fn eprint_writes_each_type_and_a_newline() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = Command::new(exe)
+            .args(["--exact", "tests::eprint_child", "--nocapture"])
+            .env(EPRINT_VAR, "1")
+            .output()
+            .expect("spawn child test");
+        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+        assert_eq!(out.stderr, "-42\ntrue\nä\na\0b\n\n".as_bytes());
     }
 
     #[test]

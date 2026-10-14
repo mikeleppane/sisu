@@ -48,6 +48,10 @@ These are adopted. Together they give Sisu a working imperative core.
   field or an array element
 - text as arrays: `s.chars()` gives a `[char]`, `s.bytes()` a `[u8]`, and
   `string(cs)` builds a `string` from a `[char]`; each call builds a new value
+- `eprint(x)`, which prints like `print` but to standard error; `read_line()`,
+  a `string?` that is the next line of standard input without its line break,
+  or `None` at the end of the input; and `s.words()`, a `[string]` of the runs
+  between white space
 - `panic("why")`, which stops the program with a message, and the keyword
   `todo`, which does the same and warns at compile time; either may stand on
   the right of `??`, as in `name ?? panic("no name")`
@@ -129,10 +133,11 @@ These came out of the milestone 2 design and are now part of its spec:
   without a name; same-scope shadowing is allowed; `0x`, `0b` and `0o`
   literals; block expressions; top-level `const`; and a list of reserved
   keywords for later milestones.
-- Left for later: text searching such as `split`, `trim` and `find` (with
-  milestone 5), format specifiers (milestone 6), printing classes, arrays and
-  optionals (milestone 8), and building a `string` from `[u8]`, which needs
-  UTF-8 validation and a failure path (milestone 5's input or milestone 12).
+- Left for later: text searching such as `split`, `trim` and `find` (milestone
+  5 brings `words()` instead), format specifiers (milestone 6), printing
+  classes, arrays and optionals (milestone 8), and building a `string` from
+  `[u8]`, which needs UTF-8 validation and a failure path (milestone 5's input
+  or milestone 12).
 
 ## Beyond milestone 6
 

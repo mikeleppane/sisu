@@ -1,0 +1,14 @@
+error[E0052]: cannot find function `readln`
+ --> E0052-readln.sisu:2:16
+  |
+2 |     let line = readln()
+  |                ^^^^^^
+  |
+help: a function with a similar name exists: `read_line`
+  |
+2 -     let line = readln()
+2 +     let line = read_line()
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0052

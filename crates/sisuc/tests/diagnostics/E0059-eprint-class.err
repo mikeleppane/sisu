@@ -1,0 +1,10 @@
+error[E0059]: cannot eprint `P`
+ --> E0059-eprint-class.sisu:6:12
+  |
+6 |     eprint(P(x: 1))
+  |            ^^^^^^^
+  |
+  = help: `eprint` takes one `i64`, `u8`, `bool`, `char` or `string`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0059
