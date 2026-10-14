@@ -1,4 +1,4 @@
-//! The prelude: `print` and `panic`, the names no top-level item can take, and `todo`.
+//! The prelude: `print`, `eprint` and `panic`, the names no top-level item can take, and `todo`.
 
 use super::*;
 
@@ -142,10 +142,38 @@ fn coalesce_unit_is_not_a_value() {
     );
 }
 
+/// `eprint` is `print` to standard error: the same operand rules, and a node of its own.
+#[test]
+fn eprint_lowers() {
+    let (program, ds) = checked("fn main() {\n    eprint(1)\n}");
+    assert!(ds.is_empty(), "{ds:?}");
+    let program = program.expect("no errors");
+    assert!(program.to_string().contains("(eprint 1)"), "{program}");
+}
+
+/// `eprint`'s argument errors are `print`'s: in each row, the body, the code, and where it is
+/// reported (the call for a count, the argument otherwise).
+#[test]
+fn eprint_argument_errors() {
+    let class = "class P {\n    x: i64\n}\n";
+    for (statement, code, pos) in [
+        ("eprint()", Code::PrintArgument, (5, 5)),
+        ("eprint(1, 2)", Code::PrintArgument, (5, 5)),
+        ("eprint(P(x: 1))", Code::PrintArgument, (5, 12)),
+        ("eprint([1])", Code::PrintArray, (5, 12)),
+        ("eprint(panic(\"x\"))", Code::PrintNever, (5, 12)),
+    ] {
+        codes(
+            &format!("{class}fn main() {{\n    {statement}\n}}"),
+            &[(code, pos)],
+        );
+    }
+}
+
 /// No top-level function, class or constant takes a prelude name.
 #[test]
 fn prelude_defined_twice() {
-    for name in ["panic", "print"] {
+    for name in ["panic", "print", "eprint"] {
         for (item, col) in [
             (format!("fn {name}() {{}}"), 4),
             (format!("class {name} {{}}"), 7),

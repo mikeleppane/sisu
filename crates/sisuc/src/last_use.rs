@@ -131,7 +131,7 @@ impl Walk {
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
-            | ExprKind::Print(operand)
+            | ExprKind::Print { operand, .. }
             | ExprKind::Unary { operand, .. } => self.expr(operand),
             ExprKind::Binary {
                 op: BinaryOp::And | BinaryOp::Or,

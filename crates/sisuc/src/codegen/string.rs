@@ -13,7 +13,7 @@ use inkwell::{AddressSpace, IntPredicate};
 use super::rc::{Helper, param};
 use super::{Codegen, POSITIONED, zeroext};
 use crate::diagnostic::Span;
-use crate::tir::{CompareOp, Expr, Place, Type};
+use crate::tir::{CompareOp, Expr, Place, Stream, Type};
 
 /// A string block's header, from the target's data layout. A block with capacity `cap` is
 /// `size + cap` bytes, aligned to `align`.
@@ -526,11 +526,12 @@ impl<'ctx> Codegen<'ctx, '_> {
         holds
     }
 
-    /// `print` of a string: `sisu_print_str(bytes, len)`, then the release.
-    pub(super) fn print_string(&mut self, operand: &Expr) {
+    /// `print` or `eprint` of a string: `sisu_print_str(bytes, len)`, or `sisu_eprint_str`, then
+    /// the release.
+    pub(super) fn print_string(&mut self, stream: Stream, operand: &Expr) {
         let string = self.operand(operand).into_pointer_value();
         self.call(
-            self.print_str,
+            self.printers[stream as usize].str,
             &[
                 self.string_field(string, BYTES).into(),
                 self.string_len(string).into(),

@@ -1,0 +1,8 @@
+error[E0061]: `eprint` never runs: its argument never finishes
+ --> E0061-eprint.sisu:2:12
+  |
+2 |     eprint(panic("x"))
+  |            ^^^^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0061

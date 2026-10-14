@@ -119,6 +119,23 @@ pub(crate) struct Expr {
     pub(crate) span: Span,
 }
 
+/// The stream a `print` writes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Stdout,
+    Stderr,
+}
+
+impl Stream {
+    /// The prelude function that writes to the stream.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Stream::Stdout => "print",
+            Stream::Stderr => "eprint",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum ExprKind {
     Int(i64),
@@ -148,7 +165,11 @@ pub(crate) enum ExprKind {
     Wrap(Box<Expr>),
     /// `u8(e)`, `i64(e)` or `char(e)`: `e` converted to the node's own type.
     Convert(Box<Expr>),
-    Print(Box<Expr>),
+    /// `print(operand)` or `eprint(operand)`.
+    Print {
+        stream: Stream,
+        operand: Box<Expr>,
+    },
     /// `panic(message)`, of type `never`; its span starts where the panic reports.
     Panic(Box<Expr>),
     /// `[a, b]`.
@@ -265,7 +286,7 @@ impl Expr {
             | ExprKind::Sum(operand)
             | ExprKind::Wrap(operand)
             | ExprKind::Convert(operand)
-            | ExprKind::Print(operand)
+            | ExprKind::Print { operand, .. }
             // A panic ends the process, so nothing before it needs binding for a release.
             | ExprKind::Panic(operand)
             | ExprKind::Unary { operand, .. } => operand.exits(),
@@ -440,7 +461,7 @@ impl Printer<'_> {
             ExprKind::Field { base, index } => self.field(f, base, *index),
             ExprKind::Wrap(operand) => self.unary(f, "wrap", operand),
             ExprKind::Convert(operand) => self.unary(f, &expr.ty.to_string(), operand),
-            ExprKind::Print(operand) => self.unary(f, "print", operand),
+            ExprKind::Print { stream, operand } => self.unary(f, stream.name(), operand),
             ExprKind::Panic(message) => self.unary(f, "panic", message),
             ExprKind::ArrayLit(elements) => {
                 f.write_str("(array")?;
@@ -670,6 +691,17 @@ mod tests {
         }
     }
 
+    /// `print(operand)`.
+    fn print_of(operand: Expr) -> Expr {
+        expr(
+            ExprKind::Print {
+                stream: Stream::Stdout,
+                operand: Box::new(operand),
+            },
+            Type::Unit,
+        )
+    }
+
     fn int(n: i64) -> Expr {
         expr(ExprKind::Int(n), Type::I64)
     }
@@ -703,7 +735,7 @@ mod tests {
             },
             Type::Bool,
         );
-        let print = expr(ExprKind::Print(Box::new(chain)), Type::Unit);
+        let print = print_of(chain);
         let if_stmt = expr(
             ExprKind::If {
                 cond: Box::new(x_ne_2),
@@ -908,7 +940,7 @@ mod tests {
             Type::I64,
         );
         let to_char = expr(ExprKind::Convert(Box::new(int(228))), Type::Char);
-        let print = |arg| Stmt::Expr(expr(ExprKind::Print(Box::new(arg)), Type::Unit));
+        let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
             functions: vec![Function {
@@ -926,6 +958,29 @@ mod tests {
     }
 
     #[test]
+    fn eprints_to_standard_error() {
+        // fn f() { eprint(1) }
+        let eprint = expr(
+            ExprKind::Print {
+                stream: Stream::Stderr,
+                operand: Box::new(int(1)),
+            },
+            Type::Unit,
+        );
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(vec![Stmt::Expr(eprint)]),
+            }],
+        };
+        assert_eq!(program.to_string(), "(fn f () unit (block (eprint 1)))");
+    }
+
+    #[test]
     fn prints_strings() {
         // fn f(s: string) { print("a\"\n" + s) }
         let lit = expr(ExprKind::Str("a\"\n".into()), Type::String);
@@ -934,10 +989,7 @@ mod tests {
             lhs: Box::new(lit),
             rhs: Box::new(s),
         };
-        let print = expr(
-            ExprKind::Print(Box::new(expr(concat, Type::String))),
-            Type::Unit,
-        );
+        let print = print_of(expr(concat, Type::String));
         let program = Program {
             classes: vec![],
             functions: vec![Function {
@@ -963,7 +1015,7 @@ mod tests {
             expr(ExprKind::Local(LocalId(1)), Type::I64),
         ];
         let interp = expr(ExprKind::Interpolate(parts), Type::String);
-        let print = expr(ExprKind::Print(Box::new(interp)), Type::Unit);
+        let print = print_of(interp);
         let program = Program {
             classes: vec![],
             functions: vec![Function {
@@ -991,7 +1043,7 @@ mod tests {
             ))
         };
         let bytes = expr(ExprKind::Bytes(s()), Type::Array(Box::new(Type::U8)));
-        let print = |arg| Stmt::Expr(expr(ExprKind::Print(Box::new(arg)), Type::Unit));
+        let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
             functions: vec![Function {

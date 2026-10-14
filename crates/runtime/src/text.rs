@@ -39,6 +39,17 @@ pub extern "C" fn sisu_print_char(c: u32) {
     crate::print_bytes(char_text(c, &mut [0; 4]));
 }
 
+/// Writes the `char` with scalar value `c` and a newline to standard error. Sisu's `eprint`
+/// calls this for a `char` argument.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_eprint_char(c: u32) {
+    crate::eprint_bytes(char_text(c, &mut [0; 4]));
+}
+
 /// Copies `text` to `out` and returns its length.
 ///
 /// # Safety
@@ -236,6 +247,23 @@ pub unsafe extern "C" fn sisu_print_str(bytes: *const u8, len: usize) {
     // SAFETY: the caller promises `len` readable bytes at `bytes`; a string's bytes pointer
     // is never null, even for the empty string.
     crate::print_bytes(unsafe { std::slice::from_raw_parts(bytes, len) });
+}
+
+/// Writes the `len` bytes at `bytes` and a newline to standard error. Sisu's `eprint` calls this
+/// for a `string` argument. It writes the bytes as they are, zero bytes included.
+///
+/// # Safety
+///
+/// `bytes` is not null and `len` bytes at it are readable; valid UTF-8 is not required.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_eprint_str(bytes: *const u8, len: usize) {
+    // SAFETY: the caller promises `len` readable bytes at `bytes`; a string's bytes pointer
+    // is never null, even for the empty string.
+    crate::eprint_bytes(unsafe { std::slice::from_raw_parts(bytes, len) });
 }
 
 /// Compares the `a_len` bytes at `a` with the `b_len` bytes at `b`, as byte slices' `Ord`

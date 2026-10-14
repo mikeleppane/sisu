@@ -44,11 +44,15 @@ pub(crate) fn valgrind(exe: &Path) -> Output {
         .expect("valgrind is required: install it with `apt install valgrind`")
 }
 
-/// Checks a `tests/run` case: both builds differ, exit 0 with empty stderr, agree on stdout, and
+/// Checks a `tests/run` case: both builds differ, exit 0, agree on stdout and on stderr, and
 /// print the same under Valgrind, which finds no leak or memory error, and in a `--rc-checks`
 /// build, which finds no count fault or live object at exit; then that stdout is `<name>.out`.
+/// Stderr is empty, unless `<name>.err` exists: then the stderr of the plain, `-O2` and
+/// `--rc-checks` runs is that file. The Valgrind runs' stderr holds Valgrind's own log, so it is
+/// never compared.
 /// Each `// o2-calls:` marker in the case must hold in the `-O2` IR (see `O2_CALLS`).
-/// With `bless`, rewrites `<name>.out` instead, after every other check passed.
+/// With `bless`, rewrites `<name>.out`, and `<name>.err` when it exists, instead, after every
+/// other check passed.
 pub(crate) fn run(path: &Path, bless: bool) {
     let [o0, o2, rc] = build(path, [O0, O2, RC_CHECKS]);
     assert!(
@@ -58,6 +62,8 @@ pub(crate) fn run(path: &Path, bless: bool) {
         path.display()
     );
     o2_calls(path);
+    let err_path = path.with_extension("err");
+    let expects_stderr = err_path.exists();
     let [out0, out2] = [&o0, &o2].map(|exe| {
         let out = Command::new(exe).output().expect("the program starts");
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -68,10 +74,18 @@ pub(crate) fn run(path: &Path, bless: bool) {
             exe.display(),
             out.status
         );
-        assert_eq!(stderr, "", "{}", exe.display());
+        if !expects_stderr {
+            assert_eq!(
+                stderr,
+                "",
+                "{}: writes to stderr, and the case has no `.err` file",
+                exe.display()
+            );
+        }
         out
     });
     let stdout = agreed(path, "stdout", &out0.stdout, &out2.stdout);
+    let stderr = agreed(path, "stderr", &out0.stderr, &out2.stderr);
     for exe in [o0, o2] {
         let checked = valgrind(&exe);
         let valgrind_stderr = String::from_utf8_lossy(&checked.stderr);
@@ -97,7 +111,7 @@ pub(crate) fn run(path: &Path, bless: bool) {
         rc.display(),
         checked.status
     );
-    assert_eq!(rc_stderr, "", "{}", rc.display());
+    assert_eq!(rc_stderr, stderr, "{}", rc.display());
     assert_eq!(
         String::from_utf8_lossy(&checked.stdout),
         stdout,
@@ -105,7 +119,11 @@ pub(crate) fn run(path: &Path, bless: bool) {
         rc.display()
     );
     // Last, so that a run failing any check above writes nothing.
-    expect_files(&[(path.with_extension("out"), stdout)], bless);
+    let mut files = vec![(path.with_extension("out"), stdout)];
+    if expects_stderr {
+        files.push((err_path, stderr));
+    }
+    expect_files(&files, bless);
 }
 
 /// Checks a `tests/run-fail` case: both builds exit 101, agree, and print `<name>.out` on stdout

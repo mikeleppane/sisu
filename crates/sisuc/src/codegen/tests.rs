@@ -106,6 +106,29 @@ fn print_bool_passes_a_zero_extended_i1() {
     }
 }
 
+/// `eprint` calls the runtime's standard error functions, one for each operand type, and
+/// `print` still calls the standard output ones.
+#[test]
+fn eprint_calls_the_stderr_functions() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn main() {\n    eprint(1)\n    eprint(true)\n    eprint('a')\n    eprint(\"s\")\n    print(2)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "call void @sisu_eprint_int(",
+        "call void @sisu_eprint_bool(i1 zeroext",
+        "call void @sisu_eprint_char(",
+        "call void @sisu_eprint_str(",
+        "call void @sisu_print_int(",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+    assert!(!ir.contains("call void @sisu_print_str("), "{ir}");
+}
+
 /// Interpolation passes a `bool` to the runtime as `print` does.
 #[test]
 fn write_bool_passes_a_zero_extended_i1() {
@@ -782,6 +805,10 @@ fn print_declarations_carry_attributes() {
         ("sisu_print_int", own),
         ("sisu_print_bool", own),
         ("sisu_print_str", reads),
+        ("sisu_eprint_int", own),
+        ("sisu_eprint_bool", own),
+        ("sisu_eprint_char", own),
+        ("sisu_eprint_str", reads),
         ("sisu_str_compare", "memory(argmem: read)"),
     ] {
         let declaration = ir

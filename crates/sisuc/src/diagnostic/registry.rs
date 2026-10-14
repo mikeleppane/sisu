@@ -402,17 +402,22 @@ pub(crate) enum DiagnosticKind {
         owner: String,
         at: Span,
     },
-    /// A `print` at `at` with no argument, several, or one it cannot print. `class` is the class
-    /// of an object argument, and `at` is then that argument.
-    PrintArgument { at: Span, class: Option<String> },
-    /// The argument at `at` of a `print`, of the array type `ty` or an optional of one.
+    /// A call of `function` (`print` or `eprint`) at `at` with no argument, several, or one it
+    /// cannot print. `class` is the class of an object argument, and `at` is then that argument.
+    PrintArgument {
+        function: &'static str,
+        at: Span,
+        class: Option<String>,
+    },
+    /// The argument at `at` of a call of `function`, of the array type `ty` or an optional of one.
     PrintArray {
+        function: &'static str,
         ty: String,
         optional: bool,
         at: Span,
     },
-    /// The argument at `at` of a `print`, which never finishes.
-    PrintNever { at: Span },
+    /// The argument at `at` of a call of `function`, which never finishes.
+    PrintNever { function: &'static str, at: Span },
     /// The optional at `at` that a member, an index or a `for` uses as a value. `value` is its
     /// path as written, when it has one. `access` is the `.` before the member, and any space or
     /// comment around it, when a `?.` can take its place.
@@ -1493,25 +1498,38 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 format!("`{name}` is a field of `{owner}`, not a method"),
             ),
-            DiagnosticKind::PrintArgument { at, class } => {
-                let takes = "`print` takes one `i64`, `u8`, `bool`, `char` or `string`";
+            DiagnosticKind::PrintArgument {
+                function,
+                at,
+                class,
+            } => {
+                let takes = format!("`{function}` takes one `i64`, `u8`, `bool`, `char` or `string`");
                 match class {
-                    Some(class) => Diagnostic::coded(code, at, format!("cannot print `{class}`"))
-                        .with_help(takes),
+                    Some(class) => {
+                        Diagnostic::coded(code, at, format!("cannot {function} `{class}`"))
+                            .with_help(takes)
+                    }
                     None => Diagnostic::coded(code, at, takes),
                 }
             }
-            DiagnosticKind::PrintArray { ty, optional, at } => {
+            DiagnosticKind::PrintArray {
+                function,
+                ty,
+                optional,
+                at,
+            } => {
                 let help = if optional {
-                    "unwrap it with `if let`, then print each element in a `for` loop"
+                    format!("unwrap it with `if let`, then {function} each element in a `for` loop")
                 } else {
-                    "print each element in a `for` loop"
+                    format!("{function} each element in a `for` loop")
                 };
-                Diagnostic::coded(code, at, format!("cannot print `{ty}`")).with_help(help)
+                Diagnostic::coded(code, at, format!("cannot {function} `{ty}`")).with_help(help)
             }
-            DiagnosticKind::PrintNever { at } => {
-                Diagnostic::coded(code, at, "`print` never runs: its argument never finishes")
-            }
+            DiagnosticKind::PrintNever { function, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{function}` never runs: its argument never finishes"),
+            ),
             DiagnosticKind::MayBeNone { value, at, access } => {
                 let d = Diagnostic::coded(code, at, format!("{} may be `None`", named(value)));
                 match access {
