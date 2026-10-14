@@ -823,12 +823,22 @@ stretch goals" with no date. Each gap gets a milestone once a definition of
 - **C FFI.** It is a stretch goal above. Without it, Sisu cannot call SQLite,
   a TLS library or an OS API that the runtime does not wrap. Under ADR 0009
   each OS feature is runtime code in Rust, which does not scale to a full
-  standard library.
+  standard library. WebAssembly in a browser is the same design with
+  another host: there is no standard output, so a program imports JavaScript
+  functions and exports its own through the `extern fn` that C uses, not a
+  second mechanism.
 - **Standard library scope.** Milestone 11 names `List` and `Map`, and
   milestone 12 brings files. Time, processes, directories, networking,
   regular expressions and JSON are not planned.
 - **Platforms.** Sisu builds only for x86-64 Linux. ARM64 Linux and macOS
   are under "Early tooling", untested, and Windows is a stretch goal.
+  WebAssembly with WASI (`wasm32-wasip1`), run by `wasmtime`, is the cheapest
+  new target: LLVM 22 in `.llvm/22` has the backend, and reference counting
+  needs nothing from the host. It needs cross-compiling (`--target`, a
+  stretch goal above), a runtime built for the target without its Unix
+  `SIGPIPE` handling, linking with `wasm-ld` in place of `cc`, and the test
+  cases run under `wasmtime`. One task per OS thread (ADR 0010) does not
+  carry over, because WASI threads are experimental.
 - **Debug info and crash reports.** A panic prints its file and line but no
   stack trace, and `gdb` cannot step through Sisu source (DWARF is a stretch
   goal). Recursion that runs out of stack dies with `SIGSEGV`, exit code 139,
