@@ -769,6 +769,62 @@ These do not make code nicer to write, so they wait:
   the language server, which can show them.
 - Self-hosting: the Sisu lexer and parser written in Sisu.
 
+## Gaps before production
+
+Status: proposal, 2026-10-14. Milestones 1 to 12 give Sisu a complete
+language, but not one ready for production use. Nothing in this section has
+a milestone or a done-when test yet. Some items appear above under "Later and
+stretch goals" with no date. Each gap gets a milestone once a definition of
+1.0 says it is needed.
+
+- **Target domain.** The roadmap does not say what Sisu is for. Command-line
+  tools and scripts need a fast `sisu run`, a standard library for files,
+  processes, regular expressions and JSON, and builds for several platforms.
+  Network services need sockets, many connections per thread, and a panic
+  that ends one task instead of the program. The answer orders every gap
+  below, so decide it first.
+- **A language reference.** Milestone specs are not published, so the
+  compiler and its tests define the language today. Users and tool authors
+  need a reference that says what a program means, apart from what `sisuc`
+  happens to do.
+- **A stability promise.** Nothing says which programs keep compiling from
+  one version to the next, how a feature is deprecated, or whether Sisu has
+  editions as Rust does. Sisu has no users yet, so this costs little now and
+  much later.
+- **C FFI.** It is a stretch goal above. Without it, Sisu cannot call SQLite,
+  a TLS library or an OS API that the runtime does not wrap. Under ADR 0009
+  each OS feature is runtime code in Rust, which does not scale to a full
+  standard library.
+- **Standard library scope.** Milestone 11 names `List` and `Map`, and
+  milestone 12 brings files. Time, processes, directories, networking,
+  regular expressions and JSON are not planned.
+- **Platforms.** Sisu builds only for x86-64 Linux. ARM64 Linux and macOS
+  are under "Early tooling", untested, and Windows is a stretch goal.
+- **Debug info and crash reports.** A panic prints its file and line but no
+  stack trace, and `gdb` cannot step through Sisu source (DWARF is a stretch
+  goal). Recursion that runs out of stack dies with `SIGSEGV`, exit code 139,
+  not with a panic that names the line.
+- **A language server.** It is a stretch goal above. It needs a parser that
+  recovers inside a body, where today the parser reports one error per item
+  (ADR 0013), and a checker that can rerun after one file changes. Both are
+  expensive to add to a batch compiler later, so the front end should be
+  shaped for them before modules (milestone 11) arrive.
+- **Packages.** "Deliberately avoided" defers a registry and lets path and
+  Git dependencies come first. A manifest (`sisu.toml`) and dependency
+  resolution have no design.
+- **Number types.** Sisu has `i64` and `u8`, and milestone 6 adds a float.
+  The C FFI, binary file formats and hashing need `i32`, `u32`, `u64` and
+  `f32`. "Integer widths and wrapping" in "Open decisions" covers only part of
+  this.
+- **Fuzzing the compiler.** Mutation testing measures the tests. Nothing
+  feeds generated programs to the parser, checker and codegen to find
+  crashes or wrong code.
+
+The first step is a definition of 1.0, recorded as an ADR: the target
+domain, the platforms, the stability promise, the tools it requires (a
+language server, `sisu fmt`, `sisu test`, debug info), C FFI and the minimum
+standard library. The milestones after 12 then follow from it.
+
 ## Deliberately avoided
 
 - Lifetimes and a borrow checker. Reference counting keeps Sisu in the Swift
