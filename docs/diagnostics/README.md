@@ -117,8 +117,9 @@ stands. The code may be in any case. Links in an explanation are relative to
 Each explanation has the same shape: a `# <CODE>: <title>` line, one
 paragraph that states the rule, then `## Why`, `## Broken` and `## Fixed`,
 and an optional `## Related`. The Broken program reports exactly its code;
-the Fixed program reports nothing. Tests compile both, and apply every
-certain fix to the Broken program.
+the Fixed program reports nothing. E0099 is the one exception: its Fixed
+program keeps the `todo` its fix leaves, so it reports W0003. Tests compile
+both, and apply every certain fix to the Broken program.
 
 ## Numbers
 

@@ -73,63 +73,47 @@ impl Checker {
     fn panic(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
         let labeled = self.labels(args);
         let [arg] = args else {
-            self.report(DiagnosticKind::ArgumentCount {
-                name: "panic".to_string(),
-                want: 1,
-                found: args.len(),
-                at: span,
-            });
-            self.stray(args);
-            return Err(Poisoned::error());
+            return self.message_count("panic", span, args);
         };
         let message = self.message(&arg.value);
-        // A message that failed is the failure of this rule, so the call is `Error`.
-        let failed = labeled || message.is_err();
-        let kind = message
-            .ok()
-            .filter(|_| !labeled)
-            .map(|message| tir::ExprKind::Panic(Box::new(message)));
-        typed(span, Type::Never, failed, kind)
+        panics(span, labeled, message)
     }
 
-    /// `todo` or `todo(message)`, which panics as `panic` does, with Rust's `todo!` messages.
-    /// It always gets the warning that it is left in the program.
-    pub(super) fn todo(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
-        self.report(DiagnosticKind::TodoLeft {
-            at: Span::new(span.start, span.start + "todo".len()),
-        });
+    /// `todo` or `todo(message)`, at `span`, whose keyword is at `keyword`: it panics as `panic`
+    /// does, with Rust's `todo!` messages, and always gets the warning that it is left in the
+    /// program.
+    pub(super) fn todo(&mut self, span: Span, keyword: Span, args: &[ast::Arg]) -> Checked {
+        self.report(DiagnosticKind::TodoLeft { at: keyword });
         let labeled = self.labels(args);
         let text = |text: &str| tir::Expr {
             kind: tir::ExprKind::Str(text.to_string()),
             ty: Type::String,
-            span,
+            span: keyword,
         };
         let message = match args {
             [] => Ok(text("not yet implemented")),
             [arg] => self.message(&arg.value).map(|message| {
                 let operands = vec![text("not yet implemented: "), message];
-                self.spilled(span, Type::String, operands, |operands| {
+                self.spilled(keyword, Type::String, operands, |operands| {
                     let (lhs, rhs) = pair(operands);
                     tir::ExprKind::Concat { lhs, rhs }
                 })
             }),
-            _ => {
-                self.report(DiagnosticKind::ArgumentCount {
-                    name: "todo".to_string(),
-                    want: 1,
-                    found: args.len(),
-                    at: span,
-                });
-                self.stray(args);
-                return Err(Poisoned::error());
-            }
+            _ => return self.message_count("todo", span, args),
         };
-        let failed = labeled || message.is_err();
-        let kind = message
-            .ok()
-            .filter(|_| !labeled)
-            .map(|message| tir::ExprKind::Panic(Box::new(message)));
-        typed(span, Type::Never, failed, kind)
+        panics(keyword, labeled, message)
+    }
+
+    /// `name`'s count error: it takes one message, and `args` is not one.
+    fn message_count(&mut self, name: &str, span: Span, args: &[ast::Arg]) -> Checked {
+        self.report(DiagnosticKind::ArgumentCount {
+            name: name.to_string(),
+            want: 1,
+            found: args.len(),
+            at: span,
+        });
+        self.stray(args);
+        Err(Poisoned::error())
     }
 
     /// A `panic` or `todo` message, an expression of type `string`. A value that interpolation
@@ -151,4 +135,16 @@ impl Checker {
         });
         Err(Poisoned::error())
     }
+}
+
+/// The panic with `message`, which reports at the start of `span`; `labeled` when its
+/// arguments had a label.
+fn panics(span: Span, labeled: bool, message: Checked) -> Checked {
+    // A message that failed is the failure of this rule, so the call is `Error`.
+    let failed = labeled || message.is_err();
+    let kind = message
+        .ok()
+        .filter(|_| !labeled)
+        .map(|message| tir::ExprKind::Panic(Box::new(message)));
+    typed(span, Type::Never, failed, kind)
 }

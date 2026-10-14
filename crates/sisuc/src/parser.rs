@@ -38,8 +38,9 @@ pub(crate) fn parse(lexed: Lexed) -> Parsed {
         depth: 0,
         lexer: &diagnostics,
         comments: &comments,
+        breaks: &breaks,
     }
-    .program(breaks)
+    .program()
 }
 
 /// The program of `source`, which must lex and parse without a diagnostic.
@@ -124,6 +125,8 @@ struct Parser<'a> {
     lexer: &'a [Diagnostic],
     /// Where each comment starts.
     comments: &'a [usize],
+    /// Where each line break is.
+    breaks: &'a [usize],
 }
 
 impl<'a> Parser<'a> {
@@ -309,7 +312,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The program, which keeps the lexer's `breaks`.
-    fn program(&mut self, breaks: Vec<usize>) -> Parsed {
+    fn program(&mut self) -> Parsed {
         let mut items = Vec::new();
         let mut broken = Vec::new();
         let mut diagnostics = Vec::new();
@@ -402,7 +405,7 @@ impl<'a> Parser<'a> {
                     .filter(|t| matches!(t.kind, TokenKind::Str(_) | TokenKind::StrHead(_)))
                     .map(|t| t.span.start)
                     .collect(),
-                breaks,
+                breaks: self.breaks.to_vec(),
             },
             diagnostics,
             checkable,
@@ -661,6 +664,7 @@ impl<'a> Parser<'a> {
             depth: self.depth,
             lexer: self.lexer,
             comments: self.comments,
+            breaks: self.breaks,
         };
         let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
@@ -1370,30 +1374,37 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `todo` or `todo(args)`. Rust's `todo!` and `todo!(...)`, and an empty `todo()`, are
-    /// reported with the fix that deletes what is extra.
+    /// `todo` or `todo(args)`. Rust's `todo!` and `todo!(...)`, with the `!` on the keyword's
+    /// line, and an empty `todo()`, are reported with the fix that deletes what is extra.
     fn todo(&mut self) -> Result<Expr, Diagnostic> {
         let keyword = self.bump().span;
         let (tokens, pos) = (self.tokens, self.pos);
         let next = |n: usize| &tokens[(pos + n).min(tokens.len() - 1)];
+        // Only a `!` on the keyword's line is Rust's `todo!`: inside brackets, where no `Newline`
+        // token ends the line, one on a later line is the next token's business.
+        let gap = keyword.end..next(0).span.start;
+        let same_line = !self.breaks.iter().any(|b| gap.contains(b));
         let (at, delete) = match (&next(0).kind, &next(1).kind, &next(2).kind) {
-            (TokenKind::Bang, TokenKind::LParen, TokenKind::RParen) => {
+            (TokenKind::Bang, TokenKind::LParen, TokenKind::RParen) if same_line => {
                 (next(0).span, next(0).span.to(next(2).span))
             }
-            (TokenKind::Bang, ..) => (next(0).span, next(0).span),
+            (TokenKind::Bang, ..) if same_line => (next(0).span, next(0).span),
             (TokenKind::LParen, TokenKind::RParen, _) => {
                 (next(0).span, next(0).span.to(next(1).span))
             }
             (TokenKind::LParen, ..) => {
                 let (args, close) = self.args()?;
                 return Ok(Expr {
-                    kind: ExprKind::Todo(args),
+                    kind: ExprKind::Todo { keyword, args },
                     span: keyword.to(close),
                 });
             }
             _ => {
                 return Ok(Expr {
-                    kind: ExprKind::Todo(Vec::new()),
+                    kind: ExprKind::Todo {
+                        keyword,
+                        args: Vec::new(),
+                    },
                     span: keyword,
                 });
             }
@@ -2644,10 +2655,22 @@ mod tests {
             ("todo!", 9, "todo"),
             ("todo!(\"why\")", 9, "todo(\"why\")"),
             ("todo!()", 9, "todo"),
+            ("(todo!)", 10, "(todo)"),
+            ("(todo!(\"why\"))", 10, "(todo(\"why\"))"),
         ] {
             let src = format!("fn main() {{\n    {line}\n}}");
             assert_eq!(parse_err(&src), (Code::TodoForm, 2, col), "{src}");
             assert_eq!(fixed(&src), format!("fn main() {{\n    {after}\n}}"));
+        }
+    }
+
+    /// A `!` on a later line is not part of `todo`, even inside parentheses, where no line break
+    /// ends it: the `todo` is bare, and the `!` is where its `)` should be.
+    #[test]
+    fn todo_bang_on_the_next_line() {
+        for rest in ["!", "!()", "!(\"why\")"] {
+            let src = format!("fn main() {{\n    (todo\n     {rest})\n}}");
+            assert_eq!(parse_err(&src), (Code::Expected, 3, 6), "{src}");
         }
     }
 

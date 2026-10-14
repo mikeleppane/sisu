@@ -163,27 +163,58 @@ fn todo_lowers() {
     }
 }
 
-/// `todo`'s message follows `panic`'s rules: in each row, the body, the other diagnostic beside
-/// the warning, and whether its fix wraps the message.
+/// `todo`'s message follows `panic`'s rules, as a statement and as a value, where a broken
+/// `todo` is `Error` and so not also "no value". In each row, the body, the warning's position,
+/// the other diagnostic, and the body its fix makes, if it has one.
 #[test]
 fn todo_message_rules() {
-    for (statements, (code, pos), wraps) in [
-        ("todo(1)", (Code::Mismatch, (2, 10)), true),
-        ("todo(\"a\", \"b\")", (Code::ArgumentCount, (2, 5)), false),
+    for (statements, warning, (code, pos), fixed) in [
+        (
+            "todo(1)",
+            (2, 5),
+            (Code::Mismatch, (2, 10)),
+            Some("todo(\"{1}\")"),
+        ),
+        (
+            "todo(\"a\", \"b\")",
+            (2, 5),
+            (Code::ArgumentCount, (2, 5)),
+            None,
+        ),
         (
             "let xs = [1]\n    todo(xs)",
+            (3, 5),
             (Code::Mismatch, (3, 10)),
-            false,
+            None,
+        ),
+        (
+            "let x = todo(1)",
+            (2, 13),
+            (Code::Mismatch, (2, 18)),
+            Some("let x = todo(\"{1}\")"),
+        ),
+        (
+            "let x = todo(\"a\", \"b\")",
+            (2, 13),
+            (Code::ArgumentCount, (2, 13)),
+            None,
+        ),
+        (
+            "let xs = [1]\n    let x = todo(xs)",
+            (3, 13),
+            (Code::Mismatch, (3, 18)),
+            None,
         ),
     ] {
         let src = body("", statements);
-        codes(&src, &[(Code::TodoLeft, (pos.0, 5)), (code, pos)]);
+        codes(&src, &[(Code::TodoLeft, warning), (code, pos)]);
         let d = &diags(&src)[1];
-        if wraps {
-            assert_eq!(applied(&src, d), body("", "todo(\"{1}\")"));
-            fix_removes_its_code(&src, d);
-        } else {
-            assert_eq!(fixes(&src, d), [], "{src}");
+        match fixed {
+            Some(fixed) => {
+                assert_eq!(applied(&src, d), body("", fixed));
+                fix_removes_its_code(&src, d);
+            }
+            None => assert_eq!(fixes(&src, d), [], "{src}"),
         }
     }
 }
@@ -232,6 +263,25 @@ fn todo_with_a_label_is_an_error() {
         &body("", "let x = todo(m: \"x\")"),
         &[(Code::TodoLeft, (2, 13)), (Code::LabeledArgument, (2, 18))],
     );
+}
+
+/// The warning, and the panic's location, are the keyword's, not the parentheses' around it. A
+/// comment between them must not split the span.
+#[test]
+fn todo_in_parentheses() {
+    for (src, pos) in [
+        ("fn main() {\n    (todo)\n}", (2, 6)),
+        ("fn main() {\n    (//é\n     todo)\n}", (3, 6)),
+    ] {
+        diagnostic(src, Code::TodoLeft, (pos.0, pos.1, "todo"), &[]);
+        let program = checked(src).0.expect("only a warning");
+        let panic = program.functions[0]
+            .body
+            .value
+            .as_ref()
+            .expect("the `todo` should be the body's value");
+        assert_eq!(&src[panic.span.start..][..4], "todo", "{src}");
+    }
 }
 
 /// A line break ends a bare `todo`: `(1)` on the next line is a statement, not its message.
