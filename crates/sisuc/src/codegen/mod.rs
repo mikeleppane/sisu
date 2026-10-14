@@ -182,8 +182,9 @@ struct Printers<'ctx> {
     str: FunctionValue<'ctx>,
 }
 
-/// `<prefix>_int`, `_bool`, `_char` and `_str`, which takes the string's `bytes_len`. `zeroext` keeps the C `bool` ABI: the callee
-/// may read all 8 bits of the argument, so the caller must extend the `i1` with zeros.
+/// `<prefix>_int`, `_bool`, `_char` and `_str`, which takes the string's `bytes_len`. `zeroext`
+/// keeps the C `bool` ABI: the callee may read all 8 bits of the argument, so the caller must
+/// extend the `i1` with zeros.
 fn declare_printers<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
