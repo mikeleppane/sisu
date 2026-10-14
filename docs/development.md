@@ -117,9 +117,10 @@ measures the marked caller as a standalone function. In a real build the
 caller is inlined, and a call to a callee that LLVM infers as `memory(none)`
 or `readonly` can then be merged with an identical call at the call site. So
 mark calls to callees that write memory, as every current marker does. The
-old external-linkage check measured the standalone caller the same way. Interprocedural constant propagation also runs on internal
-functions, so a callee that keeps its calls recurses to a depth that the call sites
-do not fix; see `handover.sisu`.
+old external-linkage check measured the standalone caller the same way.
+Interprocedural constant propagation also runs on internal functions, so a
+callee that keeps its calls recurses to a depth that the call sites do not
+fix; see `handover.sisu`.
 `crates/sisuc/tests/programs` holds the few programs that the small-stack
 tests in `programs.rs` run.
 
