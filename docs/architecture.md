@@ -75,7 +75,9 @@ becomes an LLVM function named `sisu.<name>`, and each method one named
 `sisu.<Class>.<method>`. Codegen also emits a `main` with the C signature,
 which the C startup code calls and which runs `sisu.main`. Integer overflow
 and division by zero call `sisu_panic` instead of wrapping
-([ADR 0003](adr/0003-arithmetic-panics.md)).
+([ADR 0003](adr/0003-arithmetic-panics.md)). A `Panic` node, which `panic`
+and `todo` lower to, calls `sisu_panic_message` with its location and
+message, then ends the block with `unreachable`.
 
 Objects live on the heap, with a reference count in front of their fields
 ([ADR 0005](adr/0005-reference-counting.md)). Codegen emits the helpers that

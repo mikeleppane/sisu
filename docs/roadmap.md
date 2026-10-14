@@ -216,7 +216,7 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 | 4 | `_` as a pattern that binds nothing: `for _ in 0..n`, `let _ = f()`. Milestone 7's `match` uses it as the catch-all `_ =>`. Landed in milestone 4, stage 1: `_` binds nothing, so a second `let _` in one scope is fine and `_` cannot be read. | A loop or a call whose value is not needed takes no made-up name |
 | 4 | Integer literals in hexadecimal, binary and octal: `0xFF`, `0b1010`, `0o17`, with digit separators | Bytes and bit masks, which `u8` brings in milestone 3, read as what they are |
 | 4 | A block as an expression: `let x = {`, then statements on their own lines, then `}`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
-| 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
+| 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. Landed in milestone 5, stage 1. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
 | 6 | Float literals in scientific notation: `3.0e-4` | Physics and graphics constants read as written |
 | 6 | Tests in the source file: `test "add handles negatives" { assert(add(-1, 1) == 0) }`, with a built-in `assert`. A normal build drops `test` blocks; `sisuc --test`, later `sisu test`, builds a `main` that runs each one and reports which panicked. A test is in the same module, so it sees private names. A panic ends the whole process (`sisu_panic`), so the spec decides how the other tests still run: one child process per test, or stopping at the first failure. | Tests sit next to the code, as in Rust and Zig, with no test module or attribute. It needs only milestone 5's `panic`, and the compiler's own `tests/run` cases can use it |
 
@@ -389,8 +389,8 @@ the decisions it needs are settled:
 - **Small additions** from the table above, each a branch of its own:
   `let mut` replacing `var` (land it first: it touches every test program),
   reserved keywords, `const`, `_`, hexadecimal literals, block expressions
-  and `todo`. All but `todo` landed in milestone 4, stage 1. `panic("msg")`
-  can use milestone 4's strings now, and `test` blocks wait for `panic`.
+  and `todo`. All but `todo` landed in milestone 4, stage 1; `todo` landed
+  with `panic("msg")` in milestone 5, stage 1, so `test` blocks can panic.
 - **Tooling**: everything under "Early tooling", and from "Later and stretch
   goals" parser error recovery, the lints whose features exist, linking with
   `lld`, and debug info.
