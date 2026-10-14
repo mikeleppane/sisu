@@ -403,9 +403,22 @@ impl<'ctx> Codegen<'ctx, '_> {
         array
     }
 
-    /// `Words`: counts the words with `sisu_words_count`, which also checks the whole string,
-    /// allocates the `[string]`, and fills each element from a `sisu_word_next` call that starts
-    /// where the last word ended, so the work is linear. The string is released after.
+    /// `Len` of `Words`: the `sisu_words_count` that `words` starts with, and nothing else. The
+    /// `[string]` would be released as soon as its length is read, so it is never built. The
+    /// string is released after, as `words` releases it.
+    pub(super) fn word_count(&mut self, base: &Expr) -> IntValue<'ctx> {
+        let (string, borrowed) = self.borrow_pointer(base);
+        let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
+        let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01);
+        if !borrowed {
+            self.release(string.into(), &base.ty);
+        }
+        count
+    }
+
+    /// `Words`: counts the words with `sisu_words_count`, allocates the `[string]`, and fills
+    /// each element from a `sisu_word_next` call that starts where the last word ended, so the
+    /// work is linear. The string is released after.
     pub(super) fn words(&mut self, base: &Expr) -> PointerValue<'ctx> {
         let (string, borrowed) = self.borrow_pointer(base);
         let i64_type = self.context.i64_type();

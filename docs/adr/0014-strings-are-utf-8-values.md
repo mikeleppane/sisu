@@ -1,7 +1,8 @@
 # Strings are UTF-8 values
 
 Status: accepted, 2026-10-12. It answers the open question of ADR 0009 and
-the roadmap's "What a string is".
+the roadmap's "What a string is". [ADR 0016](0016-word-functions-trust-the-utf-8-invariant.md)
+amends its first rule for the word functions.
 
 A `string` is a sequence of bytes that is always valid UTF-8. Four rules
 follow from that.

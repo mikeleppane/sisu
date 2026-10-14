@@ -374,7 +374,11 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `Len`: the length of `base`, an array or a string, which is then released, unless it is
     /// a local: the local keeps the block alive, so codegen skips its retain and release.
+    /// `s.words().len()` counts the words without building them (see `word_count`).
     pub(super) fn len(&mut self, base: &Expr) -> IntValue<'ctx> {
+        if let ExprKind::Words(string) = &base.kind {
+            return self.word_count(string);
+        }
         let (array, borrowed) = self.borrow_or_expr(base);
         let array = array
             .expect("the checker should only call `len` on an array or a string, which lower to a pointer")

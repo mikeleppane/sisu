@@ -1,0 +1,10 @@
+// Counts the lines and words on standard input, one line at a time.
+fn main() {
+    let mut lines = 0
+    let mut words = 0
+    while let line = read_line() {
+        lines += 1
+        words += line.words().len()
+    }
+    print("{lines} {words}")
+}

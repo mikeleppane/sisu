@@ -726,15 +726,20 @@ fn read_line_refills_its_buffer() {
 
 /// A line of 2 MiB holds a million words, each found from where the last one ended. A split
 /// that rescanned from the start of the line would take far longer than the test's timeout.
+/// Both forms run: a `[string]` kept in a local is built word by word, and
+/// `line.words().len()` only counts.
 #[test]
 fn words_is_linear() {
-    let source = "fn main() {\n    if let line = read_line() {\n        print(line.words().len())\n    }\n}\n";
+    let built = "fn main() {\n    if let line = read_line() {\n        let ws = line.words()\n        print(ws.len())\n    }\n}\n";
+    let counted = "fn main() {\n    if let line = read_line() {\n        print(line.words().len())\n    }\n}\n";
     let input = "a ".repeat(1 << 20).into_bytes();
-    for o2 in [false, true] {
-        let exe = compile_tmp("words_linear", source, o2);
-        let out = support::Invocation::new(input.clone(), Vec::new()).run(&exe, false);
-        assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "1048576\n");
+    for (name, source) in [("words_linear", built), ("words_count_linear", counted)] {
+        for o2 in [false, true] {
+            let exe = compile_tmp(name, source, o2);
+            let out = support::Invocation::new(input.clone(), Vec::new()).run(&exe, false);
+            assert_eq!(out.status.code(), Some(0), "{name}: {:?}", out.status);
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "1048576\n", "{name}");
+        }
     }
 }
 

@@ -13,7 +13,7 @@ cpu=${BENCH_CPU:-2}
 python=${PYTHON:-python3.14}
 out=target/bench
 benchmarks=("$@")
-[[ ${#benchmarks[@]} -gt 0 ]] || benchmarks=(fib sieve binary_trees)
+[[ ${#benchmarks[@]} -gt 0 ]] || benchmarks=(fib sieve binary_trees wc)
 
 cargo build --release --quiet -p sisuc -p sisu-runtime
 
@@ -50,13 +50,20 @@ echo "Commit $(git rev-parse --short HEAD), $(date -u +%F), $(lscpu | sed -n 's/
 echo "Median of $runs runs on CPU $cpu."
 for bench in "${benchmarks[@]}"; do
     rows=()
+    # A benchmark with an input.awk reads what it writes on standard input.
+    input=/dev/null
+    if [[ -f bench/$bench/input.awk ]]; then
+        input=$out/$bench/input
+        mkdir -p "$out/$bench"
+        [[ $input -nt bench/$bench/input.awk ]] || awk -f "bench/$bench/input.awk" >"$input"
+    fi
     for lang in "${available[@]}"; do
         dir=$out/$bench/$lang
         rm -rf "$dir" && mkdir -p "$dir"
         cmd=$(build "$lang" "$bench" "$dir")
         for i in $(seq "$runs"); do
             # shellcheck disable=SC2086 # $cmd is a command and its arguments.
-            taskset -c "$cpu" /usr/bin/time -f "%e %U %S %M" -o "$dir/time.$i" $cmd >"$dir/stdout"
+            taskset -c "$cpu" /usr/bin/time -f "%e %U %S %M" -o "$dir/time.$i" $cmd <"$input" >"$dir/stdout"
             if ! cmp -s "$dir/stdout" "$out/$bench/sisu/stdout"; then
                 echo "$bench/$lang printed something other than the Sisu version:" >&2
                 diff "$out/$bench/sisu/stdout" "$dir/stdout" >&2

@@ -1,7 +1,8 @@
 // `words()`: the runs of characters between white space, each a new string. A no-break space
 // separates words; an empty or blank string has none; `?.` gives an optional array. The last
 // receivers in `main` are built at run time, so Valgrind checks the receiver's release too:
-// `t` is read again after `words()`, so `words()` must leave it alone.
+// `t` is read again after `words()`, so `words()` must leave it alone. `show` keeps the
+// `[string]` in a local, so it is built; `s.words().len()` in `main` only counts the words.
 // o2-calls: main show 4
 // o2-calls: main show_optional 1
 fn show(s: string) {
@@ -35,4 +36,7 @@ fn main() {
     let t = "c " + "d"
     print(t.words().len())         // 2
     print(t)                       // c d
+    print("".words().len())        // 0
+    print(" \t ".words().len())    // 0
+    print(("a\u{3000}b" + "\u{2028}häst 😀\u{85}").words().len())   // 4
 }
