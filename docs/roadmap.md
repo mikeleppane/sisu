@@ -133,10 +133,11 @@ These came out of the milestone 2 design and are now part of its spec:
   without a name; same-scope shadowing is allowed; `0x`, `0b` and `0o`
   literals; block expressions; top-level `const`; and a list of reserved
   keywords for later milestones.
-- Left for later: text searching such as `split`, `trim` and `find` (milestone 5
-  brings `words()` instead), format specifiers (milestone 6), printing classes, arrays and
-  optionals (milestone 8), and building a `string` from `[u8]`, which needs
-  UTF-8 validation and a failure path (milestone 5's input or milestone 12).
+- Left for later: text searching such as `split`, `trim` and `find` (milestone
+  5 brings `words()` instead), format specifiers (milestone 6), printing
+  classes, arrays and optionals (milestone 8), and building a `string` from
+  `[u8]`, which needs UTF-8 validation and a failure path (milestone 5's input
+  or milestone 12).
 
 ## Beyond milestone 6
 

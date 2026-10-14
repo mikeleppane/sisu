@@ -84,7 +84,7 @@ pub(crate) fn compile<'ctx>(
     // A string crosses into the runtime as its bytes and its length: `sisu_print_str(bytes,
     // len)`, `sisu_eprint_str(bytes, len)` and `sisu_str_compare(a, a_len, b, b_len) -> i64`.
     let bytes_len: [BasicMetadataTypeEnum; 2] = [ptr_type.into(), i64_type.into()];
-    // The runtime's print functions, one set for each `Stream`; `Printers::of` indexes them.
+    // The runtime's print functions, one set for each `Stream`; `Stream::index` indexes them.
     let printers = [Stream::Stdout, Stream::Stderr]
         .map(|stream| declare_printers(context, &module, stream.symbol_prefix(), &bytes_len));
     let compare = i64_type.fn_type(&[bytes_len, bytes_len].concat(), false);
