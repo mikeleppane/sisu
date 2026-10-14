@@ -152,7 +152,11 @@ These came out of the milestone 2 design and are now part of its spec:
   valid UTF-8. End of input is sticky.
 - `words()` splits on Unicode `White_Space`, which includes the no-break
   space `U+00A0`, and drops empty pieces. Matching `wc -w` byte for byte
-  waits for a locale story.
+  waits for a locale story. `s.words().len()` counts the words without
+  building the `[string]`, and the word functions trust that a string is
+  valid UTF-8 in a release build
+  ([ADR 0016](adr/0016-word-functions-trust-the-utf-8-invariant.md); added
+  after milestone 5, for the `wc` benchmark).
 
 ## Beyond milestone 6
 
