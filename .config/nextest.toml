@@ -31,6 +31,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(many_unclosed_strings_lex_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Each `todo!` once scanned the file's line breaks, so many of them were quadratic and this test
+# hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_todo_bangs_parse_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # Each `u8` parameter around a join would check it twice over, so nested joins would be
 # exponential and this test would hang instead of failing.
 [[profile.default.overrides]]

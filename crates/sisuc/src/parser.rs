@@ -2680,6 +2680,32 @@ mod tests {
         assert_eq!(parse_err(src), (Code::TodoForm, 5, 9), "{src}");
     }
 
+    /// `.config/nextest.toml` kills this test after 30 s, matching it by name: a rename must
+    /// update the override there. Each `todo!` once scanned the file's line breaks, so many of
+    /// them were quadratic.
+    #[test]
+    fn many_todo_bangs_parse_in_linear_time() {
+        const ITEMS: usize = 100_000;
+        let parsed = parsed(&"fn f() {\n    todo!\n}\n".repeat(ITEMS));
+        assert_eq!(parsed.diagnostics.len(), ITEMS);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .all(|d| d.code() == Code::TodoForm)
+        );
+    }
+
+    /// Inside parentheses no line break ends `todo`, so it takes the message on the next line.
+    /// Outside them the break ends it (`todo_ends_at_the_line` in the checker's tests).
+    #[test]
+    fn todo_takes_a_message_on_the_next_line_in_parentheses() {
+        assert_eq!(
+            body("fn main() {\n    (todo\n     (\"why\"))\n}"),
+            "(block (todo \"why\"))"
+        );
+    }
+
     /// A `!` on a later line is not part of `todo`, even inside parentheses, where no line break
     /// ends it: the `todo` is bare, and the `!` is where its `)` should be.
     #[test]

@@ -21,6 +21,23 @@ fn panic_lowers() {
     assert_eq!(panic.ty, Type::Never);
 }
 
+/// The panic's location, and its count error, are the callee's, not the parentheses' around it,
+/// as `todo`'s are its keyword's.
+#[test]
+fn panic_in_parentheses() {
+    let src = "fn main() {\n    (panic(\"x\"))\n}";
+    let (program, ds) = checked(src);
+    assert!(ds.is_empty(), "{ds:?}");
+    let program = program.expect("no errors");
+    let panic = program.functions[0]
+        .body
+        .value
+        .as_ref()
+        .expect("the `panic` should be the body's value");
+    assert_eq!(&src[panic.span.start..][..5], "panic", "{src}");
+    codes(&body("", "(panic())"), &[(Code::ArgumentCount, (2, 6))]);
+}
+
 /// A message that is not a `string`: in each row, the body, the argument reported, and the
 /// body the certain fix makes, if there is one.
 #[test]

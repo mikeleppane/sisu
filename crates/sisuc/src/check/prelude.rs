@@ -22,7 +22,8 @@ impl Checker {
     ) -> Option<Checked> {
         match callee.name.as_str() {
             "print" => Some(self.print(span, args)),
-            "panic" => Some(self.panic(span, args)),
+            // The panic is the callee's, not the parentheses' around the call.
+            "panic" => Some(self.panic(Span::new(callee.span.start, span.end), args)),
             _ => None,
         }
     }
