@@ -1,0 +1,100 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time; a new run waits for the one in progress.
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Third-party actions are pinned to commit SHAs; Dependabot bumps them.
+# The fuzz step decides the job's result: each later step runs only after it
+# failed, or tolerates failure. Worst case: 15 min of build, 30 of fuzzing,
+# 15 of tmin and 10 of cmin, under the 90-minute limit.
+jobs:
+  fuzz:
+    name: Fuzz the front end
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+      - uses: ./.github/actions/install-llvm
+      - run: cargo install --locked cargo-fuzz@0.13.2
+      # Each run saves under its own key, and the prefix restores the newest one.
+      - id: restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/front_end
+          key: fuzz-corpus-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fuzz-corpus-
+      - id: fuzz
+        run: scripts/fuzz.sh
+      # First, so the raw input, log, run record and summary survive anything later.
+      - if: always() && steps.fuzz.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failure
+          path: fuzz/artifacts/
+          if-no-files-found: warn
+      - name: Minimize the failing input
+        if: always() && steps.fuzz.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          input=
+          for class in crash timeout oom; do
+            for f in fuzz/artifacts/front_end/"$class"-*; do
+              if [ -f "$f" ]; then
+                input=$f
+                break 2
+              fi
+            done
+          done
+          if [ -z "$input" ]; then
+            echo "No failing input to minimize."
+            exit 0
+          fi
+          status=0
+          timeout -k 10 900 scripts/fuzz.sh --tmin "$input" || status=$?
+          for m in fuzz/artifacts/front_end/minimized-from-*; do
+            if [ -f "$m" ]; then
+              printf -- "- Minimized: \`%s\`. Replay: \`scripts/fuzz.sh --replay %s\`.\n" "$m" "$m" >>fuzz/artifacts/summary.md
+            fi
+          done
+          exit "$status"
+      - if: always() && steps.fuzz.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-minimized
+          path: fuzz/artifacts/front_end/minimized-from-*
+          if-no-files-found: ignore
+      - name: Summary
+        if: always() && steps.fuzz.outcome != 'skipped'
+        continue-on-error: true
+        run: |
+          if [ -f fuzz/artifacts/summary.md ]; then
+            cat fuzz/artifacts/summary.md >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "The fuzzer failed before writing a summary; see the log of the fuzz step." >>"$GITHUB_STEP_SUMMARY"
+          fi
+      # cmin runs last and bounded. A killed or failed cmin leaves the corpus as it was.
+      - name: Minimize the corpus
+        if: always() && steps.fuzz.outcome != 'skipped'
+        continue-on-error: true
+        run: timeout -k 10 600 scripts/fuzz.sh --cmin
+      - if: always() && steps.fuzz.outcome != 'skipped'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/front_end
+          key: fuzz-corpus-${{ github.run_id }}-${{ github.run_attempt }}

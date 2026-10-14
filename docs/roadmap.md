@@ -297,6 +297,19 @@ so it does not wait for the later goals:
   never reads an object's layout itself (ADR 0009), and a normal build pays
   nothing. Valgrind reports the lost bytes but not the class or the field.
 
+## Fuzzing
+
+The compiler is fuzzed in two stages:
+
+1. Front-end crash fuzzing. Done. A libFuzzer target feeds arbitrary bytes to
+   `sisuc --check` and fails on a panic, a stack overflow, a timeout or an
+   out-of-memory, or on a malformed span or fix in the report. CI runs it
+   nightly; [development.md](development.md#fuzz-the-front-end) covers it.
+2. Wrong-code oracles. Open. Generators of well-typed programs, run
+   differentially (a build without `-O2` against one with it, for example),
+   would catch a program that compiles but computes the wrong answer, which
+   crash fuzzing cannot see.
+
 ## Proposed milestones 7 to 12
 
 | # | Milestone | Done when |
