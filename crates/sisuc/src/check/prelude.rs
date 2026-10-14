@@ -80,12 +80,14 @@ impl Checker {
             self.stray(args);
             return Err(Poisoned::error());
         };
-        let kind = self
-            .message(&arg.value)
+        let message = self.message(&arg.value);
+        // A message that failed is the failure of this rule, so the call is `Error`.
+        let failed = labeled || !matches!(type_of(&message), Some(Type::String));
+        let kind = message
             .ok()
             .filter(|_| !labeled)
             .map(|message| tir::ExprKind::Panic(Box::new(message)));
-        typed(span, Type::Never, labeled, kind)
+        typed(span, Type::Never, failed, kind)
     }
 
     /// A `panic` or `todo` message, an expression of type `string`. A value that interpolation

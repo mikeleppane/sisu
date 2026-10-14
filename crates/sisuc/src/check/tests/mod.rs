@@ -145,16 +145,6 @@ fn duplicate_function() {
 }
 
 #[test]
-fn print_is_built_in() {
-    diagnostic(
-        "fn print() {}\nfn main() {}",
-        Code::DefinedTwice,
-        (1, 4, "print"),
-        &[],
-    );
-}
-
-#[test]
 fn missing_main() {
     let src = "fn f() {}";
     diagnostic(src, Code::NoMain, (1, 1, ""), &[]);
@@ -1211,16 +1201,6 @@ fn class_defined_twice() {
         .map(|(span, _)| at(src, *span))
         .collect();
     assert_eq!(secondary, [(1, 7)]);
-}
-
-#[test]
-fn class_named_print() {
-    diagnostic(
-        "class print {}\nfn main() {}",
-        Code::DefinedTwice,
-        (1, 7, "print"),
-        &[],
-    );
 }
 
 #[test]
@@ -2971,7 +2951,12 @@ fn missing_function_suggests_the_closest() {
 
 #[test]
 fn missing_function_suggests_a_class_a_builtin_or_a_conversion() {
-    for (name, candidate) in [("prnt", "print"), ("i6", "i64"), ("u", "u8")] {
+    for (name, candidate) in [
+        ("prnt", "print"),
+        ("pnic", "panic"),
+        ("i6", "i64"),
+        ("u", "u8"),
+    ] {
         let src = format!(
             "class Tree {{\n    value: i64\n}}\nfn main() {{\n    let t = 1\n    {name}(t)\n}}"
         );

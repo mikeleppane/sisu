@@ -29,6 +29,11 @@ fn panic_message_must_be_string() {
         ("panic(1)", (2, 11, "1"), Some("panic(\"{1}\")")),
         ("panic(true)", (2, 11, "true"), Some("panic(\"{true}\")")),
         (
+            "let b = u8(1)\n    panic(b)",
+            (3, 11, "b"),
+            Some("let b = u8(1)\n    panic(\"{b}\")"),
+        ),
+        (
             "let c = 'a'\n    panic(c)",
             (3, 11, "c"),
             Some("let c = 'a'\n    panic(\"{c}\")"),
@@ -82,6 +87,29 @@ fn panic_is_not_a_value() {
     ] {
         let src = format!("fn g(n: i64) {{}}\n{}", body("", statement));
         codes(&src, &[(Code::NoValue, (3, col))]);
+    }
+}
+
+/// A message that fails to check makes the `panic` call `Error`, as a failed argument rule
+/// does a call: only the message's own error is reported, not "no value" for the call too.
+#[test]
+fn panic_with_a_broken_message_is_an_error() {
+    for (statement, expected) in [
+        (
+            "let x = panic(missing)",
+            &[(Code::BindingNotFound, (3, 19))][..],
+        ),
+        ("let x = panic(panic(\"x\"))", &[(Code::NoValue, (3, 19))]),
+        ("let x = panic(1)", &[(Code::Mismatch, (3, 19))]),
+        ("g(panic(1))", &[(Code::Mismatch, (3, 13))]),
+        ("let y = 1 + panic(1)", &[(Code::Mismatch, (3, 23))]),
+        (
+            "let n: i64? = None\n    let m = n ?? panic(1)",
+            &[(Code::Mismatch, (4, 24))],
+        ),
+    ] {
+        let src = format!("fn g(n: i64) {{}}\n{}", body("", statement));
+        codes(&src, expected);
     }
 }
 
