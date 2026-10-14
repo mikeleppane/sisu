@@ -420,9 +420,13 @@ fn words_takes_no_arguments() {
 /// `?.` gives an optional array.
 #[test]
 fn safe_words() {
-    contains(
-        "fn f(s: string?) {\n    let ws: [string]? = s?.words()\n}\nfn main() {}",
-        &["(words "],
+    let (program, ds) = checked("fn f(s: string?) {\n    let ws = s?.words()\n}\nfn main() {}");
+    assert!(ds.is_empty(), "{ds:?}");
+    let program = program.expect("no errors");
+    assert!(program.to_string().contains("(words "), "{program}");
+    assert_eq!(
+        program.functions[0].locals.last().expect("a local").ty,
+        Type::Optional(Box::new(Type::Array(Box::new(Type::String))))
     );
 }
 
