@@ -12,6 +12,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, param};
 use super::{Codegen, POSITIONED, zeroext};
+use crate::diagnostic::Span;
 use crate::tir::{CompareOp, Expr, Place, Type};
 
 /// A string block's header, from the target's data layout. A block with capacity `cap` is
@@ -536,6 +537,31 @@ impl<'ctx> Codegen<'ctx, '_> {
             ],
         );
         self.release(string.into(), &operand.ty);
+    }
+
+    /// `panic(message)` at `span`: `sisu_panic_message(at, at_len, bytes, len)`, then
+    /// `unreachable`. The message is not released: the process exits.
+    pub(super) fn panic_string(&mut self, message: &Expr, span: Span) {
+        let string = self.operand(message).into_pointer_value();
+        let at = self.location(span);
+        let at_ptr = self
+            .builder
+            .build_global_string_ptr(&at, "panic.at")
+            .expect(POSITIONED);
+        let at_len = self.context.i64_type().const_int(
+            u64::try_from(at.len()).expect("a location should be shorter than 2^64 bytes"),
+            false,
+        );
+        self.call(
+            self.panic_message,
+            &[
+                at_ptr.as_pointer_value().into(),
+                at_len.into(),
+                self.string_field(string, BYTES).into(),
+                self.string_len(string).into(),
+            ],
+        );
+        self.builder.build_unreachable().expect(POSITIONED);
     }
 
     /// The body of `@sisu_rc.drop.string` or `@sisu_rc.eq.string`.

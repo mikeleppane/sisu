@@ -1,0 +1,8 @@
+error[E0053]: `panic` takes 1 argument, found 0
+ --> E0053-panic.sisu:2:5
+  |
+2 |     panic()
+  |     ^^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0053

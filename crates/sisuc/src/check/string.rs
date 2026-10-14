@@ -94,11 +94,7 @@ impl Checker {
         };
         let between = lhs.span.end..rhs.span.start;
         let commented = self.comments.iter().any(|c| between.contains(c));
-        // A comment inside an operand ends at a line break, so this also keeps one out of `{}`.
-        let lines = operands.iter().any(|e| {
-            let next = self.breaks.partition_point(|&b| b < e.span.start);
-            self.breaks.get(next).is_some_and(|&b| b < e.span.end)
-        });
+        let lines = operands.iter().any(|e| !self.one_line(e.span));
         // A literal in parentheses starts at its `(`, and is wrapped whole like any other value.
         let operand = |e: &ast::Expr| Operand {
             span: e.span,
@@ -122,6 +118,13 @@ impl Checker {
             }),
         }
         .into()
+    }
+
+    /// Whether `span` holds no line break, which a string literal cannot hold. A comment inside
+    /// it would end at one, so it holds no comment either, and fits inside `{}`.
+    pub(super) fn one_line(&self, span: Span) -> bool {
+        let next = self.breaks.partition_point(|&b| b < span.start);
+        self.breaks.get(next).is_none_or(|&b| b >= span.end)
     }
 
     /// A chain over the `string`s `operands`, which codegen compares two at a time. Two make

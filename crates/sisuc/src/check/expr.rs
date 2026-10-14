@@ -1,5 +1,6 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
+use super::prelude::PRELUDE;
 use super::{
     Binding, Checked, CheckedBlock, Checker, Declared, Poisoned, UNKNOWN, block_expr, block_type,
     built_in_type, optional_of, payload, tail, type_of, value_span, wrap, wrap_block,
@@ -639,8 +640,22 @@ impl Checker {
         }
     }
 
+    /// The right side of `??`, checked against `expected`: a value, or one that never finishes,
+    /// but not `unit`.
+    fn fallback(&mut self, rhs: &ast::Expr, expected: &Type) -> Checked {
+        let checked = self.expr(rhs, Some(expected));
+        if type_of(&checked) == Some(&Type::Unit) {
+            self.report(DiagnosticKind::NoValue {
+                at: rhs.span,
+                never: false,
+            });
+            return Err(Poisoned::error());
+        }
+        checked
+    }
+
     /// `lhs ?? rhs`: `rhs` is a `T` or a `T?` beside the `T?` `lhs`, and gives the result its
-    /// type.
+    /// type, or never finishes, and the result is a `T`.
     fn coalesce(&mut self, span: Span, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         let scrutinee = self.value(lhs, None);
         let Some(Type::Optional(payload)) = type_of(&scrutinee) else {
@@ -649,13 +664,15 @@ impl Checker {
                     .push(DiagnosticKind::CoalesceNotOptional { at: lhs.span }.into());
             }
             // Only its own diagnostics matter.
-            let _ = self.value(rhs, Some(&UNKNOWN));
+            let _ = self.fallback(rhs, &UNKNOWN);
             return Err(Poisoned::error());
         };
         let payload = (**payload).clone();
         let optional = optional_of(payload.clone());
-        let other = self.value(rhs, Some(&optional));
+        let other = self.fallback(rhs, &optional);
         let ty = match type_of(&other) {
+            // `a ?? panic("x")`: only the payload reaches the result.
+            Some(Type::Never) => payload.clone(),
             Some(ty) if *ty == payload || *ty == optional => ty.clone(),
             Some(ty) => {
                 let d = self.mismatch(rhs.span, Some(rhs), &payload, ty);
@@ -948,8 +965,8 @@ impl Checker {
             self.stray(args);
             return Err(Poisoned::error());
         }
-        if callee.name.as_str() == "print" {
-            return self.print(span, args);
+        if let Some(checked) = self.prelude_call(span, callee, args) {
+            return checked;
         }
         if let Some(to @ (Type::I64 | Type::U8 | Type::Char | Type::String)) =
             built_in_type(callee.name.as_str())
@@ -1010,7 +1027,8 @@ impl Checker {
             .function_ids
             .keys()
             .map(|function| function.as_str())
-            .chain(["print", "i64", "u8", "char", "string"])
+            .chain(PRELUDE)
+            .chain(["i64", "u8", "char", "string"])
             .map(|function| (function, Definition::Function));
         self.report(DiagnosticKind::FunctionNotFound {
             name: callee.name.to_string(),
@@ -1284,48 +1302,6 @@ impl Checker {
         };
         self.diagnostics.push(d);
         None
-    }
-
-    fn print(&mut self, span: Span, args: &[ast::Arg]) -> Checked {
-        // Not `value()`: a `unit` argument needs this code, not "expression has no value".
-        let wrong = || {
-            DiagnosticKind::PrintArgument {
-                at: span,
-                class: None,
-            }
-            .into()
-        };
-        let labeled = self.labels(args);
-        let [arg] = args else {
-            self.diagnostics.push(wrong());
-            self.stray(args);
-            return Err(Poisoned::error());
-        };
-        let checked = self.expr(&arg.value, None);
-        let error = match type_of(&checked) {
-            Some(ty) if matches!(payload(ty), Type::Array(_)) => DiagnosticKind::PrintArray {
-                ty: self.type_name(ty),
-                optional: matches!(ty, Type::Optional(_)),
-                at: arg.value.span,
-            }
-            .into(),
-            Some(ty @ Type::Class(_)) => DiagnosticKind::PrintArgument {
-                at: arg.value.span,
-                class: Some(self.type_name(ty)),
-            }
-            .into(),
-            Some(Type::Unit | Type::Optional(_)) => wrong(),
-            Some(Type::Never) => DiagnosticKind::PrintNever { at: arg.value.span }.into(),
-            _ => {
-                let kind = checked
-                    .ok()
-                    .filter(|_| !labeled)
-                    .map(|arg| tir::ExprKind::Print(Box::new(arg)));
-                return typed(span, Type::Unit, labeled, kind);
-            }
-        };
-        self.diagnostics.push(error);
-        Err(Poisoned::error())
     }
 
     /// Checks the arguments of a call that cannot take them, for their own mistakes.

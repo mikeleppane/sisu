@@ -10,6 +10,7 @@ mod constants;
 mod for_loops;
 mod patterns;
 mod places;
+mod prelude;
 mod shadowing;
 mod strings;
 mod u8;
@@ -2572,9 +2573,8 @@ fn coalesce_left_not_optional() {
 
 #[test]
 fn coalesce_never() {
-    codes(
+    clean(
         "fn f(x: i64?, c: bool) -> i64 {\n    x ?? if c { return 0 } else { return 1 }\n}\nfn main() {}",
-        &[(Code::NoValue, (2, 10))],
     );
 }
 

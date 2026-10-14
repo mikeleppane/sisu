@@ -631,7 +631,7 @@ pub(crate) enum Earlier {
         kind: Definition,
         owner: Option<String>,
     },
-    /// In the language: `print`.
+    /// In the language: a prelude function, such as `print`.
     BuiltIn,
 }
 
@@ -659,6 +659,8 @@ pub(crate) enum MismatchFix {
         call: Span,
         arg: Span,
     },
+    /// A value that interpolation prints, on one line, as the literal `"{value}"`.
+    WrapInString(Span),
 }
 
 /// An operand of a `+` that interpolation joins: where it is written, and whether it is a
@@ -1247,6 +1249,20 @@ impl From<DiagnosticKind> for Diagnostic {
                             },
                             Edit {
                                 span: Span::new(arg.end, call.end),
+                                replacement: "}\"".to_string(),
+                            },
+                        ],
+                    }),
+                    Some(MismatchFix::WrapInString(value)) => d.with_fix(Fix {
+                        message: "use interpolation".to_string(),
+                        certain: true,
+                        edits: vec![
+                            Edit {
+                                span: Span::new(value.start, value.start),
+                                replacement: "\"{".to_string(),
+                            },
+                            Edit {
+                                span: Span::new(value.end, value.end),
                                 replacement: "}\"".to_string(),
                             },
                         ],

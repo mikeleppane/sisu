@@ -95,15 +95,12 @@ pub(crate) fn compile<'ctx>(
     // A pure function of the bytes it reads: `ArgMem` `Ref` (1) and no other location.
     add_nounwind_memory(&module, str_compare, 0b01);
     // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
-    // index, length)` prints a bounds panic and exits.
-    let panic = declare_noreturn(&module, "sisu_panic", &[ptr_type.into(), i64_type.into()]);
-    let bounds = [
-        ptr_type.into(),
-        i64_type.into(),
-        i64_type.into(),
-        i64_type.into(),
-    ];
+    // index, length)` prints a bounds panic and exits; `sisu_panic_message(at, at_len, msg,
+    // msg_len)` prints a `panic` call's panic and exits.
+    let panic = declare_noreturn(&module, "sisu_panic", &bytes_len);
+    let bounds = [bytes_len, [i64_type.into(); 2]].concat();
     let panic_bounds = declare_noreturn(&module, "sisu_panic_bounds", &bounds);
+    let panic_message = declare_noreturn(&module, "sisu_panic_message", &[bytes_len; 2].concat());
     // Declared only with the checks, so that a plain build's module stays as it was.
     let rc_fault =
         rc_checks.then(|| declare_noreturn(&module, "sisu_rc_fault", &[context.i32_type().into()]));
@@ -119,6 +116,7 @@ pub(crate) fn compile<'ctx>(
         str_compare,
         panic,
         panic_bounds,
+        panic_message,
         alloc,
         free,
         rc_retain,
@@ -256,6 +254,7 @@ struct Codegen<'ctx, 'src> {
     str_compare: FunctionValue<'ctx>,
     panic: FunctionValue<'ctx>,
     panic_bounds: FunctionValue<'ctx>,
+    panic_message: FunctionValue<'ctx>,
     alloc: FunctionValue<'ctx>,
     free: FunctionValue<'ctx>,
     /// `@sisu_rc.retain`, which every counted type shares.
@@ -709,6 +708,10 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// The expression's value, `None` for `unit` or `never`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per node kind, so the evaluation reads in one place"
+    )]
     fn expr(&mut self, e: &Expr) -> Option<BasicValueEnum<'ctx>> {
         let value = match &e.kind {
             ExprKind::Int(n) => self
@@ -803,6 +806,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             ExprKind::Return(value) => {
                 self.return_expr(value.as_deref());
+                return None;
+            }
+            ExprKind::Panic(message) => {
+                self.panic_string(message, e.span);
                 return None;
             }
         };
