@@ -1382,8 +1382,11 @@ impl<'a> Parser<'a> {
         let next = |n: usize| &tokens[(pos + n).min(tokens.len() - 1)];
         // Only a `!` on the keyword's line is Rust's `todo!`: inside brackets, where no `Newline`
         // token ends the line, one on a later line is the next token's business.
-        let gap = keyword.end..next(0).span.start;
-        let same_line = !self.breaks.iter().any(|b| gap.contains(b));
+        // `breaks` is sorted, so the lookup is a binary search, and only a `!` pays for it.
+        let same_line = matches!(next(0).kind, TokenKind::Bang) && {
+            let at = self.breaks.partition_point(|&b| b < keyword.end);
+            self.breaks.get(at).is_none_or(|&b| b >= next(0).span.start)
+        };
         let (at, delete) = match (&next(0).kind, &next(1).kind, &next(2).kind) {
             (TokenKind::Bang, TokenKind::LParen, TokenKind::RParen) if same_line => {
                 (next(0).span, next(0).span.to(next(2).span))
@@ -2662,6 +2665,14 @@ mod tests {
             assert_eq!(parse_err(&src), (Code::TodoForm, 2, col), "{src}");
             assert_eq!(fixed(&src), format!("fn main() {{\n    {after}\n}}"));
         }
+    }
+
+    /// The line check looks only at the breaks between the keyword and the `!`, however many
+    /// breaks come before the keyword.
+    #[test]
+    fn todo_bang_after_many_lines() {
+        let src = "fn main() {\n\n\n\n    todo!\n}";
+        assert_eq!(parse_err(src), (Code::TodoForm, 5, 9), "{src}");
     }
 
     /// A `!` on a later line is not part of `todo`, even inside parentheses, where no line break
