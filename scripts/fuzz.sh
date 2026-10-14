@@ -18,8 +18,10 @@ esac
 cd "$(git rev-parse --show-toplevel)"
 export RUST_BACKTRACE=1
 limits=(-max_len=16384 -timeout=60 -rss_limit_mb=2048)
-# Seconds for the replay of one crash, past libFuzzer's own -timeout.
+# Seconds for the replay of one crash, past libFuzzer's own -timeout, and how many crashes
+# are replayed: a regression can leave one crash- per corpus input, and the job has a limit.
 replay_seconds=120
+replay_limit=3
 corpus=fuzz/corpus/front_end
 found=fuzz/artifacts/front_end
 
@@ -94,8 +96,11 @@ done < <(find "$found" -type f -newer "$marker" -print0 | sort -z)
 # Fork mode's first pass over the corpus sends the children's output to /dev/null, so a
 # crash on a restored input leaves no panic message in the log. A plain replay prints it;
 # its own status changes neither the run's status nor which inputs count.
+crashes=0
 for failure in "${failures[@]}"; do
     if [[ ${failure%% *} != crash ]]; then continue; fi
+    crashes=$((crashes + 1))
+    if ((crashes > replay_limit)); then continue; fi
     path=${failure#* }
     {
         echo
@@ -106,6 +111,11 @@ for failure in "${failures[@]}"; do
         echo "==> scripts/fuzz.sh: the replay exited ${replay}"
     } >>"$log" 2>&1 || log_complete=false
 done
+not_replayed=0
+if ((crashes > replay_limit)); then
+    not_replayed=$((crashes - replay_limit))
+    echo "==> scripts/fuzz.sh: ${not_replayed} more crashes not replayed; scripts/fuzz.sh --replay <path> replays any of them" >>"$log" || log_complete=false
+fi
 
 # Fork mode interleaves the children's output, whose lines start `#<n>\t`; the parent's
 # status lines start `#<n>: cov:`, and the last one holds the total.
@@ -141,6 +151,10 @@ executions=$(awk '/^#[0-9]+: cov:/ { n = substr($1, 2, length($1) - 2) } END { p
             echo "  No Rust backtrace: without a sanitizer, libFuzzer prints no native stack for this class."
         fi
     done
+    if ((not_replayed > 0)); then
+        echo
+        echo "${not_replayed} more crashes were not replayed. \`scripts/fuzz.sh --replay <path>\` replays any of them."
+    fi
 } >fuzz/artifacts/summary.md
 
 cat fuzz/artifacts/summary.md

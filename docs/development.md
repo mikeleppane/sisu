@@ -189,9 +189,11 @@ Three limits of fork mode:
   `scripts/fuzz.sh --replay <input>` reproduces it.
 - A crash on a corpus input, during fork mode's first pass over the corpus,
   leaves no panic message in the log: that pass discards the children's
-  output. So after the run the script replays each new `crash-` input once,
-  for at most 2 minutes, and appends its output, with the panic message and
-  backtrace, to `fuzz.log`. The replay changes neither the exit status nor
+  output. So after the run the script replays the first 3 new `crash-`
+  inputs once, each for up to 130 s (`timeout -k 10 120`), and appends their
+  output, with the panic message and backtrace, to `fuzz.log`. A run with
+  more crashes says in the log and the summary how many it left out; replay
+  those with `--replay`. The replays change neither the exit status nor
   which inputs count.
 - A stack overflow leaves a `crash-` file only on a best-effort basis:
   libFuzzer's crash handler is not async-signal-safe. It dies by a fatal
