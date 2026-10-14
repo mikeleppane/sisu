@@ -127,6 +127,22 @@ pub(crate) enum Stream {
 }
 
 impl Stream {
+    /// The runtime's symbol prefix for the stream's print functions.
+    pub(crate) fn symbol_prefix(self) -> &'static str {
+        match self {
+            Stream::Stdout => "sisu_print",
+            Stream::Stderr => "sisu_eprint",
+        }
+    }
+
+    /// The stream's place in an array that holds one entry for each stream.
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Stream::Stdout => 0,
+            Stream::Stderr => 1,
+        }
+    }
+
     /// The prelude function that writes to the stream.
     pub(crate) fn name(self) -> &'static str {
         match self {

@@ -621,7 +621,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     pub(super) fn print_string(&mut self, stream: Stream, operand: &Expr) {
         let string = self.operand(operand).into_pointer_value();
         self.call(
-            self.printers[stream as usize].str,
+            self.printers[stream.index()].str,
             &[
                 self.string_field(string, BYTES).into(),
                 self.string_len(string).into(),
