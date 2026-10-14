@@ -10,6 +10,10 @@
 # oom- artifact, and otherwise with cargo-fuzz's status.
 set -euo pipefail
 
+# Resolve the input before the cd, so a path relative to the caller's directory works.
+case ${1:-} in
+--replay | --tmin) input=$(realpath "${2:?$1 needs an input}") ;;
+esac
 cd "$(git rev-parse --show-toplevel)"
 export RUST_BACKTRACE=1
 limits=(-max_len=16384 -timeout=60 -rss_limit_mb=2048)
@@ -17,8 +21,8 @@ corpus=fuzz/corpus/front_end
 found=fuzz/artifacts/front_end
 
 case ${1:-} in
---replay) exec cargo fuzz run --sanitizer none front_end "${2:?--replay needs an input}" -- "${limits[@]}" ;;
---tmin) exec cargo fuzz tmin --sanitizer none front_end "${2:?--tmin needs an input}" -- "${limits[@]}" ;;
+--replay) exec cargo fuzz run --sanitizer none front_end "$input" -- "${limits[@]}" ;;
+--tmin) exec cargo fuzz tmin --sanitizer none front_end "$input" -- "${limits[@]}" ;;
 --cmin) exec cargo fuzz cmin --sanitizer none front_end "$corpus" -- "${limits[@]}" ;;
 esac
 
@@ -30,6 +34,8 @@ fi
 
 # libFuzzer exits 1 when an explicit corpus directory is missing, as on a first run.
 mkdir -p "$corpus" "$found"
+log=fuzz/artifacts/fuzz.log
+: >"$log"
 
 seeds=$(mktemp -d)
 marker=$(mktemp)
@@ -44,12 +50,25 @@ done < <(find crates/sisuc/tests -name '*.sisu' -print0)
 # newer than this marker belong to this run.
 touch "$marker"
 
-cargo fuzz build --sanitizer none front_end
-cmd=(cargo fuzz run --sanitizer none --jobs "$(nproc)" front_end "$corpus" "$seeds"
-    -- -dict="$PWD/fuzz/front_end.dict" -max_total_time="$seconds" "${limits[@]}")
-start=$SECONDS
+# Runs a command with its output teed into the log. Under pipefail `|| status=$?` would
+# take tee's status, so status comes from PIPESTATUS; a failed tee only marks the log.
 status=0
-"${cmd[@]}" 2>&1 | tee fuzz/artifacts/fuzz.log || status=$?
+log_complete=true
+logged() {
+    local pipe=(0 0)
+    "$@" 2>&1 | tee -a "$log" || pipe=("${PIPESTATUS[@]}")
+    status=${pipe[0]}
+    if ((pipe[1] != 0)); then log_complete=false; fi
+}
+
+# cargo-fuzz adds -fork=N only when N != 1, so a one-CPU machine still gets 2 jobs.
+jobs=$(nproc)
+if ((jobs < 2)); then jobs=2; fi
+cmd=(cargo fuzz run --sanitizer none --jobs "$jobs" front_end "$corpus" "$seeds"
+    -- -dict="$PWD/fuzz/front_end.dict" -max_total_time="$seconds" "${limits[@]}")
+logged cargo fuzz build --sanitizer none front_end
+start=$SECONDS
+if ((status == 0)); then logged "${cmd[@]}"; fi
 elapsed=$((SECONDS - start))
 
 {
@@ -71,7 +90,7 @@ done < <(find "$found" -type f -newer "$marker" -print0 | sort -z)
 
 # Fork mode interleaves the children's output, whose lines start `#<n>\t`; the parent's
 # status lines start `#<n>: cov:`, and the last one holds the total.
-executions=$(awk '/^#[0-9]+: cov:/ { n = substr($1, 2, length($1) - 2) } END { print (n == "" ? "unknown" : n) }' fuzz/artifacts/fuzz.log)
+executions=$(awk '/^#[0-9]+: cov:/ { n = substr($1, 2, length($1) - 2) } END { print (n == "" ? "unknown" : n) }' "$log")
 
 {
     echo "# Fuzzing: front_end"
@@ -79,10 +98,15 @@ executions=$(awk '/^#[0-9]+: cov:/ { n = substr($1, 2, length($1) - 2) } END { p
     echo "- Fuzzed for ${elapsed} s (asked for ${seconds} s)."
     echo "- Executions in processed jobs: ${executions}."
     echo "- cargo-fuzz exit status: ${status}."
+    if [[ $log_complete == false ]]; then
+        echo "- \`fuzz.log\` is incomplete: writing it failed."
+    fi
     echo
     echo "## Failures"
     echo
-    if ((${#failures[@]} == 0)); then
+    if ((${#failures[@]} == 0 && status != 0)); then
+        echo "The fuzzer exited ${status} with no failing input; see \`fuzz.log\`."
+    elif ((${#failures[@]} == 0)); then
         echo "None."
     fi
     for failure in "${failures[@]}"; do
