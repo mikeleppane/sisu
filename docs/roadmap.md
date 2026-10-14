@@ -15,7 +15,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 2 | Classes, methods, heap, reference counting, optionals with `?.` and `??`, `break` and `continue` | A linked list and a binary tree run clean under Valgrind | Done |
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
 | 4 | Strings | A program reverses and compares strings | Done |
-| 5 | Input and output | A word-count tool reads standard input | Planned |
+| 5 | Standard streams and arguments | A word-count tool reads standard input | Planned |
 | 6 | Floats | A Mandelbrot set prints as text | Planned |
 
 ### What works today
@@ -167,6 +167,8 @@ and its memory model and everyday ergonomics from Swift and Kotlin (ADR 0004).
 Every later milestone should move real code toward this:
 
 ```
+import os
+
 enum Shape {
     Circle(radius: f64)
     Rect(w: f64, h: f64)
@@ -189,7 +191,7 @@ fn main() {
 
     print("Total area: {total}")
 
-    let name = env("USER") ?? "stranger"
+    let name = os.env("USER") ?? "stranger"
     print("Hello, {name}!")
 }
 ```
@@ -305,7 +307,7 @@ so it does not wait for the later goals:
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
-| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`) | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
+| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`), including `os.env(name)`, `os.exit(code)`, and an `io` module with `read_lines()`, read-everything and `read_bytes()` | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
 
 Order matters in these places:
@@ -322,8 +324,8 @@ Order matters in these places:
 - Milestone 12 needs only enums and generics, so it can start as soon as
   milestone 8 is done, before closures and records. The standard library
   (milestone 11) then reports errors with `Result` from the start.
-- Milestone 5 covers standard input, output and error, the program's
-  arguments and environment variables. Their signatures never change: the
+- Milestone 5 covers standard input, output and error, and the program's
+  arguments. Their signatures never change: the
   end of input is `None`, not an error, and a failed read or write panics
   (ADR 0009). Opening, reading and writing files waits for `Result` in
   milestone 12, so no I/O signature changes later.
@@ -348,7 +350,7 @@ settle before work starts.
 | Work | Needs | Unblocks |
 | --- | --- | --- |
 | Milestone 4: strings | Done | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
-| Milestone 5: standard streams, arguments, environment | 4 | The word-count tool |
+| Milestone 5: standard streams and arguments | 4 | The word-count tool |
 | Milestone 6: floats | Decision: floats | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
 | Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
 | Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), compiler-implemented interfaces (10), the standard library (11) |
@@ -834,7 +836,8 @@ These do not make code nicer to write, so they wait:
   bytes would copy nothing, but a view keeps the parent alive. Decide after
   generics; Swift's separate `Substring` type is the leading candidate.
   Compatibility cost: if milestone 5's `split` returns `[string]`, a later
-  `Substring` either changes its return type or adds a second method.
+  `Substring` either changes its return type or adds a second method. Milestone
+  5's `words()` returns `[string]`.
 - **Small-string optimisation.** Store short strings inside the variable's
   slot, as Swift and C++ do. Programs cannot observe it. Decide when a
   benchmark asks for it.
