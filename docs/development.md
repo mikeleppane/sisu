@@ -202,13 +202,18 @@ When the fuzz step fails, the job:
 1. Uploads `fuzz/artifacts/` as the artifact `fuzz-failure`: the raw input,
    the log, the run record and the summary.
 2. Minimizes the first failing input, preferring a crash to a timeout and a
-   timeout to an OOM, for at most 15 minutes. The minimized input is
-   uploaded as `fuzz-minimized`, and the summary names it.
+   timeout to an OOM, for at most 15 minutes. Each step that shrinks the
+   input writes a new `minimized-from-` file. All of them are uploaded as
+   `fuzz-minimized`, and the summary names the newest, which is the
+   smallest.
 
 Every run then writes `summary.md` to the run's page and shrinks the corpus
-with `--cmin`, for at most 10 minutes, before it saves it. A failed or killed shrink leaves the corpus as it was;
-the log then shows `Failed to minimize corpus`. After setup, only the fuzz
-step decides whether the job fails.
+with `--cmin`, for at most 10 minutes, before it saves it. A failed or
+killed shrink leaves the corpus as it was. Only a failed merge logs
+`Failed to minimize corpus`. A shrink stopped at the time limit shows as
+exit code 124 in the log of the "Minimize the corpus" step, or 137 if it
+ignored the first signal. After setup, only the fuzz step decides whether
+the job fails.
 
 The summary gives the seconds fuzzed, the executions in processed jobs and
 each failing input with its replay command.

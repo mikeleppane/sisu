@@ -67,11 +67,16 @@ jobs:
           fi
           status=0
           timeout -k 10 900 scripts/fuzz.sh --tmin "$input" || status=$?
-          for m in fuzz/artifacts/front_end/minimized-from-*; do
-            if [ -f "$m" ]; then
-              printf -- "- Minimized: \`%s\`. Replay: \`scripts/fuzz.sh --replay %s\`.\n" "$m" "$m" >>fuzz/artifacts/summary.md
+          # Each successful tmin step writes a new minimized-from-<hash> file; the newest is the last step's.
+          m=
+          for f in fuzz/artifacts/front_end/minimized-from-*; do
+            if [ -f "$f" ] && { [ -z "$m" ] || [ "$f" -nt "$m" ]; }; then
+              m=$f
             fi
           done
+          if [ -n "$m" ]; then
+            printf -- "- Minimized: \`%s\`. Replay: \`scripts/fuzz.sh --replay %s\`.\n" "$m" "$m" >>fuzz/artifacts/summary.md
+          fi
           exit "$status"
       - if: always() && steps.fuzz.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
