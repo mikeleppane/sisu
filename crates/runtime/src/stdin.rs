@@ -12,7 +12,8 @@ use crate::text::repair;
 pub struct Lines {
     /// The last line read, without its line ending and repaired to valid UTF-8.
     line: Vec<u8>,
-    /// Whether the input has ended: end of input is sticky, so no later call reads again.
+    /// Whether the input has ended: end of input is sticky, so no later call reads again. A
+    /// last line without `\n` ends it too.
     ended: bool,
 }
 
@@ -24,7 +25,8 @@ impl Lines {
         }
     }
 
-    /// The next line of `reader`, or `None` at the end of input and at every call after it.
+    /// The next line of `reader`, or `None` at the end of input and at every call after it. A
+    /// line cut short by the end of input is the last line, even if the reader could give more.
     /// A final `\n` is removed, and a `\r` before it; a lone `\r` stays. Invalid UTF-8 is
     /// repaired over the whole line, so a character split across two reads stays whole.
     ///
@@ -45,6 +47,9 @@ impl Lines {
             if self.line.last() == Some(&b'\r') {
                 self.line.pop();
             }
+        } else {
+            // `read_until` stops short of `\n` only at end of input.
+            self.ended = true;
         }
         if let Cow::Owned(repaired) = repair(&self.line) {
             self.line = repaired;
@@ -185,6 +190,22 @@ mod tests {
         assert_eq!(
             lines.next(&mut reader).expect("reads"),
             Some(b"a".as_slice())
+        );
+        assert_eq!(lines.next(&mut reader).expect("reads"), None);
+        let after_end = reads.get();
+        assert_eq!(lines.next(&mut reader).expect("reads"), None);
+        assert_eq!(reads.get(), after_end);
+    }
+
+    /// A read that stops short of `\n` is the end of input, so the partial line is the last
+    /// one, as when Ctrl-D is pressed twice in a terminal.
+    #[test]
+    fn lines_end_after_a_partial_line_is_sticky() {
+        let (mut reader, reads) = script(&[b"abc", b"", b"b\n"]);
+        let mut lines = Lines::new();
+        assert_eq!(
+            lines.next(&mut reader).expect("reads"),
+            Some(b"abc".as_slice())
         );
         assert_eq!(lines.next(&mut reader).expect("reads"), None);
         let after_end = reads.get();
