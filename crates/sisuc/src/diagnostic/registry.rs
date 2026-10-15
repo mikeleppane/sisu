@@ -2251,15 +2251,12 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::VariantCase { name, at } => {
                 let message = "a variant name starts with an upper-case letter";
-                // The first letter, past any leading `_`, upper-cased; none when that changes nothing.
-                let capitalized = name
-                    .char_indices()
-                    .find(|(_, c)| c.is_alphabetic())
-                    .map(|(i, c)| {
-                        let rest = &name[i + c.len_utf8()..];
-                        format!("{}{}{rest}", &name[..i], c.to_uppercase())
-                    })
-                    .filter(|capitalized| *capitalized != name);
+                // Only a lower-case first letter has a certain fix; `_Foo` would still break the rule.
+                let mut chars = name.chars();
+                let capitalized = chars
+                    .next()
+                    .filter(|c| c.is_lowercase())
+                    .map(|c| format!("{}{}", c.to_uppercase(), chars.as_str()));
                 match capitalized {
                     Some(capitalized) => {
                         Diagnostic::coded(code, at, format!("{message}: `{capitalized}`"))

@@ -235,8 +235,8 @@ fn variant_case_fix() {
     // Each row: the variant, and the name its fix gives, if any.
     let rows = [
         ("north", Some("North")),
-        ("_foo", Some("_Foo")),
-        ("_1x", Some("_1X")),
+        ("_foo", None),
+        ("_1x", None),
         ("_1", None),
     ];
     for (variant, fixed) in rows {
