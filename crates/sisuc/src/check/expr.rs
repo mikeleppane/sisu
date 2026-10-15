@@ -199,7 +199,8 @@ impl Checker {
     }
 
     /// The type of unary `-`, its operand, `expected` passed down, and whether it was reported. A
-    /// `u8` operand is an error; an `f64` keeps its type; any other is checked against `i64`.
+    /// `u8` operand is an error; an `f64` keeps its type, and an `f64?` is checked against `f64`;
+    /// any other is checked against `i64`.
     fn negated(
         &mut self,
         span: Span,
@@ -219,7 +220,7 @@ impl Checker {
                 .push(DiagnosticKind::NegatedU8 { at: span }.into());
             return Err(Poisoned::error());
         }
-        let want = if type_of(&checked) == Some(&Type::F64) {
+        let want = if type_of(&checked).map(payload) == Some(&Type::F64) {
             Type::F64
         } else {
             Type::I64
@@ -401,10 +402,12 @@ impl Checker {
     /// it: `u8` beside a `u8`, `f64` beside an `f64`, `char` beside a `char` in a comparison,
     /// else `i64`. With none, it is `i64`, so `None + 1` expects an `i64`. An `f64` after an
     /// `i64` or `u8` first operand makes the type `f64`, and that operand is reported against
-    /// it, as an operand before a `string` is in `+`, unless `expected` is `i64` or `i64?`. Once an operand is `Error`, the later
-    /// ones are checked against `Error`. An operand of `arithmetic` that is a `char` is left
-    /// unreported, as the poison `typed` `char`: its caller reports the operator, so what the
-    /// operator's type finds wrong with the other operands is dropped, in either order. In a comparison, a `char` after a number reports
+    /// it, as an operand before a `string` is in `+`. When `expected` is `i64` or `i64?`, an
+    /// `f64` first operand gives `i64`, not `f64`, so an `f64` is reported in either order.
+    /// Once an operand is `Error`, the later ones are checked against `Error`. An operand of
+    /// `arithmetic` that is a `char` is left unreported, as the poison `typed` `char`: its
+    /// caller reports the operator, so what the operator's type finds wrong with the other
+    /// operands is dropped, in either order. In a comparison, a `char` after a number reports
     /// that number, as a `char` before one reports the number.
     ///
     /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
@@ -420,6 +423,8 @@ impl Checker {
     ) -> (Vec<Checked>, Option<Type>, bool) {
         let arithmetic = operator != Operator::Compare;
         let compound = operator == (Operator::Plus { compound: true });
+        // An `i64` that the context wants holds an `f64` operand to it, in either order.
+        let wants_i64 = expected.map(payload) == Some(&Type::I64);
         let mut first = None;
         let mut ty = if literal_type(expected) != Type::I64 {
             Some(literal_type(expected))
@@ -428,6 +433,7 @@ impl Checker {
             let ty = type_of(&checked).map(|ty| match payload(ty) {
                 Type::Char if !arithmetic => Type::Char,
                 Type::String if operator != Operator::Arithmetic => Type::String,
+                Type::F64 if wants_i64 => Type::I64,
                 _ => literal_type(Some(ty)),
             });
             first = Some((k, checked));
@@ -435,11 +441,7 @@ impl Checker {
         } else {
             Some(Type::I64)
         };
-        let mut want = ty.clone();
-        let leader = first.as_ref().map(|(k, _)| *k);
-        // An `i64` that the context wants, such as a compound assignment's target's, holds an
-        // `f64` operand to it.
-        let wants_i64 = expected.map(payload) == Some(&Type::I64);
+        let (mut want, leader) = (ty.clone(), first.as_ref().map(|(k, _)| *k));
         let (mut checked, mut mismatched) = (Vec::with_capacity(operands.len()), false);
         // The diagnostics of the operator's type: mismatches, and a literal's, which that type
         // types. They wait until a `char` operand is ruled out.

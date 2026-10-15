@@ -1,0 +1,7 @@
+fn negate(x: f64?) -> f64 {
+    -x
+}
+
+fn main() {
+    print(negate(1.5))
+}

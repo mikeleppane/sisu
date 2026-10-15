@@ -45,6 +45,14 @@ fn negation_type() {
         &[(Code::Mismatch, (3, 18))],
     );
     contains("fn main() { let z: f64 = -1 }", &["(let z#0 -1.0)"]);
+    // An `f64?` is held to `f64`, the type it would negate as: see
+    // tests/diagnostics/E0032-negate-optional.
+    diagnostic(
+        "fn f(x: f64?) {\n    let _ = -x\n}\nfn main() {}",
+        Code::Mismatch,
+        (2, 14, "x"),
+        &[],
+    );
 }
 
 #[test]
@@ -140,7 +148,8 @@ fn int_to_float() {
 }
 
 /// Where the context wants an `i64`, the `f64` is the operand reported, with no fix: a compound
-/// assignment's target and a declared type are not what changes.
+/// assignment's target and a declared type are not what changes. The `f64` is reported in
+/// either order.
 #[test]
 fn mixing_under_an_integer() {
     let rows = [
@@ -149,8 +158,32 @@ fn mixing_under_an_integer() {
             (3, 10, "1.5"),
         ),
         (
+            "fn f(x: f64) {\n    let mut n = 1\n    n *= x\n    print(n)\n}\nfn main() {}",
+            (3, 10, "x"),
+        ),
+        (
             "fn f(n: i64, x: f64) -> i64 {\n    n * x\n}\nfn main() {}",
             (2, 9, "x"),
+        ),
+        (
+            "fn f(n: i64, x: f64) -> i64 {\n    x * n\n}\nfn main() {}",
+            (2, 5, "x"),
+        ),
+        (
+            "fn f(n: i64, x: f64) -> i64 {\n    return n * x\n}\nfn main() {}",
+            (2, 16, "x"),
+        ),
+        (
+            "fn f(n: i64, x: f64) -> i64 {\n    return x * n\n}\nfn main() {}",
+            (2, 12, "x"),
+        ),
+        (
+            "fn f(n: i64, x: f64) {\n    let y: i64 = n * x\n    print(y)\n}\nfn main() {}",
+            (2, 22, "x"),
+        ),
+        (
+            "fn f(n: i64, x: f64) {\n    let y: i64 = x * n\n    print(y)\n}\nfn main() {}",
+            (2, 18, "x"),
         ),
     ];
     for (src, at) in rows {
