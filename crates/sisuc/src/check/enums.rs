@@ -210,10 +210,12 @@ impl Checker<'_> {
                 }
             }
             Some((args, parens)) => {
+                // The fix deletes the parentheses, so what they hold (even a comment) makes it unsafe.
+                let inside = parens.start()..parens.end();
                 self.report(DiagnosticKind::VariantForm {
                     path: path.to_string(),
                     payload: false,
-                    arguments: !args.is_empty(),
+                    held: !args.is_empty() || self.comment_in(&[inside]),
                     at: parens,
                 });
                 self.stray(args);
@@ -223,7 +225,7 @@ impl Checker<'_> {
                 self.report(DiagnosticKind::VariantForm {
                     path: path.to_string(),
                     payload: true,
-                    arguments: false,
+                    held: false,
                     at: member.span,
                 });
                 return Err(Poisoned::error());

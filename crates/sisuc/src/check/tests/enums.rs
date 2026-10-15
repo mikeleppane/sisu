@@ -439,7 +439,7 @@ fn bare_variant_yields_to_items() {
 }
 
 /// `State.Idle()` holds nothing: the fix deletes the call's own parentheses, safely only when
-/// they hold no arguments, whose own diagnostics and comments it would delete too.
+/// they hold nothing: arguments' own diagnostics and comments would go with them.
 #[test]
 fn variant_form_fix() {
     // Each row: the statement, the column of line 2 and text of the label, and the fix's safety.
@@ -447,6 +447,12 @@ fn variant_form_fix() {
         ("let _ = State.Idle()", 23, "()", true),
         ("let _ = (State.Idle())", 24, "()", true),
         ("let _ = State.Idle(1)", 23, "(1)", false),
+        (
+            "let _ = State.Idle(// note\n    )",
+            23,
+            "(// note\n    )",
+            false,
+        ),
     ];
     for (stmt, col, text, safe) in rows {
         let src = in_g(stmt);
