@@ -50,6 +50,13 @@ fn boxed_enum(ty: &Type) -> EnumId {
     }
 }
 
+/// The index of `member` in a component of `members`.
+fn member_position(members: &[EnumId], member: EnumId) -> usize {
+    members.iter().position(|&m| m == member).expect(
+        "the checker should box only a field whose enum is in the declaring enum's component",
+    )
+}
+
 /// The enums `e` holds inline: each unboxed payload field of an enum type or its optional.
 fn held_inline(e: &Enum) -> impl Iterator<Item = EnumId> + '_ {
     e.variants
@@ -194,10 +201,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             .into_int_value()
     }
 
-    /// The address of payload field `field` of variant `variant` in the enum `id` at
-    /// `value_addr`, through the variant's struct laid over the payload storage: the value, or
-    /// the box pointer when the field is boxed.
-    pub(super) fn payload_place(
+    /// The slot that holds payload field `field` of variant `variant` in the enum `id` at
+    /// `value_addr`, through the variant's struct laid over the payload storage: a box pointer
+    /// for a boxed field.
+    pub(super) fn field_slot(
         &self,
         value_addr: PointerValue<'ctx>,
         id: EnumId,
@@ -229,7 +236,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_load(
                 self.context.ptr_type(AddressSpace::default()),
-                self.payload_place(value_addr, id, variant, field),
+                self.field_slot(value_addr, id, variant, field),
                 "box",
             )
             .expect(POSITIONED)
@@ -244,8 +251,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// The value of payload field `field` of variant `variant` in the enum `id` at
-    /// `value_addr`, borrowed: not retained. Not for a boxed field, whose helpers read its box
-    /// pointer through `load_box`.
+    /// `value_addr`, borrowed: not retained. Not yet for a boxed field: its helpers read the box
+    /// pointer through `load_box`, and the `match` task adds the boxed field's value.
     pub(super) fn payload_value(
         &self,
         value_addr: PointerValue<'ctx>,
@@ -256,7 +263,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let payload = &self.program.enums[id.0].variants[variant].fields[field];
         assert!(
             !payload.boxed,
-            "a boxed field should be read through its box pointer, never loaded as a value"
+            "a boxed field's value is not built yet (the `match` task adds it): read its box pointer"
         );
         let ty = &payload.ty;
         let llvm_ty = self.llvm_type(ty).expect(
@@ -265,7 +272,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_load(
                 llvm_ty,
-                self.payload_place(value_addr, id, variant, field),
+                self.field_slot(value_addr, id, variant, field),
                 "field",
             )
             .expect(POSITIONED)
@@ -293,7 +300,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         );
         let fields = &self.program.enums[id.0].variants[variant].fields;
         for (field, (value, payload)) in values.into_iter().zip(fields).enumerate() {
-            let place = self.payload_place(slot, id, variant, field);
+            let place = self.field_slot(slot, id, variant, field);
             if payload.boxed {
                 self.store_boxed(place, value, &payload.ty);
             } else {
@@ -502,12 +509,12 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder.position_at_end(live);
             self.decrement(boxed, last, next);
             self.builder.position_at_end(last);
-            let inner = boxed_enum(&payload.ty);
-            let index = members.iter().position(|&m| m == inner).expect(
-                "the checker should box only a field whose enum is in the declaring enum's component",
-            );
+            let index = member_position(&members, boxed_enum(&payload.ty));
             let head = self.head(heads_type, heads, index);
-            let old = self.builder.build_load(ptr_type, head, "old").expect(POSITIONED);
+            let old = self
+                .builder
+                .build_load(ptr_type, head, "old")
+                .expect(POSITIONED);
             self.store(boxed, old);
             self.store(head, boxed.into());
             self.branch_to(next);
@@ -635,10 +642,8 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// The `kind` of `member` in a component of `members`: its index, as an `i32`.
     fn member_index(&self, members: &[EnumId], member: EnumId) -> IntValue<'ctx> {
-        let index = members.iter().position(|&m| m == member).expect(
-            "the checker should box only a field whose enum is in the declaring enum's component",
-        );
-        let index = u64::try_from(index).expect("a member index should fit in a `u64`");
+        let index = u64::try_from(member_position(members, member))
+            .expect("a member index should fit in a `u64`");
         self.context.i32_type().const_int(index, false)
     }
 

@@ -29,6 +29,8 @@ fn main() {
     print(ys == ys)                                          // true
     let a = Tree.Node(Tree.Leaf(S.C(n)), Tree.Leaf(S.C(1.0)))
     print(a == a)                                            // false: the same boxes
+    let c = Tree.Node(Tree.Leaf(S.C(1.0)), Tree.Leaf(S.C(n)))
+    print(c == c)                                            // false: `nan` in the last box
     let b = Tree.Node(Tree.Leaf(S.C(1.0)), Tree.Leaf(S.C(1.0)))
     print(b == b)                                            // true
 }

@@ -37,6 +37,7 @@ fn main() {
     // The original goes first, and the copy keeps the boxes.
     let mut first = Expr.Neg(Expr.Name("a" + "b"))
     let second = first
+    print(first == second)                                  // true: one set of boxes
     first = Expr.Num(0)
     print(first == second)                                  // false
     print(second == Expr.Neg(Expr.Name("ab")))              // true
@@ -56,6 +57,8 @@ fn main() {
     print(other == tree)                                    // true
 
     let one = L.Cons(1, None)
+    let one_copy = one                                      // shares the `None` tail
+    print(one_copy == one)                                  // true
     let two = L.Cons(1, L.Cons(2, None))
     print(one == L.Cons(1, None))                           // true: both tails `None`
     print(one == two)                                       // false: one tail `None`
