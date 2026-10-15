@@ -4,8 +4,8 @@
 //!
 //! The walk goes backward through each function, in the order codegen evaluates nodes, with
 //! the set of locals live after the current point. It must match codegen exactly:
-//! - `Call`, `New` and `ArrayLit` evaluate their arguments left to right, and `Interpolate` its
-//!   parts; `Index` evaluates base then index; `Contains` base then value; `ArrayFill` value
+//! - `Call`, `New`, `ArrayLit` and `Math` evaluate their arguments left to right, and
+//!   `Interpolate` its parts; `Index` evaluates base then index; `Contains` base then value; `ArrayFill` value
 //!   then length; `Equal`, `Is`, `Concat` and arithmetic lhs then rhs.
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
@@ -120,7 +120,8 @@ impl Walk {
             ExprKind::Call { args, .. }
             | ExprKind::New { args, .. }
             | ExprKind::ArrayLit(args)
-            | ExprKind::Interpolate(args) => {
+            | ExprKind::Interpolate(args)
+            | ExprKind::Math { operands: args, .. } => {
                 for arg in args.iter_mut().rev() {
                     self.expr(arg);
                 }

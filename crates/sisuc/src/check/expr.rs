@@ -1,5 +1,8 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
+use std::ops::Range;
+
+use super::number;
 use super::prelude::PRELUDE;
 use super::{
     Binding, Checked, CheckedBlock, Checker, Declared, Poisoned, UNKNOWN, block_expr, block_type,
@@ -107,6 +110,9 @@ impl Checker<'_> {
                 node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
             }
             ExprKind::Field { base, name, safe } => {
+                if !safe && let Some(checked) = self.type_path(e.span, base, name, None) {
+                    return checked;
+                }
                 self.member(e.span, *safe, base, name, |c, checked| {
                     c.field(e.span, checked, base, name)
                 })
@@ -116,9 +122,7 @@ impl Checker<'_> {
                 method,
                 args,
                 safe,
-            } => self.member(e.span, *safe, receiver, method, |c, checked| {
-                c.method_call(e.span, checked, receiver, method, args)
-            }),
+            } => self.method_expr(e.span, *safe, receiver, method, args),
             ExprKind::Coalesce { lhs, rhs } => self.coalesce(e.span, lhs, rhs),
             ExprKind::Is { lhs, rhs } => self.is(e.span, lhs, rhs),
             ExprKind::Unary { op, operand } => {
@@ -571,7 +575,8 @@ impl Checker<'_> {
     /// and the other expects its type made optional. A bare `None` beside a value that is not
     /// optional is reported: the answer is fixed. So is a `u8` beside an `i64`, at the side
     /// checked second, a `char` beside another number, at the side that is not the `char`, and
-    /// an `i64` or a `u8` beside an `f64`, at the side that is not the `f64`.
+    /// an `i64` or a `u8` beside an `f64`, at the side that is not the `f64`. A side that is
+    /// `f64.nan` is warned about.
     fn equal(&mut self, span: Span, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         let swapped = rank(rhs) < rank(lhs);
         let (first, second) = if swapped { (rhs, lhs) } else { (lhs, rhs) };
@@ -612,6 +617,7 @@ impl Checker<'_> {
         } else {
             (checked, other)
         };
+        self.nan_comparison(negated, (lhs, &l), (rhs, &r));
         self.compared(span, l, r, |lhs, rhs| tir::ExprKind::Equal {
             negated,
             lhs,
@@ -1029,34 +1035,41 @@ impl Checker<'_> {
     }
 
     /// A call of `callee`, which names nothing callable. `len(xs)`, `sum(xs)` and
-    /// `contains(xs, v)`, where `xs` is an array with that method, point to the method.
+    /// `contains(xs, v)`, where `xs` is an array with that method, point to the method, and so
+    /// do `sqrt(x)` and `max(a, b)`, where the first argument is a number with it.
     fn unknown_call(&mut self, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
         let name = callee.name.as_str();
-        let idiom = matches!(name, "len" | "sum" | "contains")
+        let idiom = (matches!(name, "len" | "sum" | "contains")
+            || number::method_name(name).is_some())
             && args.iter().all(|arg| arg.label.is_none());
         let rest = match args.split_first() {
             Some((first, rest)) if idiom => {
                 let receiver = self.expr(&first.value, Some(&UNKNOWN));
-                // A poisoned array is not known to be one.
-                if let Ok(tir::Expr {
-                    ty: Type::Array(element),
-                    ..
-                }) = &receiver
-                    && (name != "sum" || matches!(**element, Type::I64 | Type::F64))
-                {
-                    let element = (**element).clone();
+                // A poisoned receiver is not known to be an array or a number.
+                let ty = match &receiver {
+                    Ok(tir::Expr {
+                        ty: ty @ Type::Array(element),
+                        ..
+                    }) if matches!(name, "len" | "contains")
+                        || name == "sum" && matches!(**element, Type::I64 | Type::F64) =>
+                    {
+                        Some(ty.clone())
+                    }
+                    Ok(tir::Expr { ty, .. }) if number::method(ty, name).is_some() => {
+                        Some(ty.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(ty) = ty {
                     let next = rest.first().map(|arg| arg.value.span);
-                    // The rewrite deletes the text before the array and between it and `next`,
-                    // so a comment there makes it a guess.
+                    // The rewrite deletes the text before the receiver and between it and
+                    // `next`, so a comment there makes it a guess.
                     let deleted = [
                         callee.span.start()..first.value.span.start(),
                         first.value.span.end()..next.map_or(first.value.span.end(), Span::start),
                     ];
-                    let certain = self.idiom_arguments(name, &element, rest)
-                        && !self
-                            .comments
-                            .iter()
-                            .any(|c| deleted.iter().any(|d| d.contains(c)));
+                    let certain =
+                        self.idiom_arguments(name, &ty, rest) && !self.comment_in(&deleted);
                     self.report(DiagnosticKind::MethodAsFunction {
                         name: callee.name.to_string(),
                         at: callee.span,
@@ -1095,10 +1108,24 @@ impl Checker<'_> {
         Err(Poisoned::error())
     }
 
-    /// Checks the arguments after the array of an idiom call of the method `name` on an array of
-    /// `element`, each once. Whether the method takes them: `contains` one of type `element`, or
-    /// an integer literal that fits it, that checked cleanly, and `len` and `sum` none.
-    fn idiom_arguments(&mut self, name: &str, element: &Type, rest: &[ast::Arg]) -> bool {
+    /// Whether a comment starts in one of the byte ranges `deleted`.
+    pub(super) fn comment_in(&self, deleted: &[Range<usize>]) -> bool {
+        self.comments
+            .iter()
+            .any(|c| deleted.iter().any(|d| d.contains(c)))
+    }
+
+    /// Checks the arguments after the receiver of an idiom call of the method `name`, each once.
+    /// `receiver` is the receiver's type. For a number, whether the method takes them (see
+    /// `number_arguments`). For an array: `contains` takes one of the element's type, or an
+    /// integer literal that fits it, that checked cleanly, and `len` and `sum` none.
+    fn idiom_arguments(&mut self, name: &str, receiver: &Type, rest: &[ast::Arg]) -> bool {
+        if let Some((_, params)) = number::method(receiver, name) {
+            return self.number_arguments(receiver, params, rest);
+        }
+        let Type::Array(element) = receiver else {
+            unreachable!("an idiom receiver should be a number with the method or an array");
+        };
         let [value] = rest else {
             self.stray(rest);
             return rest.is_empty() && name != "contains";
@@ -1106,12 +1133,30 @@ impl Checker<'_> {
         let checked = self.expr(&value.value, Some(&UNKNOWN));
         name == "contains"
             && checked.is_ok_and(|checked| {
-                checked.ty == *element
+                checked.ty == **element
                     || matches!(
-                        (&value.value.kind, element),
+                        (&value.value.kind, &**element),
                         (ExprKind::Int { value, .. }, Type::U8) if u8::try_from(*value).is_ok()
                     )
             })
+    }
+
+    /// `receiver.method(args)` as written, which `safe` makes `receiver?.method(args)`. A type or
+    /// `math` before the `.` may make it an idiom.
+    fn method_expr(
+        &mut self,
+        span: Span,
+        safe: bool,
+        receiver: &ast::Expr,
+        method: &ast::Ident,
+        args: &[ast::Arg],
+    ) -> Checked {
+        if !safe && let Some(checked) = self.type_path(span, receiver, method, Some(args)) {
+            return checked;
+        }
+        self.member(span, safe, receiver, method, |c, checked| {
+            c.method_call(span, checked, receiver, method, args)
+        })
     }
 
     /// `receiver.method(args)`, `receiver` checked from `receiver_expr`.
@@ -1131,6 +1176,10 @@ impl Checker<'_> {
                 return self.array_method(span, receiver, &ty, method, args);
             }
             Some(Type::String) => return self.string_method(span, receiver, method, args),
+            Some(ty @ (Type::I64 | Type::F64)) => {
+                let ty = ty.clone();
+                return self.number_method(span, receiver, &ty, method, args);
+            }
             _ => {}
         }
         let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method, target) else {
@@ -1516,7 +1565,7 @@ pub(super) fn path(e: &ast::Expr) -> Option<String> {
 }
 
 /// Whether `expr` takes a `.method()` as written, without parentheses around it.
-fn postfix(expr: &ast::Expr) -> bool {
+pub(super) fn postfix(expr: &ast::Expr) -> bool {
     matches!(
         expr.kind,
         ExprKind::Name(_)

@@ -39,7 +39,10 @@ These are adopted. Together they give Sisu a working imperative core.
   comparisons (`nan` is not equal to itself, and `-0.0` equals `0.0`);
   `i64(x)`, an `i64?` that is `None` unless `x` is a whole number in range,
   and `f64(n)`; `[f64]` with `sum`, `==` and `contains`; `f64` in constants
-  and interpolation
+  and interpolation; methods such as `sqrt`, `pow`, `sin`, `is_nan` and
+  `hypot` on `f64`, `min`, `max` and `clamp` on `f64` and `i64`, and the
+  constants `f64.pi`, `f64.tau`, `f64.e`, `f64.infinity`, `f64.nan`,
+  `f64.max`, `f64.min_positive` and `f64.epsilon`
 - `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
   conversions `i64(...)` and `u8(n)`, which is a `u8?` that is `None` when
   `n` does not fit, with no panic

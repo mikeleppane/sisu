@@ -1,0 +1,4 @@
+fn main() {
+    let f64 = 1
+    print(f64.pi)
+}

@@ -7,7 +7,9 @@ use crate::ast::{
     ForSource, Function, Ident, Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind,
     UnaryOp,
 };
-use crate::diagnostic::{Diagnostic, DiagnosticKind, Join, LetField, SemicolonPlace, Span};
+use crate::diagnostic::{
+    Diagnostic, DiagnosticKind, Join, LetField, PowerFix, SemicolonPlace, Span,
+};
 use crate::lexer::{Lexed, MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
 use crate::symbol::Symbol;
 
@@ -93,6 +95,50 @@ fn infix_op(kind: &TokenKind) -> Option<(u8, Infix)> {
         TokenKind::Percent => (7, Infix::Binary(BinaryOp::Rem)),
         _ => return None,
     })
+}
+
+/// The level of `**`, which binds as `*` does.
+const POWER_LEVEL: u8 = 7;
+
+/// Whether `e`, whose tokens are `tokens`, is a plain operand of a `**` that `.pow` can replace:
+/// a name, a float literal, a call, a field, a method call, an index, or anything in
+/// parentheses. The right side may be any literal too.
+fn power_operand(e: &Expr, tokens: &[Token], right: bool) -> bool {
+    match e.kind {
+        ExprKind::Name(_)
+        | ExprKind::Float(_)
+        | ExprKind::Call { .. }
+        | ExprKind::Field { .. }
+        | ExprKind::MethodCall { .. }
+        | ExprKind::Index { .. } => true,
+        ExprKind::Int { .. } | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Str(_) => right,
+        _ => parenthesised(tokens),
+    }
+}
+
+/// Whether one pair of parentheses holds the whole of `tokens`: it starts with a `(` whose `)`
+/// is the last token. `(a) * (b)` does not.
+fn parenthesised(tokens: &[Token]) -> bool {
+    let [first, inner @ .., last] = tokens else {
+        return false;
+    };
+    if first.kind != TokenKind::LParen || last.kind != TokenKind::RParen {
+        return false;
+    }
+    let mut open = 1usize;
+    for token in inner {
+        match token.kind {
+            TokenKind::LParen => open += 1,
+            TokenKind::RParen => {
+                open -= 1;
+                if open == 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 /// Whether `kind` begins a postfix link (`.`, `?.` or `[`); `postfix` and `at_min_literal`
@@ -1072,6 +1118,12 @@ impl<'a> Parser<'a> {
                     return Ok(lhs);
                 }
                 lhs = self.comparison_chain(lhs, base)?;
+            } else if *kind == TokenKind::StarStar {
+                // `**` binds as `*` does.
+                if POWER_LEVEL < min {
+                    return Ok(lhs);
+                }
+                return Err(self.power_operator(&lhs, base));
             } else if let Some((level, op)) = infix_op(kind) {
                 if level < min {
                     return Ok(lhs);
@@ -1125,6 +1177,41 @@ impl<'a> Parser<'a> {
                 return Ok(lhs);
             }
         }
+    }
+
+    /// The error for the `**` that is next, after `lhs`: the right side parses as `*`'s would,
+    /// and a `=` straight after the `**` is part of the error, so `x **= 2` is reported once.
+    /// The fix is a guess, `lhs.pow(rhs)`: offered when both sides are plain operands, and not
+    /// for `**=` or a chain of `**`, which Python reads from the right.
+    fn power_operator(&mut self, lhs: &Expr, base: usize) -> Diagnostic {
+        let left_ok = power_operand(lhs, self.operand_tokens(lhs), false);
+        let at = self.bump().span;
+        let assign = self.eat(&TokenKind::Eq).is_some();
+        self.depth = base + 1;
+        let rhs = match self.binary(POWER_LEVEL + 1) {
+            Ok(rhs) => rhs,
+            Err(error) => return error,
+        };
+        let fix = (left_ok
+            && !assign
+            && !self.at(&TokenKind::StarStar)
+            && power_operand(&rhs, self.operand_tokens(&rhs), true))
+        .then_some(PowerFix {
+            left: lhs.span,
+            right: rhs.span,
+        });
+        DiagnosticKind::PowerOperator { at, fix }.into()
+    }
+
+    /// The tokens of `e`, the expression just parsed: those back from the last consumed one to
+    /// the first, which starts where `e` does.
+    fn operand_tokens(&self, e: &Expr) -> &'a [Token] {
+        let consumed = &self.tokens[..self.pos];
+        let first = consumed
+            .iter()
+            .rposition(|t| t.span.start() == e.span.start())
+            .expect("the first token of an expression just parsed should be consumed");
+        &consumed[first..]
     }
 
     /// Level 4: `first` and every `<`/`<=`/`>`/`>=` operand after it, as one node.
@@ -3013,5 +3100,69 @@ mod tests {
             parse_err("fn main() {}\nfn f() ->"),
             (Code::Expected, 2, 10)
         );
+    }
+
+    /// `**` is Python's, and an error here, at the `**`. The guess is `l.pow(r)`, offered only
+    /// when both sides are plain operands, and never for an assignment or a second `**`.
+    #[test]
+    fn power_operator() {
+        let wrap = |expr: &str| format!("fn main() {{\n    let _ = {expr}\n}}");
+        let rows = [
+            ("x ** 2", Some("x.pow(2)")),
+            ("x ** y", Some("x.pow(y)")),
+            ("2.0 ** x", Some("2.0.pow(x)")),
+            ("a.b ** f(c)", Some("a.b.pow(f(c))")),
+            ("a.m() ** xs[0]", Some("a.m().pow(xs[0])")),
+            ("(a + b) ** 2", Some("(a + b).pow(2)")),
+            ("((a) + b) ** 2", Some("((a) + b).pow(2)")),
+            ("x ** (a + b)", Some("x.pow((a + b))")),
+            ("2 ** 10", None),
+            ("None ** 2", None),
+            ("x ** 2 ** 3", None),
+            ("x ** -1", None),
+            ("-x ** 2", None),
+            // `**` binds as `*` does, so only its own operands matter.
+            ("a + b ** 2", Some("a + b.pow(2)")),
+            ("x ** a + b", Some("x.pow(a) + b")),
+            // Parentheses around a whole product are not around its last factor.
+            ("(a) * (b) ** 2", None),
+            ("a * (b) ** 2", None),
+        ];
+        for (expr, fixed) in rows {
+            let src = wrap(expr);
+            let d = parse_diagnostic(&src);
+            assert_eq!(d.code(), Code::PowerOperator, "{src}");
+            let (line, col) = line_col(&src, d.span().start());
+            let found = &src[d.span().range()];
+            assert_eq!(
+                (line, col, found),
+                (2, 13 + expr.find("**").expect("has `**`"), "**"),
+                "{src}"
+            );
+            match fixed {
+                Some(fixed) => {
+                    let (certain, _) = fix_edits(&d).expect("the error has a fix");
+                    assert!(!certain, "{src}");
+                    assert_eq!(apply_fix(&src, &d), wrap(fixed));
+                    parse_ok(&wrap(fixed));
+                }
+                None => assert!(fix_edits(&d).is_none(), "{src}"),
+            }
+        }
+        // `**` where no operand starts, and no right side, are the parser's own errors.
+        assert_eq!(
+            parse_err("fn main() {\n    let ** = 1\n}"),
+            (Code::Expected, 2, 9)
+        );
+        assert_eq!(
+            parse_err("fn main() {\n    let _ = x **\n}"),
+            (Code::Expected, 3, 1)
+        );
+        // An assignment is no `pow` call, and `=` after `**` is not reported again.
+        let src = "fn main() {\n    let mut x = 1.0\n    x **= 2\n}";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.code(), Code::PowerOperator);
+        assert_eq!(line_col(src, d.span().start()), (3, 7));
+        assert!(fix_edits(&d).is_none());
     }
 }

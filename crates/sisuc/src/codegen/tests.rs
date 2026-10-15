@@ -1293,3 +1293,109 @@ fn float_to_int_saturates() {
         assert!(body.contains(wanted), "missing {wanted:?} in\n{body}");
     }
 }
+
+/// The names of the `@sisu_` functions `ir` mentions.
+fn runtime_symbols(ir: &str) -> std::collections::BTreeSet<&str> {
+    ir.split(|c: char| !(c.is_alphanumeric() || matches!(c, '@' | '_' | '.')))
+        .filter(|word| word.starts_with("@sisu_"))
+        .collect()
+}
+
+/// An `f64` method is an LLVM intrinsic, except `hypot`, which is the one `libm` call, and none
+/// adds a runtime function. `min`, `max` and `clamp` are `minimumnum` and `maximumnum`: `minnum`
+/// and `maxnum` leave the sign of a zero result unspecified, and LLVM picks it differently at
+/// `-O0` and `-O2`.
+#[test]
+fn methods_lower_to_intrinsics_and_libm() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(x: f64, y: f64) -> f64 {\n    x.sqrt() + x.round() + x.min(y) + x.max(y) + x.clamp(y, y) + x.hypot(y) + x.abs() + x.ln() + x.pow(y) + x.atan2(y)\n}\n\nfn main() {\n    let _ = f(1.0, 2.0)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "@llvm.sqrt.f64",
+        "@llvm.round.f64",
+        "@llvm.minimumnum.f64",
+        "@llvm.maximumnum.f64",
+        "@llvm.fabs.f64",
+        "@llvm.log.f64",
+        "@llvm.pow.f64",
+        "@llvm.atan2.f64",
+        "declare double @hypot(double, double)",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+    for unwanted in ["minnum", "maxnum"] {
+        assert!(!ir.contains(unwanted), "{unwanted} in\n{ir}");
+    }
+    let baseline = compiled(
+        &context,
+        "fn f(x: f64, y: f64) -> f64 { x + y }\n\nfn main() {\n    let _ = f(1.0, 2.0)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    assert_eq!(runtime_symbols(&ir), runtime_symbols(&baseline));
+}
+
+/// A module that calls no method that needs `hypot` does not declare it.
+#[test]
+fn hypot_is_declared_on_first_use() {
+    let context = Context::create();
+    let ir = compiled(&context, "fn main() {\n    let _ = 1.0.sqrt()\n}")
+        .print_to_string()
+        .to_string();
+    assert!(!ir.contains("hypot"), "{ir}");
+}
+
+/// The classification methods are float compares, not calls: `is_nan` is `uno x, x`, and the
+/// others compare `fabs x` with infinity.
+#[test]
+fn classification_is_float_compares() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn nan(x: f64) -> bool { x.is_nan() }\nfn finite(x: f64) -> bool { x.is_finite() }\nfn infinite(x: f64) -> bool { x.is_infinite() }\nfn main() {\n    let _ = nan(1.0) || finite(1.0) || infinite(1.0)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    let nan = function_body(&ir, "define internal i1 @sisu.nan(");
+    assert!(nan.contains("fcmp uno double"), "{nan}");
+    assert!(!nan.contains("call"), "{nan}");
+    let finite = function_body(&ir, "define internal i1 @sisu.finite(");
+    assert!(finite.contains("@llvm.fabs.f64"), "{finite}");
+    assert!(finite.contains("fcmp olt double"), "{finite}"); // spellchecker:disable-line
+    assert!(finite.contains("0x7FF0000000000000"), "{finite}");
+    let infinite = function_body(&ir, "define internal i1 @sisu.infinite(");
+    assert!(infinite.contains("@llvm.fabs.f64"), "{infinite}");
+    assert!(infinite.contains("fcmp oeq double"), "{infinite}");
+    assert!(infinite.contains("0x7FF0000000000000"), "{infinite}");
+}
+
+/// `i64` `min`, `max` and `clamp` are `select`s over signed compares, with no call.
+#[test]
+fn integer_min_max_clamp_are_selects() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn lo(a: i64, b: i64) -> i64 { a.min(b) }\nfn hi(a: i64, b: i64) -> i64 { a.max(b) }\nfn both(a: i64, b: i64, c: i64) -> i64 { a.clamp(b, c) }\nfn main() {\n    print(lo(1, 2) + hi(1, 2) + both(1, 2, 3))\n}",
+    )
+    .print_to_string()
+    .to_string();
+    let lo = function_body(&ir, "define internal i64 @sisu.lo(");
+    assert!(
+        lo.contains("icmp slt i64") && lo.contains("select i1"),
+        "{lo}"
+    );
+    let hi = function_body(&ir, "define internal i64 @sisu.hi(");
+    assert!(
+        hi.contains("icmp sgt i64") && hi.contains("select i1"),
+        "{hi}"
+    );
+    let both = function_body(&ir, "define internal i64 @sisu.both(");
+    assert_eq!(both.matches("select i1").count(), 2, "{both}");
+    for body in [lo, hi, both] {
+        assert!(!body.contains("call"), "{body}");
+    }
+}

@@ -1,4 +1,4 @@
-error[E0070]: `contains` is a method of arrays, not a function
+error[E0070]: `contains` is a method, not a function
  --> E0070-contains.sisu:3:11
   |
 3 |     print(contains(xs, 2))

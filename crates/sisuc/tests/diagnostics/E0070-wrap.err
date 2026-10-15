@@ -1,4 +1,4 @@
-error[E0070]: `sum` is a method of arrays, not a function
+error[E0070]: `sum` is a method, not a function
  --> E0070-wrap.sisu:2:5
   |
 2 |     sum(m ?? [0])

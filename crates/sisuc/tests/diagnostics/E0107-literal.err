@@ -1,0 +1,10 @@
+error[E0107]: Sisu has no `**`
+ --> E0107-literal.sisu:2:13
+  |
+2 |     print(2 ** 10)
+  |             ^^
+  |
+  = help: use `x.pow(y)`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0107

@@ -1685,7 +1685,7 @@ fn unknown_method() {
 fn method_through_class_name() {
     codes(
         "class Tree {\n    fn sum(self) -> i64 { 0 }\n}\nfn main() {\n    print(Tree.sum(Tree()))\n}",
-        &[(Code::BindingNotFound, (5, 11))],
+        &[(Code::TypeAsValue, (5, 11))],
     );
 }
 

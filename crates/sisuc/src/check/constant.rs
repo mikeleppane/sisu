@@ -5,7 +5,7 @@
 
 use rustc_hash::FxHashMap;
 
-use super::{Checked, Checker, Declared, Poisoned, type_of};
+use super::{Checked, Checker, Declared, Poisoned, built_in_type, type_of};
 use crate::ast::{self, ExprKind};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Panic, Span, TypedLiteral};
 use crate::symbol::Symbol;
@@ -270,6 +270,10 @@ impl Checker<'_> {
                 if matches!(callee.name.as_str(), "i64" | "u8" | "char" | "f64") =>
             {
                 all(self, &mut args.iter().map(|arg| &arg.value))
+            }
+            // `f64.pi`; `f64.PI` and `i64.max` pass too, and the checker reports them.
+            ExprKind::Field { base, .. } if matches!(base.kind, ExprKind::Name(name) if built_in_type(name.as_str()).is_some()) => {
+                true
             }
             ExprKind::Name(name) => {
                 let declared = if *name == user.name {

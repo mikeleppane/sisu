@@ -1,4 +1,4 @@
-error[E0070]: `len` is a method of arrays, not a function
+error[E0070]: `len` is a method, not a function
  --> E0070.sisu:3:11
   |
 3 |     print(len(xs))
