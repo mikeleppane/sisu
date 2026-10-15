@@ -27,15 +27,6 @@ pub(super) struct VariantInfo {
     pub(super) labels: Vec<Option<Symbol>>,
 }
 
-/// The enum that a payload field of type `ty` holds inline: an enum's, or an optional enum's.
-fn inline_enum(ty: &Type) -> Option<EnumId> {
-    match ty {
-        Type::Enum(id) => Some(*id),
-        Type::Optional(payload) => inline_enum(payload),
-        _ => None,
-    }
-}
-
 /// The name milestone 8's prelude takes, which no item, variant or binding may take, and what
 /// it is there.
 fn reserved_name(name: &str) -> Option<BuiltIn> {
@@ -312,7 +303,10 @@ impl Checker<'_> {
             .iter()
             .map(|e| {
                 let fields = e.variants.iter().flat_map(|v| v.fields.iter().flatten());
-                fields.filter_map(inline_enum).map(|id| id.0).collect()
+                fields
+                    .filter_map(Type::inline_enum)
+                    .map(|id| id.0)
+                    .collect()
             })
             .collect();
         let component = components(&held);
@@ -332,7 +326,8 @@ impl Checker<'_> {
                             .map(|ty| {
                                 // An `Error` field's error stops the program before codegen.
                                 let ty = ty.clone().unwrap_or(Type::Never);
-                                let boxed = inline_enum(&ty)
+                                let boxed = ty
+                                    .inline_enum()
                                     .is_some_and(|f| component[f.0] == component[e]);
                                 tir::Payload { ty, boxed }
                             })

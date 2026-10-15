@@ -160,8 +160,13 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 16] = [
     ("interp_format", "    2.67| 日本  |7\n", "-\n", 1000),
     // An enum is held inline: building one whose payloads hold no object allocates nothing.
     ("enum_alloc_plain", "1000\n", "0\n", 0),
-    // Copying an enum retains its string payload and never copies it.
-    ("enum_alloc_copy", "1000\ntrue\n", "0\ntrue\n", 0),
+    // Copying an enum retains its string payload or its boxes and never copies them.
+    (
+        "enum_alloc_copy",
+        "1000\ntrue\ntrue\n",
+        "0\ntrue\ntrue\n",
+        0,
+    ),
     // `Add(Num(1), Num(2))` allocates one box for each of its two fields, and nothing else.
     ("enum_alloc_boxes", "1000\n", "0\n", 2000),
 ];

@@ -275,20 +275,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_pointer_value()
         };
         let (next_a, next_b) = (load(a), load(b));
-        let (differ, step) = (block("differ"), block("step"));
-        branch(self.equal_at_once(reflexive, next_a, next_b), equal, differ);
-        self.builder.position_at_end(differ);
-        let null = |object| {
-            self.builder
-                .build_is_null(object, "null")
-                .expect(POSITIONED)
-        };
-        let either_null = self
-            .builder
-            .build_or(null(next_a), null(next_b), "either_null")
-            .expect(POSITIONED);
-        branch(either_null, unequal, step);
-        self.builder.position_at_end(step);
+        self.compare_at_once(reflexive, true, next_a, next_b, equal, unequal);
+        let step = self.current_block();
         pa.add_incoming(&[(&next_a, step)]);
         pb.add_incoming(&[(&next_b, step)]);
         self.branch_to(body);
@@ -308,16 +296,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         BasicBlock<'ctx>,
         BasicBlock<'ctx>,
     ) {
-        let block = |name| self.context.append_basic_block(function, name);
-        let (entry, differ, distinct) = (block("entry"), block("differ"), block("distinct"));
-        let (equal, unequal) = (block("equal"), block("unequal"));
-        let bool_type = self.context.bool_type();
-        for (at, value) in [(equal, 1), (unequal, 0)] {
-            self.builder.position_at_end(at);
-            self.builder
-                .build_return(Some(&bool_type.const_int(value, false)))
-                .expect(POSITIONED);
-        }
+        let entry = self.context.append_basic_block(function, "entry");
+        let (equal, unequal) = self.eq_returns(function);
         let nth = |n| {
             function
                 .get_nth_param(n)
@@ -325,32 +305,65 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_pointer_value()
         };
         let (a, b) = (nth(0), nth(1));
-        let branch = |cond, then, other| {
-            self.builder
-                .build_conditional_branch(cond, then, other)
-                .expect(POSITIONED);
-        };
         self.builder.position_at_end(entry);
-        branch(self.equal_at_once(reflexive, a, b), equal, differ);
-        self.builder.position_at_end(differ);
-        let null = |object| {
-            self.builder
-                .build_is_null(object, "null")
-                .expect(POSITIONED)
-        };
-        let either_null = self
-            .builder
-            .build_or(null(a), null(b), "either_null")
-            .expect(POSITIONED);
-        branch(either_null, unequal, distinct);
-        self.builder.position_at_end(distinct);
+        self.compare_at_once(reflexive, true, a, b, equal, unequal);
         (a, b, equal, unequal)
+    }
+
+    /// The blocks of `eq` helper `function` that return `true` and `false`.
+    pub(super) fn eq_returns(
+        &self,
+        function: FunctionValue<'ctx>,
+    ) -> (BasicBlock<'ctx>, BasicBlock<'ctx>) {
+        let bool_type = self.context.bool_type();
+        let [equal, unequal] = [(1, "equal"), (0, "unequal")].map(|(value, name)| {
+            let at = self.context.append_basic_block(function, name);
+            self.builder.position_at_end(at);
+            self.builder
+                .build_return(Some(&bool_type.const_int(value, false)))
+                .expect(POSITIONED);
+            at
+        });
+        (equal, unequal)
+    }
+
+    /// Compares the pointers `a` and `b` of a counted type that is `reflexive` or not, with no
+    /// look inside: branches to `equal` when `equal_at_once` finds them equal, and, when either
+    /// may be `null` (`nullable`), to `unequal` when only one is. Leaves the builder where they
+    /// are two pointers to compare by what they point at.
+    pub(super) fn compare_at_once(
+        &self,
+        reflexive: bool,
+        nullable: bool,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+        equal: BasicBlock<'ctx>,
+        unequal: BasicBlock<'ctx>,
+    ) {
+        let function = self.current_function();
+        let differ = self.context.append_basic_block(function, "differ");
+        self.branch_on(self.equal_at_once(reflexive, a, b), equal, differ);
+        self.builder.position_at_end(differ);
+        if nullable {
+            let distinct = self.context.append_basic_block(function, "distinct");
+            let null = |pointer| {
+                self.builder
+                    .build_is_null(pointer, "null")
+                    .expect(POSITIONED)
+            };
+            let either_null = self
+                .builder
+                .build_or(null(a), null(b), "either_null")
+                .expect(POSITIONED);
+            self.branch_on(either_null, unequal, distinct);
+            self.builder.position_at_end(distinct);
+        }
     }
 
     /// Whether two pointers of a counted type are equal with no look inside: the same pointer
     /// when the type is `reflexive`, else both `null`. One block or object that holds a `nan`
     /// is not equal to itself, so only a reflexive type may stop at the same pointer.
-    pub(super) fn equal_at_once(
+    fn equal_at_once(
         &self,
         reflexive: bool,
         a: PointerValue<'ctx>,
@@ -601,7 +614,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `retain` or `release`, as `kind` says. A string, object or array is the pointer itself,
     /// `null` for `None`; an enum goes to its helper by address; an enum optional's payload is
     /// counted only when its flag is set.
-    pub(super) fn retain_or_release(&self, kind: Helper, value: BasicValueEnum<'ctx>, ty: &Type) {
+    fn retain_or_release(&self, kind: Helper, value: BasicValueEnum<'ctx>, ty: &Type) {
         if let Some(core) = counted_core(ty) {
             let function = match kind {
                 Helper::Retain => self.rc_retain,

@@ -22,27 +22,53 @@ enum Chain {
     End
 }
 
-fn ends(c: Chain) -> bool {
-    c == Chain.End
-}
-
-fn other(z: Z) -> bool {
-    z == Z.Other
-}
-
-fn present(o: Z?) -> bool {
-    if let z = o {
-        z != Z.Other
-    } else {
-        false
+// Each callee hands its value back through a recursion as deep as `main`'s argument count plus
+// one, which `-O2` cannot know, so the inliner cannot fold the call into `main`; each also
+// compares its value after the recursive call, so that the call is neither a tail call nor the
+// identity, whose call `-O2` drops (see `enum_alloc_copy.sisu`). The moved local therefore
+// crosses a real call before scope end releases the zero value it leaves behind.
+// o2-calls: main other 1
+// o2-calls: main present 1
+// o2-calls: main ends 1
+fn ends(c: Chain, depth: i64) -> Chain {
+    let mut d = c
+    if depth > 0 {
+        d = ends(d, depth - 1)
     }
+    if d == Chain.End {
+        d = Chain.Link("", Chain.End)
+    }
+    d
 }
 
-fn main() {
+fn other(z: Z, depth: i64) -> Z {
+    let mut y = z
+    if depth > 0 {
+        y = other(y, depth - 1)
+    }
+    if y == Z.Other {
+        y = Z.Text("", Inner.Empty, C(n: 0))
+    }
+    y
+}
+
+fn present(o: Z?, depth: i64) -> Z? {
+    let mut p = o
+    if depth > 0 {
+        p = present(p, depth - 1)
+    }
+    if p == None {
+        p = Z.Other
+    }
+    p
+}
+
+fn main(args: [string]) {
+    let depth = args.len() + 1
     let z = Z.Text("a" + "b", Inner.Name("c" + "d"), C(n: 1))
-    print(other(z))                                          // false: `z` moves into the call
+    print(other(z, depth) == Z.Other)                        // false: `z` moves into the call
     let o: Z? = Z.Text("e" + "f", Inner.Name("g" + "h"), C(n: 2))
-    print(present(o))                                        // true: `o` moves into the call
+    print(present(o, depth) != None)                         // true: `o` moves into the call
     let fill = Z.Text("i" + "j", Inner.Name("k" + "l"), C(n: 3))
     let none = [fill; 0]
     print(none.len())                                        // 0
@@ -51,5 +77,5 @@ fn main() {
     w = Z.Other
     print(kept == w)                                         // false
     let c = Chain.Link("n" + "o", Chain.Link("p" + "q", Chain.End))
-    print(ends(c))                                           // false: `c` moves into the call
+    print(ends(c, depth) == Chain.End)                       // false: `c` moves into the call
 }

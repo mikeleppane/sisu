@@ -422,6 +422,16 @@ impl Type {
             _ => false,
         }
     }
+
+    /// The enum a payload field of this type holds inline unless boxed: `F`'s for `F` or `F?`.
+    /// These are the edges of the holds-inline graph.
+    pub(crate) fn inline_enum(&self) -> Option<EnumId> {
+        match self {
+            Type::Enum(id) => Some(*id),
+            Type::Optional(payload) => payload.inline_enum(),
+            _ => None,
+        }
+    }
 }
 
 impl Expr {

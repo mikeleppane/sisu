@@ -27,6 +27,12 @@ fn main() {
     print(states[1] == State.Running(Counter(count: 1)))     // true: the original is unchanged
     print(copy == states)                                    // false
     print(states == [State.Idle, State.Running(Counter(count: 1)), State.Named("ab")]) // true
+    let counter = Counter(count: 1)
+    let running = State.Running(counter)
+    let copied = running
+    counter.count = 5
+    print(copied == State.Running(Counter(count: 5)))       // true: the copy shares `counter`
+    print(running == State.Running(Counter(count: 5)))      // true: so does the original
     let empty = [State.Named("z" + ""); 0]
     print(empty.len())                                       // 0
     let mut seen = 0

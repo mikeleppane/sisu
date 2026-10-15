@@ -43,11 +43,8 @@ pub(super) struct EnumLayout<'ctx> {
 
 /// The enum a boxed field holds: its type is `F` or `F?`.
 fn boxed_enum(ty: &Type) -> EnumId {
-    match ty {
-        Type::Enum(id) => *id,
-        Type::Optional(payload) => boxed_enum(payload),
-        _ => unreachable!("the checker should box only a field of an enum type or its optional"),
-    }
+    ty.inline_enum()
+        .expect("the checker should box only a field of an enum type or its optional")
 }
 
 /// The index of `member` in a component of `members`.
@@ -63,14 +60,7 @@ fn held_inline(e: &Enum) -> impl Iterator<Item = EnumId> + '_ {
         .iter()
         .flat_map(|variant| &variant.fields)
         .filter(|field| !field.boxed)
-        .filter_map(|field| match &field.ty {
-            Type::Enum(id) => Some(*id),
-            Type::Optional(payload) => match **payload {
-                Type::Enum(id) => Some(id),
-                _ => None,
-            },
-            _ => None,
-        })
+        .filter_map(|field| field.ty.inline_enum())
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
@@ -204,7 +194,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// The slot that holds payload field `field` of variant `variant` in the enum `id` at
     /// `value_addr`, through the variant's struct laid over the payload storage: a box pointer
     /// for a boxed field.
-    pub(super) fn field_slot(
+    fn field_slot(
         &self,
         value_addr: PointerValue<'ctx>,
         id: EnumId,
@@ -253,7 +243,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// The value of payload field `field` of variant `variant` in the enum `id` at
     /// `value_addr`, borrowed: not retained. Not yet for a boxed field: its helpers read the box
     /// pointer through `load_box`, and the `match` task adds the boxed field's value.
-    pub(super) fn payload_value(
+    fn payload_value(
         &self,
         value_addr: PointerValue<'ctx>,
         id: EnumId,
@@ -611,20 +601,6 @@ impl<'ctx> Codegen<'ctx, '_> {
         );
     }
 
-    /// The blocks of `eq` helper `function` that return `true` and `false`.
-    fn eq_returns(&self, function: FunctionValue<'ctx>) -> (BasicBlock<'ctx>, BasicBlock<'ctx>) {
-        let bool_type = self.context.bool_type();
-        let [equal, unequal] = [(1, "equal"), (0, "unequal")].map(|(value, name)| {
-            let at = self.context.append_basic_block(function, name);
-            self.builder.position_at_end(at);
-            self.builder
-                .build_return(Some(&bool_type.const_int(value, false)))
-                .expect(POSITIONED);
-            at
-        });
-        (equal, unequal)
-    }
-
     /// A call of `@sisu_rc.eq_component.<F0>` with `args`: `kind`, `a` and `b`.
     fn call_component(
         &self,
@@ -638,6 +614,20 @@ impl<'ctx> Codegen<'ctx, '_> {
             .basic()
             .expect("the generated `eq_component` helper should return a `bool`")
             .into_int_value()
+    }
+
+    /// `compare_at_once` on the boxes `a` and `b` of a boxed field of type `ty`, `F` or `F?`,
+    /// which branches to `same` or `unequal`; only an `F?` box is `null`, for `None`.
+    fn boxes_differ(
+        &self,
+        ty: &Type,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+        same: BasicBlock<'ctx>,
+        unequal: BasicBlock<'ctx>,
+    ) {
+        let nullable = matches!(ty, Type::Optional(_));
+        self.compare_at_once(self.reflexive(ty), nullable, a, b, same, unequal);
     }
 
     /// The `kind` of `member` in a component of `members`: its index, as an `i32`.
@@ -748,45 +738,6 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.branch_to(top);
             }
         }
-    }
-
-    /// Compares the boxes `a` and `b` of a boxed field of type `ty`, `F` or `F?`, with no look
-    /// inside: branches to `same` when `equal_at_once` finds them equal (the same box of a
-    /// reflexive `F`, or both `null`), and, for `F?`, to `unequal` when only one is `null`.
-    /// Leaves the builder where they are two boxes to compare by their values.
-    fn boxes_differ(
-        &self,
-        ty: &Type,
-        a: PointerValue<'ctx>,
-        b: PointerValue<'ctx>,
-        same: BasicBlock<'ctx>,
-        unequal: BasicBlock<'ctx>,
-    ) {
-        let function = self.current_function();
-        let differ = self.context.append_basic_block(function, "box.differ");
-        self.branch_on(self.equal_at_once(self.reflexive(ty), a, b), same, differ);
-        self.builder.position_at_end(differ);
-        if let Type::Optional(_) = ty {
-            let content = self.context.append_basic_block(function, "box.content");
-            let null = |boxed| self.builder.build_is_null(boxed, "null").expect(POSITIONED);
-            let either_null = self
-                .builder
-                .build_or(null(a), null(b), "either_null")
-                .expect(POSITIONED);
-            self.branch_on(either_null, unequal, content);
-            self.builder.position_at_end(content);
-        }
-    }
-
-    fn branch_on(
-        &self,
-        condition: IntValue<'ctx>,
-        then: BasicBlock<'ctx>,
-        other: BasicBlock<'ctx>,
-    ) {
-        self.builder
-            .build_conditional_branch(condition, then, other)
-            .expect(POSITIONED);
     }
 
     /// `for_each_field` over the counted fields, boxes included, of the value at `value`.

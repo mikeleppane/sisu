@@ -312,9 +312,12 @@ struct Codegen<'ctx, 'src> {
     tbaa_kind: u32,
     /// The TBAA tag of an array's count and length, and of the count in `add_to_count`,
     /// `check_count` and `unique`. An array element's loads and stores carry `element_tag`, so
-    /// that LLVM knows a store to an element leaves those counts and lengths as they were. Other
-    /// accesses, such as a string's length or a new object's count, carry no tag and may alias
-    /// anything.
+    /// that LLVM knows a store to an element leaves those counts and lengths as they were. An
+    /// enum element is loaded and stored whole with `element_tag` too. A tag describes only the
+    /// bytes the access itself touches, and an element's bytes never hold a count or a length:
+    /// the strings, objects and boxes an enum element points at keep their counts in their own
+    /// blocks, as the strings of a `[string]` do. Other accesses, such as a string's length or a
+    /// new object's count, carry no tag and may alias anything.
     header_tag: MetadataValue<'ctx>,
     element_tag: MetadataValue<'ctx>,
     program: &'src Program,
@@ -1364,6 +1367,17 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn branch_to(&self, block: BasicBlock<'ctx>) {
         self.builder
             .build_unconditional_branch(block)
+            .expect(POSITIONED);
+    }
+
+    fn branch_on(
+        &self,
+        condition: IntValue<'ctx>,
+        then: BasicBlock<'ctx>,
+        other: BasicBlock<'ctx>,
+    ) {
+        self.builder
+            .build_conditional_branch(condition, then, other)
             .expect(POSITIONED);
     }
 
