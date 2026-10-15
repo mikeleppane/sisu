@@ -554,6 +554,10 @@ fn nan_comparison() {
         &[(Code::CannotCompare, (2, 13))],
     );
     codes(
+        "fn f(xs: [f64]?) {\n    let _ = xs == f64.nan\n}\nfn main() {}",
+        &[(Code::CannotCompare, (2, 13))],
+    );
+    codes(
         "fn f() {\n    let _ = y == f64.nan\n}\nfn main() {}",
         &[(Code::BindingNotFound, (2, 13))],
     );
@@ -572,6 +576,11 @@ fn f64_constant_in_const() {
     codes(
         "const C = f64.PI\nfn main() {}",
         &[(Code::NoMember, (1, 15))],
+    );
+    // Only a built-in type's member passes the gate; any other is not known at compile time.
+    codes(
+        "class P {\n    x: i64\n}\nconst C = P.x\nfn main() {}",
+        &[(Code::ConstantNotKnown, (4, 11))],
     );
     // A constant's own comparison with `nan` still warns, and holds nothing.
     codes(
