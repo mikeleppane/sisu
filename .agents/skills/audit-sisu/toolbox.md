@@ -133,7 +133,7 @@ on `main` itself it has nothing to mutate. A killed run leaves
 ## Coverage
 
 ```console
-$ scripts/coverage.sh $(git rev-list --max-parents=0 HEAD)
+$ make coverage BASE=$(git rev-list --max-parents=0 HEAD)
 ```
 
 It runs the whole suite under instrumentation, so it takes minutes. The first line gives the totals. "Touching changed code" lists the uncovered regions inside the diff; "Other" lists the rest of the changed files. With the first commit as base, every file counts as changed.

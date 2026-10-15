@@ -90,8 +90,8 @@ Then:
 
 1. Run `scripts/install-llvm.sh` and delete the old `.llvm/<major>`.
 2. Fix the compile errors from inkwell API changes.
-3. Run the checks in `docs/development.md`: build, `cargo nextest run
-   --workspace`, `prek run --all-files`, `cargo deny check`.
+3. Run the checks in `docs/development.md`: `make build`, then
+   `make check`.
 4. Check the tests that look at optimized IR, such as the `default<O2>` tests in
    `crates/sisuc/tests/cli.rs`. A new LLVM can optimize differently; change
    such a test only once the new output is understood.
