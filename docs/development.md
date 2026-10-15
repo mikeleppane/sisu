@@ -42,11 +42,17 @@ $ cargo install --locked cargo-llvm-cov # coverage
 ## Build and test
 
 ```console
-$ cargo build --workspace        # sisuc and the runtime library
-$ cargo nextest run --workspace  # unit tests and end-to-end cases
-$ prek run --all-files           # fmt, clippy, expect messages, typos, file hygiene, shell and workflow lint, as in CI
-$ cargo deny check               # advisories, licenses, sources
+$ make help    # every target
+$ make build   # sisuc and the runtime library
+$ make test    # unit tests and end-to-end cases
+$ make lint    # fmt, clippy, expect messages, typos, file hygiene, shell and workflow lint, as in CI
+$ make deny    # advisories, licenses, sources
+$ make check   # lint, test and deny: what CI requires
 ```
+
+Each target is one line in the `Makefile`, a script in `scripts/` or a cargo
+command. Run a script directly for the flags no target passes, such as
+`scripts/fuzz.sh --replay`.
 
 The end-to-end cases are files. The `cases` test binary runs one test per
 `.sisu` file in three directories under `crates/sisuc/tests`:
@@ -58,12 +64,12 @@ The end-to-end cases are files. The `cases` test binary runs one test per
 | `diagnostics/` | report diagnostics under `sisuc --check`, exiting 1 if one is an error and 0 if all are warnings; a case named `<CODE>.sisu` or `<CODE>-<case>.sisu` reports that code | `<name>.err`: the diagnostics; `<name>.json`: the same under `--format json` |
 
 To add a case, write the `.sisu` file and an empty expected file beside it,
-then fill the expected file with `SISU_BLESS=1`. Read what it wrote before
+then fill the expected file with `make bless`. Read what it wrote before
 you commit it:
 
 ```console
 $ touch crates/sisuc/tests/run/new_case.out
-$ SISU_BLESS=1 cargo nextest run -E 'binary(cases)'
+$ make bless   # SISU_BLESS=1 cargo nextest run -E 'binary(cases)'
 ```
 
 `SISU_BLESS=1` rewrites the expected files of cases that pass every other
@@ -131,8 +137,8 @@ pass that stage's tip as the base, so earlier stages stay out. Arguments after
 the base go to `cargo mutants`:
 
 ```console
-$ scripts/mutants.sh                  # changes since main
-$ scripts/mutants.sh feat/m3-writes   # changes since the stage below
+$ make mutants                        # changes since main
+$ make mutants BASE=feat/m3-writes    # changes since the stage below
 $ scripts/mutants.sh HEAD~1 --list    # list the mutants, run nothing
 ```
 
@@ -141,12 +147,17 @@ it.
 
 ## Coverage and performance
 
-`scripts/coverage.sh [base]` runs the tests under `cargo-llvm-cov` and prints
+`make coverage [BASE=<base>]` runs the tests under `cargo-llvm-cov` and prints
 a `Coverage:` line, then two lists. "Uncovered regions touching changed code"
 names regions that a changed line touches. "Other uncovered regions in changed
 files (advisory)" names the rest of those files. It never fails on low
-coverage. Agents run it before `scripts/mutants.sh`. Commit new files, or
+coverage. Agents run it before the mutants. Commit new files, or
 `git add -N` them, so the diff sees them.
+
+`make verify [BASE=<base>]` runs coverage, then mutants, and ends with one
+line: `verify: PASS` or `verify: FAIL` and why. It skips the mutants when an
+uncovered region touches the changes, since the tests that cover it change
+the mutants' results too.
 
 Programs that the tests compile link an uninstrumented runtime, built in
 `target/llvm-cov-runtime` and copied next to the instrumented `sisuc`. Runtime
@@ -186,13 +197,13 @@ its own Cargo workspace, and runs under cargo-fuzz without a sanitizer.
 Install cargo-fuzz once:
 
 ```console
-$ cargo install --locked cargo-fuzz@0.13.2
+$ cargo install --locked cargo-fuzz@0.13.2   # or make setup
 ```
 
 `scripts/fuzz.sh` holds every libFuzzer flag:
 
 ```console
-$ scripts/fuzz.sh [seconds]          # fuzz for 1800 s by default
+$ make fuzz [SECS=<seconds>]         # fuzz for 1800 s by default
 $ scripts/fuzz.sh --replay <input>   # run one input
 $ scripts/fuzz.sh --tmin <input>     # minimize one failing input
 $ scripts/fuzz.sh --cmin             # shrink fuzz/corpus/front_end in place

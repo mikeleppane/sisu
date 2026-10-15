@@ -7,19 +7,9 @@ Sisu is a small, statically typed language compiled to native x86-64 Linux code 
 
 ## Commands
 
-| Task | Command |
-|---|---|
-| Build | `cargo build --workspace` |
-| Test | `cargo nextest run --workspace` (not `cargo test`: a nextest setup script builds the runtime) |
-| Fill the expected `.out`/`.err`/`.json` files of the end-to-end cases (see `docs/development.md`) | `SISU_BLESS=1 cargo nextest run -E 'binary(cases)'` |
-| Lint and format check (the same hooks CI runs) | `prek run --all-files` |
-| Dependency audit | `cargo deny check` |
-| Mutation test a branch's changes (on a stacked branch, pass the stage's base) | `scripts/mutants.sh [base]` |
-| Coverage of a branch's changes (on a stacked branch, pass the stage's base) | `scripts/coverage.sh [base]` |
-| Fuzz the front end (nightly in CI) | `scripts/fuzz.sh [seconds]` |
-| Count the instructions of a compiler run under callgrind, which CodSpeed's simulation mode also uses | `scripts/codspeed-prep.sh`, then `valgrind --tool=callgrind --callgrind-out-file=/dev/null target/release/sisuc --check target/codspeed/large/main.sisu` |
+Run commands through `make`; `make help` lists the targets. `make test` runs nextest, not `cargo test`: nextest's setup script builds the runtime. `make coverage`, `make mutants` and `make verify` measure the changes since `BASE`, by default where HEAD left main; on a stacked branch, pass the stage's base. `make verify` runs coverage, then mutants, and its last line is the verdict.
 
-Once per clone, run `scripts/install-llvm.sh`, `prek install`, `cargo install --locked cargo-mutants`, `cargo install --locked cargo-llvm-cov` and `cargo install --locked cargo-fuzz@0.13.2`. The script installs LLVM 22 into `.llvm/22`; `.cargo/config.toml` sets `LLVM_SYS_221_PREFIX` to it. Do not build against a system LLVM. The `prek install` step enables the Git pre-commit hook. The toolchain is pinned in `rust-toolchain.toml`.
+Once per clone, run `make setup`. It installs LLVM 22 into `.llvm/22`, which `.cargo/config.toml` points `LLVM_SYS_221_PREFIX` at; do not build against a system LLVM. It also enables the Git pre-commit hook. The toolchain is pinned in `rust-toolchain.toml`.
 
 ## Code rules
 

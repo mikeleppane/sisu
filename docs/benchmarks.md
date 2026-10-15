@@ -225,9 +225,9 @@ runs (`taskset -c 2 hyperfine -N -w 5 -r 50 ...`):
 ## Running them
 
 ```sh
-scripts/bench.sh                 # all benchmarks
-scripts/bench.sh fib sieve       # some of them
-RUNS=10 BENCH_CPU=4 scripts/bench.sh
+make bench                       # all benchmarks
+make bench BENCH='fib sieve'     # some of them
+RUNS=10 BENCH_CPU=4 make bench
 ```
 
 The script builds `sisuc` in release mode and then runs each program in every
