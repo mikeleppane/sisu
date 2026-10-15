@@ -256,6 +256,25 @@ construct!(whiles, nested_while, 253);
 construct!(fors, nested_for, 253);
 construct!(array_types, array_type, 254);
 
+/// The right side of a `**` is parsed as a `*`'s would be, one level in: the parser reports the
+/// `**` up to 253 parentheses deep, and the depth past that, which no other construct ends with.
+#[test]
+fn the_right_side_of_a_power_nests_one_level_in() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    for (n, code) in [(253, "E0107"), (254, "E0071")] {
+        let source = format!(
+            "fn main() {{\n    let _ = x ** {}1{}\n}}\n",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        fs::write(dir.join("nesting_power.sisu"), source).expect("writes");
+        let out = sisuc(dir, &["--check", "nesting_power.sisu"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.matches("error[").count(), 1, "{n}: {stderr}");
+        assert!(stderr.contains(&format!("error[{code}]")), "{n}: {stderr}");
+    }
+}
+
 /// `--check`, `--emit ast` and a build of `source` all exit 1 with the one message, however large
 /// it is: the parser stops at the first level past the limit and builds nothing deeper.
 fn assert_too_deep(name: &str, source: &str) {

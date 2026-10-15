@@ -3126,6 +3126,7 @@ mod tests {
             ("x ** a + b", Some("x.pow(a) + b")),
             // Parentheses around a whole product are not around its last factor.
             ("(a) * (b) ** 2", None),
+            ("a * (b) ** 2", None),
         ];
         for (expr, fixed) in rows {
             let src = wrap(expr);
