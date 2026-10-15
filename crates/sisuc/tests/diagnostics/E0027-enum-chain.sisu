@@ -1,0 +1,17 @@
+enum E {
+    A(F, E)
+    B(G)
+}
+
+class F {
+    n: i64
+    e: E
+}
+
+enum G {
+    H(E)
+}
+
+fn main() {
+    print(1)
+}

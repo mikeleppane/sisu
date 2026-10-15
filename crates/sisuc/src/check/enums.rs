@@ -273,60 +273,45 @@ impl Checker<'_> {
         }
     }
 
-    /// The shortest chain of fields from the enum at node `start` back to it, through types
-    /// none of which can be `built`: each link's holder (`E.V` or `K.f`) and the type held.
+    /// The chain of fields from the enum at node `start`, through types none of which can be
+    /// `built`: each link's holder (`E.V` or `K.f`) and the type held. At an enum it takes the
+    /// first variant's first such field, at a class the first such field, and it ends at the
+    /// first type it meets again.
     fn chain(&self, start: usize, built: &[bool]) -> Vec<(String, String)> {
         let classes = self.classes.len();
-        let node = |ty: &Type| match ty {
-            Type::Class(id) => Some(id.0),
-            Type::Enum(id) => Some(classes + id.0),
-            _ => None,
+        // A field named `name` of type `ty`, if that type cannot be built: its name, its type's
+        // name and its node.
+        let unbuilt = |(name, ty): (&str, &Option<Type>)| {
+            let ty = ty.as_ref()?;
+            let n = match ty {
+                Type::Class(id) => id.0,
+                Type::Enum(id) => classes + id.0,
+                _ => return None,
+            };
+            (!built[n]).then(|| (name.to_string(), self.type_name(ty), n))
         };
-        // Each link out of node `n`: its holder, and the type it holds.
-        let links = |n: usize| -> Vec<(String, &Type)> {
-            if n < classes {
-                let class = &self.classes[n];
-                let fields = class.fields.iter();
-                let fields = fields.filter_map(|f| Some((f.name.name.as_str(), f.ty.as_ref()?)));
-                fields
-                    .map(|(field, ty)| (format!("{}.{field}", class.name.name), ty))
-                    .collect()
+        let mut chain = Vec::new();
+        let mut on_chain = vec![false; built.len()];
+        let mut at = start;
+        while !std::mem::replace(&mut on_chain[at], true) {
+            let (holder, field) = if at < classes {
+                let class = &self.classes[at];
+                let mut fields = class.fields.iter().map(|f| (f.name.name.as_str(), &f.ty));
+                (&class.name, fields.find_map(unbuilt))
             } else {
-                let e = &self.enums[n - classes];
-                e.variants
-                    .iter()
-                    .flat_map(|v| v.fields.iter().flatten().map(move |ty| (v, ty)))
-                    .map(|(v, ty)| (format!("{}.{}", e.name.name, v.name.name), ty))
-                    .collect()
-            }
-        };
-        let mut came_from: Vec<Option<(usize, String, &Type)>> = vec![None; built.len()];
-        let mut queue = std::collections::VecDeque::from([start]);
-        while let Some(n) = queue.pop_front() {
-            for (holder, ty) in links(n) {
-                let Some(m) = node(ty).filter(|&m| !built[m]) else {
-                    continue;
-                };
-                if m == start {
-                    let mut chain = vec![(holder, self.type_name(ty))];
-                    let mut at = n;
-                    while at != start {
-                        let (from, holder, ty) = came_from[at]
-                            .take()
-                            .expect("a node the walk reached should know where it came from");
-                        chain.push((holder, self.type_name(ty)));
-                        at = from;
-                    }
-                    chain.reverse();
-                    return chain;
-                }
-                if came_from[m].is_none() {
-                    came_from[m] = Some((n, holder, ty));
-                    queue.push_back(m);
-                }
-            }
+                let e = &self.enums[at - classes];
+                let mut fields = e.variants.first().into_iter().flat_map(|v| {
+                    let name = v.name.name.as_str();
+                    v.fields.iter().map(move |ty| (name, ty))
+                });
+                (&e.name, fields.find_map(unbuilt))
+            };
+            let (name, held, next) =
+                field.expect("a type no value can be built of should need another such type");
+            chain.push((format!("{}.{name}", holder.name), held));
+            at = next;
         }
-        panic!("an enum no value can be built of should need itself through its component");
+        chain
     }
 }
 

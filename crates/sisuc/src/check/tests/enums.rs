@@ -1,6 +1,8 @@
 //! Enum declarations: variants and payloads, the reserved names, which enums can be built, the
 //! boxes that break a cycle, and which enums are counted.
 
+use std::fmt::Write as _;
+
 use super::*;
 use crate::front_end::front_end;
 
@@ -179,10 +181,18 @@ fn enum_named_local() {
 
 #[test]
 fn never_built() {
-    let rows: [Row<'_>; 10] = [
+    let rows: [Row<'_>; 11] = [
         (
             "enum Bad { Wrap(Bad) }",
             &[(Code::NeverConstructed, (1, 6))],
+        ),
+        // A field of an unknown type has its own error, and the chain walks past it.
+        (
+            "enum Bad { Wrap(Nope, Bad) }",
+            &[
+                (Code::NeverConstructed, (1, 6)),
+                (Code::UnknownType, (1, 17)),
+            ],
         ),
         // The chain walks past fields of other types, and past a type it reached already.
         (
@@ -218,6 +228,40 @@ fn never_built() {
     for (decls, expected) in rows {
         codes(&with_main(decls), expected);
     }
+}
+
+#[test]
+fn variant_case_fix() {
+    // Each row: the variant, and the name its fix gives, if any.
+    let rows = [
+        ("north", Some("North")),
+        ("_foo", Some("_Foo")),
+        ("_1x", Some("_1X")),
+        ("_1", None),
+    ];
+    for (variant, fixed) in rows {
+        let src = with_main(&format!("enum D {{\n    {variant}\n}}"));
+        let d = diagnostic(&src, Code::VariantCase, (2, 5, variant), &[]);
+        let expected: Vec<FixAt<'_>> = fixed
+            .map(|f| (false, vec![(2, 5, variant, f.to_owned())]))
+            .into_iter()
+            .collect();
+        assert_eq!(fixes(&src, &d), expected, "{variant}");
+    }
+}
+
+#[test]
+fn long_declaration_chain_checks() {
+    // `components` keeps its own stack: a walk that recursed once per enum would need far more
+    // than the test thread's stack for this chain.
+    const N: usize = 50_000;
+    let mut decls = String::new();
+    for i in 0..N - 1 {
+        writeln!(decls, "enum E{i} {{ A(E{}) }}", i + 1)
+            .expect("writing to a string should not fail");
+    }
+    write!(decls, "enum E{} {{ A }}", N - 1).expect("writing to a string should not fail");
+    codes(&with_main(&decls), &[]);
 }
 
 #[test]

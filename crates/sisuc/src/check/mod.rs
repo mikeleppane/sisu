@@ -410,7 +410,8 @@ impl Checker<'_> {
         found
     }
 
-    /// Whether `name` is the first function, class or constant of its name; reports it when not.
+    /// Whether `name` is the first function, class, enum or constant of its name; reports it when
+    /// not.
     fn first_callable(
         &mut self,
         first: &mut FxHashMap<Symbol, (Span, Definition)>,

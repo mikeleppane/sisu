@@ -1,0 +1,8 @@
+error[E0027]: no value of `A` can be built
+ --> E0027-enum-chain-loop.sisu:1:6
+  |
+1 | enum A {
+  |      ^ `A.X` holds a `B`, and `B.Y` holds a `C`, and `C.Z` holds a `B`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0027

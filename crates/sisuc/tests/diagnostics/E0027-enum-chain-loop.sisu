@@ -1,0 +1,15 @@
+enum A {
+    X(B)
+}
+
+enum B {
+    Y(C)
+}
+
+enum C {
+    Z(B, A)
+}
+
+fn main() {
+    print(1)
+}
