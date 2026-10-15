@@ -491,8 +491,13 @@ fn same_pointer_shortcut_only_when_reflexive() {
         ("@\"sisu_rc.eq.[f64]\"(ptr", false),
     ] {
         let body = function_body(&ir, &format!("define internal i1 {helper}"));
-        assert_eq!(body.contains("%same"), reflexive, "{helper}:\n{body}");
-        assert_eq!(body.contains("%both_null"), !reflexive, "{helper}:\n{body}");
+        // The shortcut is a pointer comparison against another pointer, not against `null`.
+        let between_pointers = body
+            .lines()
+            .any(|line| line.contains("icmp eq ptr ") && !line.ends_with(", null"));
+        assert_eq!(between_pointers, reflexive, "{helper}:\n{body}");
+        // Every helper still tests for `null`, which is all a non-reflexive one may stop at.
+        assert!(body.contains("icmp eq ptr %0, null"), "{helper}:\n{body}");
     }
 }
 

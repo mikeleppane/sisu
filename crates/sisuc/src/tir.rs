@@ -216,7 +216,7 @@ pub(crate) enum ExprKind {
     Words(Box<Expr>),
     /// `string(base)`: a new string that encodes the `[char]` `base`.
     FromChars(Box<Expr>),
-    /// `base.sum()`, on an `[i64]`.
+    /// `base.sum()`, on an `[i64]` or an `[f64]`.
     Sum(Box<Expr>),
     /// `base.contains(value)`, by `==`.
     Contains {

@@ -220,7 +220,8 @@ impl Checker {
     }
 
     /// `receiver.method(args)` on `receiver`, an array of type `ty`. The methods: `len()`,
-    /// `sum()` on an `[i64]`, and `contains(x)`, whose argument is checked as an element.
+    /// `sum()` on an `[i64]` or an `[f64]`, and `contains(x)`, whose argument is checked as an
+    /// element.
     pub(super) fn array_method(
         &mut self,
         span: Span,

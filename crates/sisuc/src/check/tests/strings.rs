@@ -392,7 +392,7 @@ fn chars_and_bytes_are_arrays() {
         "fn f(s: string, m: string?) {\n    let cs: [char] = s.chars()\n    let bs: [u8] = s.bytes()\n    let o: [char]? = m?.chars()\n    print(s.chars().contains('a'))\n    print(s.bytes().len())\n}\nfn main() {}",
         &["(chars s#0)", "(bytes s#0)"],
     );
-    // `sum` stays `[i64]`-only.
+    // A `[char]` has no sum.
     codes(
         "fn f(s: string) { print(s.chars().sum()) }\nfn main() {}",
         &[(Code::SumNeedsNumbers, (1, 35))],
