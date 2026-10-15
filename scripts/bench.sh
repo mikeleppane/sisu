@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds each benchmark in bench/ in every language whose toolchain is on PATH,
 # checks that it prints what the Sisu version prints, and times it pinned to
-# one CPU. Prints a markdown table for docs/benchmarks.md.
+# one CPU. Builds and runs each program RUNS times. Prints a markdown table
+# for docs/benchmarks.md.
 #   scripts/bench.sh [benchmark...]
 # RUNS (default 5) sets the runs per program, BENCH_CPU (default 2) the CPU,
 # PYTHON (default python3.14) the Python interpreter.
@@ -13,26 +14,27 @@ cpu=${BENCH_CPU:-2}
 python=${PYTHON:-python3.14}
 out=target/bench
 benchmarks=("$@")
-[[ ${#benchmarks[@]} -gt 0 ]] || benchmarks=(fib sieve binary_trees wc)
+[[ ${#benchmarks[@]} -gt 0 ]] || benchmarks=(hello fib sieve binary_trees quicksort)
 
 cargo build --release --quiet -p sisuc -p sisu-runtime
 
 have() { command -v "$1" >/dev/null; }
 
-# Builds benchmark $2 in language $1 into directory $3, timing the build into
-# $3/compile, and prints the command that runs it.
+# Builds benchmark $2 in language $1 into directory $3, writing the build's
+# wall time in seconds, to the millisecond, into $3/compile. Prints the
+# command that runs it.
 build() {
-    local lang=$1 src=bench/$2 dir=$3
-    local t=(/usr/bin/time -f %e -o "$dir/compile")
+    local lang=$1 src=bench/$2 dir=$3 start=$EPOCHREALTIME
     case $lang in
-        sisu) "${t[@]}" target/release/sisuc -O2 "$src/main.sisu" "$dir/main" ;;
-        c) "${t[@]}" clang -O2 -o "$dir/main" "$src/main.c" ;;
-        rust) "${t[@]}" rustc -C opt-level=3 -o "$dir/main" "$src/main.rs" ;;
-        go) "${t[@]}" go build -o "$dir/main" "$src/main.go" ;;
-        java) "${t[@]}" javac -d "$dir" "$src/Main.java" && echo "java -cp $dir Main" && return ;;
+        sisu) target/release/sisuc -O2 "$src/main.sisu" "$dir/main" ;;
+        c) clang -O2 -o "$dir/main" "$src/main.c" ;;
+        rust) rustc -C opt-level=3 -o "$dir/main" "$src/main.rs" ;;
+        go) go build -o "$dir/main" "$src/main.go" ;;
+        java) javac -d "$dir" "$src/Main.java" ;;
         python) echo "$python $src/main.py" && return ;;
     esac
-    echo "$dir/main"
+    awk -v a="$start" -v b="$EPOCHREALTIME" 'BEGIN { printf "%.3f\n", b - a }' >"$dir/compile"
+    if [[ $lang == java ]]; then echo "java -cp $dir Main"; else echo "$dir/main"; fi
 }
 
 # The median of the numbers on standard input.
@@ -50,20 +52,16 @@ echo "Commit $(git rev-parse --short HEAD), $(date -u +%F), $(lscpu | sed -n 's/
 echo "Median of $runs runs on CPU $cpu."
 for bench in "${benchmarks[@]}"; do
     rows=()
-    # A benchmark with an input.awk reads what it writes on standard input.
-    input=/dev/null
-    if [[ -f bench/$bench/input.awk ]]; then
-        input=$out/$bench/input
-        mkdir -p "$out/$bench"
-        [[ $input -nt bench/$bench/input.awk ]] || awk -f "bench/$bench/input.awk" >"$input"
-    fi
     for lang in "${available[@]}"; do
         dir=$out/$bench/$lang
         rm -rf "$dir" && mkdir -p "$dir"
-        cmd=$(build "$lang" "$bench" "$dir")
+        for i in $(seq "$runs"); do
+            cmd=$(build "$lang" "$bench" "$dir")
+            if [[ -f $dir/compile ]]; then mv "$dir/compile" "$dir/compile.$i"; fi
+        done
         for i in $(seq "$runs"); do
             # shellcheck disable=SC2086 # $cmd is a command and its arguments.
-            taskset -c "$cpu" /usr/bin/time -f "%e %U %S %M" -o "$dir/time.$i" $cmd <"$input" >"$dir/stdout"
+            taskset -c "$cpu" /usr/bin/time -f "%e %U %S %M" -o "$dir/time.$i" $cmd >"$dir/stdout"
             if ! cmp -s "$dir/stdout" "$out/$bench/sisu/stdout"; then
                 echo "$bench/$lang printed something other than the Sisu version:" >&2
                 diff "$out/$bench/sisu/stdout" "$dir/stdout" >&2
@@ -79,7 +77,7 @@ for bench in "${benchmarks[@]}"; do
             binary=$(($(stat -c %s "$dir/main.stripped") / 1024))
         fi
         compile=-
-        [[ -f $dir/compile ]] && compile=$(cat "$dir/compile")
+        [[ -f $dir/compile.1 ]] && compile=$(cat "$dir"/compile.* | median)
         cells=("${names[$lang]}" "$wall" "$cpu_s" "$rss" "$binary" "$compile")
         if [[ $lang == sisu ]]; then
             for i in "${!cells[@]}"; do

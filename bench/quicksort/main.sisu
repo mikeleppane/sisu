@@ -1,0 +1,44 @@
+// Sorts 10 000 000 pseudo-random integers with a textbook quicksort.
+fn random_array(n: i64) -> [i64] {
+    let mut xs = [0; n]
+    let mut x = 42
+    for i in 0..n {
+        x = (x * 1103515245 + 12345) % 2147483648
+        xs[i] = x
+    }
+    xs
+}
+
+// Sorts xs[lo] to xs[hi] and returns the array. Each call holds the only
+// reference to the array, so every write is in place (ADR 0007).
+fn quicksort(xs: [i64], lo: i64, hi: i64) -> [i64] {
+    if lo >= hi {
+        return xs
+    }
+    let mut a = xs
+    let pivot = a[hi]
+    let mut i = lo
+    for j in lo..hi {
+        if a[j] < pivot {
+            let t = a[i]
+            a[i] = a[j]
+            a[j] = t
+            i += 1
+        }
+    }
+    a[hi] = a[i]
+    a[i] = pivot
+    a = quicksort(a, lo, i - 1)
+    quicksort(a, i + 1, hi)
+}
+
+fn main() {
+    let n = 10_000_000
+    let xs = quicksort(random_array(n), 0, n - 1)
+    // A checksum that changes if any two elements are out of order.
+    let mut sum = 0
+    for i in 0..n {
+        sum += xs[i] * (i % 100)
+    }
+    print(sum)
+}

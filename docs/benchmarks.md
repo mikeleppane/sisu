@@ -7,10 +7,11 @@ with no per-language tuning.
 
 ## Results
 
-Commit 7c8d29e for binary_trees and 9cbd44e for the others (the change
-between them is the runtime's live count), 2026-10-12, Intel Core i9-14900K,
-Linux 7.0. Each figure is the median of 5 runs, pinned to one CPU. Each table runs from fastest to slowest
-wall time, with Sisu in bold.
+fib and sieve ran at commit 9cbd44e and binary_trees at 7c8d29e (the change
+between them is the runtime's live count), on 2026-10-12. hello and quicksort
+ran at commit 4690caa on 2026-10-15. All ran on an Intel Core i9-14900K under
+Linux 7.0. Each figure is the median of 5 runs, pinned to one CPU. Each table
+runs from fastest to slowest wall time, with Sisu in bold.
 
 ### fib
 
@@ -45,6 +46,28 @@ wall time, with Sisu in bold.
 | Go | 1.33 | 1.32 | 46.3 | 1487 | 0.08 |
 | Python | 19.22 | 19.19 | 107.2 | - | - |
 
+### hello
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C | 0.00 | 0.00 | 1.1 | 14 | 0.053 |
+| Go | 0.00 | 0.00 | 1.9 | 1483 | 0.037 |
+| Python | 0.00 | 0.00 | 10.5 | - | - |
+| Rust | 0.00 | 0.00 | 1.9 | 328 | 0.073 |
+| **Sisu** | **0.00** | **0.00** | **1.4** | **353** | **0.058** |
+| Java | 0.01 | 0.00 | 39.2 | - | 0.196 |
+
+### quicksort
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C | 0.53 | 0.52 | 77.3 | 14 | 0.056 |
+| Rust | 0.55 | 0.54 | 77.8 | 330 | 0.122 |
+| Go | 0.57 | 0.56 | 78.4 | 1487 | 0.027 |
+| Java | 0.65 | 0.63 | 117.6 | - | 0.269 |
+| **Sisu** | **0.68** | **0.68** | **77.6** | **353** | **0.059** |
+| Python | 12.75 | 12.74 | 393.7 | - | - |
+
 Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 1.99.0 with `-C opt-level=3`, Go 1.27.2, OpenJDK 25.0.4.1 (Temurin), Python
 3.14.5.
@@ -56,11 +79,10 @@ Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 | [fib](../bench/fib) | Computes `fib(40)` by naive recursion | Function calls and integer arithmetic |
 | [sieve](../bench/sieve) | Counts the primes up to 50 000 000 with a sieve of Eratosthenes | Array indexing in a tight loop |
 | [binary_trees](../bench/binary_trees) | The [binary-trees](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/binarytrees.html) program of the Benchmarks Game, depth 18 | Allocating and freeing many small objects |
-| [wc](../bench/wc) | Counts the lines and words of 4 000 000 lines (159 MB) on standard input | Reading lines and counting the words in each |
+| [hello](../bench/hello) | Prints `Hello, World!` | The time from source to output: build and startup |
+| [quicksort](../bench/quicksort) | Sorts 10 000 000 pseudo-random integers with a textbook quicksort, then prints a checksum that depends on their order | Element writes, and in Sisu whether an array passed and returned is written in place |
 
-[`input.awk`](../bench/wc/input.awk) writes the input of wc: ASCII words
-separated by spaces and tabs, from a fixed seed, so every run reads the same
-bytes. Benchmarks that need floats come with milestone 6.
+Benchmarks that need floats come with milestone 6.
 
 ## What the numbers mean
 
@@ -70,9 +92,10 @@ bytes. Benchmarks that need floats come with milestone 6.
 - **Binary** is the size of the stripped executable. Java and Python have none:
   they need their runtime installed. A Sisu binary links the runtime
   (`libsisu_runtime.a`, written in Rust) statically, which accounts for most of
-  its 317 KiB.
-- **Build** is the time to compile the one file. Go's 1.88 s for fib is a cold
-  build cache; later Go builds reuse it.
+  its size.
+- **Build** is the wall time to compile the one file and link it. The hello
+  and quicksort tables give the median of 5 builds, to the millisecond. The
+  older tables time one build, so Go's 1.88 s for fib is a cold build cache.
 - Every process runs whole, so startup counts. Java pays for JVM startup and
   JIT warm-up, Python for interpreter startup.
 - `taskset` pins each run to one CPU. Go and the JVM therefore see a single
@@ -120,28 +143,41 @@ the program's IR (`sisuc -O2 --emit ir`) and the result timed.
 What remains is the counting itself: a store when an object is made, and a
 load, subtract and store when it is released. ADR 0005 accepts that cost.
 
-## Where wc spends its time
+## quicksort on an array value
 
-Callgrind counted 0.72 billion instructions for the first 400 000 lines of
-the input, down from 1.71 billion before the changes below. No table above
-times wc yet: rerun `scripts/bench.sh` on an idle machine to add one.
+A Sisu function cannot change its caller's array (ADR 0007), so `quicksort`
+takes the array and returns it, and recurses with
+`a = quicksort(a, lo, i - 1)`. Last use hands the array over, so each call
+holds the only reference and every element write happens in place. Peak
+memory shows it: Sisu holds 77.6 MiB, as C does for its one array of
+10 000 000 `i64`.
 
-- **The words are counted, not built.** Codegen compiles
-  `line.words().len()` to one `sisu_words_count` call, because the
-  `[string]` would be released as soon as its length is read. C, Rust and
-  Java count the same way. Go's `strings.Fields` builds a slice of
-  substrings that share the line's bytes. Python's `split()`, and Sisu when
-  a program keeps the `[string]` in a local, copy each word into a new
-  string.
-- **Finding white space is most of what is left.** The word scanner,
-  `run_end`, takes 48% of the instructions. It tests an ASCII byte directly
-  and decodes only the other characters, to test them against Unicode white
-  space.
-- **The line is still copied and checked.** `read_line` repairs the line's
-  UTF-8 and copies it into a new string. With `malloc` and `free`, that is
-  most of the other half. `sisu_words_count` trusts the string's UTF-8,
-  which ADR 0014 guarantees, and checks it only in a debug build
-  (ADR 0016).
+Sisu takes 1.28 times as long as C. Each element write checks the index
+against the bounds and the array's count against 1, and each addition checks
+for overflow. How much of the gap each check costs is not measured yet.
+
+## Where a hello build spends its time
+
+The Build column of hello is the time from source to a program, and every
+program then starts in under a millisecond. hyperfine timed the steps on
+commit 4690caa, pinned to one CPU, as the mean of 50 runs after 5 warm-up
+runs (`taskset -c 2 hyperfine -N -w 5 -r 50 ...`):
+
+| Command | Mean (ms) |
+| --- | ---: |
+| `sisuc --check main.sisu` | 1.4 |
+| `sisuc -O2 main.sisu main` | 27.6 |
+| `cc main.o libsisu_runtime.a -lm -o main`, the link step alone | 21.9 |
+| `./main` built by `sisuc` | 0.2 |
+| `./main` built by `clang` | 0.2 |
+| `python3.14 main.py` | 5.3 |
+
+- Lexing, parsing and checking take 1.4 ms.
+- The link through `cc`, which `sisuc` runs as its last step, takes about
+  22 of the 28 ms. A faster edit-to-output loop starts there, not in the
+  compiler.
+- `scripts/bench.sh` does not pin or warm up its builds, so its Build column
+  reads higher.
 
 ## Running them
 
@@ -164,9 +200,7 @@ a change to `sisuc` or the runtime should move them.
 To add a benchmark, add a directory under `bench/` with `main.sisu` and, for
 each language, `main.c`, `main.rs`, `main.go`, `Main.java` and `main.py`, all
 printing the same output. Then add its name to the default list in
-`scripts/bench.sh`. A benchmark that reads standard input also gets an
-`input.awk`: the script writes its output to `target/bench/<name>/input` once,
-again only when `input.awk` is newer, and feeds that file to every run.
+`scripts/bench.sh`.
 
 CodSpeed tracks Sisu against itself on every pull request that touches the
 code; see [Coverage and performance](development.md#coverage-and-performance).
