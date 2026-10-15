@@ -188,7 +188,9 @@ These came out of the milestone 2 design and are now part of its spec:
   ([ADR 0018](adr/0018-a-conversion-that-can-fail-returns-an-optional.md)).
 - Methods and constants live on `f64` (`x.sqrt()`, `f64.pi`), not in a `math`
   module. `f64` prints as the shortest text that reads back the same, with
-  `.0` on whole numbers and exponent form at `1e16` and `1e-4`. `libm`'s
+  `.0` on whole numbers. Exponent form starts at `1e16` and below `1e-4`:
+  `1e15` prints `1000000000000000.0`, `1e16` prints `1e16`, `0.0001` prints
+  `0.0001`, and `1e-5` prints `1e-5`. `libm`'s
   results are not correctly rounded, so tests print them through a precision.
 - A bare expression statement whose value nothing uses warns (`W0004`);
   `let _ = e` drops a value on purpose.
@@ -208,7 +210,7 @@ how to avoid it. Each milestone keeps the table current.
 | `+ - *`, unary `-` on `i64` or `u8` | the result overflows | check the range first; checked arithmetic is a gap |
 | `/` and `%` on `i64` or `u8` | the divisor is zero, or `i64` minimum divided by `-1` | check the divisor first |
 | `xs[i]`, `xs[i] = v` | `i` is outside the array | check `0 <= i < xs.len()`; an optional `get(i)` is a gap |
-| `[v; n]` | `n` is negative | check `n` first |
+| `[v; n]` | `n` is negative, or the array would be too large to allocate (`[0; 9223372036854775807]`) | check `n` first, and keep it to a size the program can use |
 | `xs.sum()` on `[i64]` | the sum overflows | gap |
 | `panic(msg)`, `todo` | always | they are the deliberate panics |
 | `print`, `eprint`, `read_line` | the write or read fails | none until `Result` (milestone 12) |
@@ -473,7 +475,7 @@ settle before work starts.
 | --- | --- | --- |
 | Milestone 4: strings | Done | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
 | Milestone 5: standard streams and arguments | 4 | The word-count tool |
-| Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
+| Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof printed text, so it landed after 4 |
 | Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
 | Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), compiler-implemented interfaces (10), the standard library (11) |
 | Milestone 12: `Result` and `?` | 7, 8 | File I/O, the standard library (11), concurrency |
@@ -1042,7 +1044,7 @@ stretch goals" with no date. Each gap gets a milestone once a definition of
 - **Packages.** "Deliberately avoided" defers a registry and lets path and
   Git dependencies come first. A manifest (`sisu.toml`) and dependency
   resolution have no design.
-- **Number types.** Sisu has `i64` and `u8`, and milestone 6 adds a float.
+- **Number types.** Sisu has `i64` and `u8`, and milestone 6 added `f64`.
   The C FFI, binary file formats and hashing need `i32`, `u32`, `u64` and
   `f32`. "Integer widths and wrapping" in "Open decisions" covers only part of
   this.
