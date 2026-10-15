@@ -1,0 +1,8 @@
+error[E0110]: a width is at most 1000
+ --> E0110.sisu:3:14
+  |
+3 |     print("{x:1001}")
+  |              ^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0110

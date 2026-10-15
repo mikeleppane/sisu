@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::diagnostic::Span;
 
-pub(crate) use crate::ast::{CompareOp, UnaryOp};
+pub(crate) use crate::ast::{Align, CompareOp, UnaryOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct LocalId(pub(crate) usize);
@@ -217,6 +217,35 @@ impl Stream {
     }
 }
 
+/// How an interpolation writes its part `part`: padded, and with `precision` decimals for an
+/// `f64`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Format {
+    pub(crate) part: usize,
+    pub(crate) pad: Option<Pad>,
+    pub(crate) precision: Option<u8>,
+}
+
+/// Padding to `width` code points, the text aligned by `align`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Pad {
+    pub(crate) align: Align,
+    pub(crate) width: u16,
+}
+
+/// The format as a spec: `>8.2`.
+impl fmt::Display for Format {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(Pad { align, width }) = self.pad {
+            write!(f, "{}{width}", align.char())?;
+        }
+        if let Some(precision) = self.precision {
+            write!(f, ".{precision}")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum ExprKind {
     Int(i64),
@@ -302,8 +331,11 @@ pub(crate) enum ExprKind {
         rhs: Box<Expr>,
     },
     /// A string literal with interpolations: its text pieces as `Str`, and its expressions, in
-    /// order.
-    Interpolate(Vec<Expr>),
+    /// order, and the format of each part that has a spec, in part order.
+    Interpolate {
+        parts: Vec<Expr>,
+        formats: Vec<Format>,
+    },
     /// `lhs + rhs` on `string`s.
     Concat {
         lhs: Box<Expr>,
@@ -373,7 +405,9 @@ impl Expr {
             ExprKind::Compare { operands, .. }
             | ExprKind::Math { operands, .. }
             | ExprKind::ArrayLit(operands)
-            | ExprKind::Interpolate(operands) => operands.iter().any(Expr::exits),
+            | ExprKind::Interpolate {
+                parts: operands, ..
+            } => operands.iter().any(Expr::exits),
             ExprKind::Field { base: operand, .. }
             | ExprKind::Len(operand)
             | ExprKind::Chars(operand)
@@ -580,7 +614,7 @@ impl Printer<'_> {
             }
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
-            ExprKind::Interpolate(parts) => self.list(f, format_args!("interp"), parts),
+            ExprKind::Interpolate { parts, formats } => self.interpolate(f, parts, formats),
             ExprKind::Concat { lhs, rhs } => self.binary(f, "concat", lhs, rhs),
             ExprKind::Compare { operands, ops } => {
                 // `(< a b <= c)`: the first operator leads, the rest sit between operands.
@@ -719,6 +753,28 @@ impl Printer<'_> {
     ) -> fmt::Result {
         write!(f, "({head}")?;
         self.each(f, exprs)?;
+        f.write_str(")")
+    }
+
+    /// `(interp ...)`, each part with a format as `(fmt <part> "<spec>")`.
+    fn interpolate(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        parts: &[Expr],
+        formats: &[Format],
+    ) -> fmt::Result {
+        f.write_str("(interp")?;
+        for (i, part) in parts.iter().enumerate() {
+            f.write_str(" ")?;
+            match formats.iter().find(|format| format.part == i) {
+                Some(format) => {
+                    f.write_str("(fmt ")?;
+                    self.expr(f, part)?;
+                    write!(f, " \"{format}\")")?;
+                }
+                None => self.expr(f, part)?,
+            }
+        }
         f.write_str(")")
     }
 
@@ -1186,7 +1242,13 @@ mod tests {
             expr(ExprKind::Local(LocalId(0)), Type::String),
             expr(ExprKind::Local(LocalId(1)), Type::I64),
         ];
-        let interp = expr(ExprKind::Interpolate(parts), Type::String);
+        let interp = expr(
+            ExprKind::Interpolate {
+                parts,
+                formats: vec![],
+            },
+            Type::String,
+        );
         let print = print_of(interp);
         let program = Program {
             classes: vec![],
@@ -1201,6 +1263,53 @@ mod tests {
         assert_eq!(
             program.to_string(),
             r#"(fn f ((s#0 string) (n#1 i64)) unit (block (print (interp "a" s#0 n#1))))"#
+        );
+    }
+
+    #[test]
+    fn prints_interpolation_with_formats() {
+        // fn f(n: i64, x: f64) { print("a{n:^4}{x:.3}{n:<10.0}") }, as if the checker allowed
+        // the last precision.
+        let n = || expr(ExprKind::Local(LocalId(0)), Type::I64);
+        let parts = vec![
+            expr(ExprKind::Str("a".into()), Type::String),
+            n(),
+            expr(ExprKind::Local(LocalId(1)), Type::F64),
+            n(),
+        ];
+        let pad = |align, width| Some(Pad { align, width });
+        let formats = vec![
+            Format {
+                part: 1,
+                pad: pad(Align::Center, 4),
+                precision: None,
+            },
+            Format {
+                part: 2,
+                pad: None,
+                precision: Some(3),
+            },
+            Format {
+                part: 3,
+                pad: pad(Align::Left, 10),
+                precision: Some(0),
+            },
+        ];
+        let interp = expr(ExprKind::Interpolate { parts, formats }, Type::String);
+        let print = print_of(interp);
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0), LocalId(1)],
+                ret: Type::Unit,
+                locals: vec![param("n", Type::I64), param("x", Type::F64)],
+                body: block(vec![Stmt::Expr(print)]),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            r#"(fn f ((n#0 i64) (x#1 f64)) unit (block (print (interp "a" (fmt n#0 "^4") (fmt x#1 ".3") (fmt n#0 "<10.0")))))"#
         );
     }
 

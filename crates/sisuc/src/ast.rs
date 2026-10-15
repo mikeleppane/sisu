@@ -201,9 +201,9 @@ pub(crate) enum ExprKind {
     Char(char),
     /// A string literal, or a text piece of an interpolation, decoded.
     Str(String),
-    /// A string literal with interpolations: its text pieces as `Str`, without empty ones, and
-    /// its expressions, in order.
-    Interpolate(Vec<Expr>),
+    /// A string literal with interpolations: its text pieces as `Str` parts, without empty ones,
+    /// and its expressions, in order.
+    Interpolate(Vec<Part>),
     Name(Symbol),
     Call {
         callee: Ident,
@@ -284,6 +284,60 @@ pub(crate) enum ExprKind {
     },
     /// `{ ... }` where an expression belongs: its value is its last expression.
     Block(Block),
+}
+
+/// A part of an interpolation: a text piece, or an expression with the format spec it may have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Part {
+    pub(crate) value: Expr,
+    pub(crate) spec: Option<FormatSpec>,
+}
+
+/// A format spec, `[<^>][width][.precision]`, and its span, from its `:`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FormatSpec {
+    pub(crate) align: Option<Align>,
+    pub(crate) width: Option<u16>,
+    pub(crate) precision: Option<u8>,
+    pub(crate) span: Span,
+}
+
+/// A format spec's alignment: `<`, `>` or `^`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Align {
+    Left,
+    Right,
+    Center,
+}
+
+impl Align {
+    /// The character that writes it.
+    pub(crate) fn char(self) -> char {
+        match self {
+            Align::Left => '<',
+            Align::Right => '>',
+            Align::Center => '^',
+        }
+    }
+}
+
+impl fmt::Display for Part {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(spec) = self.spec else {
+            return self.value.fmt(f);
+        };
+        write!(f, "(fmt {} \"", self.value)?;
+        if let Some(align) = spec.align {
+            write!(f, "{}", align.char())?;
+        }
+        if let Some(width) = spec.width {
+            write!(f, "{width}")?;
+        }
+        if let Some(precision) = spec.precision {
+            write!(f, ".{precision}")?;
+        }
+        f.write_str("\")")
+    }
 }
 
 /// A call argument; the checker decides where a label belongs.

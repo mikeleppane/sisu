@@ -32,6 +32,8 @@ pub(crate) enum TokenKind {
     StrMiddle(String),
     /// The text after the last interpolation, decoded.
     StrTail(String),
+    /// The text of a format spec, after its `:`; the token's span starts at the `:`.
+    FormatSpec(String),
     Fn,
     Let,
     Mut,
@@ -118,6 +120,7 @@ impl TokenKind {
             TokenKind::StrHead(_) => "StrHead",
             TokenKind::StrMiddle(_) => "StrMiddle",
             TokenKind::StrTail(_) => "StrTail",
+            TokenKind::FormatSpec(_) => "FormatSpec",
             TokenKind::Fn => "Fn",
             TokenKind::Let => "Let",
             TokenKind::Mut => "Mut",
@@ -239,7 +242,8 @@ impl TokenKind {
             // A string piece after an interpolation starts at the `}` that ends it.
             TokenKind::RBrace | TokenKind::StrMiddle(_) | TokenKind::StrTail(_) => "}",
             TokenKind::Comma => ",",
-            TokenKind::Colon => ":",
+            // A format spec starts at its `:`.
+            TokenKind::Colon | TokenKind::FormatSpec(_) => ":",
             TokenKind::Arrow => "->",
             TokenKind::Dot => ".",
             TokenKind::DotDot => "..",
@@ -342,6 +346,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed<'_>, Diagnostic> {
                 let Some(kind) = kind else { continue };
                 kind
             }
+            ':' if brackets.at_end() => format_spec(source, start, &mut chars),
             '-' if matches!(chars.peek(), Some(&(_, ' ' | '\t')))
                 && tokens.last().is_some_and(|t| t.kind == TokenKind::Newline) =>
             {
@@ -361,8 +366,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed<'_>, Diagnostic> {
                 }
             }
         };
-        let end = chars.peek().map_or(source.len(), |&(i, _)| i);
-        let span = Span::new(start, end);
+        let span = Span::new(start, chars.peek().map_or(source.len(), |&(i, _)| i));
         if line_start {
             if let Some(d) = check_line_start(source, &tokens, &brackets.open, &kind, span) {
                 // A `{` on its own line lexes as if written on the line above. No other line-start
@@ -809,6 +813,24 @@ pub(crate) fn dump(source: &str, tokens: &[Token]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The format spec after the `:` at `start`, which ends an interpolation's expression: its text
+/// runs up to the `}` that ends the interpolation, a `"` or the line end. A `{` in it opens a pair
+/// whose `}` is part of the text.
+fn format_spec(source: &str, start: usize, chars: &mut Chars) -> TokenKind {
+    let mut open = 0_usize;
+    while let Some((_, c)) =
+        chars.next_if(|&(_, c)| !matches!(c, '"' | '\n') && (c != '}' || open > 0))
+    {
+        match c {
+            '{' => open += 1,
+            '}' => open -= 1,
+            _ => {}
+        }
+    }
+    let end = chars.peek().map_or(source.len(), |&(i, _)| i);
+    TokenKind::FormatSpec(source[start + 1..end].to_string())
 }
 
 /// Consumes chars while `pred` holds and returns the byte offset after the last one.
@@ -1814,6 +1836,81 @@ mod tests {
             ),
         ] {
             assert_eq!(kinds(src), expected, "{src}");
+        }
+    }
+
+    /// A `:` that no bracket inside the interpolation encloses starts a format spec, which runs
+    /// to the `}` that ends the interpolation; a `{` in it opens a pair whose `}` is its text.
+    #[test]
+    fn format_spec_tokens() {
+        use TokenKind::{Colon, Eof, FormatSpec, LParen, RParen, StrHead, StrTail};
+        let empty = String::new;
+        for (src, expected) in [
+            (
+                r#""{x:>8.2}""#,
+                vec![
+                    StrHead(empty()),
+                    ident("x"),
+                    FormatSpec(">8.2".to_string()),
+                    StrTail(empty()),
+                    Eof,
+                ],
+            ),
+            (
+                r#""{x:>{w}}""#,
+                vec![
+                    StrHead(empty()),
+                    ident("x"),
+                    FormatSpec(">{w}".to_string()),
+                    StrTail(empty()),
+                    Eof,
+                ],
+            ),
+            (
+                r#""{f(a: 1)}""#,
+                vec![
+                    StrHead(empty()),
+                    ident("f"),
+                    LParen,
+                    ident("a"),
+                    Colon,
+                    int(1),
+                    RParen,
+                    StrTail(empty()),
+                    Eof,
+                ],
+            ),
+            (
+                r#""{':'}""#,
+                vec![
+                    StrHead(empty()),
+                    TokenKind::Char(':'),
+                    StrTail(empty()),
+                    Eof,
+                ],
+            ),
+        ] {
+            assert_eq!(kinds(src), expected, "{src}");
+        }
+        // The spec's span starts at its `:`.
+        let src = r#""é{x:<3}""#;
+        let spec = &tokens(src)[2];
+        assert_eq!(&src[spec.span.range()], ":<3");
+    }
+
+    /// A spec that a `"` or the line end cuts off leaves the literal unclosed, and that is the
+    /// one error.
+    #[test]
+    fn format_spec_cut_off() {
+        for (src, expected) in [
+            (
+                "let s = \"{x:>8\"\nlet t = 1",
+                (Code::LiteralNotClosed, 1, 15),
+            ),
+            ("let s = \"{x:>8\nlet t = 1", (Code::LiteralNotClosed, 1, 9)),
+            ("let s = \"{x:>8", (Code::LiteralNotClosed, 1, 9)),
+        ] {
+            assert_eq!(found(src), [expected], "{src:?}");
         }
     }
 

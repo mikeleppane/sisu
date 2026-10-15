@@ -1,0 +1,5 @@
+fn main() {
+    let x = 2.5
+    let w = 8
+    print("{x:>{w}}")
+}

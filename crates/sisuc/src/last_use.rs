@@ -120,7 +120,7 @@ impl Walk {
             ExprKind::Call { args, .. }
             | ExprKind::New { args, .. }
             | ExprKind::ArrayLit(args)
-            | ExprKind::Interpolate(args)
+            | ExprKind::Interpolate { parts: args, .. }
             | ExprKind::Math { operands: args, .. } => {
                 for arg in args.iter_mut().rev() {
                     self.expr(arg);
