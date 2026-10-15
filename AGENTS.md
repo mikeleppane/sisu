@@ -36,6 +36,10 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
+### Reviews
+
+To have another model review a spec, a plan or a diff, use the `review-sisu` skill. It holds the review brief, the reviewers to launch, and how to rule on their findings.
+
 ### Docs
 
 Before you open a pull request, run the `update-docs` skill to bring the docs in line with the code. After a merge, run it only when the user asks or the pull request skipped it. Skills live in `.agents/skills/`, where Codex finds them; `.claude/skills/` symlinks each one for Claude Code. An agent without skill support follows `.agents/skills/update-docs/SKILL.md` directly.
