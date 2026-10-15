@@ -42,6 +42,7 @@ codes! {
     UnreachableCode = "W0001",
     NeverReassigned = "W0002",
     TodoLeft = "W0003",
+    UnusedValue = "W0004",
     LeadingBinaryMinus = "E0002",
     UnclosedBracket = "E0003",
     BraceOnNewLine = "E0004",
@@ -552,6 +553,8 @@ pub(crate) enum DiagnosticKind {
         at: Span,
         fix: Option<TypedLiteral>,
     },
+    /// The expression statement at `at`, whose value of type `ty` nothing uses.
+    UnusedValue { ty: String, at: Span },
 }
 
 /// A literal that replaces the conversion `call`, the whole value of a constant: `literal` is
@@ -856,6 +859,7 @@ impl DiagnosticKind {
             DiagnosticKind::TodoLeft { .. } => Code::TodoLeft,
             DiagnosticKind::TodoForm { .. } => Code::TodoForm,
             DiagnosticKind::ConversionInConstant { .. } => Code::ConversionInConstant,
+            DiagnosticKind::UnusedValue { .. } => Code::UnusedValue,
         }
     }
 }
@@ -1856,6 +1860,15 @@ impl From<DiagnosticKind> for Diagnostic {
                     }
                     None => d,
                 }
+            }
+            DiagnosticKind::UnusedValue { ty, at } => {
+                Diagnostic::coded(code, at, format!("unused value of type `{ty}`"))
+                    .with_help("use it, or write `let _ =` to drop it on purpose")
+                    .with_fix(guess(
+                        "drop it on purpose",
+                        Span::new(at.start, at.start),
+                        "let _ = ",
+                    ))
             }
         }
     }

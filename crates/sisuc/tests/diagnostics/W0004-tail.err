@@ -1,0 +1,14 @@
+warning[W0004]: unused value of type `i64`
+ --> W0004-tail.sisu:1:10
+  |
+1 | fn g() { 1 }
+  |          ^
+  |
+  = help: use it, or write `let _ =` to drop it on purpose
+help: drop it on purpose
+  |
+1 | fn g() { let _ = 1 }
+  |          +++++++
+
+sisuc: 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: W0004

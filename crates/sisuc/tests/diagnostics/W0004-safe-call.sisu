@@ -1,0 +1,11 @@
+class Counter {
+    count: i64
+
+    fn next(self) -> i64 { self.count + 1 }
+}
+
+fn main() {
+    let c: Counter? = Counter(count: 1)
+    c?.next()
+    print(1)
+}

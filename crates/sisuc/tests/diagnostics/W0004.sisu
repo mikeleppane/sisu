@@ -1,0 +1,5 @@
+fn main() {
+    let n = 300
+    u8(n)
+    print(n)
+}

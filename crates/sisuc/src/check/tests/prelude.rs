@@ -367,6 +367,10 @@ fn todo_in_parentheses() {
 fn todo_ends_at_the_line() {
     codes(
         &body("", "todo\n    (1)"),
-        &[(Code::TodoLeft, (2, 5)), (Code::UnreachableCode, (3, 5))],
+        &[
+            (Code::TodoLeft, (2, 5)),
+            (Code::UnreachableCode, (3, 5)),
+            (Code::UnusedValue, (3, 5)),
+        ],
     );
 }

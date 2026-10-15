@@ -617,6 +617,9 @@ impl Checker {
             Some(ret) => Some(ret),
         };
         let mut body = self.block(&f.body, expected);
+        if let (Some(Type::Unit), Ok(checked)) = (&ret, &body) {
+            self.discard_tail(&f.body, checked);
+        }
         if let Some(want @ Type::Optional(payload)) = &ret
             && block_type(&body) == Some(&**payload)
         {

@@ -1,0 +1,14 @@
+warning[W0004]: unused value of type `i64?`
+ --> W0004-safe-call.sisu:9:5
+  |
+9 |     c?.next()
+  |     ^^^^^^^^^
+  |
+  = help: use it, or write `let _ =` to drop it on purpose
+help: drop it on purpose
+  |
+9 |     let _ = c?.next()
+  |     +++++++
+
+sisuc: 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: W0004

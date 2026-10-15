@@ -1,0 +1,26 @@
+warning[W0004]: unused value of type `i64`
+ --> W0004-branch.sisu:3:12
+  |
+3 |     if c { 1 } else { 2 }
+  |            ^
+  |
+  = help: use it, or write `let _ =` to drop it on purpose
+help: drop it on purpose
+  |
+3 |     if c { let _ = 1 } else { 2 }
+  |            +++++++
+
+warning[W0004]: unused value of type `i64`
+ --> W0004-branch.sisu:3:23
+  |
+3 |     if c { 1 } else { 2 }
+  |                       ^
+  |
+  = help: use it, or write `let _ =` to drop it on purpose
+help: drop it on purpose
+  |
+3 |     if c { 1 } else { let _ = 2 }
+  |                       +++++++
+
+sisuc: 2 warnings
+sisuc: for more on a code, run `sisuc --explain <code>`: W0004

@@ -112,6 +112,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |
+| [W0004](W0004.md) | warning | unused value |
 
 ## Explanations
 
