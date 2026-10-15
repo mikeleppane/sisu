@@ -73,9 +73,106 @@ fn compound_assign_types_literal() {
 #[test]
 fn conversions() {
     contains(
-        "fn f(b: u8, n: i64) -> i64 { i64(b) + i64(u8(n)) }\nfn main() {}",
-        &["(i64 b#0)", "(i64 (u8 n#1))"],
+        "fn f(b: u8, n: i64) -> i64 { i64(b) + i64(u8(n) ?? 0) }\nfn main() {}",
+        &[
+            "(i64 b#0)",
+            "(i64 (if-some #2 (u8? n#1) (block #2) (block 0u8)))",
+        ],
     );
+}
+
+/// A conversion that can fail is an optional of its target; one that cannot is the target.
+#[test]
+fn conversion_types() {
+    for (conversion, ty) in [
+        ("u8(n)", "u8?"),
+        ("char(n)", "char?"),
+        ("i64(u8(n) ?? 0)", "i64"),
+        ("i64('a')", "i64"),
+    ] {
+        let src = format!("fn main() {{\n    let n = 1\n    let x = {conversion}\n}}");
+        let (program, ds) = checked(&src);
+        assert!(ds.is_empty(), "{src}: {ds:?}");
+        let program = program.expect("no errors");
+        let x = program.functions[0].locals.last().expect("a local");
+        assert_eq!(x.ty.to_string(), ty, "{src}");
+    }
+}
+
+/// The optional a conversion gives is not its payload: the mismatch gets the help, and no fix,
+/// since the default is not known.
+#[test]
+fn failed_conversion_as_value() {
+    for (decl, found) in [("b: u8", "u8(n)"), ("c: char", "char(n)")] {
+        let src = format!("fn main() {{\n    let n = 1\n    let {decl} = {found}\n}}");
+        let col = 12 + decl.len();
+        let d = diagnostic(&src, Code::Mismatch, (3, col, found), &[]);
+        assert!(d.help().is_some(), "{d:?}");
+        assert_eq!(fixes(&src, &d), []);
+    }
+    // Any other optional where its payload is expected has no such help: a name, a call of a
+    // function, and a conversion whose optional is not of the type expected.
+    for (src, found) in [
+        ("fn f(m: u8?) {\n    let b: u8 = m\n}\nfn main() {}", "m"),
+        (
+            "fn g() -> u8? { 1 }\nfn f() {\n    let b: u8 = g()\n}\nfn main() {}",
+            "g()",
+        ),
+        (
+            "fn f(n: i64) {\n    let b: char = u8(n)\n}\nfn main() {}",
+            "u8(n)",
+        ),
+    ] {
+        let ds = diags(src);
+        let [d] = ds.as_slice() else {
+            panic!("{src}: {ds:?}")
+        };
+        assert_eq!(d.code(), Code::Mismatch, "{src}");
+        assert_eq!(&src[d.span().start..d.span().end], found, "{src}");
+        assert!(d.help().is_none(), "{src}");
+    }
+}
+
+/// A literal argument is no special case: the conversion is still an optional.
+#[test]
+fn literal_argument_is_optional() {
+    codes(
+        "fn main() {\n    let b = u8(65)\n    let c: u8 = b\n}",
+        &[(Code::Mismatch, (3, 17))],
+    );
+}
+
+/// `u8(...)` and `char(...)` give an optional, so they are offered only where one fits.
+#[test]
+fn conversion_fix_needs_optional() {
+    let program =
+        |line: &str| format!("fn main() {{\n    let n = 1\n    let k = 'a'\n    {line}\n}}");
+    for (declared, fixed) in [
+        ("let b: u8? = n", Some("let b: u8? = u8(n)")),
+        ("let b: u8 = n", None),
+        ("let c: char? = n", Some("let c: char? = char(n)")),
+        ("let c: char = n", None),
+        // Through `i64`, from a `char`.
+        ("let b: u8? = k", Some("let b: u8? = u8(i64(k))")),
+        ("let b: u8 = k", None),
+    ] {
+        let src = program(declared);
+        let col = declared.len() + 4;
+        let d = diagnostic(&src, Code::Mismatch, (4, col, &declared[col - 5..]), &[]);
+        match fixed {
+            Some(fixed) => {
+                assert!(d.fixes().iter().all(|f| !f.certain()), "{src}");
+                let fixed = program(fixed);
+                assert_eq!(applied(&src, &d), fixed);
+                clean(&fixed);
+            }
+            None => assert_eq!(fixes(&src, &d), [], "{src}"),
+        }
+    }
+    // The right of `??` wants the payload, which a conversion does not give.
+    let src = "fn f(o: u8?, n: i64) {\n    print(o ?? n)\n}\nfn main() {}";
+    let d = diagnostic(src, Code::Mismatch, (2, 16, "n"), &[]);
+    assert_eq!(fixes(src, &d), []);
 }
 
 #[test]
@@ -136,19 +233,6 @@ fn no_mixing() {
     );
 }
 
-#[test]
-fn mismatch_fix_wraps_in_a_conversion() {
-    let src = "fn f(n: i64) {\n    let b: u8 = n\n}\nfn main() {}";
-    let d = diagnostic(src, Code::Mismatch, (2, 17, "n"), &[]);
-    assert_eq!(
-        fixes(src, &d),
-        [(
-            false,
-            vec![(2, 17, "", "u8(".to_owned()), (2, 18, "", ")".to_owned())]
-        )]
-    );
-}
-
 /// Each row: the program, the expression found, and its conversion. The rows cover each
 /// `mismatch` call that can offer one: an expected type, a comparison, `??`, a branch with
 /// none expected, an array element.
@@ -171,7 +255,7 @@ fn mismatch_fix_converts_the_expression_found() {
             "b",
             "i64",
         ),
-        // An optional `u8` wants the conversion to `u8`.
+        // An optional `u8` wants the conversion to `u8`, which gives one.
         (
             "fn f(n: i64) {\n    let b: u8? = n\n}\nfn main() {}",
             "n",
@@ -179,19 +263,19 @@ fn mismatch_fix_converts_the_expression_found() {
         ),
         // A longer expression is wrapped whole.
         (
-            "fn n() -> i64 { 1 }\nfn f(b: u8) {\n    print(b + n())\n}\nfn main() {}",
+            "fn n() -> i64 { 1 }\nfn f() {\n    let b: u8? = n()\n}\nfn main() {}",
             "n()",
             "u8",
         ),
         // Offsets are bytes, and an earlier line holds a multibyte char.
         (
-            "// ä\nfn f(n: i64) {\n    let b: u8 = n\n}\nfn main() {}",
+            "// ä\nfn f(n: i64) {\n    let b: u8? = n\n}\nfn main() {}",
             "n",
             "u8",
         ),
         // A branch with a type expected, a range bound.
         (
-            "fn f(c: bool, x: i64) -> u8 {\n    if c { x } else { 1 }\n}\nfn main() {}",
+            "fn f(c: bool, x: i64) -> u8? {\n    if c { x } else { 1 }\n}\nfn main() {}",
             "x",
             "u8",
         ),
@@ -200,25 +284,19 @@ fn mismatch_fix_converts_the_expression_found() {
             "b",
             "i64",
         ),
-        // No type is expected: the second operand, the right of `??`, the second branch, the
-        // second element.
+        // No type is expected: the second operand, the second branch, the second element.
         (
-            "fn f(b: u8, n: i64) {\n    print(b == n)\n}\nfn main() {}",
+            "fn f(n: i64, b: u8) {\n    print(n == b)\n}\nfn main() {}",
+            "b",
+            "i64",
+        ),
+        (
+            "fn f(c: bool, b: u8?, n: i64) {\n    let x = if c { b } else { n }\n}\nfn main() {}",
             "n",
             "u8",
         ),
         (
-            "fn f(o: u8?, n: i64) {\n    print(o ?? n)\n}\nfn main() {}",
-            "n",
-            "u8",
-        ),
-        (
-            "fn f(c: bool, b: u8, n: i64) {\n    let x = if c { b } else { n }\n}\nfn main() {}",
-            "n",
-            "u8",
-        ),
-        (
-            "fn f(b: u8, n: i64) {\n    let xs = [b, n]\n}\nfn main() {}",
+            "fn f(b: u8?, n: i64) {\n    let xs = [b, n]\n}\nfn main() {}",
             "n",
             "u8",
         ),

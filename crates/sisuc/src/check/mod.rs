@@ -18,7 +18,7 @@ use crate::diagnostic::{
 };
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
-use constant::ConstInfo;
+use constant::{ConstInfo, ConstantSite};
 use prelude::PRELUDE;
 
 /// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
@@ -164,8 +164,9 @@ struct Checker {
     quotes: Vec<usize>,
     /// Where each line break is, in order.
     breaks: Vec<usize>,
-    /// Whether a constant's value is being checked, where interpolation is not known.
-    in_constant: bool,
+    /// The constant whose value is being checked, where interpolation is not known and a
+    /// conversion that can fail is an error.
+    in_constant: Option<ConstantSite>,
     /// Each `+` found to join a `string` under an expected `u8`, which a later check of it
     /// checks with no expected type.
     joins: FxHashSet<Span>,
@@ -190,7 +191,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         comments: program.comments.clone(),
         quotes: program.quotes.clone(),
         breaks: program.breaks.clone(),
-        in_constant: false,
+        in_constant: None,
         joins: FxHashSet::default(),
     };
     checker.collect_names(program);
@@ -616,6 +617,9 @@ impl Checker {
             Some(ret) => Some(ret),
         };
         let mut body = self.block(&f.body, expected);
+        if let (Some(Type::Unit), Ok(checked)) = (&ret, &body) {
+            self.discard_tail(&f.body, checked);
+        }
         if let Some(want @ Type::Optional(payload)) = &ret
             && block_type(&body) == Some(&**payload)
         {
@@ -684,7 +688,8 @@ impl Checker {
 
     /// "expected `want`, found `got`" at `span`, where `source` is the expression found, when
     /// known. Between `u8`, `i64` and `char` it offers to convert `source`, unless that is an
-    /// `if`: an `else if` is one, and `else u8(if ...)` does not parse.
+    /// `if`: an `else if` is one, and `else u8(if ...)` does not parse. A conversion to `u8` or
+    /// `char` gives an optional, so it is offered only where one is expected.
     fn mismatch(
         &self,
         span: Span,
@@ -692,15 +697,18 @@ impl Checker {
         want: &Type,
         got: &Type,
     ) -> Diagnostic {
+        let optional = matches!(want, Type::Optional(_));
         // `u8` and `char` convert into each other through `i64`.
         let (to, through) = match (payload(want), got) {
-            (Type::U8, Type::I64) => (Some("u8"), None),
             (Type::I64, Type::U8 | Type::Char) => (Some("i64"), None),
-            (Type::Char, Type::I64) => (Some("char"), None),
-            (Type::U8, Type::Char) => (Some("u8"), Some("i64")),
-            (Type::Char, Type::U8) => (Some("char"), Some("i64")),
+            (Type::U8, Type::I64) if optional => (Some("u8"), None),
+            (Type::Char, Type::I64) if optional => (Some("char"), None),
+            (Type::U8, Type::Char) if optional => (Some("u8"), Some("i64")),
+            (Type::Char, Type::U8) if optional => (Some("char"), Some("i64")),
             _ => (None, None),
         };
+        let conversion =
+            matches!(got, Type::Optional(p) if **p == *want) && source.is_some_and(can_fail);
         DiagnosticKind::Mismatch {
             want: vec![self.type_name(want)],
             got: self.type_name(got),
@@ -720,9 +728,15 @@ impl Checker {
                         operand: e.span,
                     })
                 }),
+            conversion,
         }
         .into()
     }
+}
+
+/// Whether `e` is a call of a conversion that can fail: `u8(...)` or `char(...)`.
+fn can_fail(e: &ast::Expr) -> bool {
+    matches!(&e.kind, ast::ExprKind::Call { callee, .. } if matches!(callee.name.as_str(), "u8" | "char"))
 }
 
 /// The type a built-in type name names.

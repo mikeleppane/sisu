@@ -16,7 +16,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
 | 4 | Strings | A program reverses and compares strings | Done |
 | 5 | Standard streams and arguments | A word-count tool reads standard input | Done |
-| 6 | Floats | A Mandelbrot set prints as text | Planned |
+| 6 | Floats and conversions: `f64`, conversions that can fail return an optional, an unused-value warning, format specs | A Mandelbrot set prints as text, and a projectile table prints with format specs and a conversion to `i64?`, all clean under Valgrind | Planned |
 
 ### What works today
 
@@ -36,12 +36,14 @@ These are adopted. Together they give Sisu a working imperative core.
 - optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
   `while let`
 - `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
-  conversions `u8(...)` and `i64(...)`
+  conversions `i64(...)` and `u8(n)`, which is a `u8?` that is `None` when
+  `n` does not fit, with no panic
 - arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
   read and written by index, compared with `==`, and walked with `for x in xs`
   or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
 - `char`, one Unicode scalar value such as `'ä'`, compared by code point and
-  converted with `i64(c)` and `char(n)`
+  converted with `i64(c)` and `char(n)`, a `char?` that is `None` for a
+  surrogate or a value above `0x10FFFF`, with no panic
 - `string`: UTF-8 literals with escapes, `+` and `+=`, comparison by bytes,
   `len()` in bytes, and interpolation such as `"n = {n}"`; `+=` on a string
   that nothing else holds appends in place, whether it is a local, a `mut`
@@ -60,6 +62,9 @@ These are adopted. Together they give Sisu a working imperative core.
 - `let _ = e` and `for _ in ...`, which drop a value without a name;
   shadowing in the same scope; `0x`, `0b` and `0o` integer literals; block
   expressions such as `let a = { ... }`; and top-level `const`
+- a warning, `W0004`, for an expression statement whose value nothing uses,
+  such as a bare `u8(n)` or `twice(21)`; `let _ = e` drops the value on
+  purpose
 - error messages in the style of `rustc`, pointing at the code, each with a
   stable code that `sisuc --explain` describes, a JSON form, and fixes where
   the checker can offer one
@@ -158,6 +163,26 @@ These came out of the milestone 2 design and are now part of its spec:
   ([ADR 0016](adr/0016-word-functions-trust-the-utf-8-invariant.md); added
   after milestone 5, for the `wc` benchmark).
 
+### What panics
+
+After milestone 6, these are all the ways a Sisu program panics, each with
+how to avoid it. Each milestone keeps the table current.
+
+| Operation | Panics when | Without the panic |
+| --- | --- | --- |
+| `+ - *`, unary `-` on `i64` or `u8` | the result overflows | check the range first; checked arithmetic is a gap |
+| `/` and `%` on `i64` or `u8` | the divisor is zero, or `i64` minimum divided by `-1` | check the divisor first |
+| `xs[i]`, `xs[i] = v` | `i` is outside the array | check `0 <= i < xs.len()`; an optional `get(i)` is a gap |
+| `[v; n]` | `n` is negative | check `n` first |
+| `xs.sum()` on `[i64]` | the sum overflows | gap |
+| `panic(msg)`, `todo` | always | they are the deliberate panics |
+| `print`, `eprint`, `read_line` | the write or read fails | none until `Result` (milestone 12) |
+| Conversions | never | they return an optional |
+| `f64` arithmetic, methods, comparisons | never | IEEE 754 ([ADR 0017](adr/0017-floats-follow-ieee-754.md)) |
+| `x.clamp`, `x.min`, `x.max` | never | |
+
+Out-of-memory aborts and stack overflow are not panics.
+
 ## Beyond milestone 6
 
 Status: proposal, 2026-10-09, revised 2026-10-11 after a review of the
@@ -241,8 +266,7 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 | 4 | Integer literals in hexadecimal, binary and octal: `0xFF`, `0b1010`, `0o17`, with digit separators | Bytes and bit masks, which `u8` brings in milestone 3, read as what they are |
 | 4 | A block as an expression: `let x = {`, then statements on their own lines, then `}`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
 | 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. Landed in milestone 5, stage 1. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
-| 6 | Float literals in scientific notation: `3.0e-4` | Physics and graphics constants read as written |
-| 6 | Tests in the source file: `test "add handles negatives" { assert(add(-1, 1) == 0) }`, with a built-in `assert`. A normal build drops `test` blocks; `sisuc --test`, later `sisu test`, builds a `main` that runs each one and reports which panicked. A test is in the same module, so it sees private names. A panic ends the whole process (`sisu_panic`), so the spec decides how the other tests still run: one child process per test, or stopping at the first failure. | Tests sit next to the code, as in Rust and Zig, with no test module or attribute. It needs only milestone 5's `panic`, and the compiler's own `tests/run` cases can use it |
+| 6 | Float literals in scientific notation: `3.0e-4`. Lands in milestone 6. | Physics and graphics constants read as written |
 
 ### Portability rules
 
@@ -414,7 +438,7 @@ settle before work starts.
 | --- | --- | --- |
 | Milestone 4: strings | Done | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
 | Milestone 5: standard streams and arguments | 4 | The word-count tool |
-| Milestone 6: floats | Decision: floats | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
+| Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
 | Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
 | Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), compiler-implemented interfaces (10), the standard library (11) |
 | Milestone 12: `Result` and `?` | 7, 8 | File I/O, the standard library (11), concurrency |
@@ -451,6 +475,15 @@ the decisions it needs are settled:
   reserved keywords, `const`, `_`, hexadecimal literals, block expressions
   and `todo`. All but `todo` landed in milestone 4, stage 1; `todo` landed
   with `panic("msg")` in milestone 5, stage 1, so `test` blocks can panic.
+  Scheduled right after milestone 6: tests in the source file,
+  `test "add handles negatives" { assert(add(-1, 1) == 0) }`, with a built-in
+  `assert`. A normal build drops `test` blocks; `sisuc --test`, later
+  `sisu test`, builds a `main` that runs each one and reports which panicked.
+  A test is in the same module, so it sees private names. A panic ends the
+  whole process (`sisu_panic`), so the spec decides how the other tests still
+  run: one child process per test, or stopping at the first failure. Tests
+  sit next to the code, as in Rust and Zig, with no test module or attribute,
+  and the compiler's own `tests/run` cases can use `assert`.
 - **Tooling**: everything under "Early tooling", and from "Later and stretch
   goals" parser error recovery, the lints whose features exist, linking with
   `lld`, and debug info.
@@ -1008,18 +1041,6 @@ standard library. The milestones after 12 then follow from it.
 - **Small-string optimisation.** Store short strings inside the variable's
   slot, as Swift and C++ do. Programs cannot observe it. Decide when a
   benchmark asks for it.
-- **Floats.** Decide before milestone 6:
-  - Literals. The number scanner reads only digits and separators today.
-    With floats, `0..n` must still be a range and `1.0` a float. Tuples
-    (milestone 10) read elements with `.0`, so `t.0.1` must read as two
-    element reads, not as the float `0.1`: Rust's lexer has to handle the
-    same case.
-  - What NaN, infinity and a division by zero do, checked against ADR 0003
-    and ADR 0006: a silent NaN is a wrong answer that does not stop the
-    program.
-  - Conversions. They follow `i64(x)`, `u8(x)` and `char(x)`, which exist today. A float
-    converted to an integer that cannot hold it panics or is rejected, never
-    wraps.
 - **Values with fields.** Agreed 2026-10-14; the spec of milestone 7 or of
   records (milestone 10), whichever starts first, confirms it, because both
   build on it:
@@ -1104,8 +1125,9 @@ standard library. The milestones after 12 then follow from it.
     do. Code after the catch can see class objects left half changed, and
     it is a second way to handle errors beside `Result`.
 
-  Milestone 6's `test` blocks do not wait for this: running each test in a
-  child process isolates its panic with no runtime support.
+  The `test` blocks scheduled right after milestone 6 do not wait for this:
+  running each test in a child process isolates its panic with no runtime
+  support.
 - **Nested optionals.** Decide before milestone 8. Milestone 2 rejects
   `T??` and treats an optional of an optional as the same optional. The
   library `Option<Option<T>>` nests: a `Map<K, V?>` lookup returns one. Decide
@@ -1124,9 +1146,10 @@ standard library. The milestones after 12 then follow from it.
     `Hash` or `Ord`, and only values (numbers, `bool`, strings, enums,
     records and tuples) do. A value that holds a class reference needs the
     same rule.
-  - Floats: NaN is not equal to itself, and `-0.0 == 0.0`. Decide whether
-    `f64` implements `Ord` and `Hash`, or a total order is used, before
-    "built-in types implement both" is promised.
+  - Floats: [ADR 0017](adr/0017-floats-follow-ieee-754.md) settles equality:
+    NaN is not equal to itself, and `-0.0 == 0.0`. `Ord` and `Hash` stay
+    open: decide whether `f64` implements them, or a total order is used,
+    before "built-in types implement both" is promised.
   - Function values: whether they have `==` and `print`, and so what a
     record or class that holds one gets.
 - **Integer widths and wrapping.** Decide before milestone 8. Sisu has

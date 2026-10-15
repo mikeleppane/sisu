@@ -1,0 +1,37 @@
+# Floats follow IEEE 754
+
+Status: accepted, 2026-10-15. Integers panic ([ADR 0003](0003-arithmetic-panics.md));
+`f64` does not. It replaces the roadmap's line that a silent NaN is a wrong
+answer.
+
+`f64` arithmetic, methods and comparisons never panic. Division by zero gives
+infinity or NaN, `sqrt(-1.0)` gives NaN, and an operation that overflows gives
+infinity, as IEEE 754 says. A program that wants a stop checks the value
+itself.
+
+Two rules follow from IEEE 754 and are worth stating.
+
+- **`min`, `max` and `clamp` order `-0.0` below `0.0`.** They follow IEEE
+  754-2019 `minimumNumber` and `maximumNumber`, so `(-0.0).max(0.0)` is `0.0`
+  and `(0.0).min(-0.0)` is `-0.0`. `==` still says `-0.0 == 0.0`.
+- **`==` on a composite holding an `f64` has no same-object shortcut.** It
+  compares every element. An array or class that holds NaN is therefore not
+  equal to itself, even when both sides are the same object.
+
+## Considered options
+
+- **Panic on NaN and on division by zero (Python's `ZeroDivisionError`)**:
+  a wrong answer would stop the program. But a check after every operation
+  costs time and blocks vectorisation, and numeric code everywhere expects
+  IEEE results.
+- **IEEE 754 (Rust, Swift, C)**: the same results on every machine, no check
+  per operation, and what a numeric programmer already knows.
+
+## Consequences
+
+- `f64.nan != f64.nan`. An array or class holding NaN is unequal to itself,
+  and `contains(f64.nan)` is false.
+- Milestone 8 cannot give `f64` a total `Ord` or `Hash` without a rule of its
+  own for NaN and `-0.0`.
+- A NaN can travel a long way before it shows up as a wrong answer. Printing
+  it as `nan` is what makes it visible.

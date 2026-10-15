@@ -1,0 +1,5 @@
+const B = u8(300)
+
+fn main() {
+    print(B)
+}

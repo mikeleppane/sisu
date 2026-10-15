@@ -8,11 +8,11 @@ fn main() {
     print(a > b)              // true
     print(half(a) % 7)        // 2
     print(i64(a) * 2)         // 400
-    print(u8(65) - 1)         // 64
+    print((u8(65) ?? 0) - 1)  // 64
     print(maybe(true) == 7)   // true
     print(maybe(false) == None) // true
     let mut c: u8 = 0
     c += 250
     print(c)                  // 250
-    print(u8(255))            // 255
+    print(u8(255) ?? 0)       // 255
 }

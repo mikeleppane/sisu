@@ -1,5 +1,5 @@
 fn main() {
     let b: u8 = 65
-    let c: char = b
-    print(c)
+    let c: char? = b
+    print(c ?? 'a')
 }

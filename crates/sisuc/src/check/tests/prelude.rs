@@ -45,9 +45,9 @@ fn panic_message_must_be_string() {
         ("panic(1)", (2, 11, "1"), Some("panic(\"{1}\")")),
         ("panic(true)", (2, 11, "true"), Some("panic(\"{true}\")")),
         (
-            "let b = u8(1)\n    panic(b)",
+            "let b: u8 = 1\n    panic(b)",
             (3, 11, "b"),
-            Some("let b = u8(1)\n    panic(\"{b}\")"),
+            Some("let b: u8 = 1\n    panic(\"{b}\")"),
         ),
         (
             "let c = 'a'\n    panic(c)",
@@ -367,6 +367,10 @@ fn todo_in_parentheses() {
 fn todo_ends_at_the_line() {
     codes(
         &body("", "todo\n    (1)"),
-        &[(Code::TodoLeft, (2, 5)), (Code::UnreachableCode, (3, 5))],
+        &[
+            (Code::TodoLeft, (2, 5)),
+            (Code::UnreachableCode, (3, 5)),
+            (Code::UnusedValue, (3, 5)),
+        ],
     );
 }

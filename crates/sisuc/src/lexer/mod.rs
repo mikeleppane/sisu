@@ -1328,7 +1328,7 @@ mod tests {
         let d = only(literal);
         assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
         for (sign, parses) in [("", false), ("-", true)] {
-            let src = format!("fn main() {{ {sign}{literal} }}");
+            let src = format!("fn main() {{ let _ = {sign}{literal} }}");
             let fixed = apply_fix(&src, &only(&src));
             let clean = front_end(&fixed).1.is_empty();
             assert_eq!(clean, parses, "{fixed}");

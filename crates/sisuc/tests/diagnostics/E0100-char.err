@@ -1,0 +1,15 @@
+error[E0100]: a constant cannot use a conversion that can fail
+ --> E0100-char.sisu:1:11
+  |
+1 | const C = char(65)
+  |           ^^^^^^^^ `char(...)` gives a `char?`
+  |
+  = help: write the literal with its type: `const B: u8 = 200`
+help: write the literal with its type
+  |
+1 - const C = char(65)
+1 + const C: char = 'A'
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0100

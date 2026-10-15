@@ -41,7 +41,6 @@ fn folds() {
         ("const A = false && 1 / 0 == 1", "false"),
         ("const A = true || 1 / 0 == 1", "true"),
         ("const A = 2 < 1 < 9223372036854775807 + 1", "false"),
-        ("const B = 255\nconst A = u8(B)", "255u8"),
         ("const M: u8 = 7\nconst A = i64(M) - 8", "-1"),
         ("const A = -9223372036854775807 - 1", "-9223372036854775808"),
         ("const A: u8 = 255", "255u8"),
@@ -188,8 +187,6 @@ fn fold_errors() {
             "const A = 1 < 2 && 1 / 0 == 1",
             &[(Code::ConstantPanics, (1, 20))],
         ),
-        ("const A = u8(300)", &[(Code::ConstantPanics, (1, 11))]),
-        ("const A = u8(-1)", &[(Code::ConstantPanics, (1, 11))]),
         // Run time evaluates the left operand first, so its panic is the one reported.
         (
             "const A = (1 / 0) + (9223372036854775807 + 1)",
@@ -217,7 +214,7 @@ fn fold_errors() {
     }
 }
 
-/// A `char` constant folds, compares by code point and converts as run time does.
+/// A `char` constant folds and compares by code point as run time does.
 #[test]
 fn const_char() {
     // Each initializer folds on its own, and the prints show them in order: a comparison in
@@ -230,11 +227,11 @@ fn const_char() {
         ("OTHER", "C == 'a'", "false"),
         ("DIFFERS", "C != 'a'", "true"),
         ("EQUAL", "C != 'ä'", "false"),
-        ("BELOW", "char(55295) < char(57344)", "true"),
-        ("ABOVE", "char(57344) < char(55295)", "false"),
-        ("TOP", "char(0x10FFFF) >= char(57344)", "true"),
+        ("BELOW", "'\\u{D7FF}' < '\\u{E000}'", "true"),
+        ("ABOVE", "'\\u{E000}' < '\\u{D7FF}'", "false"),
+        ("TOP", "'\\u{10FFFF}' >= '\\u{E000}'", "true"),
         ("CHAIN", "'a' < 'b' <= 'b'", "true"),
-        ("NEXT", "char(i64(C) + 1)", "'å'"),
+        ("NEXT", "i64(C) + 1", "229"),
         ("N", "'x'", "'x'"),
         ("CODE", "i64(C)", "228"),
     ];
@@ -255,27 +252,11 @@ fn const_char() {
         &format!("{decls}fn main() {{\n{prints}}}"),
         &[&format!("(block {})", folded.join(" "))],
     );
-    // No arithmetic, even in a constant: the guess wraps the constant as it does a local.
-    let src = with_main("const C = 'ä'\nconst D = C + 1");
-    let d = diagnostic(&src, Code::ArithmeticOnChar, (2, 13, "+"), &[]);
-    assert_eq!(
-        applied(&src, &d),
-        with_main("const C = 'ä'\nconst D = char(i64(C) + 1)")
+    // No arithmetic, even in a constant.
+    codes(
+        &with_main("const C = 'ä'\nconst D = C + 1"),
+        &[(Code::ArithmeticOnChar, (2, 13))],
     );
-    // A scalar value converts; the surrogates and everything above `10FFFF` panic as run time does.
-    for value in ["0xD800", "0xDFFF", "0x110000", "-1"] {
-        let src = with_main(&format!("const F = char({value})"));
-        let d = diagnostic(
-            &src,
-            Code::ConstantPanics,
-            (1, 11, &format!("char({value})")),
-            &[],
-        );
-        assert_eq!(fixes(&src, &d), []);
-    }
-    clean(&with_main(
-        "const N: char = 'x'\nconst F = char(0xD7FF)\nconst G = char(0xE000)\nconst H = char(0x10FFFF)",
-    ));
 }
 
 /// A `string` constant folds `+` and chains as run time does, and each use is its literal.
@@ -384,20 +365,14 @@ fn const_diagnostics() {
         (1, 15, "250 + 10"),
         &[],
     );
-    diagnostic(
-        "const A = u8(300)\nfn main() {}",
-        Code::ConstantPanics,
-        (1, 11, "u8(300)"),
-        &[],
-    );
 }
 
 /// E0032's guess wraps the constant in the conversion, as it does a local.
 #[test]
 fn mismatch_guess_wraps_the_constant() {
     for (src, wrapped) in [
-        ("const I = 1\nconst A: u8 = I\nfn main() {}", "u8(I)"),
         ("const A: u8 = 1\nfn main() { let b: i64 = A }", "i64(A)"),
+        ("const A = 1\nfn main() { let b: u8? = A }", "u8(A)"),
     ] {
         let ds = diags(src);
         let [d] = ds.as_slice() else {
@@ -406,6 +381,95 @@ fn mismatch_guess_wraps_the_constant() {
         assert_eq!(d.code(), Code::Mismatch);
         assert!(applied(src, d).contains(wrapped), "{src}");
         assert!(d.fixes().iter().all(|f| !f.certain()), "{src}");
+    }
+}
+
+/// A conversion that can fail is an error in a constant, at the call, and nothing else is: the
+/// call is typed as its payload. The certain fix writes the literal, when the call is the whole
+/// value and the argument converts to a value the literal can show without an escape.
+#[test]
+fn conversion_in_constant() {
+    // The source, the codes it reports, and the program the fix gives, if there is one.
+    type Case<'a> = (&'a str, &'a [(Code, (usize, usize))], Option<&'a str>);
+    let error = |col| (Code::ConversionInConstant, (1, col));
+    let rows: [Case<'_>; 19] = [
+        ("const B = u8(200)", &[error(11)], Some("const B: u8 = 200")),
+        (
+            "const C = char(65)",
+            &[error(11)],
+            Some("const C: char = 'A'"),
+        ),
+        (
+            "const B: u8 = u8(200)",
+            &[error(15)],
+            Some("const B: u8 = 200"),
+        ),
+        // `'` and `\` need an escape, and a value that is not ASCII graphic is not offered.
+        ("const C = char(39)", &[error(11)], None),
+        ("const C = char(92)", &[error(11)], None),
+        ("const C = char(32)", &[error(11)], None),
+        ("const C = char(0xD7FF)", &[error(11)], None),
+        // A value that does not convert.
+        ("const B = u8(300)", &[error(11)], None),
+        // An argument that does not fold, or has its own error, gives no fix.
+        ("const B = u8(1 / 0)", &[error(11)], None),
+        (
+            "const B = u8(1 + true)",
+            &[error(11), (Code::Mismatch, (1, 18))],
+            None,
+        ),
+        ("const B = u8(-1)", &[error(11)], None),
+        ("const C = char(0xD800)", &[error(11)], None),
+        ("const C = char(0x110000)", &[error(11)], None),
+        // A declared type other than the target, or a call that is not the whole value.
+        (
+            "const C: char = u8(200)",
+            &[error(17), (Code::Mismatch, (1, 17))],
+            None,
+        ),
+        ("const B = u8(200) + 1", &[error(11)], None),
+        // Each call is reported, even where run time would not reach it.
+        (
+            "const B = false && u8(1) == u8(2)",
+            &[error(20), error(29)],
+            None,
+        ),
+        // A use of the constant says nothing more.
+        (
+            "const B = u8(200)\nfn main() { let x: u8 = B }",
+            &[error(11)],
+            Some("const B: u8 = 200\nfn main() { let x: u8 = B }"),
+        ),
+        // A conversion that cannot fail is allowed, and its own errors stay.
+        (
+            "const N = i64(2)",
+            &[(Code::AlreadyConverted, (1, 15))],
+            None,
+        ),
+        (
+            "const M: u8 = 200\nconst N = i64(M + M)",
+            &[(Code::ConstantPanics, (2, 15))],
+            None,
+        ),
+    ];
+    for (src, expected, fixed) in rows {
+        let src = with_main(src);
+        codes(&src, expected);
+        let ds = diags(&src);
+        match fixed {
+            Some(fixed) => {
+                let fixed = with_main(fixed);
+                assert!(ds[0].fixes().iter().all(Fix::certain), "{src}");
+                assert_eq!(applied(&src, &ds[0]), fixed);
+                clean(&fixed);
+            }
+            None => assert!(
+                ds.iter()
+                    .filter(|d| d.code() == Code::ConversionInConstant)
+                    .all(|d| d.fixes().is_empty()),
+                "{src}"
+            ),
+        }
     }
 }
 

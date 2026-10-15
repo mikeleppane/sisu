@@ -137,7 +137,7 @@ fn reassign_field() {
 // The field is retained before the call's result is released.
 fn field_of_call() {
     let n = make().next
-    make().next
+    let _ = make().next
 }
 
 fn assign_through_call() {

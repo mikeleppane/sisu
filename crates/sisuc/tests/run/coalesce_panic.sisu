@@ -2,7 +2,7 @@
 // pointer. The payload is there, so neither panic runs, and Valgrind checks the string's release.
 // `unreached` is compiled but never called: a right side whose branches both return.
 fn unreached(x: i64?, c: bool) {
-    x ?? if c { return } else { return }
+    let _ = x ?? if c { return } else { return }
 }
 
 fn main() {

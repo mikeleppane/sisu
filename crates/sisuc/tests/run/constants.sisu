@@ -5,10 +5,9 @@ const R = -7 % 2
 const M: u8 = 0xF0
 const SUM = M + 15
 const CHAIN = 1 < L < AREA
-const B = 255
-const BYTE = u8(B)
+const BYTE: u8 = 255
 const C = 'a'
-const NEXT = char(i64(C) + 1)
+const NEXT = i64(C) + 1
 const GREETING = "hel" + "lo" // spellchecker:disable-line
 
 fn main() {
@@ -28,10 +27,10 @@ fn main() {
     print(1 < l < area) // true
     let b = 255
     print(BYTE) // 255
-    print(u8(b)) // 255
+    print(u8(b) ?? 0) // 255
     let c = 'a'
-    print(NEXT) // b
-    print(char(i64(c) + 1)) // b
+    print(NEXT) // 98
+    print(i64(c) + 1) // 98
     print(GREETING) // hello
     let hel = "hel" // spellchecker:disable-line
     print(hel + "lo") // hello, built at run time // spellchecker:disable-line

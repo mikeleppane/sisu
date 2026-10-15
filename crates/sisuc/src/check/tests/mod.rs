@@ -14,6 +14,7 @@ mod prelude;
 mod shadowing;
 mod strings;
 mod u8;
+mod unused;
 
 fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
     check(&parse_ok(src))
@@ -297,7 +298,7 @@ fn unknown_let_type_poisons() {
 #[test]
 fn unknown_param_type_still_checks_body() {
     codes(
-        "fn f(a: str) -> i64 { true }\nfn main() { f(1) }",
+        "fn f(a: str) -> i64 { true }\nfn main() { let _ = f(1) }",
         &[(Code::UnknownType, (1, 9)), (Code::Mismatch, (1, 23))],
     );
 }

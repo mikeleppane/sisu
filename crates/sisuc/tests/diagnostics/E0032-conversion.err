@@ -1,0 +1,10 @@
+error[E0032]: expected `u8`, found `u8?`
+ --> E0032-conversion.sisu:3:17
+  |
+3 |     let b: u8 = u8(n)
+  |                 ^^^^^
+  |
+  = help: a conversion that can fail gives an optional: give a default with `??`, or unwrap it with `if let`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

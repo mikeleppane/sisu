@@ -852,7 +852,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
             ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
             ExprKind::Block(block) => return self.block(block, None),
-            ExprKind::Convert(_) => self.convert(e),
+            ExprKind::Convert(_) => return Some(self.convert(e)),
             ExprKind::None | ExprKind::Wrap(_) | ExprKind::IfSome { .. } => {
                 return self.optional(e);
             }
@@ -881,6 +881,28 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
+    /// The scalar optional `ty` as its `{ i1, T }` pair: the flag `some`, and `value`.
+    fn pair(
+        &self,
+        ty: &Type,
+        some: IntValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let pair = self
+            .llvm_type(ty)
+            .expect("the checker should type a scalar optional, which has an LLVM type")
+            .into_struct_type();
+        let pair = self
+            .builder
+            .build_insert_value(pair.const_zero(), some, 0, "some")
+            .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
+        let pair = self
+            .builder
+            .build_insert_value(pair, value, 1, "wrap")
+            .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
+        pair.as_basic_value_enum()
+    }
+
     /// `None`, `Wrap` and `IfSome`: a class optional is a pointer, a scalar one a `{ i1, T }`.
     fn optional(&mut self, e: &Expr) -> Option<BasicValueEnum<'ctx>> {
         match &e.kind {
@@ -896,20 +918,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 if e.ty.is_counted() {
                     return Some(value);
                 }
-                let pair = self
-                    .llvm_type(&e.ty)
-                    .expect("the checker should type `Wrap` as an optional, which has an LLVM type")
-                    .into_struct_type();
                 let some = self.context.bool_type().const_int(1, false);
-                let pair = self
-                    .builder
-                    .build_insert_value(pair.const_zero(), some, 0, "some")
-                    .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
-                let pair = self
-                    .builder
-                    .build_insert_value(pair, value, 1, "wrap")
-                    .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
-                Some(pair.as_basic_value_enum())
+                Some(self.pair(&e.ty, some, value))
             }
             ExprKind::IfSome {
                 bind,

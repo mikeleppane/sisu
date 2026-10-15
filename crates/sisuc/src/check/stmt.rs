@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 use super::array::optional_array;
 use super::expr::local;
 use super::{
-    Binding, BindingKind, CheckedBlock, Checker, LoopContext, Poisoned, block_expr, type_of,
+    Binding, BindingKind, CheckedBlock, Checker, LoopContext, Poisoned, block_expr, tail, type_of,
 };
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
@@ -39,6 +39,11 @@ impl Checker {
             self.invalid_jump |= outer_jump;
             let stmt_ty = match checked {
                 Ok(lowered) => {
+                    if !last
+                        && let (StmtKind::Expr(source), tir::Stmt::Expr(e)) = (&stmt.kind, &lowered)
+                    {
+                        self.discard(source, e);
+                    }
                     // `let _ = e` lowers to an expression, but a `let` has no value.
                     let ty = if matches!(stmt.kind, StmtKind::Let { .. }) {
                         Type::Unit
@@ -87,6 +92,74 @@ impl Checker {
         Ok(tir::Block { stmts, value, ty })
     }
 
+    /// Warns "unused value" at `source`, whose checked form is `checked`, unless its type is
+    /// `unit` or `never`. An `if`, an `if let` or a block is not itself the value: the tail of
+    /// each branch is.
+    pub(super) fn discard(&mut self, source: &ast::Expr, checked: &tir::Expr) {
+        // An optional join wraps a whole branch value, an inner `if` too.
+        let checked = match &checked.kind {
+            ExprKind::Wrap(inner) => inner,
+            _ => checked,
+        };
+        match (&source.kind, &checked.kind) {
+            (
+                ast::ExprKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                },
+                ExprKind::If {
+                    then_block: then_checked,
+                    else_block: else_checked,
+                    ..
+                },
+            )
+            | (
+                ast::ExprKind::IfLet {
+                    then_block,
+                    else_block,
+                    ..
+                },
+                ExprKind::IfSome {
+                    then_block: then_checked,
+                    else_block: else_checked,
+                    ..
+                },
+            ) => {
+                self.discard_tail(then_block, then_checked);
+                if let (Some(source), Some(checked)) = (else_block, else_checked) {
+                    self.discard_tail(source, checked);
+                }
+            }
+            (ast::ExprKind::Block(source), ExprKind::Block(checked)) => {
+                self.discard_tail(source, checked);
+            }
+            _ => {
+                debug_assert!(
+                    !matches!(
+                        source.kind,
+                        ast::ExprKind::If { .. } | ast::ExprKind::IfLet { .. }
+                    ),
+                    "the checker should lower an `if` to `If` and an `if let` to `IfSome`"
+                );
+                if !matches!(checked.ty, Type::Unit | Type::Never) {
+                    let ty = self.type_name(&checked.ty);
+                    self.report(DiagnosticKind::UnusedValue {
+                        ty,
+                        at: source.span,
+                    });
+                }
+            }
+        }
+    }
+
+    /// `discard` of the value of `block`, whose checked form is `checked`, if it has one.
+    pub(super) fn discard_tail(&mut self, block: &ast::Block, checked: &tir::Block) {
+        if let (Some(source), Some(value)) = (tail(block), &checked.value) {
+            self.discard(source, value);
+        }
+    }
+
     /// The statement, or its type when it failed. `expected` is for an expression statement.
     fn stmt(&mut self, stmt: &ast::Stmt, expected: Option<&Type>) -> Result<tir::Stmt, Poisoned> {
         let unit = || Poisoned::typed(Type::Unit);
@@ -127,8 +200,11 @@ impl Checker {
             StmtKind::While { cond, body } => {
                 let header = LoopContext::Header(keyword_span(stmt.span, "while"));
                 let cond = self.in_loop(header, |c| c.expect(cond, Some(&Type::Bool)));
-                let body = self.in_loop(LoopContext::Body, |c| c.block(body, None));
-                let (Ok(cond), Ok(body)) = (cond, body) else {
+                let checked = self.in_loop(LoopContext::Body, |c| c.block(body, None));
+                if let Ok(checked) = &checked {
+                    self.discard_tail(body, checked);
+                }
+                let (Ok(cond), Ok(body)) = (cond, checked) else {
                     return Err(unit());
                 };
                 Ok(tir::Stmt::Expr(lower_loop(
@@ -145,10 +221,13 @@ impl Checker {
                 let header = LoopContext::Header(keyword_span(stmt.span, "while"));
                 let (scrutinee, bound, _) =
                     self.in_loop(header, |c| c.unwrapped(Unwrap::WhileLet, value));
-                let (bind, body) = self.in_loop(LoopContext::Body, |c| {
+                let (bind, checked) = self.in_loop(LoopContext::Body, |c| {
                     c.unwrapping_block("while let", name, bound, body, None)
                 });
-                let (Ok(scrutinee), Ok(body)) = (scrutinee, body) else {
+                if let Ok(checked) = &checked {
+                    self.discard_tail(body, checked);
+                }
+                let (Ok(scrutinee), Ok(body)) = (scrutinee, checked) else {
                     return Err(unit());
                 };
                 Ok(tir::Stmt::Expr(lower_loop(
@@ -193,10 +272,13 @@ impl Checker {
             ast::ForSource::Array(e) => c.for_array(span, e),
             ast::ForSource::Range { start, end } => c.for_range(span, start, end),
         });
-        let (x, body) = self.in_loop(LoopContext::Body, |c| {
+        let (x, checked) = self.in_loop(LoopContext::Body, |c| {
             c.unwrapping_block("for", name, bound, body, None)
         });
-        let (Some(header), Ok(body)) = (header, body) else {
+        if let Ok(checked) = &checked {
+            self.discard_tail(body, checked);
+        }
+        let (Some(header), Ok(body)) = (header, checked) else {
             return Err(Poisoned::typed(Type::Unit));
         };
         // The body keeps its own type, so codegen releases a counted tail value.

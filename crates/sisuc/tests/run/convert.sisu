@@ -1,0 +1,36 @@
+// A conversion that can fail gives an optional: `None` outside the target type, and no panic.
+// Each boundary is converted on both sides.
+fn show_u8(b: u8?) {
+    if let v = b {
+        print(i64(v)) // the value
+    } else {
+        print("none") // none
+    }
+}
+
+fn show_char(c: char?) {
+    if let v = c {
+        print(v) // the character
+    } else {
+        print("none") // none
+    }
+}
+
+fn main() {
+    show_u8(u8(0))            // 0
+    show_u8(u8(255))          // 255
+    show_u8(u8(256))          // none
+    show_u8(u8(-1))           // none
+    show_char(char(0xD7FF))   // U+D7FF, the last scalar value below the surrogates
+    show_char(char(0xD800))   // none: the first surrogate
+    show_char(char(0xDFFF))   // none: the last surrogate
+    show_char(char(0xE000))   // U+E000, the first scalar value above them
+    show_char(char(0x10FFFF)) // U+10FFFF, the last scalar value
+    show_char(char(0x110000)) // none
+    show_char(char(-1))       // none
+    let c = '7'
+    let d = u8(i64(c) - 48) ?? panic("not a digit")
+    print(i64(d))             // 7
+    let n = 300
+    print(i64(u8(n) ?? 9))    // 9
+}

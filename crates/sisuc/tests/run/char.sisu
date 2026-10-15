@@ -5,7 +5,7 @@
 // and only the unoptimized build passes a `char` in.
 // o2-calls: main climb 1
 fn climb(c: char, steps: i64) -> char {
-    if steps == 0 { c } else { char(i64(climb(c, steps - 1)) + 1) }
+    if steps == 0 { c } else { char(i64(climb(c, steps - 1)) + 1) ?? c }
 }
 
 fn maybe(c: bool) -> char? { if c { 'ä' } else { None } }
@@ -19,9 +19,9 @@ fn main() {
     let low = 0xD7FF
     let high = 0xE000
     let top = 0x10FFFF
-    print(i64(char(low)))            // 55295: the last scalar value below the surrogates
-    print(i64(char(high)))           // 57344: the first one above them
-    print(i64(char(top)))            // 1114111: the last scalar value
+    print(i64(char(low) ?? 'a'))     // 55295: the last scalar value below the surrogates
+    print(i64(char(high) ?? 'a'))    // 57344: the first one above them
+    print(i64(char(top) ?? 'a'))     // 1114111: the last scalar value
     print(char(top) == '\u{10FFFF}') // true
     let mut total = 0
     for i in 0..1000 {

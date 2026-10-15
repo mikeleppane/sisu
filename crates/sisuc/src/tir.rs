@@ -179,7 +179,8 @@ pub(crate) enum ExprKind {
     },
     /// A `T` where a `T?` is expected.
     Wrap(Box<Expr>),
-    /// `u8(e)`, `i64(e)` or `char(e)`: `e` converted to the node's own type.
+    /// `u8(e)`, `i64(e)` or `char(e)`: `e` converted to the node's own type, a `u8?` or a
+    /// `char?` for a conversion that can fail.
     Convert(Box<Expr>),
     /// `print(operand)` or `eprint(operand)`.
     Print {

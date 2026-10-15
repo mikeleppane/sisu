@@ -45,20 +45,22 @@ fn fields_and_methods() {
 fn returns_self() {
     let t = T(count: 3, e: E())
     print(t.me().me().count)
-    t.me()
+    let _ = t.me()
     print(t.count)
 }
 
-// A `unit` function whose body ends in an object.
+// A `unit` function whose body ends in an object. The unused value warning stays: the tail is
+// what codegen releases here, and `let _ =` would make it a statement.
 fn ends_in_object() {
     E()
 }
 
-// Class-typed values that nothing keeps.
+// Class-typed values that nothing keeps. The branch and loop tails keep their warnings, as
+// `ends_in_object` does.
 fn discarded(c: bool) {
-    E()
-    T(count: 1, e: E())
-    T(count: 2, e: E()).me()
+    let _ = E()
+    let _ = T(count: 1, e: E())
+    let _ = T(count: 2, e: E()).me()
     ends_in_object()
     if c { E() }
     let mut i = 0

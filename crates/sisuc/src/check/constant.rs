@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 
 use super::{Checked, Checker, Declared, Poisoned, type_of};
 use crate::ast::{self, ExprKind};
-use crate::diagnostic::{Diagnostic, DiagnosticKind, Panic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Panic, Span, TypedLiteral};
 use crate::symbol::Symbol;
 use crate::tir::{self, BinaryOp, CompareOp, Type, UnaryOp};
 
@@ -114,6 +114,41 @@ impl ConstInfo {
     }
 }
 
+/// The constant whose value is being checked: `value` is that whole value, `name_end` the end of
+/// its name, where `: T` goes, and `declared` its declared type, if it has one.
+pub(super) struct ConstantSite {
+    value: Span,
+    name_end: usize,
+    declared: Option<Type>,
+}
+
+impl ConstantSite {
+    /// The literal that replaces the conversion `to(arg)` at `call`: only when the call is the
+    /// whole value, any declared type is `to`, and `arg` converts to a value that a literal shows
+    /// with no escape.
+    pub(super) fn literal(&self, call: Span, to: &Type, arg: &tir::Expr) -> Option<TypedLiteral> {
+        if call != self.value || self.declared.as_ref().is_some_and(|ty| ty != to) {
+            return None;
+        }
+        let n = evaluate(arg, &mut FxHashMap::default()).ok()?.int();
+        let literal = match Constant::of(n, to)? {
+            Constant::Char(c) if c.is_ascii_graphic() && !matches!(c, '\'' | '\\') => {
+                format!("'{c}'")
+            }
+            Constant::U8(b) => b.to_string(),
+            _ => return None,
+        };
+        Some(TypedLiteral {
+            call,
+            literal,
+            annotate: self
+                .declared
+                .is_none()
+                .then(|| (self.name_end, to.to_string())),
+        })
+    }
+}
+
 impl Checker {
     /// Folds every constant in source order.
     pub(super) fn fold_constants(&mut self, program: &ast::Program) {
@@ -154,12 +189,16 @@ impl Checker {
         }
         // The locals a `string` chain binds belong to no function.
         let locals = self.locals.len();
-        self.in_constant = true;
+        self.in_constant = Some(ConstantSite {
+            value: c.value.span,
+            name_end: c.name.span.end,
+            declared: declared.clone(),
+        });
         let checked = match &declared {
             Some(ty) => self.expect(&c.value, Some(ty)),
             None => self.value(&c.value, None),
         };
-        self.in_constant = false;
+        self.in_constant = None;
         self.locals.truncate(locals);
         let ty = declared.or_else(|| type_of(&checked).cloned());
         let Ok(checked) = checked else {
@@ -337,14 +376,8 @@ fn evaluate(
         tir::ExprKind::Equal { negated, lhs, rhs } => {
             Constant::Bool((evaluate(lhs, locals)? == evaluate(rhs, locals)?) != *negated)
         }
-        tir::ExprKind::Convert(operand) => {
-            let not_fit = if e.ty == Type::Char {
-                Panic::NotChar
-            } else {
-                Panic::NotU8
-            };
-            Constant::of(evaluate(operand, locals)?.int(), &e.ty).ok_or_else(|| panic(not_fit))?
-        }
+        // A conversion that can fail is an error in a constant, so only `i64(x)` gets here.
+        tir::ExprKind::Convert(operand) => Constant::Int(evaluate(operand, locals)?.int()),
         _ => unreachable!("the gate should let only literals, operators and conversions through"),
     })
 }

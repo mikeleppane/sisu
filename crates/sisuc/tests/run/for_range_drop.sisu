@@ -6,7 +6,7 @@ fn main() {
     let mut total = 0
     for i in 0..3 {
         total += i
-        make(i)
+        make(i) // warns unused value: the body's tail is what codegen releases
     }
     print(total) // 3
 }
