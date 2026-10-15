@@ -1,19 +1,29 @@
 // `f64` arithmetic and printing: the runtime's tests own the spelling of each value, so these
-// check the wiring, at both levels, where `-O2` folds what `-O0` computes.
-fn main() {
-    let a = 0.1
-    print(a + 0.2)       // 0.30000000000000004
-    print(1e15 * 10.0)   // 1e16
-    print(1.0 / 0.0)     // inf
-    print(-1.0 / 0.0)    // -inf
-    print(-7.5 % 2.0)    // -1.5: the remainder has the sign of the dividend
-    print(-(0.0))        // -0.0
-    print(1e308 * 10.0)  // inf: overflow
-    print(5e-324 / 2.0)  // 0.0: underflow
-    let g = 9.81
-    let mut v = 0.0
-    let dt = 0.01
-    v -= g * dt
-    print(v)             // -0.0981
-    eprint(2.5)          // 2.5, on standard error
+// check the wiring. Every value printed has an operand that `same` returns, and `-O2` keeps the
+// calls to `same`, so each `+`, `-`, `*`, `/` and `%` (`frem`, a call to `fmod`) runs at both
+// levels.
+// args: a
+// o2-calls: main same 9
+fn same(x: f64, depth: i64) -> f64 {
+    if depth == 0 { x } else { -same(-x, depth - 1) }
+}
+
+fn main(args: [string]) {
+    // A depth that `-O2` does not know: `same` returns its `x` at any depth.
+    let d = args.len()
+    let a = same(0.1, d)
+    print(a + 0.2)                  // 0.30000000000000004
+    print(same(1e15, d) * 10.0)     // 1e16
+    let zero = same(0.0, d)
+    print(1.0 / zero)               // inf
+    print(-1.0 / zero)              // -inf
+    print(same(-7.5, d) % 2.0)      // -1.5: the remainder has the sign of the dividend
+    print(-zero)                    // -0.0
+    print(same(1e308, d) * 10.0)    // inf: overflow
+    print(same(5e-324, d) / 2.0)    // 0.0: underflow
+    let g = same(9.81, d)
+    let mut v = same(0.0, d)
+    v -= g * 0.01
+    print(v)                        // -0.0981
+    eprint(same(2.5, d))            // 2.5, on standard error
 }
