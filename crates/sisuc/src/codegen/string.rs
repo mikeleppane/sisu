@@ -720,7 +720,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         match kind {
             Helper::Drop => self.define_string_drop(function),
             Helper::Eq => self.define_string_eq(function),
-            Helper::Release | Helper::Unique => {
+            Helper::Retain | Helper::Release | Helper::Unique => {
                 unreachable!("only a string's `drop` and `eq` should reach `define_string_helper`")
             }
         }

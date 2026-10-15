@@ -1,0 +1,47 @@
+// An optional enum is a `{ flag, value }` pair, never a pointer: `??`, `?.`, `if let` and `==`
+// test the flag, and `==` compares two payloads only when both are present. `Lit(0)` has the
+// zero value's bits, which a `None` holds, so `==` that read a `None`'s payload would find them
+// equal.
+enum Num {
+    Lit(i64)
+    Text(string)
+
+    fn eval(self) -> i64 {
+        if self == Num.Text("one") {
+            1
+        } else {
+            2
+        }
+    }
+}
+
+fn main() {
+    let some: Num? = Num.Text("o" + "ne")
+    let none: Num? = None
+    let zero: Num? = Num.Lit(0)
+    print(some?.eval() ?? 0)                                 // 1
+    print(none?.eval() ?? 0)                                 // 0
+    print((none ?? Num.Lit(5)) == Num.Lit(5))                // true
+    print((some ?? Num.Lit(5)) == Num.Text("one"))           // true
+    if let x = some {
+        print(x == Num.Text("one"))                          // true
+    }
+    if let x = none {
+        print(x == Num.Lit(0))
+    } else {
+        print("none")                                        // none
+    }
+    let other: Num? = None
+    print(none == other)                                     // true: both `None`
+    print(zero == none)                                      // false: only one is present
+    print(none == zero)                                      // false
+    print(zero == Num.Lit(0))                                // true
+    print(some == Num.Text("one" + ""))                      // true
+    print(some == Num.Lit(1))                                // false: the tags differ
+    let xs: [Num?] = [None, Num.Text("t" + ""), zero]
+    print(xs == [None, Num.Text("t"), Num.Lit(0)])           // true
+    print(xs == [zero, Num.Text("t"), Num.Lit(0)])           // false: `None` is not `Lit(0)`
+    print(xs[0] == none)                                     // true
+    print((xs[1] ?? Num.Lit(9)) == Num.Text("t"))           // true
+    print(xs[0]?.eval() ?? 0)                                // 0
+}

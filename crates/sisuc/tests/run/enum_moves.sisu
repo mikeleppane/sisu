@@ -1,0 +1,42 @@
+// A `Move` leaves the zero value in a local's slot, which scope end releases. An enum's zero
+// value is its first variant with every field zero, so each release helper must release nothing
+// for a null string, a null object and a nested enum's zero value. `[e; 0]` releases `e` once.
+class C {
+    n: i64
+}
+
+enum Inner {
+    Name(string)
+    Empty
+}
+
+enum Z {
+    Text(string, Inner, C)
+    Other
+}
+
+fn other(z: Z) -> bool {
+    z == Z.Other
+}
+
+fn present(o: Z?) -> bool {
+    if let z = o {
+        z != Z.Other
+    } else {
+        false
+    }
+}
+
+fn main() {
+    let z = Z.Text("a" + "b", Inner.Name("c" + "d"), C(n: 1))
+    print(other(z))                                          // false: `z` moves into the call
+    let o: Z? = Z.Text("e" + "f", Inner.Name("g" + "h"), C(n: 2))
+    print(present(o))                                        // true: `o` moves into the call
+    let fill = Z.Text("i" + "j", Inner.Name("k" + "l"), C(n: 3))
+    let none = [fill; 0]
+    print(none.len())                                        // 0
+    let mut w = Z.Text("m" + "", Inner.Empty, C(n: 4))
+    let kept = w
+    w = Z.Other
+    print(kept == w)                                         // false
+}

@@ -125,7 +125,7 @@ fn allocs_in_panics_without_the_summary_line() {
 }
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
-const ALLOCATIONS: [(&str, &str, &str, i64); 13] = [
+const ALLOCATIONS: [(&str, &str, &str, i64); 15] = [
     // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
@@ -149,6 +149,10 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 13] = [
     ("interp", "9\ne\n", "1\n-\n", 1000),
     // Formatting and padding write into that result too: no buffer of their own.
     ("interp_format", "    2.67| 日本  |7\n", "-\n", 1000),
+    // An enum is held inline: building one whose payloads hold no object allocates nothing.
+    ("enum_alloc_plain", "1000\n", "0\n", 0),
+    // Copying an enum retains its string payload and never copies it.
+    ("enum_alloc_copy", "1000\ntrue\n", "0\ntrue\n", 0),
 ];
 
 #[test]

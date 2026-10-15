@@ -2,6 +2,7 @@
 
 mod arith;
 mod array;
+mod enums;
 mod io;
 mod math;
 mod rc;
@@ -28,7 +29,8 @@ use inkwell::values::{
 };
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
-use self::rc::Helper;
+use self::enums::EnumLayout;
+use self::rc::{Helper, counted_core};
 use crate::diagnostic::{LineIndex, Span};
 use crate::tir::{
     Block, Class, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt,
@@ -60,12 +62,6 @@ pub(crate) fn compile<'ctx>(
     let ptr_type = context.ptr_type(AddressSpace::default());
     let void = context.void_type();
 
-    // Every class type exists before any body is set, so a field can name any class.
-    let types: Vec<StructType> = program
-        .classes
-        .iter()
-        .map(|class| context.opaque_struct_type(&format!("sisu.{}", class.name)))
-        .collect();
     // `sisu_alloc(size, align)` and `sisu_free(ptr, size, align)`, from the runtime.
     let alloc = module.add_function(
         "sisu_alloc",
@@ -138,22 +134,14 @@ pub(crate) fn compile<'ctx>(
         source,
         lines: LineIndex::new(source),
         classes: Vec::new(),
+        enums: Vec::new(),
         functions: Vec::new(),
         locals: Vec::new(),
         types: Vec::new(),
         live: Vec::new(),
         loops: Vec::new(),
     };
-    // A class is `{ i64 count, fields... }`, its fields sorted by alignment.
-    let layouts: Vec<_> = program
-        .classes
-        .iter()
-        .map(|class| codegen.class_body(class))
-        .collect();
-    for (ty, (body, element)) in types.into_iter().zip(layouts) {
-        ty.set_body(&body, false);
-        codegen.classes.push(ClassLayout { ty, element });
-    }
+    codegen.lay_out_types();
     // Every class gets its helpers, used or not, as in milestone 2.
     for helper in [Helper::Release, Helper::Eq] {
         for id in 0..program.classes.len() {
@@ -284,7 +272,7 @@ enum Slot<'ctx> {
     /// A `let` binding or a parameter that is not counted: an SSA value.
     Value(BasicValueEnum<'ctx>),
     /// A variable or a counted local: an `alloca` of this type, loaded and stored until
-    /// `mem2reg` promotes it. A `Move` stores `null` into a counted local's slot.
+    /// `mem2reg` promotes it. A `Move` stores the zero value into a counted local's slot.
     Alloca(PointerValue<'ctx>, BasicTypeEnum<'ctx>),
 }
 
@@ -343,6 +331,8 @@ struct Codegen<'ctx, 'src> {
     lines: LineIndex,
     /// `%sisu.<Class>` and its field elements, indexed by `ClassId`.
     classes: Vec<ClassLayout<'ctx>>,
+    /// `%sisu.<Enum>` and its payload structs, indexed by `EnumId`.
+    enums: Vec<EnumLayout<'ctx>>,
     /// Indexed by `FuncId`.
     functions: Vec<FunctionValue<'ctx>>,
     /// The current function's locals, indexed by `LocalId`; `None` until bound, and for `unit`.
@@ -368,19 +358,47 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::String | Type::Class(_) | Type::Array(_) => {
                 Some(self.context.ptr_type(AddressSpace::default()).into())
             }
-            Type::Enum(_) => panic!("enum layout lands in Task 4"),
+            Type::Enum(id) => Some(self.enum_layout(*id).ty.into()),
             Type::Optional(payload) => match self
                 .llvm_type(payload)
                 .expect("the checker should reject an optional of `unit` or `never`, so its payload has a value type")
             {
                 // A class optional is the object's pointer, `null` for `None`.
                 ptr @ BasicTypeEnum::PointerType(_) => Some(ptr),
-                // A scalar optional is `{ i1, T }`: whether it holds a value, then the value.
+                // A scalar or enum optional is `{ i1, T }`: whether it holds a value, then the
+                // value.
                 value => {
                     let flag = self.context.bool_type().into();
                     Some(self.context.struct_type(&[flag, value], false).into())
                 }
             },
+        }
+    }
+
+    /// Lays out every enum, then every class: a class's layout needs the sizes of its enum
+    /// fields, while an enum's payload holds a class as a pointer. A class is
+    /// `{ i64 count, fields... }`, its fields sorted by alignment.
+    fn lay_out_types(&mut self) {
+        self.lay_out_enums();
+        // Every class type exists before any body is set, so a field can name any class.
+        let types: Vec<StructType> = self
+            .program
+            .classes
+            .iter()
+            .map(|class| {
+                self.context
+                    .opaque_struct_type(&format!("sisu.{}", class.name))
+            })
+            .collect();
+        let layouts: Vec<_> = self
+            .program
+            .classes
+            .iter()
+            .map(|class| self.class_body(class))
+            .collect();
+        for (ty, (body, element)) in types.into_iter().zip(layouts) {
+            ty.set_body(&body, false);
+            self.classes.push(ClassLayout { ty, element });
         }
     }
 
@@ -505,8 +523,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         })
     }
 
-    /// `Move`: the value of `local`, whose reference leaves its slot without a retain. The
-    /// slot then holds `null`, which releasing skips.
+    /// `Move`: the value of `local`, whose references leave its slot without a retain. The
+    /// slot then holds the zero value, which releasing skips.
     fn move_local(&self, local: LocalId) -> BasicValueEnum<'ctx> {
         let Some(Slot::Alloca(ptr, ty)) = self.locals[local.0] else {
             unreachable!(
@@ -932,7 +950,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return None;
             }
             ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
-            ExprKind::Variant { .. } => panic!("variants land in Task 4"),
+            ExprKind::Variant { id, variant, args } => {
+                return Some(self.build_variant(*id, *variant, args));
+            }
             ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
             ExprKind::Block(block) => return self.block(block, None),
             ExprKind::Convert(_) => return Some(self.convert(e)),
@@ -997,8 +1017,8 @@ impl<'ctx> Codegen<'ctx, '_> {
             ),
             ExprKind::Wrap(operand) => {
                 let value = self.expr(operand)?;
-                // A class needs no wrapping: its pointer is never `null`.
-                if e.ty.is_counted(&self.program.enums) {
+                // A string, class or array needs no wrapping: its pointer is never `null`.
+                if counted_core(&e.ty).is_some() {
                     return Some(value);
                 }
                 let some = self.context.bool_type().const_int(1, false);
@@ -1010,12 +1030,13 @@ impl<'ctx> Codegen<'ctx, '_> {
                 then_block,
                 else_block,
             } => {
-                // A class optional's reference moves into `bind`. On the `None` path it is
-                // `null`, so it holds nothing to release. A scalar pair binds its value.
+                // A pointer optional's reference moves into `bind`. On the `None` path it is
+                // `null`, so it holds nothing to release. A pair binds its value, and on the
+                // `None` path holds the zero value, which holds nothing either.
                 let value = self
                     .expr(scrutinee)
                     .expect("the checker should reject an `if let` scrutinee that is not an optional, so it has a value");
-                let (some, bound) = if scrutinee.ty.is_counted(&self.program.enums) {
+                let (some, bound) = if counted_core(&scrutinee.ty).is_some() {
                     let some = self
                         .builder
                         .build_is_not_null(value.into_pointer_value(), "some")
@@ -1230,7 +1251,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `a < b <= c` is `a < b && b <= c` with `b` computed once. The checker splits a chain of
     /// strings into pairs.
     fn compare(&mut self, operands: &[Expr], ops: &[CompareOp]) -> IntValue<'ctx> {
-        if operands[0].ty.is_counted(&self.program.enums) {
+        if operands[0].ty == Type::String {
             let ([lhs, rhs], [op]) = (operands, ops) else {
                 unreachable!("the checker should split a comparison chain of strings into pairs")
             };

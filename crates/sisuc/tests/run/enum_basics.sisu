@@ -1,0 +1,80 @@
+// Enum values of every non-recursive payload kind are built, passed to and returned from
+// functions, called through methods, held in class fields and arrays, and compared with `==` and
+// `!=`. Strings are built at run time, so Valgrind sees each one freed exactly once.
+class C {
+    n: i64
+}
+
+enum Inner {
+    Num(i64)
+    Name(string)
+}
+
+enum Shape {
+    Dot
+    Circle(i64)
+    Rect(w: i64, h: i64)
+    Label(string)
+    Ref(C)
+    Nest(Inner)
+    Mixed(u8, string, bool)
+
+    fn same(self, other: Shape) -> bool {
+        self == other
+    }
+
+    fn itself(self) -> Shape {
+        self
+    }
+}
+
+class Holder {
+    s: Shape
+}
+
+fn pass(s: Shape) -> Shape {
+    s
+}
+
+fn main() {
+    let dot = Shape.Dot
+    print(dot == Shape.Dot)                                  // true
+    print(dot != Shape.Circle(1))                            // true: different tags
+    print(Shape.Circle(1) == pass(Shape.Circle(1)))          // true
+    print(Shape.Circle(1) == Shape.Circle(2))                // false: same tag, different payload
+    let r = Shape.Rect(w: 2, h: 3)
+    print(r == Shape.Rect(w: 2, h: 3))                       // true
+    print(r == Shape.Rect(w: 2, h: 4))                       // false: the second field differs
+    print(r != Shape.Rect(w: 1, h: 3))                       // true: the first field differs
+    print(r == Shape.Circle(2))                              // false: different tags
+    let label = Shape.Label("ab" + "c")
+    print(label == Shape.Label("a" + "bc"))                  // true
+    print(label != Shape.Label("ab" + ""))                   // true: the strings differ
+    print(label == Shape.Dot)                                // false
+    let shared = Shape.Ref(C(n: 1))
+    print(shared == Shape.Ref(C(n: 1)))                      // true: classes compare their fields
+    print(shared == Shape.Ref(C(n: 2)))                      // false
+    let nest = Shape.Nest(Inner.Name("x" + "y"))
+    print(nest == Shape.Nest(Inner.Name("xy" + "")))         // true
+    print(nest == Shape.Nest(Inner.Num(1)))                  // false: the inner tags differ
+    print(Shape.Nest(Inner.Num(1)) != Shape.Nest(Inner.Num(2))) // true: the inner payloads differ
+    let mixed = Shape.Mixed(7, "m" + "", true)
+    print(mixed == Shape.Mixed(7, "m", true))                // true
+    print(mixed == Shape.Mixed(7, "m", false))               // false: the last field differs
+    print(mixed == Shape.Mixed(8, "m", true))                // false: the first field differs
+    print(label.same(pass(label)))                           // true: through a call and a method
+    print(r.itself() == r)                                   // true
+    let mut v = label
+    v = Shape.Circle(3)
+    print(v == Shape.Circle(3))                              // true: the old value is released
+    let h = Holder(s: label)
+    print(h.s == label)                                      // true
+    print(h == Holder(s: Shape.Label("abc" + "")))           // true: the class compares its enum field
+    print(h == Holder(s: Shape.Dot))                         // false
+    let shapes = [dot, r, label, shared, nest, mixed]
+    print(shapes[1] == r)                                    // true
+    print(shapes[4] == nest)                                 // true
+    print(shapes == [Shape.Dot, r, label, shared, nest, mixed]) // true
+    print(shapes == [Shape.Dot, r, label, shared, nest, dot]) // false
+    print(shapes.len())                                      // 6
+}

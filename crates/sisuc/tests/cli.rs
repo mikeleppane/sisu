@@ -998,3 +998,50 @@ fn emit_tokens_enum() {
         "1:1 Enum enum\n1:5 Eof\n"
     );
 }
+
+#[test]
+fn enum_layouts_follow_the_target() {
+    use std::fmt::Write as _;
+    // `Outer` is declared before the `Pair?` it holds and `Holder` before the `Trio` it holds,
+    // so each layout needs a later one's first. `Wide` has 257 variants, one more than an `i8`
+    // tag holds.
+    let wide = (0..257).fold(String::new(), |mut wide, v| {
+        writeln!(wide, "    V{v}").expect("writing to a `String` should not fail");
+        wide
+    });
+    let source = format!(
+        "enum Outer {{\n    Maybe(Pair?)\n}}\n\n\
+         enum Pair {{\n    Two(i64, i64)\n}}\n\n\
+         enum Holder {{\n    Wrap(Trio)\n}}\n\n\
+         enum Trio {{\n    Three(i64, i64, i64)\n}}\n\n\
+         enum Light {{\n    Red\n    Green\n}}\n\n\
+         enum Wide {{\n{wide}}}\n\n\
+         fn main() {{\n    \
+         print(Outer.Maybe(Pair.Two(1, 2)) == Outer.Maybe(None))\n    \
+         print(Holder.Wrap(Trio.Three(1, 2, 3)) == Holder.Wrap(Trio.Three(1, 2, 4)))\n    \
+         print(Light.Red == Light.Green)\n    \
+         print(Wide.V256 == Wide.V0)\n\
+         }}\n"
+    );
+    let out = run_on("enum_layouts_follow_the_target", &source, &["--emit", "ir"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    // The smallest tag that holds the variant count; storage sized and aligned for the largest
+    // payload, `{ i1, %sisu.Pair }` and `%sisu.Trio` at 32 bytes; no storage when no variant
+    // has a field.
+    for wanted in [
+        "%sisu.Pair = type { i8, [2 x i64] }",
+        "%sisu.Outer = type { i8, [4 x i64] }",
+        "%sisu.Trio = type { i8, [3 x i64] }",
+        "%sisu.Holder = type { i8, [4 x i64] }",
+        "%sisu.Light = type { i8 }",
+        "%sisu.Wide = type { i16 }",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+}

@@ -1,0 +1,39 @@
+// Arrays hold enum values inline. Each element's counted parts are retained when a shared block
+// is copied for a write, and released when a block is freed; Valgrind sees every string and
+// object freed exactly once.
+class Counter {
+    mut count: i64
+}
+
+enum State {
+    Idle
+    Running(Counter)
+    Named(string)
+}
+
+fn main() {
+    let states = [State.Idle, State.Running(Counter(count: 1)), State.Named("a" + "b")]
+    print(states.len())                                      // 3
+    print(states[0] == State.Idle)                           // true
+    print(states[2] == State.Named("ab"))                    // true
+    print(states.contains(State.Named("ab" + "")))           // true
+    print(states.contains(State.Named("b" + "")))            // false
+    let filled = [State.Named("x" + ""); 3]
+    print(filled == [State.Named("x"), State.Named("x"), State.Named("x" + "")]) // true
+    print(filled[2] == State.Named("x"))                     // true
+    let mut copy = states
+    copy[1] = State.Idle
+    print(copy[1] == State.Idle)                             // true
+    print(states[1] == State.Running(Counter(count: 1)))     // true: the original is unchanged
+    print(copy == states)                                    // false
+    print(states == [State.Idle, State.Running(Counter(count: 1)), State.Named("ab")]) // true
+    let empty = [State.Named("z" + ""); 0]
+    print(empty.len())                                       // 0
+    let mut seen = 0
+    for s in states {
+        if s != State.Idle {
+            seen += 1
+        }
+    }
+    print(seen)                                              // 2
+}
