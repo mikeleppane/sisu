@@ -147,6 +147,29 @@ fn write_bool_passes_a_zero_extended_i1() {
     }
 }
 
+/// The precision and the alignment cross to the runtime as a C `u8`, which the caller extends
+/// with zeros, as for a `bool`; a `char` is already 32 bits and gets no extension.
+#[test]
+fn format_specs_pass_zero_extended_i8s() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(x: f64, c: char) -> string {\n    \"{x:>8.2}{c}\"\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "declare i64 @sisu_write_f64_fixed(double, i8 zeroext, ptr)",
+        "call i64 @sisu_write_f64_fixed(double %",
+        ", i8 zeroext 2, ptr",
+        "declare i64 @sisu_pad(ptr, i64, i64, i8 zeroext)",
+        ", i64 8, i8 zeroext 1)",
+        "declare i64 @sisu_write_char(i32, ptr)",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+}
+
 #[test]
 fn arithmetic_calls_overflow_intrinsics() {
     let context = Context::create();

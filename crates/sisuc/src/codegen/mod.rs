@@ -841,10 +841,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
             ExprKind::Char(c) => self.context.i32_type().const_int(u64::from(*c), false),
             ExprKind::Str(text) => return Some(self.string_lit(text).into()),
-            ExprKind::Interpolate { parts, formats } => {
-                assert!(formats.is_empty(), "format specs land in Task 10");
-                return self.interpolate(parts);
-            }
+            ExprKind::Interpolate { parts, formats } => return self.interpolate(parts, formats),
             ExprKind::Concat { lhs, rhs } => return Some(self.concat_expr(lhs, rhs).into()),
             ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {

@@ -33,9 +33,87 @@ pub unsafe extern "C" fn sisu_write_f64(x: f64, out: *mut u8) -> usize {
     unsafe { crate::text::write(shortest(x, &mut [0; FLOAT_BYTES]), out) }
 }
 
+/// The longest text of an `f64` at the largest precision the checker allows, 30: `-f64::MAX`,
+/// a sign, 309 digits, a point and 30 decimals. A precision `p` takes at most `311 + p`.
+const FIXED_BYTES: usize = 341;
+
+/// Writes `x` with `precision` decimals, rounded half to even from its exact binary value and
+/// never in exponent form, to `out`, and returns how many bytes it wrote: at most
+/// `311 + precision`. NaN is `nan`; infinity is `inf` or `-inf`, without decimals.
+/// Interpolation calls this for an `f64` with a precision.
+///
+/// # Safety
+///
+/// `precision` is at most 30, and `out[..311 + precision]` is writable.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_write_f64_fixed(x: f64, precision: u8, out: *mut u8) -> usize {
+    if x.is_nan() {
+        // SAFETY: the caller promises at least 311 bytes, and `nan` takes 3.
+        return unsafe { crate::text::write(b"nan", out) };
+    }
+    let mut buffer = [0; FIXED_BYTES];
+    let mut rest = &mut buffer[..];
+    let precision = usize::from(precision);
+    write!(rest, "{x:.precision$}")
+        .expect("341 bytes should hold every `f64` at a precision of at most 30");
+    let len = FIXED_BYTES - rest.len();
+    // SAFETY: the caller promises `311 + precision` bytes, which the text never passes.
+    unsafe { crate::text::write(&buffer[..len], out) }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FLOAT_BYTES, shortest, sisu_write_f64};
+    use super::{FLOAT_BYTES, shortest, sisu_write_f64, sisu_write_f64_fixed};
+
+    /// `x` at `precision`, written into exactly the `311 + precision` bytes the caller gives.
+    fn fixed(x: f64, precision: u8) -> String {
+        let mut out = vec![0; 311 + usize::from(precision)];
+        // SAFETY: `out` has room for `311 + precision` bytes.
+        #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+        let len = unsafe { sisu_write_f64_fixed(x, precision, out.as_mut_ptr()) };
+        out.truncate(len);
+        String::from_utf8(out).expect("the text should be ASCII")
+    }
+
+    /// Rounding is half to even from the exact binary value, the sign stays on a negative value
+    /// that rounds to zero, and the specials ignore the precision.
+    #[test]
+    fn fixed_precision() {
+        for (x, precision, want) in [
+            // 2.675 is 2.67499999999999982236431605997495353221893310546875.
+            (2.675, 2, "2.67"),
+            (0.5, 0, "0"),
+            (1.5, 0, "2"),
+            (2.5, 0, "2"),
+            (-0.004, 2, "-0.00"),
+            (f64::NAN, 2, "nan"),
+            (-f64::NAN, 2, "nan"),
+            (f64::INFINITY, 3, "inf"),
+            (f64::NEG_INFINITY, 3, "-inf"),
+        ] {
+            assert_eq!(fixed(x, precision), want, "{x} at {precision}");
+        }
+    }
+
+    /// `-f64::MAX` at the largest precision fills its bound: a sign, 309 digits, a point and 30
+    /// decimals.
+    #[test]
+    fn fixed_fills_its_bound() {
+        let text = fixed(-f64::MAX, 30);
+        assert_eq!(text.len(), 341);
+        assert!(
+            text.starts_with("-179769313486231570814527423731704356798"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("858368.000000000000000000000000000000"),
+            "{text}"
+        );
+    }
 
     /// Interpolation writes the text `print` does; the longest fills the 24 bytes it is given.
     #[test]

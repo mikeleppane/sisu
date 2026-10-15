@@ -140,7 +140,8 @@ to panic and to allocate and free objects, arrays and strings:
 `sisu_print_char`, `sisu_print_str`, `sisu_eprint_char`, `sisu_eprint_str`,
 `sisu_str_compare`, and `sisu_write_int`, `sisu_write_bool` and
 `sisu_write_char`, which interpolation calls (`float.rs` adds `sisu_write_f64`
-for an `f64`), and
+for an `f64`, and `sisu_write_f64_fixed` for one with a precision), and
+`sisu_pad`, which pads a part with a width in place, and
 `sisu_utf8_count`, `sisu_utf8_decode`, `sisu_utf8_len` and `sisu_utf8_encode`,
 which `chars()` and `string(cs)` call, and `sisu_words_count` and
 `sisu_word_next`, which `words()` calls; `s.words().len()`, written as one

@@ -15,7 +15,7 @@ use inkwell::{AddressSpace, IntPredicate};
 use super::rc::{Helper, param};
 use super::{Codegen, POSITIONED, add_nounwind_memory, zeroext};
 use crate::diagnostic::Span;
-use crate::tir::{CompareOp, Expr, Place, Stream, Type};
+use crate::tir::{Align, CompareOp, Expr, Format, Pad, Place, Stream, Type};
 
 /// A string block's header, from the target's data layout. A block with capacity `cap` is
 /// `size + cap` bytes, aligned to `align`.
@@ -303,10 +303,14 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `Interpolate`, in one pass: evaluates every part, left to right, then allocates one
     /// block with room for the most text each part can give, writes each part at the running
-    /// offset, stores the length written and releases the `string` parts. `None` when a part
-    /// exits: nothing is allocated yet, and the checker bound every counted part before it to
-    /// a local, which the exit releases.
-    pub(super) fn interpolate(&mut self, parts: &[Expr]) -> Option<BasicValueEnum<'ctx>> {
+    /// offset, pads it there when its format has a width, stores the length written and
+    /// releases the `string` parts. `None` when a part exits: nothing is allocated yet, and the
+    /// checker bound every counted part before it to a local, which the exit releases.
+    pub(super) fn interpolate(
+        &mut self,
+        parts: &[Expr],
+        formats: &[Format],
+    ) -> Option<BasicValueEnum<'ctx>> {
         let mut values = Vec::with_capacity(parts.len());
         for part in parts {
             values.push(self.expr(part)?);
@@ -317,28 +321,41 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_int_nuw_add(a, b, "len")
                 .expect(POSITIONED)
         };
-        // The most bytes each part's text takes: see `sisu_write_int`, `_f64`, `_bool` and
-        // `_char`. A string's length is below 2^47 on x86-64, so the sum cannot overflow.
-        let cap = parts
-            .iter()
-            .zip(&values)
-            .fold(i64_type.const_zero(), |cap, (part, value)| {
-                let bound = match part.ty {
-                    Type::String => return add(cap, self.string_len(value.into_pointer_value())),
-                    Type::I64 => 20,
-                    Type::U8 => 3,
-                    Type::Bool => 5,
-                    Type::Char => 4,
-                    Type::F64 => 24,
+        let format_of = |i| formats.iter().find(|format| format.part == i);
+        let bound = |bytes| i64_type.const_int(bytes, false);
+        // The most bytes each part's text takes: see `sisu_write_int`, `_f64`, `_f64_fixed`,
+        // `_bool` and `_char`, plus the width when it is padded. A string's length is below
+        // 2^47 on x86-64, so the sum cannot overflow.
+        let cap = parts.iter().zip(&values).enumerate().fold(
+            i64_type.const_zero(),
+            |cap, (i, (part, value))| {
+                let format = format_of(i);
+                let text = match part.ty {
+                    Type::String => self.string_len(value.into_pointer_value()),
+                    Type::I64 => bound(20),
+                    Type::U8 => bound(3),
+                    Type::Bool => bound(5),
+                    Type::Char => bound(4),
+                    Type::F64 => bound(
+                        format
+                            .and_then(|format| format.precision)
+                            .map_or(24, |precision| 311 + u64::from(precision)),
+                    ),
                     _ => unreachable!(
                         "the checker should accept only text, numbers, `bool` and `char`"
                     ),
                 };
-                add(cap, i64_type.const_int(bound, false))
-            });
+                let cap = add(cap, text);
+                match format.and_then(|format| format.pad) {
+                    Some(pad) => add(cap, bound(u64::from(pad.width))),
+                    None => cap,
+                }
+            },
+        );
         let result = self.new_string(cap);
         let mut len = i64_type.const_zero();
-        for (part, value) in parts.iter().zip(&values) {
+        for (i, (part, value)) in parts.iter().zip(&values).enumerate() {
+            let format = format_of(i);
             let at = self.string_byte(result, len);
             let written = match part.ty {
                 Type::String => {
@@ -352,12 +369,36 @@ impl<'ctx> Codegen<'ctx, '_> {
                         .builder
                         .build_int_z_extend(value.into_int_value(), i64_type, "widened")
                         .expect(POSITIONED);
-                    self.write_text("sisu_write_int", widened.into(), at)
+                    self.write_text("sisu_write_int", &[widened.into(), at.into()])
                 }
-                Type::I64 => self.write_text("sisu_write_int", *value, at),
-                Type::F64 => self.write_text("sisu_write_f64", *value, at),
-                Type::Bool => self.write_text("sisu_write_bool", *value, at),
-                _ => self.write_text("sisu_write_char", *value, at),
+                Type::I64 => self.write_text("sisu_write_int", &[*value, at.into()]),
+                Type::F64 => match format.and_then(|format| format.precision) {
+                    Some(precision) => {
+                        let precision = self.context.i8_type().const_int(precision.into(), false);
+                        let args = [*value, precision.into(), at.into()];
+                        self.write_text("sisu_write_f64_fixed", &args)
+                    }
+                    None => self.write_text("sisu_write_f64", &[*value, at.into()]),
+                },
+                Type::Bool => self.write_text("sisu_write_bool", &[*value, at.into()]),
+                _ => self.write_text("sisu_write_char", &[*value, at.into()]),
+            };
+            let written = match format.and_then(|format| format.pad) {
+                Some(Pad { align, width }) => {
+                    let align = match align {
+                        Align::Left => 0,
+                        Align::Right => 1,
+                        Align::Center => 2,
+                    };
+                    let args = [
+                        at.into(),
+                        written.into(),
+                        bound(width.into()).into(),
+                        self.context.i8_type().const_int(align, false).into(),
+                    ];
+                    self.write_text("sisu_pad", &args)
+                }
+                None => written,
             };
             len = add(len, written);
         }
@@ -556,38 +597,39 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.call(function, &[text.into(), n.into(), out.into()]);
     }
 
-    /// A call of the runtime's `name(value, out) -> len`, which writes the text of `value` at
-    /// `out`; declared on first use, so that a module without interpolation stays as it was.
-    fn write_text(
-        &self,
-        name: &str,
-        value: BasicValueEnum<'ctx>,
-        out: PointerValue<'ctx>,
-    ) -> IntValue<'ctx> {
-        // `zeroext` keeps the C `bool` ABI, as for `sisu_print_bool`.
-        let bool_arg = value.get_type() == self.context.bool_type().into();
+    /// A call of the runtime's `name(args) -> len`, such as `sisu_write_int(value, out)`, which
+    /// writes text at `out`; declared on first use, so that a module without interpolation
+    /// stays as it was.
+    fn write_text(&self, name: &str, args: &[BasicValueEnum<'ctx>]) -> IntValue<'ctx> {
+        // The C ABI extends a `bool` or a `u8` argument to 32 bits and the callee may read all
+        // of them, so the caller extends it with zeros, as for `sisu_print_bool`.
+        let narrow = || {
+            (0..).zip(args).filter_map(|(i, arg)| {
+                matches!(arg, BasicValueEnum::IntValue(int) if int.get_type().get_bit_width() < 32)
+                    .then_some(i)
+            })
+        };
         let function = self.module.get_function(name).unwrap_or_else(|| {
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let fn_type = self
-                .context
-                .i64_type()
-                .fn_type(&[value.get_type().into(), ptr_type.into()], false);
+            let params: Vec<BasicMetadataTypeEnum> =
+                args.iter().map(|arg| arg.get_type().into()).collect();
+            let fn_type = self.context.i64_type().fn_type(&params, false);
             let function = self.module.add_function(name, fn_type, None);
-            if bool_arg {
-                function.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
+            for i in narrow() {
+                function.add_attribute(AttributeLoc::Param(i), zeroext(self.context));
             }
             function
         });
+        let values: Vec<BasicMetadataValueEnum> = args.iter().map(|&arg| arg.into()).collect();
         let call = self
             .builder
-            .build_call(function, &[value.into(), out.into()], "written")
+            .build_call(function, &values, "written")
             .expect(POSITIONED);
-        if bool_arg {
-            call.add_attribute(AttributeLoc::Param(0), zeroext(self.context));
+        for i in narrow() {
+            call.add_attribute(AttributeLoc::Param(i), zeroext(self.context));
         }
         call.try_as_basic_value()
             .basic()
-            .expect("a `sisu_write_*` function should return an `i64`, as the runtime declares it")
+            .expect("a `sisu_write_*` or `sisu_pad` function should return an `i64`, as the runtime declares it")
             .into_int_value()
     }
 

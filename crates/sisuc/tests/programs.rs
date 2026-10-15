@@ -125,7 +125,7 @@ fn allocs_in_panics_without_the_summary_line() {
 }
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
-const ALLOCATIONS: [(&str, &str, &str, i64); 12] = [
+const ALLOCATIONS: [(&str, &str, &str, i64); 13] = [
     // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
@@ -147,6 +147,8 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 12] = [
     ("append_element", "1001\nx\n", "1\na\n", 10),
     // Each interpolation allocates its result and nothing else.
     ("interp", "9\ne\n", "1\n-\n", 1000),
+    // Formatting and padding write into that result too: no buffer of their own.
+    ("interp_format", "    2.67| 日本  |7\n", "-\n", 1000),
 ];
 
 #[test]
