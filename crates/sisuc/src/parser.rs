@@ -119,18 +119,26 @@ fn power_operand(e: &Expr, tokens: &[Token], right: bool) -> bool {
 /// Whether one pair of parentheses holds the whole of `tokens`: it starts with a `(` whose `)`
 /// is the last token. `(a) * (b)` does not.
 fn parenthesised(tokens: &[Token]) -> bool {
-    let mut open = 0usize;
-    for (i, token) in tokens.iter().enumerate() {
+    let [first, inner @ .., last] = tokens else {
+        return false;
+    };
+    if first.kind != TokenKind::LParen || last.kind != TokenKind::RParen {
+        return false;
+    }
+    let mut open = 1usize;
+    for token in inner {
         match token.kind {
             TokenKind::LParen => open += 1,
-            TokenKind::RParen => open = open.saturating_sub(1),
+            TokenKind::RParen => {
+                open -= 1;
+                if open == 0 {
+                    return false;
+                }
+            }
             _ => {}
         }
-        if open == 0 {
-            return i + 1 == tokens.len() && i > 0;
-        }
     }
-    false
+    true
 }
 
 /// Whether `kind` begins a postfix link (`.`, `?.` or `[`); `postfix` and `at_min_literal`
@@ -1202,7 +1210,7 @@ impl<'a> Parser<'a> {
         let first = consumed
             .iter()
             .rposition(|t| t.span.start() == e.span.start())
-            .unwrap_or(consumed.len());
+            .expect("the first token of an expression just parsed should be consumed");
         &consumed[first..]
     }
 
@@ -3108,6 +3116,7 @@ mod tests {
             ("(a + b) ** 2", Some("(a + b).pow(2)")),
             ("x ** (a + b)", Some("x.pow((a + b))")),
             ("2 ** 10", None),
+            ("None ** 2", None),
             ("x ** 2 ** 3", None),
             ("x ** -1", None),
             ("-x ** 2", None),
@@ -3138,6 +3147,15 @@ mod tests {
                 None => assert!(fix_edits(&d).is_none(), "{src}"),
             }
         }
+        // `**` where no operand starts, and no right side, are the parser's own errors.
+        assert_eq!(
+            parse_err("fn main() {\n    let ** = 1\n}"),
+            (Code::Expected, 2, 9)
+        );
+        assert_eq!(
+            parse_err("fn main() {\n    let _ = x **\n}"),
+            (Code::Expected, 3, 1)
+        );
         // An assignment is no `pow` call, and `=` after `**` is not reported again.
         let src = "fn main() {\n    let mut x = 1.0\n    x **= 2\n}";
         let d = parse_diagnostic(src);

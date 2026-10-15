@@ -654,8 +654,13 @@ fn math_idioms() {
             None => assert_eq!(fixes(&src, &d), [], "{src}"),
         }
     }
-    // A name that no method of the type has stays an unknown function.
+    // A name that no method of the type has stays an unknown function, and so does a method of
+    // numbers called on a `u8`.
     codes(&program("abs(n)"), &[(Code::FunctionNotFound, (2, 13))]);
+    let src = "fn f(b: u8) {\n    let _ = max(b, 3)\n}\nfn main() {}";
+    codes(src, &[(Code::FunctionNotFound, (2, 13))]);
+    // A call on another type's name is still a type read as a value.
+    codes(&program("i64.max(n, 3)"), &[(Code::TypeAsValue, (2, 13))]);
     // The rewrite would delete the comment.
     let src = "fn f(x: f64) {\n    let _ = math.sqrt( // root\n        x)\n}\nfn main() {}";
     let d = diagnostic(src, math, (2, 13, "math.sqrt"), &[]);
