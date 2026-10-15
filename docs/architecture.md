@@ -103,7 +103,9 @@ An array is one counted heap block too: a header of two `i64`s, the count and
 the length, then the elements. Each array type gets the same helpers, such as
 `sisu_rc.release.[i64]`, plus `sisu_rc.unique.[i64]`, which copies the block
 before a write when another holder shares it. An index out of bounds calls
-`sisu_panic_bounds`.
+`sisu_panic_bounds`. A load or store of a count or a length carries one TBAA
+tag, and one of an array element another, so LLVM knows that writing an
+element changes no count and no length.
 
 A string is one counted block with a header of three `i64`s: the count, the
 length and the capacity, then the UTF-8 bytes. A literal is a private global
