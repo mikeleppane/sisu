@@ -497,7 +497,10 @@ fn same_pointer_shortcut_only_when_reflexive() {
             .any(|line| line.contains("icmp eq ptr ") && !line.ends_with(", null"));
         assert_eq!(between_pointers, reflexive, "{helper}:\n{body}");
         // Every helper still tests for `null`, which is all a non-reflexive one may stop at.
-        assert!(body.contains("icmp eq ptr %0, null"), "{helper}:\n{body}");
+        let against_null = body
+            .lines()
+            .any(|line| line.contains("icmp eq ptr ") && line.ends_with(", null"));
+        assert!(against_null, "{helper}:\n{body}");
     }
 }
 
