@@ -818,15 +818,52 @@ These do not make code nicer to write, so they wait:
   `mir` is worth its cost only for what LLVM cannot know: the language's
   rules. General optimization (inlining, loops, constants) stays with LLVM,
   which does it better. The first of these needs introduces `mir`:
-  - Compiling `match` in milestone 7 into a decision tree, which is simpler
-    as basic blocks than as LLVM IR built directly from a tree.
   - Reference-count elision: removing increment and decrement pairs that
     cancel out, which is why Swift has SIL. ADR 0012 (proposed) removes the
     pair around a method's `self` without it.
+  - Explicit count statements. Today codegen decides where to add and
+    subtract 1 while it emits LLVM IR, and `last_use.rs` must repeat
+    codegen's evaluation order by hand. In `mir`, one pass writes every
+    retain, release and move as a statement, and LLVM emission follows them.
+    Debug builds of the compiler then check each function, as Roc's borrow
+    certifier does: on every path, each owned reference is moved or released
+    once, nothing is used after its release, and a borrow ends before its
+    owner does. Valgrind and `--rc-checks` stay, because the checker cannot
+    see the runtime or how LLVM IR is emitted.
+
+  Milestone 7 compiles `match` without `mir`: arms are tested in order,
+  straight into basic blocks, with backtracking for nested alternatives.
 
   It brings its own `--emit mir` printer, and desugaring moves out of
   codegen into the `tir`-to-`mir` step. The name follows `tir`; `sil` would
   clash with Swift's.
+- Borrowing every counted parameter, after ADR 0012 is built and measured.
+  ADR 0012 borrows only `self`, and leaves the other parameters until a
+  benchmark shows that argument counting matters. Then infer it, as Lean 4
+  does ("Counting Immutable Beans") and Roc does. A parameter starts
+  borrowed. It becomes owned when the function stores it, returns it, passes
+  it to an owned parameter, or puts it in a `let mut` local that it then
+  changes. The last case keeps ADR 0007's handover: a borrowed array has
+  count 2, so the first write would copy it. Recursive functions are solved
+  together, one strongly connected group of the call graph at a time. The
+  result is one flag per parameter on `tir`, computed as last use is, so it
+  needs no `mir`. Last use must not move a borrowed parameter. Callers keep
+  ADR 0012's rule: they add 1 to an argument read from a `mut` field, a weak
+  field or an array element. A function called through a closure keeps owned
+  parameters.
+- Reusing a box in `match`. Milestone 7 boxes the enum fields that close a
+  cycle. When a `match` takes apart the last reference to a box, and its arm
+  builds a box of the same enum type, as
+  `Add(l, r) => Expr.Add(simplify(l), simplify(r))` does, the old box could
+  hold the new value in place of a `sisu_free` and a `sisu_alloc`. Koka
+  (Perceus) and Roc call this reuse. Enums have no identity, so a program
+  cannot tell. Classes stay out, because `is` sees identity. Reuse needs
+  `match` to move fields out of a box with count 1 first, which milestone 7
+  does not build: its `match` adds 1 to each binding and then releases the
+  box. A box kept for reuse stays off the pending list, and an arm that does
+  not reuse it frees it on every exit. An enum benchmark in `bench/`, such as
+  an expression simplifier, measures the move and the reuse separately
+  before either is built.
 - Handing over an array held in a field or an element. The last-use rule
   moves only locals, so `self.cells = step(self.cells)` and
   `grid[i] = f(grid[i])` share the array with the call, and the first write
@@ -845,6 +882,13 @@ These do not make code nicer to write, so they wait:
   them today. On the binary_trees benchmark, a direct call to `malloc` ran
   no faster than `sisu_alloc` ([Benchmarks](benchmarks.md)), so wait for a benchmark
   that shows runtime calls matter.
+
+  Bitcode ties two LLVM versions together. LLVM reads bitcode written by
+  older releases, not newer ones, so `sisuc`'s LLVM must read what the pinned
+  Rust toolchain writes, and a test must prove it on each upgrade. Roc's
+  builtins were Zig bitcode, so its LLVM had to follow Zig's. Generating the
+  hot runtime functions as IR inside `sisuc`, as the `@sisu_rc.*` helpers
+  are, avoids the coupling.
 - A formatter, `sisu fmt`, after milestone 7, once `enum` and `match` have
   fixed most of the syntax. It has one style and no options, as with `gofmt`
   and `zig fmt`. It must keep comments, but the lexer drops them today
@@ -939,6 +983,19 @@ stretch goals" with no date. Each gap gets a milestone once a definition of
   (ADR 0013), and a checker that can rerun after one file changes. Both are
   expensive to add to a batch compiler later, so the front end should be
   shaped for them before modules (milestone 11) arrive.
+- **Fast feedback.** Good developer experience needs an edit to reach a
+  result quickly. Today every build checks the whole program and runs all of
+  it through LLVM. Fast rebuilds need incremental compilation, where a change
+  recompiles only what depends on it. It has three parts, each ordered by
+  what `--time` shows:
+  - Caching each module's object file, as "Separate compilation and build
+    caching" under milestone 11 describes.
+  - A checker that reruns only the items a change affects, as Rust's query
+    system does. The language server above needs the same machinery, so
+    design both together.
+  - A development build that skips most of LLVM's work, as Roc's dev backend
+    and Rust's Cranelift backend do, and a link that patches only what
+    changed, as Roc's surgical linker does.
 - **Packages.** "Deliberately avoided" defers a registry and lets path and
   Git dependencies come first. A manifest (`sisu.toml`) and dependency
   resolution have no design.
@@ -949,6 +1006,17 @@ stretch goals" with no date. Each gap gets a milestone once a definition of
 - **Fuzzing the compiler.** Mutation testing measures the tests. Nothing
   feeds generated programs to the parser, checker and codegen to find
   crashes or wrong code.
+- **Distributing `sisuc`.** Nothing installs Sisu outside a clone. `sisuc`
+  finds `libsisu_runtime.a` only next to its own executable in a Cargo target
+  directory (`link.rs`), and it links with `cc`, so users need a C toolchain.
+  The release binary links LLVM statically but needs glibc, libstdc++,
+  libgcc_s, libm, zlib and zstd. A compiled program needs glibc and
+  libgcc_s. A first release ships the runtime beside `sisuc` and finds it
+  there, and is built on an old glibc with libstdc++, zlib and zstd linked
+  statically, then tested on a clean machine. A fully static `sisuc` built
+  against musl needs LLVM built from source against musl. Static compiled
+  programs need the runtime built for `x86_64-unknown-linux-musl` and a link
+  against musl's C library.
 
 The first step is a definition of 1.0, recorded as an ADR: the target
 domain, the platforms, the stability promise, the tools it requires (a
