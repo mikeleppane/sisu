@@ -64,7 +64,9 @@ becomes an `Append`. A local keeps `Assign` with `Concat` and appends in place
 through `concat`'s count-1 path. It folds each top-level `const` to a literal
 and replaces every use of its name with that literal. A call to a prelude
 function such as `print` or `panic` has its own rule, and `panic(msg)` and
-`todo` become a `Panic` node of type `never`. It reports every error
+`todo` become a `Panic` node of type `never`. A method on a number, such as
+`x.sqrt()` or `n.max(m)`, becomes a `Math` node, and a constant such as
+`f64.pi` becomes a literal. It reports every error
 in one run: an expression that already failed gets the poison type, so one
 mistake produces one diagnostic. A program with no errors comes out as the
 typed tree, `tir`, which is all that codegen reads.
@@ -86,7 +88,8 @@ parameter. Integer overflow
 and division by zero call `sisu_panic` instead of wrapping
 ([ADR 0003](adr/0003-arithmetic-panics.md)). A `Panic` node, which `panic`
 and `todo` lower to, calls `sisu_panic_message` with its location and
-message, then ends the block with `unreachable`.
+message, then ends the block with `unreachable`. A `Math` node becomes an LLVM
+intrinsic, except `hypot`, which calls `hypot` from `libm`.
 
 Objects live on the heap, with a reference count in front of their fields
 ([ADR 0005](adr/0005-reference-counting.md)). Codegen lays the fields out
