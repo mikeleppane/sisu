@@ -678,8 +678,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `@sisu_rc.unique.[T](slot) -> ptr`: the array in `slot` when its count is 1. Otherwise
     /// the old block is released, and a new block of the same length with count 1, the
     /// elements copied with `llvm.memcpy` and each counted one retained, is stored into
-    /// `slot`. It has no
-    /// `null` early return: the slot is an `alloca`, a field address or an element address.
+    /// `slot`. It has no `null` early return: the slot is an `alloca`, a field address or an
+    /// element address.
     fn define_array_unique(&self, element: &Type, function: FunctionValue<'ctx>) {
         let block = |name| self.context.append_basic_block(function, name);
         let (entry, only, shared) = (block("entry"), block("only"), block("shared"));
@@ -711,7 +711,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         // The slot's reference moves to the copy. Releasing it never frees the old block: its
         // count was above 1. Releasing it before the copy exists, not after, leaves the copy's
         // count and length as the last stores, so that LLVM can forward them past an inlined
-        // `unique` instead of loading them again: bench/quicksort ran 9% faster.
+        // `unique` instead of loading them again. With the TBAA tags, that drops the second
+        // count and bounds checks of a swap; see `partition_makes_its_array_unique_once`.
         self.add_to_count(array, i64_type.const_int((-1_i64).cast_unsigned(), false));
         // The length fit once, so the new block needs no size check.
         let copy = self.alloc_array(element, len, None);

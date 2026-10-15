@@ -154,24 +154,32 @@ memory shows it: Sisu holds 77.6 MiB, as C does for its one array of
 
 Each element write checks the index against the bounds and the array's
 count against 1, and each addition checks for overflow. To find what each
-check costs, each kind was removed by hand from the program's IR at commit
-c97a45a (`sisuc --emit ir-raw`), and the result built with the same
-`default<O2>` pipeline. hyperfine timed each build, pinned to one CPU, as the
-mean of 15 runs:
+check costs, each kind was removed by hand from the program's IR
+(`sisuc --emit ir-raw`), and the result built with the same `default<O2>`
+pipeline. hyperfine timed every build in one session, pinned to one CPU, as
+the mean of 15 runs, and callgrind counted the instructions. "Before" is
+commit c75ef2d; "after" is 3dbda29, which adds the change described below.
 
-| Removed from the IR | Mean (ms) | Times C |
-| --- | ---: | ---: |
-| Nothing | 686 | 1.28 |
-| The overflow checks | 705 | 1.32 |
-| The count checks | 617 | 1.15 |
-| The bounds checks | 624 | 1.17 |
-| All three | 541 | 1.01 |
-| C, for comparison | 535 | 1.00 |
+| Build | Mean (ms) | Times C | Instructions (billions) |
+| --- | ---: | ---: | ---: |
+| C, for comparison | 542 | 1.00 | 2.82 |
+| Before | 688 | 1.27 | 6.44 |
+| Before, overflow checks removed | 709 | 1.31 | 6.25 |
+| Before, count checks removed | 628 | 1.16 | 5.07 |
+| Before, bounds checks removed | 628 | 1.16 | 4.35 |
+| Before, all three removed | 545 | 1.01 | 2.95 |
+| Before, TBAA tags only | 682 | 1.26 | 6.28 |
+| Before, reordered `unique` only | 685 | 1.26 | 6.68 |
+| After | 622 | 1.15 | 4.82 |
+| After, count checks removed | 582 | 1.07 | 3.99 |
+| After, bounds checks removed | 586 | 1.08 | 3.57 |
 
-The checks are the whole gap to C. Some were redundant. In the swap
-`a[i] = a[j]` then `a[j] = t`, the second write checked the count and the
-length of the array the first write had just made unique. LLVM kept those
-checks for two reasons:
+The checks are the whole gap to C. The overflow checks cost no measurable
+time: without them the program ran fewer instructions but no faster.
+
+Some checks were redundant. In the swap `a[i] = a[j]` then `a[j] = t`, the
+second write checked the count and the length of the array the first write
+had just made unique. LLVM kept those checks for two reasons:
 
 - It could not tell that storing an element leaves the count and the length
   alone.
@@ -181,12 +189,15 @@ checks for two reasons:
 
 Codegen now tags the count and the length apart from the elements (TBAA,
 type-based alias analysis), and `unique` releases the old block before it
-allocates the copy. Either change alone gains nothing; together they remove
-those checks. Built with and without them, quicksort ran in 635 ms instead of
-707 ms. That is as fast as removing every count check by hand, so proving at
-compile time that an array has one holder, as Roc's Morphic analysis does,
-would gain nothing more here. Marking `sisu_alloc`'s result `noalias` gained
-nothing either.
+allocates the copy. Either change alone keeps those checks and gains no
+time. Together they remove them: quicksort takes 622 ms instead of 688, and
+runs 25% fewer instructions. Marking `sisu_alloc`'s result `noalias` in place
+of the reorder removes none of them.
+
+Two costs remain. Removing the count checks that are left would take the
+time from 622 to 582 ms. That bounds what proving at compile time that an
+array has one holder, as Roc's Morphic analysis does, could gain here.
+Removing the bounds checks that are left would gain about as much.
 
 ## Where a hello build spends its time
 

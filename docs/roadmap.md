@@ -880,12 +880,13 @@ These do not make code nicer to write, so they wait:
   and assign it back. `inout` parameters stay out (ADR 0007).
 - Proving uniqueness at compile time. Roc's Morphic analysis follows each
   array through the whole program to prove that a write holds the only
-  reference, so the write needs no count check. Wait for a benchmark that
-  needs it. On quicksort, removing every count check by hand ran no faster
-  than the TBAA tags and the reordered `unique` that codegen emits
-  ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)).
-- Removing bounds checks that LLVM keeps. On quicksort, removing every bounds
-  check by hand took the time from 686 to 624 ms, against C's 535
+  reference, so the write needs no count check. On quicksort, removing by
+  hand the count checks that codegen still emits took the time from 622 to
+  582 ms, against C's 542
+  ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). That is the most
+  the analysis could gain there, for a whole-program pass.
+- Removing bounds checks that LLVM keeps. On quicksort, removing by hand the
+  bounds checks that codegen still emits took the time from 622 to 586 ms
   ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). `for j in lo..hi`
   indexes `a[j]` with no proof that `hi` is below the length. A first step is
   to find which checks LLVM keeps that a range fact about the loop would

@@ -322,10 +322,11 @@ struct Codegen<'ctx, 'src> {
     rc_fault: Option<FunctionValue<'ctx>>,
     /// The kind id of `!tbaa` metadata.
     tbaa_kind: u32,
-    /// The TBAA tag of a count, or of an array's length. An access of a count or length is
-    /// tagged with it, and an access of an array element with `element_tag`, so that LLVM knows
-    /// a store to an element leaves every count and length as it was. Other accesses carry no
-    /// tag and may alias anything.
+    /// The TBAA tag of an array's count and length, and of the count in `add_to_count`,
+    /// `check_count` and `unique`. An array element's loads and stores carry `element_tag`, so
+    /// that LLVM knows a store to an element leaves those counts and lengths as they were. Other
+    /// accesses, such as a string's length or a new object's count, carry no tag and may alias
+    /// anything.
     header_tag: MetadataValue<'ctx>,
     element_tag: MetadataValue<'ctx>,
     program: &'src Program,
@@ -1055,7 +1056,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder.build_store(ptr, value).expect(POSITIONED);
     }
 
-    /// `load`, tagged with `tag`, `header_tag` or `element_tag`.
+    /// `load`, tagged with `tag`, which is `header_tag` or `element_tag`.
     fn load_tagged(
         &self,
         ty: BasicTypeEnum<'ctx>,
@@ -1072,7 +1073,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         value
     }
 
-    /// `store`, tagged with `tag`, `header_tag` or `element_tag`.
+    /// `store`, tagged with `tag`, which is `header_tag` or `element_tag`.
     fn store_tagged(
         &self,
         ptr: PointerValue<'ctx>,
