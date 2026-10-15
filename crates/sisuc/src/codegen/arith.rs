@@ -1,9 +1,9 @@
 //! Checked integer operations: arithmetic that panics on overflow or a zero divisor, and
 //! comparisons.
 
-use inkwell::IntPredicate;
 use inkwell::intrinsics::Intrinsic;
-use inkwell::values::{BasicValueEnum, IntValue};
+use inkwell::values::{BasicValueEnum, FloatValue, IntValue};
+use inkwell::{FloatPredicate, IntPredicate};
 
 use super::{Codegen, POSITIONED};
 use crate::diagnostic::{Panic, Span};
@@ -38,6 +38,40 @@ impl<'ctx> Codegen<'ctx, '_> {
                 "`binary` should send `and` and `or` to `short_circuit` before this match"
             ),
         }
+    }
+
+    /// `lhs op rhs` on `f64`s, to IEEE 754: no overflow or zero divisor check, and no fast-math
+    /// flag. `%` is `frem`, whose result has the sign of `lhs`, as C's `fmod`.
+    pub(super) fn float_binary(
+        &mut self,
+        op: BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> FloatValue<'ctx> {
+        let (l, r) = (self.float(lhs), self.float(rhs));
+        let b = &self.builder;
+        match op {
+            BinaryOp::Add => b.build_float_add(l, r, "sum"),
+            BinaryOp::Sub => b.build_float_sub(l, r, "difference"),
+            BinaryOp::Mul => b.build_float_mul(l, r, "product"),
+            BinaryOp::Div => b.build_float_div(l, r, "quotient"),
+            BinaryOp::Rem => b.build_float_rem(l, r, "remainder"),
+            BinaryOp::And | BinaryOp::Or => {
+                unreachable!("the checker should type `and` and `or` `bool`, never `f64`")
+            }
+        }
+        .expect(POSITIONED)
+    }
+
+    pub(super) fn float_compare(
+        &self,
+        predicate: FloatPredicate,
+        lhs: FloatValue<'ctx>,
+        rhs: FloatValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        self.builder
+            .build_float_compare(predicate, lhs, rhs, "cmp")
+            .expect(POSITIONED)
     }
 
     pub(super) fn int_compare(
@@ -135,13 +169,24 @@ impl<'ctx> Codegen<'ctx, '_> {
         .expect(POSITIONED)
     }
 
+    /// `lhs op rhs` on two integers, `signed` or not, or on two `f64`s, ordered: false beside a
+    /// NaN.
     pub(super) fn compare_pair(
         &self,
         op: CompareOp,
         signed: bool,
-        lhs: IntValue<'ctx>,
-        rhs: IntValue<'ctx>,
+        lhs: BasicValueEnum<'ctx>,
+        rhs: BasicValueEnum<'ctx>,
     ) -> IntValue<'ctx> {
+        if let (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) = (lhs, rhs) {
+            let predicate = match op {
+                CompareOp::Lt => FloatPredicate::OLT, // spellchecker:disable-line
+                CompareOp::Le => FloatPredicate::OLE,
+                CompareOp::Gt => FloatPredicate::OGT,
+                CompareOp::Ge => FloatPredicate::OGE,
+            };
+            return self.float_compare(predicate, lhs, rhs);
+        }
         let predicate = match (op, signed) {
             (CompareOp::Lt, true) => IntPredicate::SLT,
             (CompareOp::Le, true) => IntPredicate::SLE,
@@ -152,7 +197,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             (CompareOp::Gt, false) => IntPredicate::UGT,
             (CompareOp::Ge, false) => IntPredicate::UGE,
         };
-        self.int_compare(predicate, lhs, rhs)
+        self.int_compare(predicate, lhs.into_int_value(), rhs.into_int_value())
     }
 
     /// `i64(u8)`, `i64(char)`, `u8(i64)` and `char(i64)`, the type `e.ty` saying which. A `u8?`
@@ -165,6 +210,13 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         let value = self.value(operand);
         let (fits, payload) = match &e.ty {
+            Type::F64 => {
+                return self
+                    .builder
+                    .build_signed_int_to_float(value, self.context.f64_type(), "float")
+                    .expect(POSITIONED)
+                    .into();
+            }
             Type::Optional(payload) if **payload == Type::Char => {
                 (self.scalar(value), self.context.i32_type())
             }

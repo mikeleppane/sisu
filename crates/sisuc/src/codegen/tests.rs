@@ -1153,3 +1153,78 @@ fn many_panic_sites_compile_in_linear_time() {
     );
     compiled(&Context::create(), &src);
 }
+
+/// No float instruction carries a fast-math flag, so `-O2` keeps every result exact to IEEE
+/// 754. The operands come from the arguments' count, so `-O2` cannot fold the operations away,
+/// and each comparison is printed alone: together, `s <= b || s >= b || s != b` folds to true.
+#[test]
+fn float_ops_have_no_fast_math() {
+    let context = Context::create();
+    let module = compiled(
+        &context,
+        "fn ops(a: f64, b: f64) -> bool {\n    let s = -(a + b - a * b / a % b)\n    print(s < a)\n    print(s <= b)\n    print(s > a)\n    print(s >= b)\n    print(s == a)\n    s != b\n}\n\nfn main(args: [string]) {\n    let n = args.len()\n    print(ops(f64(n), f64(n + 1)))\n}",
+    );
+    let machine = target_machine(true).expect("the host is a target");
+    optimize(&module, &machine, true).expect("the module should optimize");
+    let ir = module.print_to_string().to_string();
+    for wanted in ["fadd", "frem", "fcmp une"] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+    let opcodes = ["fadd", "fsub", "fmul", "fdiv", "frem", "fneg", "fcmp"];
+    let flags = [
+        "fast", "nnan", "ninf", "nsz", "arcp", "contract", "afn", "reassoc",
+    ];
+    let mut seen = 0;
+    for line in ir.lines() {
+        let Some((_, text)) = line.split_once(" = ") else {
+            continue;
+        };
+        let mut words = text.split_whitespace();
+        if !words.next().is_some_and(|op| opcodes.contains(&op)) {
+            continue;
+        }
+        seen += 1;
+        // The words between the opcode and the type: `fcmp`'s predicate, or a flag.
+        for word in words.take_while(|w| *w != "double") {
+            assert!(!flags.contains(&word), "{line}");
+        }
+    }
+    assert!(seen >= 7, "{ir}");
+}
+
+/// Until Task 5, `==` and `!=` on an `f64?`, an `[f64]` or a class with an `f64` field, and
+/// `contains` on an `[f64]`, stop the compiler; declaring them does not.
+#[test]
+fn f64_composites_wait_for_task_5() {
+    let class = "class P {\n    x: f64\n    o: f64?\n    a: [f64]\n}\n\n";
+    let rows = [
+        ("let a: f64? = 1.0\n    print(a == a)", true),
+        ("let a = [1.0]\n    print(a != a)", true),
+        ("let p = P(x: 1.0, o: None, a: [])\n    print(p == p)", true),
+        ("let a = [1.0]\n    print(a.contains(1.0))", true),
+        (
+            "let p = P(x: 1.0, o: None, a: [])\n    print(p.x == p.x)",
+            false,
+        ),
+    ];
+    for (body, panics) in rows {
+        let src = format!("{class}fn main() {{\n    {body}\n}}\n");
+        let result = std::panic::catch_unwind(|| {
+            compiled(&Context::create(), &src);
+        });
+        let message = result.err().map(|payload| {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
+                .unwrap_or_default()
+        });
+        match (panics, message) {
+            (true, Some(message)) => {
+                assert_eq!(message, "f64 in a composite lands in Task 5", "{src}");
+            }
+            (false, None) => {}
+            (_, message) => panic!("{src}: {message:?}"),
+        }
+    }
+}

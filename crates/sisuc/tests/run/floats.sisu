@@ -1,0 +1,19 @@
+// `f64` arithmetic and printing: the runtime's tests own the spelling of each value, so these
+// check the wiring, at both levels, where `-O2` folds what `-O0` computes.
+fn main() {
+    let a = 0.1
+    print(a + 0.2)       // 0.30000000000000004
+    print(1e15 * 10.0)   // 1e16
+    print(1.0 / 0.0)     // inf
+    print(-1.0 / 0.0)    // -inf
+    print(-7.5 % 2.0)    // -1.5: the remainder has the sign of the dividend
+    print(-(0.0))        // -0.0
+    print(1e308 * 10.0)  // inf: overflow
+    print(5e-324 / 2.0)  // 0.0: underflow
+    let g = 9.81
+    let mut v = 0.0
+    let dt = 0.01
+    v -= g * dt
+    print(v)             // -0.0981
+    eprint(2.5)          // 2.5, on standard error
+}

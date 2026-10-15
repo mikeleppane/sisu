@@ -58,7 +58,8 @@ impl Checker {
                     Some(InterpolateHelp::ForLoop)
                 }
                 Some(Type::Optional(_)) => Some(InterpolateHelp::Unwrap),
-                Some(Type::Unit | Type::Class(_) | Type::Array(_)) => None,
+                // Until Task 5 interpolates an `f64`.
+                Some(Type::Unit | Type::F64 | Type::Class(_) | Type::Array(_)) => None,
             };
             let found = type_of(&value).expect("a part reported here should have a type");
             self.report(DiagnosticKind::CannotInterpolate {

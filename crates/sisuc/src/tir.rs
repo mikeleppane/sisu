@@ -20,6 +20,7 @@ pub(crate) struct ClassId(pub(crate) usize);
 pub(crate) enum Type {
     I64,
     U8,
+    F64,
     Bool,
     Char,
     String,
@@ -28,7 +29,7 @@ pub(crate) enum Type {
     Class(ClassId),
     /// `[T]`.
     Array(Box<Type>),
-    /// Holds `I64`, `U8`, `Bool`, `Char`, `String`, `Class` or `Array`.
+    /// Holds `I64`, `U8`, `F64`, `Bool`, `Char`, `String`, `Class` or `Array`.
     Optional(Box<Type>),
 }
 
@@ -155,6 +156,7 @@ impl Stream {
 #[derive(Debug)]
 pub(crate) enum ExprKind {
     Int(i64),
+    Float(f64),
     Bool(bool),
     /// A `char` literal.
     Char(char),
@@ -287,6 +289,7 @@ impl Expr {
     pub(crate) fn exits(&self) -> bool {
         match &self.kind {
             ExprKind::Int(_)
+            | ExprKind::Float(_)
             | ExprKind::Bool(_)
             | ExprKind::Char(_)
             | ExprKind::Str(_)
@@ -384,6 +387,7 @@ impl fmt::Display for Type {
         f.write_str(match self {
             Type::I64 => "i64",
             Type::U8 => "u8",
+            Type::F64 => "f64",
             Type::Bool => "bool",
             Type::Char => "char",
             Type::String => "string",
@@ -462,6 +466,9 @@ impl Printer<'_> {
         match &expr.kind {
             ExprKind::Int(n) if expr.ty == Type::U8 => write!(f, "{n}u8"),
             ExprKind::Int(n) => write!(f, "{n}"),
+            // Rust's shortest text, which spells NaN `NaN`; Sisu spells it `nan`.
+            ExprKind::Float(x) if x.is_nan() => f.write_str("nan"),
+            ExprKind::Float(x) => write!(f, "{x:?}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::Char(c) => write!(f, "{c:?}"),
             ExprKind::Str(s) => write!(f, "{s:?}"),
@@ -955,6 +962,30 @@ mod tests {
         for (op, symbol) in ops {
             assert_eq!(op.to_string(), symbol);
         }
+    }
+
+    #[test]
+    fn prints_float_literals() {
+        let float = |x| expr(ExprKind::Float(x), Type::F64);
+        let program = Program {
+            classes: vec![],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(
+                    [1.0, 1e16, f64::NAN]
+                        .into_iter()
+                        .map(|x| Stmt::Expr(print_of(float(x))))
+                        .collect(),
+                ),
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            "(fn f () unit (block (print 1.0) (print 1e16) (print nan)))"
+        );
     }
 
     #[test]

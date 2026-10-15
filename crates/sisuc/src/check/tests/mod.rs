@@ -7,6 +7,7 @@ use crate::parser::parse_ok;
 mod arrays;
 mod chars;
 mod constants;
+mod floats;
 mod for_loops;
 mod patterns;
 mod places;

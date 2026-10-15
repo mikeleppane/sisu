@@ -29,9 +29,32 @@ impl Checker {
         checked
     }
 
-    /// The integer literal `value`, written as `text`, typed by `expected`.
+    /// The integer literal `value`, written as `text`, typed by `expected`. An `f64` must hold
+    /// it exactly.
     fn integer(&mut self, at: Span, value: i64, text: &str, expected: Option<&Type>) -> Checked {
         let ty = literal_type(expected);
+        if ty == Type::F64 {
+            // Through `i128`: 2^63, the nearest `f64` to `i64::MAX`, saturates back to it.
+            #[expect(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                reason = "the round trip is the check that the `f64` is exact"
+            )]
+            let (x, exact) = (value as f64, (value as f64) as i128 == i128::from(value));
+            if !exact {
+                self.report(DiagnosticKind::NotExactlyF64 {
+                    text: text.to_string(),
+                    nearest: format!("{x:?}"),
+                    at,
+                });
+                return Err(Poisoned::typed(ty));
+            }
+            return Ok(tir::Expr {
+                kind: tir::ExprKind::Float(x),
+                ty,
+                span: at,
+            });
+        }
         if ty == Type::U8 && !(0..=i64::from(u8::MAX)).contains(&value) {
             // Only `-9223372036854775808` parses to a negative literal.
             self.diagnostics.push(if value < 0 {
@@ -63,9 +86,7 @@ impl Checker {
         };
         match &e.kind {
             ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
-            // Stopgap until Task 4 types floats, so that the Fixed programs of E0101 to E0103
-            // check clean: a poisoned value with no diagnostic fails the checker's assertion.
-            ExprKind::Float(_) => node(tir::ExprKind::Int(0), Type::I64),
+            ExprKind::Float(x) => node(tir::ExprKind::Float(x.0), Type::F64),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
             ExprKind::Char(c) => node(tir::ExprKind::Char(*c), Type::Char),
             ExprKind::Str(s) => node(tir::ExprKind::Str(s.clone()), Type::String),
@@ -102,16 +123,20 @@ impl Checker {
             ExprKind::Is { lhs, rhs } => self.is(e.span, lhs, rhs),
             ExprKind::Unary { op, operand } => {
                 let (want, (operand, mismatched)) = match op {
-                    UnaryOp::Neg => (Type::I64, self.negated(e.span, operand, expected)?),
+                    UnaryOp::Neg => self.negated(e.span, operand, expected)?,
                     UnaryOp::Not => (Type::Bool, self.operand(operand, Some(&Type::Bool))),
                 };
                 typed(
                     e.span,
                     want,
                     mismatched,
-                    operand.ok().map(|operand| tir::ExprKind::Unary {
-                        op: *op,
-                        operand: Box::new(operand),
+                    operand.ok().map(|operand| match operand.kind {
+                        // `-1.5` is one literal, as it reads.
+                        tir::ExprKind::Float(x) => tir::ExprKind::Float(-x),
+                        _ => tir::ExprKind::Unary {
+                            op: *op,
+                            operand: Box::new(operand),
+                        },
                     }),
                 )
             }
@@ -173,14 +198,14 @@ impl Checker {
         }
     }
 
-    /// The operand of unary `-`, `expected` passed down, and whether it was reported. A `u8`
-    /// operand is an error; any other is checked against `i64`.
+    /// The type of unary `-`, its operand, `expected` passed down, and whether it was reported. A
+    /// `u8` operand is an error; an `f64` keeps its type; any other is checked against `i64`.
     fn negated(
         &mut self,
         span: Span,
         operand: &ast::Expr,
         expected: Option<&Type>,
-    ) -> Result<(Checked, bool), Poisoned> {
+    ) -> Result<(Type, (Checked, bool)), Poisoned> {
         // A bare `None` expects an `i64`, as in `None + 1`.
         let expected = expected.or_else(|| none_literal(operand).then_some(&Type::I64));
         let before = self.diagnostics.len();
@@ -194,10 +219,16 @@ impl Checker {
                 .push(DiagnosticKind::NegatedU8 { at: span }.into());
             return Err(Poisoned::error());
         }
-        Ok(self.against(operand, checked, Some(&Type::I64)))
+        let want = if type_of(&checked) == Some(&Type::F64) {
+            Type::F64
+        } else {
+            Type::I64
+        };
+        let checked = self.against(operand, checked, Some(&want));
+        Ok((want, checked))
     }
 
-    /// A comparison chain: every operand is of one integer type, or every one a `string`.
+    /// A comparison chain: every operand is of one number type, or every one a `string`.
     fn compare(&mut self, span: Span, operands: &[ast::Expr], ops: &[CompareOp]) -> Checked {
         let operands: Vec<_> = operands.iter().collect();
         let (checked, ty, mismatched) = self.integers(&operands, None, Operator::Compare);
@@ -333,8 +364,8 @@ impl Checker {
     }
 
     /// `integers` for the binary operator at `span`. A `+` that a `string` makes a join under an
-    /// expected `u8` is checked again with none, so that no operand is held to a `u8` it was
-    /// never going to meet: its `string` meets that `u8` once, where the caller checks it. The
+    /// expected `u8` or `f64` is checked again with none, so that no operand is held to a type it
+    /// was never going to meet: its `string` meets that type once, where the caller checks it. The
     /// join is remembered, so an operand checked again checks a join inside it once, with no
     /// expected type: each level of nesting adds a check, where it would double them.
     fn binary_operands(
@@ -345,7 +376,7 @@ impl Checker {
         operator: Operator,
     ) -> (Vec<Checked>, Option<Type>, bool) {
         let joins = operator == (Operator::Plus { compound: false });
-        if !joins || literal_type(expected) != Type::U8 {
+        if !joins || literal_type(expected) == Type::I64 {
             return self.integers(operands, expected, operator);
         }
         if self.joins.contains(&span) {
@@ -363,21 +394,23 @@ impl Checker {
         self.integers(operands, None, operator)
     }
 
-    /// The operands of one integer operator, checked in source order; the type they share,
+    /// The operands of one number operator, checked in source order; the type they share,
     /// `None` when it is `Error`; and whether one was reported against it. The type is `u8`
-    /// when `expected` is `u8` or `u8?`. Otherwise the first concrete operand (of `rank` 0) is
-    /// checked first, with no expected type, and gives it: `u8` beside a `u8`, `char` beside a
-    /// `char` in a comparison, else `i64`. With none, it is `i64`, so `None + 1` expects an
-    /// `i64`. Once an operand is `Error`, the later ones are checked against `Error`. An operand
-    /// of `arithmetic` that is a `char` is left unreported, as the poison `typed` `char`: its
-    /// caller reports the operator, so what the operator's type finds wrong with the other
-    /// operands is dropped, in either order. In a comparison, a `char` after a number reports
+    /// when `expected` is `u8` or `u8?`, and `f64` when it is `f64` or `f64?`. Otherwise the
+    /// first concrete operand (of `rank` 0) is checked first, with no expected type, and gives
+    /// it: `u8` beside a `u8`, `f64` beside an `f64`, `char` beside a `char` in a comparison,
+    /// else `i64`. With none, it is `i64`, so `None + 1` expects an `i64`. An `f64` after an
+    /// `i64` or `u8` first operand makes the type `f64`, and that operand is reported against
+    /// it, as an operand before a `string` is in `+`, unless `expected` is `i64` or `i64?`. Once an operand is `Error`, the later
+    /// ones are checked against `Error`. An operand of `arithmetic` that is a `char` is left
+    /// unreported, as the poison `typed` `char`: its caller reports the operator, so what the
+    /// operator's type finds wrong with the other operands is dropped, in either order. In a comparison, a `char` after a number reports
     /// that number, as a `char` before one reports the number.
     ///
     /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
     /// drives from either side: an operand of another type is reported against `string`, with
     /// the guess to interpolate, the one before a `string` included, in place of what its own
-    /// type was found to lack. A join after an `Error` is `Error`. An expected `u8` is
+    /// type was found to lack. A join after an `Error` is `Error`. An expected `u8` or `f64` is
     /// `binary_operands`' to drop.
     fn integers(
         &mut self,
@@ -388,8 +421,8 @@ impl Checker {
         let arithmetic = operator != Operator::Compare;
         let compound = operator == (Operator::Plus { compound: true });
         let mut first = None;
-        let mut ty = if literal_type(expected) == Type::U8 {
-            Some(Type::U8)
+        let mut ty = if literal_type(expected) != Type::I64 {
+            Some(literal_type(expected))
         } else if let Some(k) = operands.iter().position(|e| rank(e) == 0) {
             let checked = self.value(operands[k], None);
             let ty = type_of(&checked).map(|ty| match payload(ty) {
@@ -404,6 +437,9 @@ impl Checker {
         };
         let mut want = ty.clone();
         let leader = first.as_ref().map(|(k, _)| *k);
+        // An `i64` that the context wants, such as a compound assignment's target's, holds an
+        // `f64` operand to it.
+        let wants_i64 = expected.map(payload) == Some(&Type::I64);
         let (mut checked, mut mismatched) = (Vec::with_capacity(operands.len()), false);
         // The diagnostics of the operator's type: mismatches, and a literal's, which that type
         // types. They wait until a `char` operand is ruled out.
@@ -450,9 +486,9 @@ impl Checker {
                 }
             } else if arithmetic && char_value {
                 (Err(Poisoned::typed(Type::Char)), false)
-            } else if let Some(k) = leader
-                .filter(|_| char_value && !arithmetic && matches!(want, Some(Type::I64 | Type::U8)))
-            {
+            } else if let Some(k) = leader.filter(|_| {
+                char_value && !arithmetic && matches!(want, Some(Type::I64 | Type::U8 | Type::F64))
+            }) {
                 // A `char` after a number in a comparison: the number is the one converted.
                 if let Some(got) = type_of(&checked[k]).cloned() {
                     let d = self.mismatch(operands[k].span, Some(operands[k]), &Type::Char, &got);
@@ -461,6 +497,19 @@ impl Checker {
                 checked[k] = Err(Poisoned::error());
                 want = None;
                 (Err(Poisoned::error()), true)
+            } else if let Some(k) = leader.filter(|_| {
+                got == Some(Type::F64) && matches!(want, Some(Type::I64 | Type::U8)) && !wants_i64
+            }) {
+                // An `f64` after an integer: the integer is the one converted, and the operands
+                // after this one are held to `f64`.
+                if let Some(found) = type_of(&checked[k]).cloned() {
+                    let d = self.mismatch(operands[k].span, Some(operands[k]), &Type::F64, &found);
+                    self.diagnostics.push(d);
+                }
+                checked[k] = Err(Poisoned::error());
+                ty = Some(Type::F64);
+                want = Some(Type::F64);
+                (value, true)
             } else {
                 let start = self.diagnostics.len();
                 let settled = self.settled(e, value, want.as_ref());
@@ -517,7 +566,8 @@ impl Checker {
     /// `lhs == rhs`, or `!=`. The side of lower `rank` is checked first, the left on a tie,
     /// and the other expects its type made optional. A bare `None` beside a value that is not
     /// optional is reported: the answer is fixed. So is a `u8` beside an `i64`, at the side
-    /// checked second, and a `char` beside a `u8` or an `i64`, at the side that is not the `char`.
+    /// checked second, a `char` beside another number, at the side that is not the `char`, and
+    /// an `i64` or a `u8` beside an `f64`, at the side that is not the `f64`.
     fn equal(&mut self, span: Span, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         let swapped = rank(rhs) < rank(lhs);
         let (first, second) = if swapped { (rhs, lhs) } else { (lhs, rhs) };
@@ -534,15 +584,18 @@ impl Checker {
                 .push(DiagnosticKind::NeverNone { value, at: span }.into());
             return Err(Poisoned::error());
         }
-        // The numbers are `i64`, `u8` and `char`: none is compared with another.
-        let number = |ty: &Type| matches!(ty, Type::I64 | Type::U8 | Type::Char);
+        // The numbers are `i64`, `u8`, `f64` and `char`: none is compared with another.
+        let number = |ty: &Type| matches!(ty, Type::I64 | Type::U8 | Type::F64 | Type::Char);
         if let (Some(want), Some(got)) = (type_of(&checked), type_of(&other))
             && number(payload(want))
             && number(payload(got))
             && payload(want) != payload(got)
         {
-            // A number beside a `char` is the one converted; else the second is held to the first.
-            let d = if *payload(got) == Type::Char {
+            // A number beside a `char` is the one converted, and an integer beside an `f64`; else
+            // the second is held to the first.
+            let d = if *payload(got) == Type::Char
+                || (*payload(got) == Type::F64 && *payload(want) != Type::Char)
+            {
                 self.mismatch(first.span, Some(first), payload(got), want)
             } else {
                 self.mismatch(second.span, Some(second), payload(want), got)
@@ -959,7 +1012,7 @@ impl Checker {
         if let Some(checked) = self.prelude_call(span, callee, args) {
             return checked;
         }
-        if let Some(to @ (Type::I64 | Type::U8 | Type::Char | Type::String)) =
+        if let Some(to @ (Type::I64 | Type::U8 | Type::F64 | Type::Char | Type::String)) =
             built_in_type(callee.name.as_str())
         {
             return self.convert(span, to, args);
@@ -1019,7 +1072,7 @@ impl Checker {
             .keys()
             .map(|function| function.as_str())
             .chain(PRELUDE)
-            .chain(["i64", "u8", "char", "string"])
+            .chain(["i64", "u8", "f64", "char", "string"])
             .map(|function| (function, Definition::Function));
         let suggestion = match alias(name) {
             Some(prelude) => Some(Suggestion {
@@ -1353,10 +1406,12 @@ pub(super) fn int_literal(e: &ast::Expr) -> bool {
     }
 }
 
-/// The type literals take beside a value of type `ty`: `u8` if `ty` is `u8` or `u8?`, else `i64`.
+/// The type literals take beside a value of type `ty`: `u8` if `ty` is `u8` or `u8?`, `f64` if
+/// it is `f64` or `f64?`, else `i64`.
 pub(super) fn literal_type(ty: Option<&Type>) -> Type {
     match ty.map(payload) {
         Some(Type::U8) => Type::U8,
+        Some(Type::F64) => Type::F64,
         _ => Type::I64,
     }
 }

@@ -421,6 +421,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `Contains`: `base`, then `value`; whether some element of `base` is `==` to `value`,
     /// stopping at the first that is. Then both are released.
     pub(super) fn contains(&mut self, base: &Expr, value: &Expr) -> IntValue<'ctx> {
+        self.no_f64_inside(&base.ty);
         let element = element_of(&base.ty);
         let array = self
             .expr(base)

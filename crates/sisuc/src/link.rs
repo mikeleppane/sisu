@@ -10,6 +10,8 @@ pub(crate) fn link(object: &Path, output: &Path) -> Result<(), String> {
     let out = Command::new("cc")
         .arg(object)
         .arg(&runtime)
+        // libm, after the runtime: `frem` lowers to a call to `fmod`.
+        .arg("-lm")
         .arg("-o")
         .arg(output)
         .output()

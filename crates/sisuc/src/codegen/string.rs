@@ -623,7 +623,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     ) -> IntValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let order = self.str_compare(l.into_pointer_value(), r.into_pointer_value());
-        let holds = self.compare_pair(op, true, order, self.context.i64_type().const_zero());
+        let zero = self.context.i64_type().const_zero();
+        let holds = self.compare_pair(op, true, order.into(), zero.into());
         self.release(l, &lhs.ty);
         self.release(r, &rhs.ty);
         holds

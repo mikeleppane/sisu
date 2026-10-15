@@ -559,8 +559,8 @@ impl Checker {
                     Type::Class(id)
                 } else {
                     let span = Span::new(ty.span.start, ty.span.start + name.as_str().len());
-                    let types =
-                        ["i64", "u8", "bool", "char", "string"].map(|ty| (ty, Definition::Type));
+                    let types = ["i64", "u8", "f64", "bool", "char", "string"]
+                        .map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
                     self.report(DiagnosticKind::UnknownType {
                         name: name.to_string(),
@@ -698,9 +698,11 @@ impl Checker {
         got: &Type,
     ) -> Diagnostic {
         let optional = matches!(want, Type::Optional(_));
-        // `u8` and `char` convert into each other through `i64`.
+        // `u8` and `char` convert into each other through `i64`, and into `f64` through it.
         let (to, through) = match (payload(want), got) {
             (Type::I64, Type::U8 | Type::Char) => (Some("i64"), None),
+            (Type::F64, Type::I64) => (Some("f64"), None),
+            (Type::F64, Type::U8 | Type::Char) => (Some("f64"), Some("i64")),
             (Type::U8, Type::I64) if optional => (Some("u8"), None),
             (Type::Char, Type::I64) if optional => (Some("char"), None),
             (Type::U8, Type::Char) if optional => (Some("u8"), Some("i64")),
@@ -744,6 +746,7 @@ fn built_in_type(name: &str) -> Option<Type> {
     match name {
         "i64" => Some(Type::I64),
         "u8" => Some(Type::U8),
+        "f64" => Some(Type::F64),
         "bool" => Some(Type::Bool),
         "char" => Some(Type::Char),
         "string" => Some(Type::String),

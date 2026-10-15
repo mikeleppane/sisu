@@ -145,6 +145,7 @@ codes! {
     FloatNeedsDigits = "E0101",
     ExponentNeedsDigits = "E0102",
     FloatOutOfRange = "E0103",
+    NotExactlyF64 = "E0104",
 }
 
 impl Code {
@@ -327,6 +328,13 @@ pub(crate) enum DiagnosticKind {
     /// The integer literal `text` as written, at `at`, which does not fit the `u8` its position
     /// expects.
     IntegerDoesNotFit { text: String, at: Span },
+    /// The integer literal `text` as written, at `at`, which the `f64` its position expects
+    /// does not hold exactly; `nearest` is the text of the `f64` it rounds to.
+    NotExactlyF64 {
+        text: String,
+        nearest: String,
+        at: Span,
+    },
     /// A `self` at `at`, outside a method.
     SelfOutsideMethod { at: Span },
     /// A unary `-` at `at` on a `u8`.
@@ -814,6 +822,7 @@ impl DiagnosticKind {
             DiagnosticKind::JumpOutsideLoop { .. } => Code::JumpOutsideLoop,
             DiagnosticKind::AlreadyDeclared { .. } => Code::AlreadyDeclared,
             DiagnosticKind::IntegerDoesNotFit { .. } => Code::IntegerDoesNotFit,
+            DiagnosticKind::NotExactlyF64 { .. } => Code::NotExactlyF64,
             DiagnosticKind::SelfOutsideMethod { .. } => Code::SelfOutsideMethod,
             DiagnosticKind::NegatedU8 { .. } => Code::NegatedU8,
             DiagnosticKind::NoValue { .. } => Code::NoValue,
@@ -1209,7 +1218,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 suggestion,
             } => similar(
                 Diagnostic::coded(code, at, format!("cannot find type `{name}`")).with_help(
-                    "the types are `i64`, `u8`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
+                    "the types are `i64`, `u8`, `f64`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
                 ),
                 at,
                 suggestion,
@@ -1390,6 +1399,18 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::IntegerDoesNotFit { text, at } => {
                 Diagnostic::coded(code, at, format!("`{text}` does not fit in `u8`"))
             }
+            DiagnosticKind::NotExactlyF64 { text, nearest, at } => {
+                Diagnostic::coded(code, at, format!("`{text}` is not exactly an `f64`")).with_fix(
+                    Fix {
+                        message: format!("write `{nearest}`"),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: at,
+                            replacement: nearest,
+                        }],
+                    },
+                )
+            }
             DiagnosticKind::SelfOutsideMethod { at } => {
                 Diagnostic::coded(code, at, "`self` is only available in a method")
             }
@@ -1551,7 +1572,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 class,
             } => {
-                let takes = format!("`{function}` takes one `i64`, `u8`, `bool`, `char` or `string`");
+                let takes = format!("`{function}` takes one `i64`, `u8`, `f64`, `bool`, `char` or `string`");
                 match class {
                     Some(class) => {
                         Diagnostic::coded(code, at, format!("cannot {function} `{class}`"))

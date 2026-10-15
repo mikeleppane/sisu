@@ -5,7 +5,7 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::Linkage;
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
-use inkwell::{AddressSpace, IntPredicate};
+use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
 use super::{Codegen, POSITIONED};
 use crate::tir::Type;
@@ -324,18 +324,17 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_int_value();
         }
         if !matches!(ty, Type::Optional(_)) {
-            return self.int_compare(IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value());
+            return self.scalar_equal(lhs, rhs);
         }
         // `fa == fb && (!fa || va == vb)` on flags `f` and values `v`, with no branch.
         let part = |pair: BasicValueEnum<'ctx>, index| {
             self.builder
                 .build_extract_value(pair.into_struct_value(), index, "part")
                 .expect("a scalar optional should be lowered to a `{ flag, value }` pair")
-                .into_int_value()
         };
-        let (fa, fb) = (part(lhs, 0), part(rhs, 0));
+        let (fa, fb) = (part(lhs, 0).into_int_value(), part(rhs, 0).into_int_value());
         let flags = self.int_compare(IntPredicate::EQ, fa, fb);
-        let values = self.int_compare(IntPredicate::EQ, part(lhs, 1), part(rhs, 1));
+        let values = self.scalar_equal(part(lhs, 1), part(rhs, 1));
         let none = self.builder.build_not(fa, "none").expect(POSITIONED);
         let values = self
             .builder
@@ -344,6 +343,17 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_and(flags, values, "equal")
             .expect(POSITIONED)
+    }
+
+    /// Whether two scalars are equal: an `f64` to IEEE 754, so `nan` equals nothing and `-0.0`
+    /// equals `0.0`.
+    fn scalar_equal(&self, lhs: BasicValueEnum<'ctx>, rhs: BasicValueEnum<'ctx>) -> IntValue<'ctx> {
+        match (lhs, rhs) {
+            (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
+                self.float_compare(FloatPredicate::OEQ, l, r)
+            }
+            _ => self.int_compare(IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value()),
+        }
     }
 
     /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to

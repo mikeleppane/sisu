@@ -1,0 +1,13 @@
+error[E0032]: expected `f64`, found `i64`
+ --> E0032-mixed.sisu:4:11
+  |
+4 |     print(n * x)
+  |           ^
+  |
+help: if the types are right, convert it with `f64(...)`
+  |
+4 |     print(f64(n) * x)
+  |           ++++ +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

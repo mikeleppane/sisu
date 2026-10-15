@@ -112,6 +112,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0101](E0101.md) | error | float without digits on both sides of `.` |
 | [E0102](E0102.md) | error | exponent without digits |
 | [E0103](E0103.md) | error | float literal out of range for `f64` |
+| [E0104](E0104.md) | error | integer literal not exactly an `f64` |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

@@ -1,0 +1,41 @@
+// `f64` comparisons follow IEEE 754: every comparison with `nan` is false except `!=`, and
+// `-0.0` equals `0.0`. `flip` and `widen` recurse, not in tail position, and `main` calls each
+// from a loop with a depth that changes, so `-O2` keeps the calls: `flip` negates a value
+// `-O2` does not know, and `widen` converts one.
+// o2-calls: main flip 1
+// o2-calls: main widen 1
+fn flip(x: f64, times: i64) -> f64 {
+    if times == 0 { x } else { -flip(x, times - 1) }
+}
+
+fn widen(n: i64, steps: i64) -> f64 {
+    if steps == 0 { f64(n) } else { widen(n + 1, steps - 1) + 0.5 }
+}
+
+fn main() {
+    let nan = 0.0 / 0.0
+    print(nan < 1.0)            // false
+    print(nan <= 1.0)           // false
+    print(nan > 1.0)            // false
+    print(nan >= 1.0)           // false
+    print(nan == 1.0)           // false
+    print(nan != 1.0)           // true
+    print(nan == nan)           // false
+    print(nan != nan)           // true
+    print(-0.0 == 0.0)          // true
+    print(-0.0 < 0.0)           // false
+    let half = 0.5
+    print(0.0 < half <= 0.5)    // true
+    print(0.0 < half < 0.25)    // false
+    print(0.0 < nan < 1.0)      // false
+    let mut flipped = 0.0
+    for i in 0..1000 {
+        flipped += flip(1.5, i % 3 + 1)
+    }
+    print(flipped)              // -501.0: 667 times -1.5 at odd depths, 333 times 1.5 at depth 2
+    let mut widened = 0.0
+    for i in 0..1000 {
+        widened += widen(i, i % 5)
+    }
+    print(widened)              // 502500.0: each is i + 1.5 * (i % 5), summing 499500 and 3000
+}

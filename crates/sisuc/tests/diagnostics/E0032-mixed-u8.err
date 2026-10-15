@@ -1,0 +1,13 @@
+error[E0032]: expected `f64`, found `u8`
+ --> E0032-mixed-u8.sisu:4:11
+  |
+4 |     print(b * x)
+  |           ^
+  |
+help: if the types are right, convert it with `f64(...)`
+  |
+4 |     print(f64(i64(b)) * x)
+  |           ++++++++ ++
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032
