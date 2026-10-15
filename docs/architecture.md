@@ -19,7 +19,9 @@ the terms.
 
 **Driver** (`crates/sisuc/src/lib.rs`). Reads the command line, runs the
 stages in order and prints diagnostics. The `sisuc` binary (`main.rs`) only
-runs it on a thread with a 64 MiB stack. The fuzzer calls the library too:
+runs it on a thread with a 64 MiB stack. It reads at most 1 GiB of source,
+so every span offset fits in a `u32`; a larger file is a tool error. The
+fuzzer calls the library too:
 `fuzz.rs` runs the `--check` path on raw bytes and asserts that every
 diagnostic span and fix edit is well formed. The `--emit` and `--check` flags stop
 the pipeline early, as [Developing Sisu](development.md#look-inside-the-compiler)
@@ -31,7 +33,9 @@ end a statement becomes a `Newline` token, because statements end at
 newlines, not semicolons
 ([ADR 0001](adr/0001-newline-terminated-statements.md)). It decodes a `char`
 literal and its escapes into one scalar value, and a string literal into its
-text, so later stages never see the escape text. A string with `{expr}` parts
+text, so later stages never see the escape text. An integer literal's token
+holds only its value; a diagnostic that quotes the literal as written slices
+the source with its span. A string with `{expr}` parts
 becomes a `StrHead` token, the expression's tokens, and `StrMiddle` or
 `StrTail` tokens for the text between and after them. The lexer interns each
 name into a `Symbol` (`symbol.rs`), so the parser and checker copy, compare and
@@ -85,7 +89,10 @@ and `todo` lower to, calls `sisu_panic_message` with its location and
 message, then ends the block with `unreachable`.
 
 Objects live on the heap, with a reference count in front of their fields
-([ADR 0005](adr/0005-reference-counting.md)). Codegen emits the helpers that
+([ADR 0005](adr/0005-reference-counting.md)). Codegen lays the fields out
+largest alignment first, and fields of equal alignment in declared order, so
+less padding sits between them; `tir` and every diagnostic keep declared
+order. Codegen emits the helpers that
 manage them: `sisu_rc.retain`, and for each class `sisu_rc.release.<Class>`,
 `sisu_rc.drop.<Class>` and `sisu_rc.eq.<Class>`, which `==` calls.
 
