@@ -1,0 +1,9 @@
+enum Expr {
+    Num(i64)
+}
+
+fn make(e: Expr) -> Expr {
+    e.Num(1)
+}
+
+fn main() {}

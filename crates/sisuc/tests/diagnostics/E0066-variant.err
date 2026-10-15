@@ -1,0 +1,10 @@
+error[E0066]: expected field `w` here, found `h`
+ --> E0066-variant.sisu:6:24
+  |
+6 |     let _ = Shape.Rect(h: 3, w: 2)
+  |                        ^
+  |
+  = help: name the fields in declaration order: `w`, `h`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0066

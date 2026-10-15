@@ -276,3 +276,204 @@ fn class_cycle_not_repeated() {
         &[(Code::NeverConstructed, (2, 5))],
     );
 }
+
+/// The enums and the class the construction tests build and name.
+const BUILT: &str = "enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+    fn eval(self) -> i64 {
+        0
+    }
+}
+enum State {
+    Idle
+    Running(i64)
+}
+enum Light {
+    Idle
+    On
+}
+enum Shape {
+    Rect(w: i64, h: i64)
+    Boxed(Size)
+    Pair([i64], i64)
+}
+class Size {
+    width: i64
+    height: i64
+}";
+
+/// `stmt` as the one statement of `g`, which takes an `Expr` `e` and a `Shape` `s`, beside the
+/// declarations of `BUILT`: `stmt` starts at line 2, column 5.
+fn in_g(stmt: &str) -> String {
+    format!("fn g(e: Expr, s: Shape) {{\n    {stmt}\n}}\n{BUILT}\nfn main() {{}}")
+}
+
+#[test]
+fn construction_lowers() {
+    let rows = [
+        ("Expr.Num(2)", "(variant Expr.Num 2)"),
+        (
+            "Expr.Add(Expr.Num(2), Expr.Num(3))",
+            "(variant Expr.Add (variant Expr.Num 2) (variant Expr.Num 3))",
+        ),
+        ("State.Idle", "(variant State.Idle)"),
+        ("Shape.Rect(w: 2, h: 3)", "(variant Shape.Rect 2 3)"),
+        (
+            "Shape.Boxed(Size(width: 2, height: 3))",
+            "(variant Shape.Boxed (new Size 2 3))",
+        ),
+    ];
+    for (value, printed) in rows {
+        contains(&in_g(&format!("let _ = {value}")), &[printed]);
+    }
+    // A variant lives inside its enum, so a class of its name is another thing.
+    let src = format!(
+        "class Num {{}}\nfn main() {{\n    let _ = Num()\n    let _ = Expr.Num(1)\n}}\n{BUILT}"
+    );
+    contains(&src, &["(new Num) (variant Expr.Num 1)"]);
+}
+
+#[test]
+fn construction_spills() {
+    // A counted argument before one that exits is spilled, as a constructor's is.
+    let src = format!(
+        "fn f(xs: [i64], c: bool) -> i64 {{\n    let _ = Shape.Pair(xs, if c {{ return 1 }} else {{ 2 }})\n    0\n}}\n{BUILT}\nfn main() {{}}"
+    );
+    contains(
+        &src,
+        &[
+            "(block (let #2 xs#0) (let #3 (if c#1 (block (return 1)) (block 2))) (variant Shape.Pair #2 #3))",
+        ],
+    );
+}
+
+#[test]
+fn construction_errors() {
+    // Each row: the statement, and the code it reports at the column of line 2.
+    let rows = [
+        ("let _ = Num(2)", Code::BareVariant, 13),
+        ("let _ = Idle", Code::BareVariant, 13),
+        ("let _ = Expr.Nmu(2)", Code::UnknownVariant, 18),
+        ("let _ = State.Idle()", Code::VariantForm, 23),
+        ("let _ = Expr.Num", Code::VariantForm, 18),
+        ("let _ = Expr.Num(n: 2)", Code::LabeledArgument, 22),
+        ("let _ = Expr.Num(1, 2)", Code::ArgumentCount, 13),
+        ("let _ = Shape.Rect(h: 3, w: 2)", Code::FieldOutOfOrder, 24),
+        ("let _ = Shape.Rect(w: 2)", Code::MissingField, 13),
+        ("let _ = Shape.Rect(2, 3)", Code::ArgumentNeedsLabel, 24),
+        (
+            "let _ = Shape.Rect(w: 2, h: 3, d: 4)",
+            Code::TooManyArguments,
+            36,
+        ),
+        ("let _ = Shape.Rect(w: 2, x: 3)", Code::NoMember, 30),
+        ("let _ = e.Num(1)", Code::MemberKind, 15),
+        ("let _ = Expr.eval(e)", Code::MemberKind, 18),
+        ("let _ = s.w", Code::EnumField, 15),
+        ("s.w = 5", Code::EnumField, 7),
+        // A method read as a field, and a method no enum declares, as on a class.
+        ("let _ = e.eval", Code::MethodNotField, 15),
+        ("let _ = e.nope()", Code::NoMember, 15),
+        // A name no enum has as a variant is no bare variant.
+        ("let _ = nope", Code::BindingNotFound, 13),
+        // An enum's name, like a class's, is a type, not a value.
+        ("let _ = Shape", Code::TypeAsValue, 13),
+    ];
+    for (stmt, code, col) in rows {
+        codes(&in_g(stmt), &[(code, (2, col))]);
+    }
+}
+
+/// A construction that fails in itself is `Error`; one whose argument fails keeps the enum's
+/// type, as a class's construction does. Each row binds it to a `bool`.
+#[test]
+fn failed_construction_poisons() {
+    let rows = [
+        ("Shape.Rect(w: 2)", &[(Code::MissingField, (2, 19))][..]),
+        ("Expr.Num(n: 2)", &[(Code::LabeledArgument, (2, 28))]),
+        (
+            "Expr.Num(nope)",
+            &[(Code::Mismatch, (2, 19)), (Code::BindingNotFound, (2, 28))],
+        ),
+        (
+            "Size(width: nope, height: 1)",
+            &[(Code::Mismatch, (2, 19)), (Code::BindingNotFound, (2, 31))],
+        ),
+    ];
+    for (value, expected) in rows {
+        codes(&in_g(&format!("let _: bool = {value}")), expected);
+    }
+}
+
+/// An item that takes a variant's name is what the name means.
+#[test]
+fn bare_variant_yields_to_items() {
+    // A class's name, and an enum's.
+    for name in ["Size", "Shape"] {
+        let src = format!(
+            "fn main() {{\n    let _ = {name}\n}}\nenum V {{\n    Size\n    Shape\n}}\n{BUILT}"
+        );
+        codes(&src, &[(Code::TypeAsValue, (2, 13))]);
+    }
+}
+
+/// A variant whose payload mixes labels is reported at its declaration; a construction of it
+/// checks only its arguments.
+#[test]
+fn mixed_labels_poison_construction() {
+    codes(
+        "enum E {\n    V(a: i64, bool)\n}\nfn main() {\n    let _: bool = E.V(1, nope)\n}",
+        &[
+            (Code::MixedLabels, (2, 15)),
+            (Code::BindingNotFound, (5, 26)),
+        ],
+    );
+}
+
+#[test]
+fn enum_methods() {
+    contains(
+        "enum E {\n    A\n    B(i64)\n    fn same(self, o: E) -> bool { self == o }\n}\nfn main() {\n    let _ = E.A.same(E.B(1))\n}",
+        &["(call E.same (variant E.A) (variant E.B 1))"],
+    );
+    clean("enum E {\n    A\n    fn f(self) -> E { self }\n}\nfn main() {}");
+}
+
+#[test]
+fn enum_name_shadowed() {
+    // The local takes no enum's name, so `Shape.Dot` is still the variant.
+    codes(
+        "enum Shape {\n    Dot\n    Circle(i64)\n}\nfn main() {\n    let Shape = 1\n    let _ = Shape.Dot\n    let _ = Shape.Circle(2)\n}",
+        &[(Code::EnumNamedLocal, (6, 9))],
+    );
+}
+
+#[test]
+fn enum_value_rules() {
+    // Each row: the statement, and the code it reports at the column of line 2. An enum gets the
+    // code a class gets for each rule.
+    let rows = [
+        ("let _ = e is e", Code::IsNeedsObjects, 13),
+        ("let _ = o is o", Code::IsNeedsObjects, 13),
+        ("let _ = e < e", Code::Mismatch, 13),
+        ("let _ = p < p", Code::Mismatch, 13),
+        ("print(e)", Code::PrintArgument, 11),
+        ("print(p)", Code::PrintArgument, 11),
+        ("let _ = \"{e}\"", Code::CannotInterpolate, 15),
+        ("let _ = \"{p}\"", Code::CannotInterpolate, 15),
+        ("let _ = e == f", Code::CannotCompare, 13),
+    ];
+    let decls = "enum E {\n    A(string)\n    B\n}\nenum F { C }\nclass P { x: i64 }";
+    for (stmt, code, col) in rows {
+        let src =
+            format!("fn g(e: E, o: E?, f: F, p: P) {{\n    {stmt}\n}}\n{decls}\nfn main() {{}}");
+        codes(&src, &[(code, (2, col))]);
+    }
+    for value in ["State.Idle", "P(x: 1)"] {
+        let src = format!(
+            "const S = {value}\nenum State {{ Idle }}\nclass P {{ x: i64 }}\nfn main() {{}}"
+        );
+        codes(&src, &[(Code::ConstantNotKnown, (1, 11))]);
+    }
+}

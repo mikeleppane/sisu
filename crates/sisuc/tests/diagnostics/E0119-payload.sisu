@@ -1,0 +1,8 @@
+enum State {
+    Idle
+    Running(i64)
+}
+
+fn main() {
+    let _ = State.Running
+}

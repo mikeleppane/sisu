@@ -1,0 +1,10 @@
+error[E0056]: missing field `h`
+ --> E0056-variant.sisu:6:13
+  |
+6 |     let _ = Shape.Rect(w: 2)
+  |             ^^^^^^^^^^^^^^^^
+  |
+  = help: name the fields in declaration order: `w`, `h`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0056

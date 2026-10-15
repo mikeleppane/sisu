@@ -1,0 +1,13 @@
+enum State {
+    Idle
+    Running(i64)
+}
+
+enum Light {
+    Idle
+    On
+}
+
+fn main() {
+    let _ = Idle
+}

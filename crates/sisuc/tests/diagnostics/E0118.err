@@ -1,0 +1,14 @@
+error[E0118]: `Expr` has no variant `Nun`
+ --> E0118.sisu:7:18
+  |
+7 |     let _ = Expr.Nun(2)
+  |                  ^^^
+  |
+help: a variant with a similar name exists: `Num`
+  |
+7 -     let _ = Expr.Nun(2)
+7 +     let _ = Expr.Num(2)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0118

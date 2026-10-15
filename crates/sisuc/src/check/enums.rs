@@ -3,21 +3,26 @@
 
 use rustc_hash::FxHashMap;
 
-use super::{Checker, Definition, DiagnosticKind};
+use super::{Checked, Checker, Declared, Definition, DiagnosticKind, Poisoned};
 use crate::ast;
-use crate::diagnostic::{BuiltIn, Unbuilt};
+use crate::diagnostic::{BuiltIn, Span, Unbuilt, VariantLabels, suggestion};
+use crate::symbol::Symbol;
 use crate::tir::{self, EnumId, Type};
 
 pub(super) struct EnumInfo {
     pub(super) name: ast::Ident,
     /// The first variant of each name, in declaration order.
     pub(super) variants: Vec<VariantInfo>,
+    /// The first method of each name that no variant takes, and every broken one.
+    pub(super) methods: FxHashMap<Symbol, Declared<tir::FuncId>>,
 }
 
 pub(super) struct VariantInfo {
     pub(super) name: ast::Ident,
     /// The payload's field types; `None` is `Error`.
     pub(super) fields: Vec<Option<Type>>,
+    /// The payload's labels, one for each field.
+    pub(super) labels: Vec<Option<Symbol>>,
 }
 
 /// The enum that a payload field of type `ty` holds inline: an enum's, or an optional enum's.
@@ -106,14 +111,183 @@ impl Checker<'_> {
                 self.enums[id.0].variants.push(VariantInfo {
                     name: name.clone(),
                     fields,
+                    labels: payload
+                        .iter()
+                        .map(|field| field.label.as_ref().map(|label| label.name))
+                        .collect(),
                 });
             }
         }
         for method in &e.methods {
-            self.first_definition(&mut first, Definition::Method, Some(owner), &method.name);
+            let func = tir::FuncId(self.signatures.len());
+            if self.first_definition(&mut first, Definition::Method, Some(owner), &method.name) {
+                self.enums[id.0]
+                    .methods
+                    .insert(method.name.name, Declared::Known(func));
+            }
             self.signature(method, format!("{owner}.{}", method.name.name));
             declared.push((method, Some(Type::Enum(id))));
         }
+        for method in &e.broken_methods {
+            self.enums[id.0]
+                .methods
+                .insert(method.name, Declared::Broken);
+        }
+    }
+
+    /// `Enum.member`, or `Enum.member(args)` when `call` is given, where `Enum` is the enum
+    /// `id`: the variant `member` built, or an error.
+    pub(super) fn enum_path(
+        &mut self,
+        span: Span,
+        id: EnumId,
+        member: &ast::Ident,
+        call: Option<&[ast::Arg]>,
+    ) -> Checked {
+        let info = &self.enums[id.0];
+        let enum_name = info.name.name.as_str();
+        let Some(variant) = info
+            .variants
+            .iter()
+            .position(|v| v.name.name == member.name)
+        else {
+            match info.methods.get(&member.name) {
+                Some(Declared::Known(_)) => self.report(DiagnosticKind::MemberKind {
+                    name: member.name.to_string(),
+                    enum_name: enum_name.to_string(),
+                    method: true,
+                    at: member.span,
+                }),
+                // The method's own error is reported.
+                Some(Declared::Broken) => {}
+                None => {
+                    let variants = info
+                        .variants
+                        .iter()
+                        .map(|v| (v.name.name.as_str(), Definition::Variant));
+                    let suggestion = suggestion(member.name.as_str(), variants);
+                    self.report(DiagnosticKind::UnknownVariant {
+                        enum_name: enum_name.to_string(),
+                        name: member.name.to_string(),
+                        at: member.span,
+                        suggestion,
+                    });
+                }
+            }
+            self.stray(call.unwrap_or_default());
+            return Err(Poisoned::error());
+        };
+        let path = format!("{enum_name}.{}", member.name);
+        let v = &info.variants[variant];
+        let ty = Type::Enum(id);
+        let args = match call {
+            None if v.fields.is_empty() => Vec::new(),
+            Some(args) if !v.fields.is_empty() => {
+                let labels = v.labels.clone();
+                let fields: Vec<_> = v.fields.clone();
+                let built = if labels.iter().all(Option::is_some) {
+                    let named: Vec<_> = labels.into_iter().flatten().zip(fields).collect();
+                    self.construct(span, &path, &named, args)
+                } else if labels.iter().all(Option::is_none) {
+                    self.positional(span, path, &fields, args)
+                } else {
+                    // Mixed labels are reported at the declaration.
+                    self.stray(args);
+                    Err(true)
+                };
+                match built {
+                    Ok(args) => args,
+                    Err(failed) => return Err(Poisoned::of((!failed).then_some(ty))),
+                }
+            }
+            Some(args) => {
+                let parens = Span::new(member.span.end(), span.end());
+                self.report(DiagnosticKind::VariantForm {
+                    path,
+                    payload: false,
+                    at: parens,
+                });
+                self.stray(args);
+                return Err(Poisoned::error());
+            }
+            None => {
+                self.report(DiagnosticKind::VariantForm {
+                    path,
+                    payload: true,
+                    at: member.span,
+                });
+                return Err(Poisoned::error());
+            }
+        };
+        Ok(self.spilled(span, ty, args, |args| tir::ExprKind::Variant {
+            id,
+            variant,
+            args,
+        }))
+    }
+
+    /// The arguments of `path(args)`, a variant whose payload declares no labels, checked
+    /// against its `fields` in order. `Err` holds whether a mistake was reported here, rather
+    /// than in an argument.
+    fn positional(
+        &mut self,
+        span: Span,
+        path: String,
+        fields: &[Option<Type>],
+        args: &[ast::Arg],
+    ) -> Result<Vec<tir::Expr>, bool> {
+        // Each `label: ` and the space after it, which the fix deletes.
+        let labels: Vec<_> = args
+            .iter()
+            .filter_map(|arg| {
+                let label = arg.label.as_ref()?;
+                Some(Span::new(label.span.start(), arg.value.span.start()))
+            })
+            .collect();
+        let labeled = !labels.is_empty();
+        if let Some(first) = args.iter().find_map(|arg| arg.label.as_ref()) {
+            self.report(DiagnosticKind::LabeledArgument {
+                at: first.span,
+                variant: Some(VariantLabels {
+                    path: path.clone(),
+                    labels,
+                }),
+            });
+        }
+        if fields.len() != args.len() {
+            self.report(DiagnosticKind::ArgumentCount {
+                name: path,
+                want: fields.len(),
+                found: args.len(),
+                at: span,
+            });
+            self.stray(args);
+            return Err(true);
+        }
+        let (checked, mismatched): (Vec<_>, Vec<_>) = args
+            .iter()
+            .zip(fields)
+            .map(|(arg, field)| self.operand(&arg.value, field.as_ref()))
+            .unzip();
+        let failed = labeled || mismatched.contains(&true);
+        match checked.into_iter().collect() {
+            Ok(args) if !failed => Ok(args),
+            _ => Err(failed),
+        }
+    }
+
+    /// The enums with a variant `name`, by name, in declaration order. A duplicate or broken
+    /// enum has no variants anyone can name.
+    pub(super) fn variant_of(&self, name: Symbol) -> Vec<String> {
+        self.enums
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| {
+                matches!(self.enum_ids.get(&e.name.name), Some(Declared::Known(id)) if id.0 == *i)
+                    && e.variants.iter().any(|v| v.name.name == name)
+            })
+            .map(|(_, e)| e.name.name.to_string())
+            .collect()
     }
 
     /// Lowers every enum: boxes each payload field whose enum lies in the declaring enum's

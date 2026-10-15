@@ -195,7 +195,9 @@ impl Checker<'_> {
             // `Error`: its diagnostic was recorded where it was bound.
             Some(_) => Err(Poisoned::error()),
             None => self.constant_use(name, span).unwrap_or_else(|| {
-                let d = self.not_found(name, span);
+                let d = self
+                    .bare_variant(name, span)
+                    .unwrap_or_else(|| self.not_found(name, span));
                 self.diagnostics.push(d);
                 Err(Poisoned::error())
             }),
@@ -625,7 +627,8 @@ impl Checker<'_> {
         })
     }
 
-    /// `lhs is rhs`: each a class or its optional, of one class.
+    /// `lhs is rhs`: each a class or its optional, of one class. An enum value has no identity
+    /// to test: two equal ones are the same value.
     fn is(&mut self, span: Span, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         if none_literal(lhs) || none_literal(rhs) {
             let other = if none_literal(lhs) { rhs } else { lhs };
@@ -643,7 +646,7 @@ impl Checker<'_> {
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
             // Once an operand is `Error`, the later one is not held to `is`.
             let Some(ty) = type_of(checked) else { break };
-            if matches!(payload(ty), Type::Array(_) | Type::String)
+            if matches!(payload(ty), Type::Array(_) | Type::String | Type::Enum(_))
                 || !ty.is_counted(&self.lowered_enums)
             {
                 let kind = DiagnosticKind::IsNeedsObjects {
@@ -1030,9 +1033,16 @@ impl Checker<'_> {
             return self.convert(span, to, args);
         }
         match declared {
-            (Some(Declared::Known(class)), _) => self.construct(span, class, args),
+            (Some(Declared::Known(class)), _) => self.construct_class(span, class, args),
             (_, Some(Declared::Known(func))) => self.invoke(span, func, None, args),
-            _ => self.unknown_call(callee, args),
+            _ => match self.bare_variant(callee.name, callee.span) {
+                Some(d) => {
+                    self.diagnostics.push(d);
+                    self.stray(args);
+                    Err(Poisoned::error())
+                }
+                None => self.unknown_call(callee, args),
+            },
         }
     }
 
@@ -1250,15 +1260,17 @@ impl Checker<'_> {
     pub(super) fn labels(&mut self, args: &[ast::Arg]) -> bool {
         let mut labeled = false;
         for label in args.iter().filter_map(|a| a.label.as_ref()) {
-            self.report(DiagnosticKind::LabeledArgument { at: label.span });
+            self.report(DiagnosticKind::LabeledArgument {
+                at: label.span,
+                variant: None,
+            });
             labeled = true;
         }
         labeled
     }
 
-    /// `C(f: e, ...)` names every field of `C`, in declaration order. Only the first mistake
-    /// is reported; every argument is still checked for its own.
-    fn construct(&mut self, span: Span, class: tir::ClassId, args: &[ast::Arg]) -> Checked {
+    /// `C(f: e, ...)`, a construction of the class `class`.
+    fn construct_class(&mut self, span: Span, class: tir::ClassId, args: &[ast::Arg]) -> Checked {
         let info = &self.classes[class.0];
         let name = info.name.name.as_str();
         let fields: Vec<(Symbol, Option<Type>)> = info
@@ -1266,6 +1278,24 @@ impl Checker<'_> {
             .iter()
             .map(|f| (f.name.name, f.ty.clone()))
             .collect();
+        let ty = Type::Class(class);
+        match self.construct(span, name, &fields, args) {
+            Ok(args) => Ok(self.spilled(span, ty, args, |args| tir::ExprKind::New { class, args })),
+            Err(failed) => Err(Poisoned::of((!failed).then_some(ty))),
+        }
+    }
+
+    /// The arguments of `name(f: e, ...)`, a class's constructor or a variant with labels,
+    /// which name every one of `fields` in declaration order. Only the first mistake is
+    /// reported; every argument is still checked for its own. `Err` holds whether a mistake was
+    /// reported here, rather than in an argument.
+    pub(super) fn construct(
+        &mut self,
+        span: Span,
+        name: &str,
+        fields: &[(Symbol, Option<Type>)],
+        args: &[ast::Arg],
+    ) -> Result<Vec<tir::Expr>, bool> {
         let names: Vec<_> = fields.iter().map(|(f, _)| *f).collect();
         let mut failed = false;
         let mut checked = Vec::with_capacity(args.len());
@@ -1290,12 +1320,9 @@ impl Checker<'_> {
             });
             failed = true;
         }
-        let ty = Type::Class(class);
         match checked.into_iter().collect() {
-            Ok(args) if !failed => {
-                Ok(self.spilled(span, ty, args, |args| tir::ExprKind::New { class, args }))
-            }
-            _ => Err(Poisoned::of((!failed).then_some(ty))),
+            Ok(args) if !failed => Ok(args),
+            _ => Err(failed),
         }
     }
 
@@ -1360,6 +1387,19 @@ impl Checker<'_> {
                     }
                 }
             }
+            Type::Enum(id) => match self.enums[id.0].methods.get(&name.name) {
+                Some(Declared::Known(func)) => {
+                    let no_arguments = self.signatures[func.0].params.is_empty();
+                    method(self.type_name(ty), no_arguments).into()
+                }
+                // Its own error is reported.
+                Some(Declared::Broken) => return None,
+                None => DiagnosticKind::EnumField {
+                    enum_name: self.type_name(ty),
+                    at: name.span,
+                }
+                .into(),
+            },
             Type::Array(_) if name.name.as_str() == "len" => {
                 method(self.type_name(ty), true).into()
             }
@@ -1394,6 +1434,27 @@ impl Checker<'_> {
                     DiagnosticKind::FieldNotMethod {
                         name: name.name.to_string(),
                         owner: self.type_name(ty),
+                        at: name.span,
+                    }
+                    .into()
+                } else {
+                    let methods = info.methods.keys().map(|method| method.as_str());
+                    no_member(Definition::Method, self.type_name(ty), name, methods)
+                }
+            }
+            Type::Enum(id) => {
+                let info = &self.enums[id.0];
+                match info.methods.get(&name.name) {
+                    Some(&Declared::Known(func)) => return Some(func),
+                    // Its own error is reported; the caller checks the arguments.
+                    Some(Declared::Broken) => return None,
+                    None => {}
+                }
+                if info.variants.iter().any(|v| v.name.name == name.name) {
+                    DiagnosticKind::MemberKind {
+                        name: name.name.to_string(),
+                        enum_name: self.type_name(ty),
+                        method: false,
                         at: name.span,
                     }
                     .into()
@@ -1600,8 +1661,9 @@ pub(super) fn no_member<'a>(
     .into()
 }
 
-/// The mistake in argument `i` of a constructor of `class`, whose fields are `fields`, if any.
-fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
+/// The mistake in argument `i` of `name(...)`, a class's constructor or a variant with labels,
+/// whose fields are `fields`, if any.
+fn misplaced(name: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
     let Some(field) = fields.get(i) else {
         let start = arg
             .label
@@ -1610,7 +1672,7 @@ fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option
             .start();
         return Some(
             DiagnosticKind::TooManyArguments {
-                class: class.to_string(),
+                class: name.to_string(),
                 fields: fields.len(),
                 at: Span::new(start, arg.value.span.end()),
             }
@@ -1641,7 +1703,7 @@ fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option
     } else {
         Some(no_member(
             Definition::Field,
-            class.to_string(),
+            name.to_string(),
             label,
             fields.iter().map(|field| field.as_str()),
         ))

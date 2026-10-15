@@ -665,6 +665,28 @@ fn main() {
     }
 
     #[test]
+    fn broken_enum_method_poisons_its_calls() {
+        // The call reports nothing: the method's own error is reported already.
+        // Read as a field, or named through the enum, it reports nothing either; the arguments
+        // are still checked.
+        let src = "enum E {\n    A\n    fn m(self) {\n        let = 1\n    }\n}\nfn main() {\n    E.A.m()\n    let _ = E.A.m\n    E.m(nope)\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (4, 13)), (Code::BindingNotFound, (10, 9))]
+        );
+    }
+
+    #[test]
+    fn broken_name_poisons_an_enum_path() {
+        // The broken function `E` poisons the enum `E`: its paths report only their arguments.
+        let src = "fn E() {\n    let = 1\n}\nenum E { A }\nfn main() {\n    let _ = E.A(nope)\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (2, 9)), (Code::BindingNotFound, (6, 17))]
+        );
+    }
+
+    #[test]
     fn broken_method_is_no_field_confusion() {
         let src = "class C {\n    n: i64\n    fn m(self) {\n        let = 1\n    }\n}\nfn main() {\n    let c = C(n: 1)\n    print(c.m)\n}\n";
         assert_eq!(codes(src), [(Code::Expected, (4, 13))]);

@@ -10,7 +10,7 @@ mod suggest;
 pub(crate) use registry::{
     BuiltIn, Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable, InterpolateHelp,
     Join, LetField, Literal, LiteralKind, MathFix, Member, MismatchFix, NanFix, Operand, Owner,
-    Panic, PowerFix, SemicolonPlace, TypedLiteral, Unbuilt, Unwrap,
+    Panic, PowerFix, SemicolonPlace, TypedLiteral, Unbuilt, Unwrap, VariantLabels,
 };
 pub(crate) use suggest::{Suggestion, alias, suggestion};
 

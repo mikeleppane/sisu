@@ -302,6 +302,12 @@ pub(crate) enum ExprKind {
         class: ClassId,
         args: Vec<Expr>,
     },
+    /// The variant `variant` of the enum `id`, holding `args` in declaration order.
+    Variant {
+        id: EnumId,
+        variant: usize,
+        args: Vec<Expr>,
+    },
     /// Field `index` of the class `base` has.
     Field {
         base: Box<Expr>,
@@ -436,9 +442,9 @@ impl Expr {
             | ExprKind::Local(_)
             | ExprKind::Move(_) => false,
             ExprKind::Break | ExprKind::Continue | ExprKind::Return(_) => true,
-            ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
-                args.iter().any(Expr::exits)
-            }
+            ExprKind::Call { args, .. }
+            | ExprKind::New { args, .. }
+            | ExprKind::Variant { args, .. } => args.iter().any(Expr::exits),
             ExprKind::Compare { operands, .. }
             | ExprKind::Math { operands, .. }
             | ExprKind::ArrayLit(operands)
@@ -622,14 +628,17 @@ impl Printer<'_> {
                 f.write_str(")")
             }
             ExprKind::Call { func, args } => {
-                write!(f, "(call {}", self.program.functions[func.0].name)?;
-                self.each(f, args)?;
-                f.write_str(")")
+                let name = &self.program.functions[func.0].name;
+                self.list(f, format_args!("call {name}"), args)
             }
             ExprKind::New { class, args } => {
-                write!(f, "(new {}", self.program.classes[class.0].name)?;
-                self.each(f, args)?;
-                f.write_str(")")
+                let name = &self.program.classes[class.0].name;
+                self.list(f, format_args!("new {name}"), args)
+            }
+            ExprKind::Variant { id, variant, args } => {
+                let e = &self.program.enums[id.0];
+                let name = &e.variants[*variant].name;
+                self.list(f, format_args!("variant {}.{name}", e.name), args)
             }
             ExprKind::Field { base, index } => self.field(f, base, *index),
             ExprKind::Wrap(operand) => self.unary(f, "wrap", operand),
@@ -1546,6 +1555,43 @@ mod tests {
     }
 
     #[test]
+    fn prints_variants() {
+        let id = EnumId(0);
+        let variant = |variant, args| expr(ExprKind::Variant { id, variant, args }, Type::Enum(id));
+        let enums = vec![Enum {
+            name: "Expr".into(),
+            variants: ["Nil", "Num"]
+                .map(|name| Variant {
+                    name: name.into(),
+                    fields: Vec::new(),
+                })
+                .into(),
+            counted: false,
+            cycle: None,
+        }];
+        let program = Program {
+            classes: vec![],
+            enums,
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![],
+                ret: Type::Unit,
+                locals: vec![],
+                body: block(vec![
+                    Stmt::Expr(variant(0, vec![])),
+                    Stmt::Expr(variant(1, vec![int(2)])),
+                ]),
+            }],
+        };
+        assert!(
+            program
+                .to_string()
+                .contains("(block (variant Expr.Nil) (variant Expr.Num 2))"),
+            "{program}"
+        );
+    }
+
+    #[test]
     fn exits_finds_a_jump_at_any_depth() {
         let (if_stmt, looped) = if_and_loop();
         // A `break` in a loop in a block's statement, and in a block's value.
@@ -1565,6 +1611,13 @@ mod tests {
             args: vec![int(1), ret],
         };
         assert!(expr(call, Type::Unit).exits());
+        // A `return` in an argument of a variant.
+        let variant = ExprKind::Variant {
+            id: EnumId(0),
+            variant: 0,
+            args: vec![int(1), expr(ExprKind::Return(None), Type::Never)],
+        };
+        assert!(expr(variant, Type::Enum(EnumId(0))).exits());
         // A `return` in an operand of `is`.
         let is = ExprKind::Is {
             lhs: Box::new(local(0)),

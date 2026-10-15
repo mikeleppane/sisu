@@ -158,6 +158,11 @@ codes! {
     MixedLabels = "E0114",
     EmptyEnum = "E0115",
     EnumNamedLocal = "E0116",
+    BareVariant = "E0117",
+    UnknownVariant = "E0118",
+    VariantForm = "E0119",
+    MemberKind = "E0120",
+    EnumField = "E0121",
     NanComparison = "W0005",
 }
 
@@ -421,8 +426,12 @@ pub(crate) enum DiagnosticKind {
         labeled: bool,
         commented: bool,
     },
-    /// A label at `at` on an argument of a call that is not a constructor.
-    LabeledArgument { at: Span },
+    /// A label at `at` on an argument of a call that is not a constructor. A call of a variant
+    /// that declares no labels is reported once, at its first label: `variant` holds them all.
+    LabeledArgument {
+        at: Span,
+        variant: Option<VariantLabels>,
+    },
     /// A constructor at `at` without the field `field`; `fields` are its class's, in order.
     MissingField {
         field: String,
@@ -444,7 +453,8 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A call of `function` (`print` or `eprint`) at `at` with no argument, several, or one it
-    /// cannot print. `class` is the class of an object argument, and `at` is then that argument.
+    /// cannot print. `class` is the class or enum of an object or enum argument, and `at` is
+    /// then that argument.
     PrintArgument {
         function: &'static str,
         at: Span,
@@ -628,6 +638,39 @@ pub(crate) enum DiagnosticKind {
     EmptyEnum { name: String, at: Span },
     /// A local, parameter or binding at `at` named `name`, which names an enum.
     EnumNamedLocal { name: String, at: Span },
+    /// The variant `name`, at `at`, written without its enum where no item or binding takes the
+    /// name; `enums` are the enums that have such a variant, in declaration order.
+    BareVariant {
+        name: String,
+        enums: Vec<String>,
+        at: Span,
+    },
+    /// The variant `name`, at `at`, which the enum `enum_name` does not have; `suggestion` is its
+    /// closest variant.
+    UnknownVariant {
+        enum_name: String,
+        name: String,
+        at: Span,
+        suggestion: Option<Suggestion>,
+    },
+    /// The variant `path` (`State.Idle`) built the wrong way. With `payload` it has one and is not
+    /// called, and `at` is the variant's name; without, it holds nothing and is called, and `at`
+    /// is the parentheses with what they hold.
+    VariantForm {
+        path: String,
+        payload: bool,
+        at: Span,
+    },
+    /// The member `name`, at `at`, of the enum `enum_name`, used as the other kind of member: a
+    /// `method` named through the enum, or else a variant called on a value.
+    MemberKind {
+        name: String,
+        enum_name: String,
+        method: bool,
+        at: Span,
+    },
+    /// The field at `at`, read or assigned on a value of the enum `enum_name`.
+    EnumField { enum_name: String, at: Span },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -674,6 +717,13 @@ pub(crate) struct TypedLiteral {
     pub(crate) call: Span,
     pub(crate) literal: String,
     pub(crate) annotate: Option<(usize, String)>,
+}
+
+/// The variant `path` (`Expr.Num`) whose payload declares no labels, and each `label: ` of a call
+/// of it, which its fix deletes.
+pub(crate) struct VariantLabels {
+    pub(crate) path: String,
+    pub(crate) labels: Vec<Span>,
 }
 
 /// What a literal that is not closed is the literal of.
@@ -1047,6 +1097,11 @@ impl DiagnosticKind {
             DiagnosticKind::MixedLabels { .. } => Code::MixedLabels,
             DiagnosticKind::EmptyEnum { .. } => Code::EmptyEnum,
             DiagnosticKind::EnumNamedLocal { .. } => Code::EnumNamedLocal,
+            DiagnosticKind::BareVariant { .. } => Code::BareVariant,
+            DiagnosticKind::UnknownVariant { .. } => Code::UnknownVariant,
+            DiagnosticKind::VariantForm { .. } => Code::VariantForm,
+            DiagnosticKind::MemberKind { .. } => Code::MemberKind,
+            DiagnosticKind::EnumField { .. } => Code::EnumField,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
@@ -1741,9 +1796,23 @@ impl From<DiagnosticKind> for Diagnostic {
                     edits,
                 })
             }
-            DiagnosticKind::LabeledArgument { at } => {
+            DiagnosticKind::LabeledArgument { at, variant: None } => {
                 Diagnostic::coded(code, at, "labels on arguments come in milestone 10")
             }
+            DiagnosticKind::LabeledArgument {
+                at,
+                variant: Some(VariantLabels { path, labels }),
+            } => Diagnostic::coded(code, at, format!("`{path}` takes no labels")).with_fix(Fix {
+                message: "remove the labels".to_string(),
+                safe: false,
+                edits: labels
+                    .into_iter()
+                    .map(|span| Edit {
+                        span,
+                        replacement: String::new(),
+                    })
+                    .collect(),
+            }),
             DiagnosticKind::MissingField { field, fields, at } => {
                 Diagnostic::coded(code, at, format!("missing field `{field}`"))
                     .with_help(field_order(&fields))
@@ -2276,6 +2345,83 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::EnumNamedLocal { name, at } => {
                 Diagnostic::coded(code, at, format!("`{name}` names an enum"))
             }
+            DiagnosticKind::BareVariant { name, enums, at } => {
+                // Inserting the enum's name is certain only when one enum has the variant.
+                let safe = enums.len() == 1;
+                let qualify = |e: &String| Fix {
+                    message: format!("write `{e}.{name}`"),
+                    safe,
+                    edits: vec![Edit {
+                        span: Span::new(at.start(), at.start()),
+                        replacement: format!("{e}."),
+                    }],
+                };
+                let d = match enums.as_slice() {
+                    [e] => Diagnostic::coded(
+                        code,
+                        at,
+                        format!("`{name}` is a variant of `{e}`; write `{e}.{name}`"),
+                    ),
+                    several => {
+                        let paths: Vec<_> =
+                            several.iter().map(|e| format!("`{e}.{name}`")).collect();
+                        Diagnostic::coded(
+                            code,
+                            at,
+                            format!("`{name}` is a variant of several enums"),
+                        )
+                        .with_help(format!("write one of {}", paths.join(", ")))
+                    }
+                };
+                enums.iter().fold(d, |d, e| d.with_fix(qualify(e)))
+            }
+            DiagnosticKind::UnknownVariant {
+                enum_name,
+                name,
+                at,
+                suggestion,
+            } => similar(
+                Diagnostic::coded(code, at, format!("`{enum_name}` has no variant `{name}`")),
+                at,
+                suggestion,
+            ),
+            DiagnosticKind::VariantForm { path, payload, at } => {
+                if payload {
+                    Diagnostic::coded(
+                        code,
+                        at,
+                        format!("`{path}` needs its payload: `{path}(...)`"),
+                    )
+                } else {
+                    Diagnostic::coded(code, at, format!("`{path}` holds nothing; write `{path}`"))
+                        .with_fix(Fix {
+                            message: "remove the parentheses".to_string(),
+                            safe: true,
+                            edits: vec![Edit {
+                                span: at,
+                                replacement: String::new(),
+                            }],
+                        })
+                }
+            }
+            DiagnosticKind::MemberKind {
+                name,
+                enum_name,
+                method,
+                at,
+            } => {
+                let message = if method {
+                    format!("`{name}` is a method; call it on a value: `e.{name}()`")
+                } else {
+                    format!("`{name}` is a variant; build it with `{enum_name}.{name}`")
+                };
+                Diagnostic::coded(code, at, message)
+            }
+            DiagnosticKind::EnumField { enum_name, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{enum_name}` has no fields; take it apart with `match`"),
+            ),
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };
                 let d = Diagnostic::coded(

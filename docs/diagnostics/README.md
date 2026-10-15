@@ -125,6 +125,11 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0114](E0114.md) | error | payload labels mixed |
 | [E0115](E0115.md) | error | enum without variants |
 | [E0116](E0116.md) | error | local named like an enum |
+| [E0117](E0117.md) | error | variant without its enum |
+| [E0118](E0118.md) | error | unknown variant |
+| [E0119](E0119.md) | error | variant built the wrong way |
+| [E0120](E0120.md) | error | variant or method used as the other |
+| [E0121](E0121.md) | error | field access on an enum |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

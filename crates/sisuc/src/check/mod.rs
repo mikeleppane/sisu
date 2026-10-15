@@ -339,6 +339,7 @@ impl Checker<'_> {
                     self.enums.push(EnumInfo {
                         name: e.name.clone(),
                         variants: Vec::new(),
+                        methods: FxHashMap::default(),
                     });
                     if !self.built_in(&e.name)
                         && self.first_callable(&mut first, Definition::Enum, &e.name)
@@ -731,10 +732,32 @@ impl Checker<'_> {
             .map(|class| (class.as_str(), Definition::Class))
     }
 
+    /// The variant `name`, at `span`, written without its enum: `None` when an item takes the
+    /// name, or no enum has such a variant.
+    fn bare_variant(&self, name: Symbol, span: Span) -> Option<Diagnostic> {
+        let item = self.class_ids.contains_key(&name)
+            || self.function_ids.contains_key(&name)
+            || self.enum_ids.contains_key(&name)
+            || self.constants.contains_key(&name);
+        let enums = self.variant_of(name);
+        (!item && !enums.is_empty()).then(|| {
+            DiagnosticKind::BareVariant {
+                name: name.to_string(),
+                enums,
+                at: span,
+            }
+            .into()
+        })
+    }
+
     /// "cannot find binding `name`", offering the closest binding of any open scope. A type's
-    /// name, built in or a class's, is in scope, but as a type: that is reported instead.
+    /// name, built in or a class's or an enum's, is in scope, but as a type: that is reported
+    /// instead.
     fn not_found(&self, name: Symbol, span: Span) -> Diagnostic {
-        if built_in_type(name.as_str()).is_some() || self.class_ids.contains_key(&name) {
+        if built_in_type(name.as_str()).is_some()
+            || self.class_ids.contains_key(&name)
+            || self.enum_ids.contains_key(&name)
+        {
             return DiagnosticKind::TypeAsValue {
                 name: name.to_string(),
                 at: span,

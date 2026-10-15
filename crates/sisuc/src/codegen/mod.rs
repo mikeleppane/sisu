@@ -932,6 +932,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return None;
             }
             ExprKind::New { class, args } => return Some(self.new_object(*class, args).into()),
+            ExprKind::Variant { .. } => panic!("variants land in Task 4"),
             ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
             ExprKind::Block(block) => return self.block(block, None),
             ExprKind::Convert(_) => return Some(self.convert(e)),

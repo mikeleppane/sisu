@@ -4,7 +4,7 @@
 use std::f64::consts;
 
 use super::expr::{no_member, postfix, typed};
-use super::{Checked, Checker, Poisoned, UNKNOWN, built_in_type};
+use super::{Checked, Checker, Declared, Poisoned, UNKNOWN, built_in_type};
 use crate::ast;
 use crate::diagnostic::{Definition, DiagnosticKind, MathFix, NanFix, Span};
 use crate::tir::{self, MathOp, Type};
@@ -95,7 +95,9 @@ fn constant_named(name: &str) -> Option<&'static str> {
 }
 
 impl Checker<'_> {
-    /// `base.member`, or `base.member(args)` when `call` is given, where `base` names no local:
+    /// `base.member`, or `base.member(args)` when `call` is given, where `base` names an enum,
+    /// whatever local tried to take its name: the enum's variant `member`, or an error. Otherwise,
+    /// where `base` names no local:
     /// - a built-in type: the `f64` constant `member`, or, for any other member, an error whose
     ///   candidates are that type's constants (only `f64` has any);
     /// - `math` or `Math`, or `f64` in a call: the math idiom of another language, reported.
@@ -111,6 +113,15 @@ impl Checker<'_> {
         let ast::ExprKind::Name(name) = base.kind else {
             return None;
         };
+        // A local cannot take an enum's name, so the enum wins over one that tried.
+        match self.enum_ids.get(&name) {
+            Some(&Declared::Known(id)) => return Some(self.enum_path(span, id, member, call)),
+            Some(Declared::Broken) => {
+                self.stray(call.unwrap_or_default());
+                return Some(Err(Poisoned::error()));
+            }
+            None => {}
+        }
         if self.lookup(name).is_some() {
             return None;
         }
