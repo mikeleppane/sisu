@@ -469,6 +469,33 @@ fn eq_loops_on_the_chain_field() {
     }
 }
 
+/// An `eq` helper answers "equal" for one pointer on both sides only when its type's `==` is
+/// reflexive; where an `f64` is reachable, through an optional, an array or a class's fields,
+/// one block or object may hold a `nan`, so only two `null`s are equal at once.
+#[test]
+fn same_pointer_shortcut_only_when_reflexive() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class Node {\n    value: i64\n    next: Node?\n}\nclass Pt {\n    x: f64\n}\nclass Bag {\n    ps: [Pt?]\n}\nfn same(a: Node, b: Node, c: Bag, d: Bag, e: [i64], f: [i64], g: [f64], h: [f64]) -> bool { a == b && c == d && e == f && g == h }\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for (helper, reflexive) in [
+        // A class whose only cycle is through itself, with no `f64` reached, is reflexive.
+        ("@sisu_rc.eq.Node(ptr", true),
+        ("@\"sisu_rc.eq.[i64]\"(ptr", true),
+        ("@sisu_rc.eq.Pt(ptr", false),
+        ("@sisu_rc.eq.Bag(ptr", false),
+        ("@\"sisu_rc.eq.[Pt?]\"(ptr", false),
+        ("@\"sisu_rc.eq.[f64]\"(ptr", false),
+    ] {
+        let body = function_body(&ir, &format!("define internal i1 {helper}"));
+        assert_eq!(body.contains("%same"), reflexive, "{helper}:\n{body}");
+        assert_eq!(body.contains("%both_null"), !reflexive, "{helper}:\n{body}");
+    }
+}
+
 #[test]
 fn helper_names_cannot_collide() {
     let context = Context::create();

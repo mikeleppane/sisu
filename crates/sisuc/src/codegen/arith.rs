@@ -229,16 +229,17 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .expect(POSITIONED)
                     .into();
             }
-            Type::Optional(payload) if **payload == Type::Char => {
-                (self.scalar(value), self.context.i32_type())
-            }
-            Type::Optional(payload) if **payload == Type::U8 => {
-                let max = value.get_type().const_int(u64::from(u8::MAX), false);
-                (
-                    self.int_compare(IntPredicate::ULE, value, max),
-                    self.context.i8_type(),
-                )
-            }
+            Type::Optional(payload) => match **payload {
+                Type::Char => (self.scalar(value), self.context.i32_type()),
+                Type::U8 => {
+                    let max = value.get_type().const_int(u64::from(u8::MAX), false);
+                    (
+                        self.int_compare(IntPredicate::ULE, value, max),
+                        self.context.i8_type(),
+                    )
+                }
+                ref ty => unreachable!("the checker should give no conversion to `{ty}?`"),
+            },
             ty => unreachable!("the checker should give no conversion to `{ty}`"),
         };
         let narrowed = self
