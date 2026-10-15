@@ -753,15 +753,14 @@ impl<'a> Parser<'a> {
 
     /// The error for the comma at the next token, which ends a `member`. Its fix deletes a comma
     /// that is the last on its line (or is followed by the `}`), and replaces any other, with the
-    /// spaces after it, with a line break and the indentation of the line.
+    /// spaces and tabs right after it, with a line break and the indentation of the line. The edit
+    /// never reaches past those, so text the lexer skipped after the comma stays.
     fn member_comma(&self, member: diagnostic::Member) -> Diagnostic {
         let comma = self.peek().span;
         // A comma is not `Eof`, so the token after it exists.
         let next = &self.tokens[self.pos + 1];
-        let ends_line = matches!(
-            next.kind,
-            TokenKind::Newline | TokenKind::RBrace | TokenKind::Eof
-        ) || self.source[comma.end()..next.span.start()].contains('\n');
+        let ends_line = matches!(next.kind, TokenKind::RBrace | TokenKind::Eof)
+            || self.source[comma.end()..next.span.start()].contains('\n');
         let (remove, replacement) = if ends_line {
             (comma, String::new())
         } else {
@@ -772,8 +771,12 @@ impl<'a> Parser<'a> {
                 .chars()
                 .take_while(|c| matches!(c, ' ' | '\t'))
                 .collect::<String>();
+            let spaces = self.source[comma.end()..]
+                .chars()
+                .take_while(|c| matches!(c, ' ' | '\t'))
+                .count();
             (
-                Span::new(comma.start(), next.span.start()),
+                Span::new(comma.start(), comma.end() + spaces),
                 format!("\n{indent}"),
             )
         };
@@ -3396,6 +3399,16 @@ mod tests {
             ("enum E { A,   B(i64) }", (1, 11), "enum E { A\nB(i64) }"),
             ("enum E { A, }", (1, 11), "enum E { A }"),
             (
+                "enum E {\n    A, // c\n    B\n}",
+                (2, 6),
+                "enum E {\n    A // c\n    B\n}",
+            ),
+            (
+                "enum E {\n    A,  \n    B\n}",
+                (2, 6),
+                "enum E {\n    A  \n    B\n}",
+            ),
+            (
                 "enum E {\n    A(i64),\n    B\n}",
                 (2, 11),
                 "enum E {\n    A(i64)\n    B\n}",
@@ -3408,6 +3421,26 @@ mod tests {
             assert_eq!(fixed(src), expected, "{src}");
             parse_ok(expected);
         }
+    }
+
+    #[test]
+    fn comma_fix_keeps_the_text_the_lexer_skipped() {
+        // The `$` is a lexer error; the fix must not delete it.
+        let src = "enum E { A, $B }";
+        let parsed = parsed(src);
+        let comma = parsed
+            .diagnostics
+            .iter()
+            .find(|d| d.code() == Code::FieldComma)
+            .expect("a comma error");
+        assert_eq!(apply_fix(src, comma), "enum E { A\n$B }");
+        let lexed = lex(src).expect("source lexes");
+        assert!(
+            lexed
+                .diagnostics
+                .iter()
+                .any(|d| d.code() == Code::UnexpectedCharacter)
+        );
     }
 
     #[test]
