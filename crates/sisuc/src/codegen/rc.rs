@@ -438,7 +438,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             return;
         };
         let i64_type = self.context.i64_type();
-        let count = self.load(i64_type.into(), object).into_int_value();
+        let count = self
+            .load_tagged(i64_type.into(), object, "old", self.header_tag)
+            .into_int_value();
         let dead = self.int_compare(IntPredicate::SLT, count, i64_type.const_int(1, false));
         let function = self.current_function();
         let fault_block = self.context.append_basic_block(function, "rc.fault");
@@ -485,15 +487,13 @@ impl<'ctx> Codegen<'ctx, '_> {
     ) -> IntValue<'ctx> {
         let i64_type = self.context.i64_type();
         let count = self
-            .builder
-            .build_load(i64_type, object, "count")
-            .expect(POSITIONED)
+            .load_tagged(i64_type.into(), object, "count", self.header_tag)
             .into_int_value();
         let count = self
             .builder
             .build_int_add(count, delta, "count")
             .expect(POSITIONED);
-        self.store(object, count.into());
+        self.store_tagged(object, count.into(), self.header_tag);
         count
     }
 

@@ -24,7 +24,7 @@ use inkwell::targets::{
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue,
-    PointerValue,
+    MetadataValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
@@ -104,6 +104,15 @@ pub(crate) fn compile<'ctx>(
     // Declared only with the checks, so that a plain build's module stays as it was.
     let rc_fault =
         rc_checks.then(|| declare_noreturn(&module, "sisu_rc_fault", &[context.i32_type().into()]));
+    // Two TBAA types under one root: an access tagged with one never touches memory that an
+    // access tagged with the other does.
+    let root = context.metadata_node(&[context.metadata_string("sisu").into()]);
+    let tbaa_tag = |name: &str| {
+        let offset = i64_type.const_zero().into();
+        let ty =
+            context.metadata_node(&[context.metadata_string(name).into(), root.into(), offset]);
+        context.metadata_node(&[ty.into(), ty.into(), offset])
+    };
 
     let mut codegen = Codegen {
         context,
@@ -118,6 +127,9 @@ pub(crate) fn compile<'ctx>(
         free,
         rc_retain,
         rc_fault,
+        tbaa_kind: context.get_kind_id("tbaa"),
+        header_tag: tbaa_tag("count and length"),
+        element_tag: tbaa_tag("array element"),
         program,
         helpers: RefCell::new(FxHashMap::default()),
         pending: RefCell::new(Vec::new()),
@@ -308,6 +320,14 @@ struct Codegen<'ctx, 'src> {
     rc_retain: FunctionValue<'ctx>,
     /// `sisu_rc_fault(kind)`, declared only with the RC checks: `Some` turns them on.
     rc_fault: Option<FunctionValue<'ctx>>,
+    /// The kind id of `!tbaa` metadata.
+    tbaa_kind: u32,
+    /// The TBAA tag of a count, or of an array's length. An access of a count or length is
+    /// tagged with it, and an access of an array element with `element_tag`, so that LLVM knows
+    /// a store to an element leaves every count and length as it was. Other accesses carry no
+    /// tag and may alias anything.
+    header_tag: MetadataValue<'ctx>,
+    element_tag: MetadataValue<'ctx>,
     program: &'src Program,
     /// The helpers declared so far, by kind and counted type; see `rc::helper`.
     helpers: RefCell<FxHashMap<(Helper, Type), FunctionValue<'ctx>>>,
@@ -1033,6 +1053,36 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     fn store(&self, ptr: PointerValue<'ctx>, value: BasicValueEnum<'ctx>) {
         self.builder.build_store(ptr, value).expect(POSITIONED);
+    }
+
+    /// `load`, tagged with `tag`, `header_tag` or `element_tag`.
+    fn load_tagged(
+        &self,
+        ty: BasicTypeEnum<'ctx>,
+        ptr: PointerValue<'ctx>,
+        name: &str,
+        tag: MetadataValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let value = self.builder.build_load(ty, ptr, name).expect(POSITIONED);
+        let load = value
+            .as_instruction_value()
+            .expect("a load should be an instruction");
+        load.set_metadata(tag, self.tbaa_kind)
+            .expect("a TBAA tag should be a metadata node");
+        value
+    }
+
+    /// `store`, tagged with `tag`, `header_tag` or `element_tag`.
+    fn store_tagged(
+        &self,
+        ptr: PointerValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+        tag: MetadataValue<'ctx>,
+    ) {
+        let store = self.builder.build_store(ptr, value).expect(POSITIONED);
+        store
+            .set_metadata(tag, self.tbaa_kind)
+            .expect("a TBAA tag should be a metadata node");
     }
 
     /// `loop`: the body block runs until a `Break` branches to the end block, where codegen
