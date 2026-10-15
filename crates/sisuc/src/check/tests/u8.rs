@@ -145,19 +145,24 @@ fn literal_argument_is_optional() {
 /// `u8(...)` and `char(...)` give an optional, so they are offered only where one fits.
 #[test]
 fn conversion_fix_needs_optional() {
+    let program =
+        |line: &str| format!("fn main() {{\n    let n = 1\n    let k = 'a'\n    {line}\n}}");
     for (declared, fixed) in [
         ("let b: u8? = n", Some("let b: u8? = u8(n)")),
         ("let b: u8 = n", None),
         ("let c: char? = n", Some("let c: char? = char(n)")),
         ("let c: char = n", None),
+        // Through `i64`, from a `char`.
+        ("let b: u8? = k", Some("let b: u8? = u8(i64(k))")),
+        ("let b: u8 = k", None),
     ] {
-        let src = format!("fn main() {{\n    let n = 1\n    {declared}\n}}");
+        let src = program(declared);
         let col = declared.len() + 4;
-        let d = diagnostic(&src, Code::Mismatch, (3, col, "n"), &[]);
+        let d = diagnostic(&src, Code::Mismatch, (4, col, &declared[col - 5..]), &[]);
         match fixed {
             Some(fixed) => {
                 assert!(d.fixes().iter().all(|f| !f.certain()), "{src}");
-                let fixed = format!("fn main() {{\n    let n = 1\n    {fixed}\n}}");
+                let fixed = program(fixed);
                 assert_eq!(applied(&src, &d), fixed);
                 clean(&fixed);
             }
