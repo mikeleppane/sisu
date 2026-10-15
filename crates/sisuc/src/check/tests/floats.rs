@@ -548,6 +548,15 @@ fn nan_comparison() {
     for expr in ["x == f64.pi", "x < f64.nan", "x == x"] {
         clean(&program(expr));
     }
+    // A side that failed, or has no `f64` to compare, is reported once, by its own error.
+    codes(
+        "fn f(xs: [f64]) {\n    let _ = xs == f64.nan\n}\nfn main() {}",
+        &[(Code::CannotCompare, (2, 13))],
+    );
+    codes(
+        "fn f() {\n    let _ = y == f64.nan\n}\nfn main() {}",
+        &[(Code::BindingNotFound, (2, 13))],
+    );
     // A comparison that is an error is not also a warning.
     codes(
         "fn f(n: i64) {\n    let _ = n == f64.nan\n}\nfn main() {}",
