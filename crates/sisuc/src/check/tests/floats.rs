@@ -343,3 +343,98 @@ fn float_interpolation() {
         &[(Code::CannotInterpolate, (2, 13))],
     );
 }
+
+/// One method of each result shape. The declared type proves the result: the same call is a
+/// mismatch against the wrong type, which every row names.
+#[test]
+fn method_types() {
+    let rows = [
+        ("x.sqrt()", "f64", "bool"),
+        ("x.pow(2.0)", "f64", "bool"),
+        ("x.hypot(1.0)", "f64", "bool"),
+        ("x.is_nan()", "bool", "f64"),
+        ("x.is_finite()", "bool", "f64"),
+        ("x.is_infinite()", "bool", "f64"),
+        ("x.min(1.0)", "f64", "bool"),
+        ("x.clamp(0.0, 1.0)", "f64", "bool"),
+        ("n.min(1)", "i64", "bool"),
+        ("n.max(1)", "i64", "f64"),
+        ("n.clamp(0, 1)", "i64", "f64"),
+    ];
+    for (expr, ty, wrong) in rows {
+        let program = |declared: &str| {
+            format!(
+                "fn f(n: i64, x: f64) {{\n    let y: {declared} = {expr}\n    print(y)\n}}\nfn main() {{}}"
+            )
+        };
+        clean(&program(ty));
+        let src = program(wrong);
+        let found: Vec<_> = diags(&src).iter().map(Diagnostic::code).collect();
+        assert_eq!(found, [Code::Mismatch], "{src}");
+    }
+    // Through `?.` the result is optional.
+    clean("fn f(x: f64?) {\n    let y: f64? = x?.sqrt()\n    print(y ?? 0.0)\n}\nfn main() {}");
+    codes(
+        "fn f(x: f64?) {\n    let y: f64 = x?.sqrt()\n    print(y)\n}\nfn main() {}",
+        &[(Code::Mismatch, (2, 18))],
+    );
+}
+
+/// The receiver's type is the expected type of each argument, so an integer literal is an
+/// `f64`; the receiver comes first among the operands.
+#[test]
+fn method_literals() {
+    contains(
+        "fn f(x: f64) {\n    print(x.pow(2))\n}\nfn main() {}",
+        &["(math pow x#0 2.0)"],
+    );
+    contains(
+        "fn f(x: f64) {\n    print(x.clamp(0, 1))\n}\nfn main() {}",
+        &["(math clamp x#0 0.0 1.0)"],
+    );
+    contains(
+        "fn f(n: i64) {\n    print(n.clamp(0, 1))\n}\nfn main() {}",
+        &["(math clamp n#0 0 1)"],
+    );
+}
+
+/// `Math` prints as `(math <method> <receiver> <arguments>)`, and a literal receiver is the
+/// first operand.
+#[test]
+fn math_prints() {
+    contains(
+        "fn f(x: f64) {\n    print(x.sqrt())\n    print((-1.0).is_nan())\n    print(x.is_infinite())\n}\nfn main() {}",
+        &[
+            "(math sqrt x#0)",
+            "(math is_nan -1.0)",
+            "(math is_infinite x#0)",
+        ],
+    );
+}
+
+#[test]
+fn method_errors() {
+    let rows = [
+        // The count is the method's, as for any method.
+        ("x.sqrt(1)", Code::ArgumentCount, (2, 13)),
+        ("x.pow()", Code::ArgumentCount, (2, 13)),
+        ("x.clamp(1.0)", Code::ArgumentCount, (2, 13)),
+        ("x.sqrtt()", Code::NoMember, (2, 15)),
+        // `sqrt` is not a method of an `i64`.
+        ("n.sqrt()", Code::NoMember, (2, 15)),
+        ("b.min(b)", Code::NoMember, (2, 15)),
+    ];
+    for (expr, code, at) in rows {
+        let src = scalars(expr);
+        codes(&src, &[(code, at)]);
+    }
+    // The nearest method is the guess.
+    let src = scalars("x.sqrtt()");
+    let d = diagnostic(&src, Code::NoMember, (2, 15, "sqrtt"), &[]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(false, vec![(2, 15, "sqrtt", "sqrt".to_owned())])]
+    );
+    // An argument of the wrong type is a mismatch at the argument, whatever the method.
+    codes(&scalars("x.pow(n)"), &[(Code::Mismatch, (2, 19))]);
+}

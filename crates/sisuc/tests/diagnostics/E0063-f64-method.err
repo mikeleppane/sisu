@@ -1,0 +1,14 @@
+error[E0063]: `f64` has no method `sqrtt`
+ --> E0063-f64-method.sisu:3:13
+  |
+3 |     print(x.sqrtt())
+  |             ^^^^^
+  |
+help: a method with a similar name exists: `sqrt`
+  |
+3 -     print(x.sqrtt())
+3 +     print(x.sqrt())
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0063

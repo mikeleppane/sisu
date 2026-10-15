@@ -45,6 +45,70 @@ pub(crate) enum BinaryOp {
     Or,
 }
 
+/// A method of `f64` or `i64`. `Min`, `Max` and `Clamp` are also the methods of `i64`: the
+/// operand type picks the lowering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MathOp {
+    Abs,
+    Sqrt,
+    Floor,
+    Ceil,
+    Trunc,
+    Round,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Exp,
+    Ln,
+    Log10,
+    Log2,
+    Pow,
+    Hypot,
+    Min,
+    Max,
+    Clamp,
+    IsNan,
+    IsFinite,
+    IsInfinite,
+}
+
+impl MathOp {
+    /// The method's name, which the printer also uses.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            MathOp::Abs => "abs",
+            MathOp::Sqrt => "sqrt",
+            MathOp::Floor => "floor",
+            MathOp::Ceil => "ceil",
+            MathOp::Trunc => "trunc",
+            MathOp::Round => "round",
+            MathOp::Sin => "sin",
+            MathOp::Cos => "cos",
+            MathOp::Tan => "tan",
+            MathOp::Asin => "asin",
+            MathOp::Acos => "acos",
+            MathOp::Atan => "atan",
+            MathOp::Atan2 => "atan2",
+            MathOp::Exp => "exp",
+            MathOp::Ln => "ln",
+            MathOp::Log10 => "log10",
+            MathOp::Log2 => "log2",
+            MathOp::Pow => "pow",
+            MathOp::Hypot => "hypot",
+            MathOp::Min => "min",
+            MathOp::Max => "max",
+            MathOp::Clamp => "clamp",
+            MathOp::IsNan => "is_nan",
+            MathOp::IsFinite => "is_finite",
+            MathOp::IsInfinite => "is_infinite",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Program {
     pub(crate) classes: Vec<Class>,
@@ -223,6 +287,11 @@ pub(crate) enum ExprKind {
         base: Box<Expr>,
         value: Box<Expr>,
     },
+    /// `operands[0].op(operands[1..])`: a method of `f64` or `i64`, with the receiver first.
+    Math {
+        op: MathOp,
+        operands: Vec<Expr>,
+    },
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,
@@ -302,6 +371,7 @@ impl Expr {
                 args.iter().any(Expr::exits)
             }
             ExprKind::Compare { operands, .. }
+            | ExprKind::Math { operands, .. }
             | ExprKind::ArrayLit(operands)
             | ExprKind::Interpolate(operands) => operands.iter().any(Expr::exits),
             ExprKind::Field { base: operand, .. }
@@ -495,11 +565,7 @@ impl Printer<'_> {
             ExprKind::Print { stream, operand } => self.unary(f, stream.name(), operand),
             ExprKind::Panic(message) => self.unary(f, "panic", message),
             ExprKind::ReadLine => f.write_str("(read_line)"),
-            ExprKind::ArrayLit(elements) => {
-                f.write_str("(array")?;
-                self.each(f, elements)?;
-                f.write_str(")")
-            }
+            ExprKind::ArrayLit(elements) => self.list(f, format_args!("array"), elements),
             ExprKind::ArrayFill { value, len } => self.binary(f, "array-fill", value, len),
             ExprKind::Index { base, index } => self.binary(f, "index", base, index),
             ExprKind::Len(base) => self.unary(f, "len", base),
@@ -509,13 +575,12 @@ impl Printer<'_> {
             ExprKind::FromChars(base) => self.unary(f, "string", base),
             ExprKind::Sum(base) => self.unary(f, "sum", base),
             ExprKind::Contains { base, value } => self.binary(f, "contains", base, value),
+            ExprKind::Math { op, operands } => {
+                self.list(f, format_args!("math {}", op.name()), operands)
+            }
             ExprKind::Unary { op, operand } => self.unary(f, &op.to_string(), operand),
             ExprKind::Binary { op, lhs, rhs } => self.binary(f, &op.to_string(), lhs, rhs),
-            ExprKind::Interpolate(parts) => {
-                f.write_str("(interp")?;
-                self.each(f, parts)?;
-                f.write_str(")")
-            }
+            ExprKind::Interpolate(parts) => self.list(f, format_args!("interp"), parts),
             ExprKind::Concat { lhs, rhs } => self.binary(f, "concat", lhs, rhs),
             ExprKind::Compare { operands, ops } => {
                 // `(< a b <= c)`: the first operator leads, the rest sit between operands.
@@ -645,6 +710,18 @@ impl Printer<'_> {
     }
 
     /// Writes each expression after a space.
+    /// `(head e1 e2 ...)`.
+    fn list(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        head: fmt::Arguments<'_>,
+        exprs: &[Expr],
+    ) -> fmt::Result {
+        write!(f, "({head}")?;
+        self.each(f, exprs)?;
+        f.write_str(")")
+    }
+
     fn each(&self, f: &mut fmt::Formatter<'_>, exprs: &[Expr]) -> fmt::Result {
         exprs.iter().try_for_each(|e| {
             f.write_str(" ")?;

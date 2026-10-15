@@ -4,6 +4,7 @@
 mod array;
 mod constant;
 mod expr;
+mod number;
 mod place;
 mod prelude;
 mod stmt;

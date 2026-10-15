@@ -3,6 +3,7 @@
 mod arith;
 mod array;
 mod io;
+mod math;
 mod rc;
 mod string;
 
@@ -852,6 +853,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.print(*stream, operand);
                 return None;
             }
+            ExprKind::Math { op, operands } => return Some(self.math(*op, operands)),
             ExprKind::Unary { operand, .. } if e.ty == Type::F64 => {
                 let operand = self.float(operand);
                 let negated = self.builder.build_float_neg(operand, "neg");

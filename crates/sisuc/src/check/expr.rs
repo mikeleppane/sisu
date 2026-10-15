@@ -1131,6 +1131,10 @@ impl Checker<'_> {
                 return self.array_method(span, receiver, &ty, method, args);
             }
             Some(Type::String) => return self.string_method(span, receiver, method, args),
+            Some(ty @ (Type::I64 | Type::F64)) => {
+                let ty = ty.clone();
+                return self.number_method(span, receiver, &ty, method, args);
+            }
             _ => {}
         }
         let Some(func) = self.find_method(type_of(&receiver), receiver_expr, method, target) else {
