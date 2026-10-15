@@ -18,6 +18,11 @@ merge only when the user asks, or when the pull request merged without it.
 Run plain git from the repository root, one command per call. Start with
 `git fetch origin`, so `origin/main` is current.
 
+Before a pull request, run `git merge-tree --write-tree --name-only origin/main HEAD`.
+Exit status 1 means the branch conflicts with `main`, and the output names the
+files. Rebase onto `origin/main` first, then document the rebased code: the docs
+describe what merges, and a rebase can change it.
+
 - Before a pull request: `git diff --stat origin/main...HEAD`, then
   `git diff origin/main...HEAD -- <path>` for each file that matters.
 - For a branch that is not checked out: the same, with `<branch>` for
