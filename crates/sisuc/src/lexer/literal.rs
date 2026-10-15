@@ -285,7 +285,11 @@ pub(super) fn string_text(
             '{' => {
                 let inside = &source[i + 1..];
                 // What the main loop skips.
-                let close = source.len() - inside.trim_start_matches([' ', '\t', '\r']).len();
+                let mut close = source.len() - inside.trim_start_matches([' ', '\t', '\r']).len();
+                // A spec with no expression before it is empty too, unless it is cut off.
+                if source[close..].starts_with(':') {
+                    close = super::spec_end(source, close).unwrap_or(close);
+                }
                 if !source[close..].starts_with('}') {
                     break End::Brace;
                 }

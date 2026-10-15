@@ -764,9 +764,11 @@ impl Printer<'_> {
         formats: &[Format],
     ) -> fmt::Result {
         f.write_str("(interp")?;
+        // The formats are in part order, so one pass over them meets each in turn.
+        let mut formats = formats.iter().peekable();
         for (i, part) in parts.iter().enumerate() {
             f.write_str(" ")?;
-            match formats.iter().find(|format| format.part == i) {
+            match formats.next_if(|format| format.part == i) {
                 Some(format) => {
                     f.write_str("(fmt ")?;
                     self.expr(f, part)?;

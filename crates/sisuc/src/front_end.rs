@@ -204,7 +204,9 @@ fn main() {
     /// not read, and the unclosed literal is its function's one error.
     #[test]
     fn format_spec_recovery() {
-        use Code::{Expected, LiteralNotClosed, Mismatch, UnsupportedFormatSpec};
+        use Code::{
+            EmptyInterpolation, Expected, LiteralNotClosed, Mismatch, UnsupportedFormatSpec,
+        };
         for (src, expected) in [
             (
                 "fn main() {\n    let w = 3\n    print(\"{w:>{w}}\")\n}\n",
@@ -212,7 +214,16 @@ fn main() {
             ),
             (
                 "fn main() {\n    let x = 1.5\n    let s = \"{x:>8\"\n}\nfn f() {\n    let y: i64 = \"a\"\n}\n",
-                vec![(LiteralNotClosed, (3, 19)), (Mismatch, (6, 18))],
+                vec![(LiteralNotClosed, (3, 13)), (Mismatch, (6, 18))],
+            ),
+            (
+                "fn main() {\n    let x = 1\n    print(\"{x:+\" + \"abc}\")\n}\n",
+                vec![(LiteralNotClosed, (3, 11))],
+            ),
+            // A spec with no expression before it, as Rust and Python allow.
+            (
+                "fn main() {\n    print(\"{:>8}\")\n}\n",
+                vec![(EmptyInterpolation, (2, 12))],
             ),
             (
                 "fn main() {\n    let x = 1\n    let y = 2\n    print(\"{x:03} {y:+}\")\n}\n",

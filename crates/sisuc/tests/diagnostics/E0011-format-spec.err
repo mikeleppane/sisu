@@ -1,8 +1,0 @@
-error[E0011]: expected an expression, found `:`
- --> E0011-format-spec.sisu:3:13
-  |
-3 |     print("{:>8} {x}")
-  |             ^^^
-
-sisuc: 1 error
-sisuc: for more on a code, run `sisuc --explain <code>`: E0011
