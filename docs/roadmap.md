@@ -35,6 +35,11 @@ These are adopted. Together they give Sisu a working imperative core.
 - `==` that compares objects field by field, and `is` that tests identity
 - optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
   `while let`
+- `f64`, written `2.5`, `1e-3` or `3.0e8`, with IEEE 754 arithmetic and
+  comparisons (`nan` is not equal to itself, and `-0.0` equals `0.0`);
+  `i64(x)`, an `i64?` that is `None` unless `x` is a whole number in range,
+  and `f64(n)`; `[f64]` with `sum`, `==` and `contains`; `f64` in constants
+  and interpolation
 - `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
   conversions `i64(...)` and `u8(n)`, which is a `u8?` that is `None` when
   `n` does not fit, with no panic

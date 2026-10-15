@@ -42,7 +42,7 @@ any type.
 
 **Conversion**:
 A call written with a type's name, `T(x)`, that turns a value into an
-adjacent type, such as `u8(n)` or `i64(c)`. A conversion that can fail
+adjacent type, such as `u8(n)`, `i64(c)` or `f64(n)`. A conversion that can fail
 returns `T?`.
 _Avoid_: cast, fallible conversion, `as`
 
@@ -270,7 +270,7 @@ _Avoid_: unowned
 **Counted type**:
 A type whose values are shared blocks carrying a reference count: classes,
 arrays and strings, and optionals of them. Copying such a value copies a
-pointer and raises the count; `i64`, `u8`, `bool` and `char` are copied whole and are not counted.
+pointer and raises the count; `i64`, `f64`, `u8`, `bool` and `char` are copied whole and are not counted.
 _Avoid_: reference type, heap type
 
 **Owned reference**:
