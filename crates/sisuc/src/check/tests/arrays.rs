@@ -283,10 +283,10 @@ fn contains_spills_for_an_exit_in_its_value() {
 }
 
 #[test]
-fn sum_needs_an_i64_array() {
+fn sum_needs_numbers() {
     codes(
         "fn f(xs: [bool]) { print(xs.sum()) }\nfn main() {}",
-        &[(Code::SumNeedsI64, (1, 29))],
+        &[(Code::SumNeedsNumbers, (1, 29))],
     );
 }
 

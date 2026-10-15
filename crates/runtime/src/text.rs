@@ -69,7 +69,7 @@ pub extern "C" fn sisu_eprint_char(c: u32) {
     unsafe_code,
     reason = "writes through the pointer generated code passes"
 )]
-unsafe fn write(text: &[u8], out: *mut u8) -> usize {
+pub(crate) unsafe fn write(text: &[u8], out: *mut u8) -> usize {
     // SAFETY: the caller promises room for `text.len()` bytes at `out`, apart from `text`.
     unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len()) };
     text.len()

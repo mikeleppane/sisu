@@ -1,4 +1,4 @@
-error[E0032]: expected `u8` or `char`, found `bool`
+error[E0032]: expected `u8`, `char` or `f64`, found `bool`
  --> E0032-alternatives.sisu:3:15
   |
 3 |     print(i64(ok))

@@ -260,8 +260,8 @@ impl Checker {
                 let kind = receiver.ok().map(|r| tir::ExprKind::Len(Box::new(r)));
                 typed(span, Type::I64, false, kind)
             }
-            "sum" if **element != Type::I64 => {
-                let d = DiagnosticKind::SumNeedsI64 {
+            "sum" if !matches!(**element, Type::I64 | Type::F64) => {
+                let d = DiagnosticKind::SumNeedsNumbers {
                     ty: self.type_name(ty),
                     at: method.span,
                 };
@@ -269,7 +269,7 @@ impl Checker {
             }
             "sum" => {
                 let kind = receiver.ok().map(|r| tir::ExprKind::Sum(Box::new(r)));
-                typed(span, Type::I64, false, kind)
+                typed(span, (**element).clone(), false, kind)
             }
             _ => {
                 let labeled = self.labels(args);

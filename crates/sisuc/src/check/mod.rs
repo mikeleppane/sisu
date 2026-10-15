@@ -736,9 +736,10 @@ impl Checker {
     }
 }
 
-/// Whether `e` is a call of a conversion that can fail: `u8(...)` or `char(...)`.
+/// Whether `e` is a call of a conversion that can fail: `u8(...)`, `char(...)`, or `i64(...)`,
+/// which can fail only from an `f64`, the one argument that makes it an optional.
 fn can_fail(e: &ast::Expr) -> bool {
-    matches!(&e.kind, ast::ExprKind::Call { callee, .. } if matches!(callee.name.as_str(), "u8" | "char"))
+    matches!(&e.kind, ast::ExprKind::Call { callee, .. } if matches!(callee.name.as_str(), "u8" | "char" | "i64"))
 }
 
 /// The type a built-in type name names.

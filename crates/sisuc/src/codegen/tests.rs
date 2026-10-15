@@ -1192,39 +1192,30 @@ fn float_ops_have_no_fast_math() {
     assert!(seen >= 7, "{ir}");
 }
 
-/// Until Task 5, `==` and `!=` on an `f64?`, an `[f64]` or a class with an `f64` field, and
-/// `contains` on an `[f64]`, stop the compiler; declaring them does not.
+/// `i64(x)` from an `f64` converts with the saturating `llvm.fptosi.sat`, never a plain
+/// `fptosi`, which is poison out of range: the range check and the round trip decide the flag.
 #[test]
-fn f64_composites_wait_for_task_5() {
-    let class = "class P {\n    x: f64\n    o: f64?\n    a: [f64]\n}\n\n";
-    let rows = [
-        ("let a: f64? = 1.0\n    print(a == a)", true),
-        ("let a = [1.0]\n    print(a != a)", true),
-        ("let p = P(x: 1.0, o: None, a: [])\n    print(p == p)", true),
-        ("let a = [1.0]\n    print(a.contains(1.0))", true),
-        (
-            "let p = P(x: 1.0, o: None, a: [])\n    print(p.x == p.x)",
-            false,
-        ),
-    ];
-    for (body, panics) in rows {
-        let src = format!("{class}fn main() {{\n    {body}\n}}\n");
-        let result = std::panic::catch_unwind(|| {
-            compiled(&Context::create(), &src);
-        });
-        let message = result.err().map(|payload| {
-            payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
-                .unwrap_or_default()
-        });
-        match (panics, message) {
-            (true, Some(message)) => {
-                assert_eq!(message, "f64 in a composite lands in Task 5", "{src}");
-            }
-            (false, None) => {}
-            (_, message) => panic!("{src}: {message:?}"),
-        }
+fn float_to_int_saturates() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(x: f64) -> i64? { i64(x) }\n\nfn main() {\n    print(f(2.0) ?? 0)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "define internal { i1, i64 } @sisu.f(");
+    assert!(body.contains("@llvm.fptosi.sat.i64.f64"), "{body}");
+    assert!(
+        !body.lines().any(|l| l.contains(" fptosi ")),
+        "a plain `fptosi` in\n{body}"
+    );
+    // The range check is ordered, so `nan` is out of range, and the round trip is `oeq`.
+    for wanted in [
+        "fcmp oge double",
+        "fcmp olt double", // spellchecker:disable-line
+        "sitofp",
+        "fcmp oeq double",
+    ] {
+        assert!(body.contains(wanted), "missing {wanted:?} in\n{body}");
     }
 }

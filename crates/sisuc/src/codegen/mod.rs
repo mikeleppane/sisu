@@ -728,7 +728,6 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `lhs == rhs`, or `!=` when `negated`; releases both operands after comparing them.
     fn equal_expr(&mut self, negated: bool, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
-        self.no_f64_inside(&lhs.ty);
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let equal = match lhs.ty {
             Type::I64 | Type::U8 | Type::Bool | Type::Char if negated => {
@@ -743,21 +742,6 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.release(l, &lhs.ty);
         self.release(r, &rhs.ty);
         equal
-    }
-
-    /// Panics on an `f64?`, an `[f64]` or a class with an `f64` field, whose `==` waits for a
-    /// later stage. The class helpers are generated for every class, so it panics only here,
-    /// where a program compares or searches one.
-    fn no_f64_inside(&self, ty: &Type) {
-        let inside = match ty {
-            Type::Optional(inner) | Type::Array(inner) => **inner == Type::F64,
-            Type::Class(id) => self.program.classes[id.0]
-                .fields
-                .iter()
-                .any(|field| field.ty == Type::F64),
-            _ => false,
-        };
-        assert!(!inside, "f64 in a composite lands in Task 5");
     }
 
     /// `lhs is rhs`; releases both operands after comparing them.
@@ -817,7 +801,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Bytes(base) => return Some(self.bytes(base).into()),
             ExprKind::Words(base) => return Some(self.words(base).into()),
             ExprKind::FromChars(base) => return Some(self.string_from_chars(base).into()),
-            ExprKind::Sum(base) => self.sum(base, e.span),
+            ExprKind::Sum(base) => return Some(self.sum(&e.ty, base, e.span)),
             ExprKind::Contains { base, value } => self.contains(base, value),
             ExprKind::Local(local) => {
                 let value = self.load_local(*local)?;

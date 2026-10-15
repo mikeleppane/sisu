@@ -17,9 +17,41 @@ pub(crate) fn shortest(x: f64, buffer: &mut [u8; FLOAT_BYTES]) -> &[u8] {
     &buffer[..len]
 }
 
+/// Writes `x` as `print` does to `out`, and returns how many bytes it wrote: at most 24.
+/// Interpolation calls this for an `f64`.
+///
+/// # Safety
+///
+/// `out` has room for the text of `x`, at most 24 bytes.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_write_f64(x: f64, out: *mut u8) -> usize {
+    // SAFETY: the caller promises room for the text, at most the 24 bytes `shortest` gives.
+    unsafe { crate::text::write(shortest(x, &mut [0; FLOAT_BYTES]), out) }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FLOAT_BYTES, shortest};
+    use super::{FLOAT_BYTES, shortest, sisu_write_f64};
+
+    /// Interpolation writes the text `print` does; the longest fills the 24 bytes it is given.
+    #[test]
+    fn write_f64_fills_its_bound() {
+        for (x, want) in [
+            (-2.225_073_858_507_201_4e-308, "-2.2250738585072014e-308"),
+            (1.0, "1.0"),
+            (f64::NAN, "nan"),
+        ] {
+            let mut out = [0; FLOAT_BYTES];
+            // SAFETY: `out` has room for 24 bytes.
+            #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+            let len = unsafe { sisu_write_f64(x, out.as_mut_ptr()) };
+            assert_eq!(&out[..len], want.as_bytes());
+        }
+    }
 
     #[test]
     fn shortest_matches_the_spec() {

@@ -1,0 +1,53 @@
+// `==` on a composite compares each `f64` in it by IEEE 754, so one that holds `nan` is not equal
+// to itself, even where both sides are one block or one object; `None` still equals `None`.
+// `nan` is made as `0.0 / 0.0`.
+class P {
+    x: f64
+}
+
+class Link {
+    value: f64
+    next: Link?
+}
+
+class Holder {
+    o: f64?
+}
+
+fn main() {
+    let nan = 0.0 / 0.0
+    print([nan] == [nan])           // false
+    let xs = [nan]
+    let ys = xs
+    print(xs == ys)                 // false: both share one block
+    print([[nan]] == [[nan]])       // false
+    let nested = [[nan]]
+    let alias = nested
+    print(nested == alias)          // false: one block, and one block inside it
+    let p = P(x: nan)
+    print(p == p)                   // false: one object
+    let tail = Link(value: nan, next: None)
+    let a = Link(value: 1.0, next: tail)
+    let b = Link(value: 1.0, next: tail)
+    print(a == b)                   // false: the chains share the object that holds `nan`
+    let c = Link(value: 1.0, next: Link(value: 2.0, next: None))
+    let e = Link(value: 1.0, next: Link(value: 2.0, next: None))
+    print(c == e)                   // true
+    let o: f64? = nan
+    print(o == o)                   // false
+    let n1: f64? = None
+    let n2: f64? = None
+    print(n1 == n2)                 // true
+    let some: f64? = 1.5
+    print(some == n1)               // false
+    print(n1 == some)               // false
+    let other: f64? = 1.5
+    print(some == other)            // true
+    let h = Holder(o: None)
+    print(h == h)                   // true: `None` equals `None`
+    let gaps: [f64?] = [None, 1.5]
+    print(gaps == gaps)             // true
+    print(xs.contains(nan))         // false
+    print([1.5].contains(1.5))      // true
+    print(ys.len())                 // 1
+}

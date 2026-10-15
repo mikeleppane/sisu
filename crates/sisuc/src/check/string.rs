@@ -1,8 +1,8 @@
 //! `string`: interpolation, `+` that joins two, a chain of comparisons over them, `len()`,
 //! `chars()`, `bytes()` and `words()`, and the guess to interpolate a value that `+` or
 //! `string(x)` meets.
-//! Conversions: `i64(x)`, `u8(x)` and `char(x)` between the scalar types, and `string(cs)` from
-//! a `[char]`.
+//! Conversions: `i64(x)`, `u8(x)`, `char(x)` and `f64(x)` between the scalar types, and
+//! `string(cs)` from a `[char]`.
 
 use std::fmt::Write;
 
@@ -45,7 +45,9 @@ impl Checker {
         for part in parts {
             let value = self.expr(part, None);
             let help = match type_of(&value) {
-                None | Some(Type::I64 | Type::U8 | Type::Bool | Type::Char | Type::String) => {
+                None
+                | Some(Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char | Type::String) =>
+                {
                     checked.push(value);
                     continue;
                 }
@@ -58,8 +60,7 @@ impl Checker {
                     Some(InterpolateHelp::ForLoop)
                 }
                 Some(Type::Optional(_)) => Some(InterpolateHelp::Unwrap),
-                // Until Task 5 interpolates an `f64`.
-                Some(Type::Unit | Type::F64 | Type::Class(_) | Type::Array(_)) => None,
+                Some(Type::Unit | Type::Class(_) | Type::Array(_)) => None,
             };
             let found = type_of(&value).expect("a part reported here should have a type");
             self.report(DiagnosticKind::CannotInterpolate {
@@ -89,7 +90,7 @@ impl Checker {
     ) -> Diagnostic {
         let printed = matches!(
             got,
-            Type::I64 | Type::U8 | Type::Bool | Type::Char | Type::String
+            Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char | Type::String
         );
         let [lhs, rhs] = operands else {
             unreachable!("`+` should have two operands");
@@ -216,10 +217,11 @@ impl Checker {
         typed(span, ty, false, kind)
     }
 
-    /// `to(arg)`: `i64(x)` takes a `u8` or a `char`; `u8(x)` and `char(x)` take an `i64`; and
-    /// `string(x)` takes a `[char]`. The argument of a scalar conversion expects no type, so a
-    /// literal one is an `i64`; `string([])` is the empty string. `u8(x)` and `char(x)` can
-    /// fail, so they give an optional, and in a constant they are an error, typed as `to`.
+    /// `to(arg)`: `i64(x)` takes a `u8`, a `char` or an `f64`; `u8(x)`, `char(x)` and `f64(x)`
+    /// take an `i64`; and `string(x)` takes a `[char]`. The argument of a scalar conversion
+    /// expects no type, so a literal one is an `i64`; `string([])` is the empty string. `u8(x)`,
+    /// `char(x)` and `i64(x)` from an `f64` can fail, so they give an optional, and in a constant
+    /// they are an error, typed as `to`.
     pub(super) fn convert(&mut self, span: Span, to: Type, args: &[ast::Arg]) -> Checked {
         let labeled = self.labels(args);
         let [arg] = args else {
@@ -234,11 +236,13 @@ impl Checker {
         };
         let chars = [Type::Array(Box::new(Type::Char))];
         let from: &[Type] = match to {
-            Type::I64 => &[Type::U8, Type::Char],
+            Type::I64 => &[Type::U8, Type::Char, Type::F64],
             Type::String => &chars,
             _ => &[Type::I64],
         };
         let checked = self.value(&arg.value, (to == Type::String).then_some(&chars[0]));
+        let fails = matches!(to, Type::U8 | Type::Char)
+            || (to == Type::I64 && type_of(&checked) == Some(&Type::F64));
         // The head, `to(`, and the tail, `)`, are the text a rewrite of the call deletes.
         let head = span.start..arg.value.span.start;
         let tail = arg.value.span.end..span.end;
@@ -278,7 +282,7 @@ impl Checker {
                 }
                 .into(),
             },
-            _ if matches!(to, Type::U8 | Type::Char) && self.in_constant.is_some() => {
+            _ if fails && self.in_constant.is_some() => {
                 let fix = self.in_constant.as_ref().and_then(|site| {
                     let arg = checked.as_ref().ok()?;
                     site.literal(span, &to, arg)
@@ -300,7 +304,7 @@ impl Checker {
                     .ok()
                     .filter(|_| !labeled)
                     .map(|arg| node(Box::new(arg)));
-                let ty = if matches!(to, Type::U8 | Type::Char) {
+                let ty = if fails {
                     Type::Optional(Box::new(to))
                 } else {
                     to
@@ -323,7 +327,10 @@ impl Checker {
         want: &Type,
         deleted: &[std::ops::Range<usize>],
     ) -> Diagnostic {
-        let printed = matches!(got, Type::I64 | Type::U8 | Type::Bool | Type::Char);
+        let printed = matches!(
+            got,
+            Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char
+        );
         let commented = self
             .comments
             .iter()

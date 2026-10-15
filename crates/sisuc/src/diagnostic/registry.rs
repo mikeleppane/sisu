@@ -110,7 +110,7 @@ codes! {
     FieldOutOfOrder = "E0066",
     SameObject = "E0067",
     CannotIndex = "E0068",
-    SumNeedsI64 = "E0069",
+    SumNeedsNumbers = "E0069",
     MethodAsFunction = "E0070",
     NestingTooDeep = "E0071",
     InvalidUtf8 = "E0072",
@@ -476,8 +476,8 @@ pub(crate) enum DiagnosticKind {
     SameObject { class: String, at: Span },
     /// An index into the value at `at`, of type `ty`, which is no array.
     CannotIndex { ty: String, at: Span },
-    /// A `sum` at `at` of an array of type `ty`, which is not `[i64]`.
-    SumNeedsI64 { ty: String, at: Span },
+    /// A `sum` at `at` of an array of type `ty`, which is neither `[i64]` nor `[f64]`.
+    SumNeedsNumbers { ty: String, at: Span },
     /// A call at `at` of the array method `name` as a function, with the array `receiver` as
     /// its first argument. `next` is the next argument, if any. `wrap` is whether `receiver`
     /// needs parentheses to take a `.name(...)`, and `certain` whether the method call checks.
@@ -851,7 +851,7 @@ impl DiagnosticKind {
             DiagnosticKind::FieldOutOfOrder { .. } => Code::FieldOutOfOrder,
             DiagnosticKind::SameObject { .. } => Code::SameObject,
             DiagnosticKind::CannotIndex { .. } => Code::CannotIndex,
-            DiagnosticKind::SumNeedsI64 { .. } => Code::SumNeedsI64,
+            DiagnosticKind::SumNeedsNumbers { .. } => Code::SumNeedsNumbers,
             DiagnosticKind::MethodAsFunction { .. } => Code::MethodAsFunction,
             DiagnosticKind::NestingTooDeep { .. } => Code::NestingTooDeep,
             DiagnosticKind::InvalidUtf8 { .. } => Code::InvalidUtf8,
@@ -1236,12 +1236,16 @@ impl From<DiagnosticKind> for Diagnostic {
                 fix,
                 conversion,
             } => {
-                let want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
-                let mut d = Diagnostic::coded(
-                    code,
-                    at,
-                    format!("expected {}, found `{got}`", want.join(" or ")),
-                );
+                let mut want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
+                // `a`, `b` or `c`.
+                let last = want.pop().expect("a mismatch should want at least one type");
+                let want = if want.is_empty() {
+                    last
+                } else {
+                    format!("{} or {last}", want.join(", "))
+                };
+                let mut d =
+                    Diagnostic::coded(code, at, format!("expected {want}, found `{got}`"));
                 if let Some(other) = other {
                     d = d.with_secondary(other, "`+` joins this `string`");
                 }
@@ -1664,8 +1668,8 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("cannot index `{ty}`"))
                     .with_help("only arrays can be indexed")
             }
-            DiagnosticKind::SumNeedsI64 { ty, at } => {
-                Diagnostic::coded(code, at, format!("`sum` needs an `[i64]`, found `{ty}`"))
+            DiagnosticKind::SumNeedsNumbers { ty, at } => {
+                Diagnostic::coded(code, at, format!("`sum` needs an `[i64]` or an `[f64]`, found `{ty}`"))
             }
             DiagnosticKind::MethodAsFunction {
                 name,
@@ -1769,7 +1773,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 })
             }
             DiagnosticKind::ConstantType { at } => {
-                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `bool`, `char` or `string`")
+                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `f64`, `bool`, `char` or `string`")
             }
             DiagnosticKind::ConstantNotKnown { at } => {
                 Diagnostic::coded(code, at, "a constant's value must be known at compile time")
@@ -1886,7 +1890,10 @@ impl From<DiagnosticKind> for Diagnostic {
             }),
             DiagnosticKind::ConversionInConstant { to, at, fix } => {
                 let d = Diagnostic::coded(code, at, "a constant cannot use a conversion that can fail")
-                    .with_label(format!("`{to}(...)` gives a `{to}?`"))
+                    .with_label(format!(
+                        "`{to}(...)` gives {} `{to}?`",
+                        if to == "i64" { "an" } else { "a" }
+                    ))
                     .with_help("write the literal with its type: `const B: u8 = 200`");
                 match fix {
                     Some(TypedLiteral {

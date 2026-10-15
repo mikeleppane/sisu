@@ -200,14 +200,19 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.int_compare(predicate, lhs.into_int_value(), rhs.into_int_value())
     }
 
-    /// `i64(u8)`, `i64(char)`, `u8(i64)` and `char(i64)`, the type `e.ty` saying which. A `u8?`
-    /// or `char?` is a `{ i1, T }` pair of whether the value fits and the value truncated, with
-    /// no branch: `u8` fits `0..=255`, and `char` a scalar value. One unsigned compare also
-    /// catches the negatives.
+    /// `i64(u8)`, `i64(char)`, `i64(f64)`, `u8(i64)`, `char(i64)` and `f64(i64)`, the type
+    /// `e.ty` saying which. A `u8?` or `char?` is a `{ i1, T }` pair of whether the value fits
+    /// and the value truncated, with no branch: `u8` fits `0..=255`, and `char` a scalar value.
+    /// One unsigned compare also catches the negatives. An `i64?` comes from an `f64`.
     pub(super) fn convert(&mut self, e: &Expr) -> BasicValueEnum<'ctx> {
         let ExprKind::Convert(operand) = &e.kind else {
             unreachable!("`convert` should be called on a `Convert` node");
         };
+        if e.ty == Type::Optional(Box::new(Type::I64)) {
+            let x = self.float(operand);
+            let (fits, n) = self.float_to_int(x);
+            return self.pair(&e.ty, fits, n.into());
+        }
         let value = self.value(operand);
         let (fits, payload) = match &e.ty {
             Type::F64 => {
@@ -217,29 +222,63 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .expect(POSITIONED)
                     .into();
             }
-            Type::Optional(payload) if **payload == Type::Char => {
-                (self.scalar(value), self.context.i32_type())
-            }
-            Type::Optional(_) => {
-                let max = value.get_type().const_int(u64::from(u8::MAX), false);
-                (
-                    self.int_compare(IntPredicate::ULE, value, max),
-                    self.context.i8_type(),
-                )
-            }
-            _ => {
+            Type::I64 => {
                 return self
                     .builder
                     .build_int_z_extend(value, self.context.i64_type(), "widened")
                     .expect(POSITIONED)
                     .into();
             }
+            Type::Optional(payload) if **payload == Type::Char => {
+                (self.scalar(value), self.context.i32_type())
+            }
+            Type::Optional(payload) if **payload == Type::U8 => {
+                let max = value.get_type().const_int(u64::from(u8::MAX), false);
+                (
+                    self.int_compare(IntPredicate::ULE, value, max),
+                    self.context.i8_type(),
+                )
+            }
+            ty => unreachable!("the checker should give no conversion to `{ty}`"),
         };
         let narrowed = self
             .builder
             .build_int_truncate(value, payload, "narrowed")
             .expect(POSITIONED);
         self.pair(&e.ty, fits, narrowed.into())
+    }
+
+    /// Whether `x` is a whole number in `i64`'s range, and that number, with no branch.
+    /// `llvm.fptosi.sat` gives `0` for NaN and saturates out of range, where `fptosi` would be
+    /// poison; the range compares fail for NaN, and converting back finds a fractional part.
+    fn float_to_int(&self, x: FloatValue<'ctx>) -> (IntValue<'ctx>, IntValue<'ctx>) {
+        let i64_type = self.context.i64_type();
+        let f64_type = self.context.f64_type();
+        // -2^63 and 2^63, exact as `f64`s.
+        let bound = 9_223_372_036_854_775_808.0;
+        let above = self.float_compare(FloatPredicate::OGE, x, f64_type.const_float(-bound));
+        let below = self.float_compare(FloatPredicate::OLT, x, f64_type.const_float(bound)); // spellchecker:disable-line
+        let saturating = Intrinsic::find("llvm.fptosi.sat")
+            .expect("LLVM should provide `llvm.fptosi.sat` by name")
+            .get_declaration(&self.module, &[i64_type.into(), f64_type.into()])
+            .expect("`llvm.fptosi.sat` should be overloaded on its result and operand types");
+        let n = self
+            .builder
+            .build_call(saturating, &[x.into()], "truncated")
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("`llvm.fptosi.sat` should return an integer")
+            .into_int_value();
+        let back = self
+            .builder
+            .build_signed_int_to_float(n, f64_type, "back")
+            .expect(POSITIONED);
+        let whole = self.float_compare(FloatPredicate::OEQ, back, x);
+        let b = &self.builder;
+        let in_range = b.build_and(above, below, "in_range").expect(POSITIONED);
+        let fits = b.build_and(in_range, whole, "fits").expect(POSITIONED);
+        (fits, n)
     }
 
     /// Whether the `i64` `value` is a Unicode scalar value: at most `0x10FFFF`, and not a

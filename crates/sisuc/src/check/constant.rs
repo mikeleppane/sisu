@@ -1,5 +1,7 @@
 //! Top-level constants: the gate on what a value may hold, and folding it as run time would.
-//! Each use of a constant lowers to its literal, so `tir` and codegen never see a constant.
+//! Each use of a constant lowers to its literal, so `tir` and codegen never see a constant. An
+//! `f64` folds with Rust's `f64`, whose operators give the IEEE 754 results that LLVM's do, so
+//! folding never fails on one.
 
 use rustc_hash::FxHashMap;
 
@@ -14,6 +16,8 @@ use crate::tir::{self, BinaryOp, CompareOp, Type, UnaryOp};
 enum Constant {
     Int(i64),
     U8(u8),
+    /// Compared by the derived `PartialEq`, which is IEEE 754's `==`, as at run time.
+    F64(f64),
     Bool(bool),
     Char(char),
     Str(String),
@@ -37,6 +41,7 @@ impl Constant {
         match self {
             Constant::Int(_) => Type::I64,
             Constant::U8(_) => Type::U8,
+            Constant::F64(_) => Type::F64,
             Constant::Bool(_) => Type::Bool,
             Constant::Char(_) => Type::Char,
             Constant::Str(_) => Type::String,
@@ -48,6 +53,7 @@ impl Constant {
         let kind = match self {
             Constant::Int(n) => tir::ExprKind::Int(*n),
             Constant::U8(n) => tir::ExprKind::Int(i64::from(*n)),
+            Constant::F64(x) => tir::ExprKind::Float(*x),
             Constant::Bool(b) => tir::ExprKind::Bool(*b),
             Constant::Char(c) => tir::ExprKind::Char(*c),
             Constant::Str(s) => tir::ExprKind::Str(s.clone()),
@@ -66,8 +72,21 @@ impl Constant {
             Constant::Int(n) => *n,
             Constant::U8(n) => i64::from(*n),
             Constant::Char(c) => i64::from(u32::from(*c)),
-            Constant::Bool(_) | Constant::Str(_) => {
+            Constant::F64(_) | Constant::Bool(_) | Constant::Str(_) => {
                 unreachable!("the checker should give an integer operator integers")
+            }
+        }
+    }
+
+    fn float(&self) -> f64 {
+        match self {
+            Constant::F64(x) => *x,
+            Constant::Int(_)
+            | Constant::U8(_)
+            | Constant::Bool(_)
+            | Constant::Char(_)
+            | Constant::Str(_) => {
+                unreachable!("the checker should give an `f64` operator `f64`s")
             }
         }
     }
@@ -75,7 +94,11 @@ impl Constant {
     fn bool(&self) -> bool {
         match self {
             Constant::Bool(b) => *b,
-            Constant::Int(_) | Constant::U8(_) | Constant::Char(_) | Constant::Str(_) => {
+            Constant::Int(_)
+            | Constant::U8(_)
+            | Constant::F64(_)
+            | Constant::Char(_)
+            | Constant::Str(_) => {
                 unreachable!("the checker should give a `bool` operator `bool`s")
             }
         }
@@ -84,7 +107,11 @@ impl Constant {
     fn str(self) -> String {
         match self {
             Constant::Str(s) => s,
-            Constant::Int(_) | Constant::U8(_) | Constant::Bool(_) | Constant::Char(_) => {
+            Constant::Int(_)
+            | Constant::U8(_)
+            | Constant::F64(_)
+            | Constant::Bool(_)
+            | Constant::Char(_) => {
                 unreachable!("the checker should give `+` over `string`s `string`s")
             }
         }
@@ -125,17 +152,21 @@ pub(super) struct ConstantSite {
 impl ConstantSite {
     /// The literal that replaces the conversion `to(arg)` at `call`: only when the call is the
     /// whole value, any declared type is `to`, and `arg` converts to a value that a literal shows
-    /// with no escape.
+    /// with no escape. An `f64` converts when it is a whole number in `i64`'s range.
     pub(super) fn literal(&self, call: Span, to: &Type, arg: &tir::Expr) -> Option<TypedLiteral> {
         if call != self.value || self.declared.as_ref().is_some_and(|ty| ty != to) {
             return None;
         }
-        let n = evaluate(arg, &mut FxHashMap::default()).ok()?.int();
+        let n = match evaluate(arg, &mut FxHashMap::default()).ok()? {
+            Constant::F64(x) => whole(x)?,
+            value => value.int(),
+        };
         let literal = match Constant::of(n, to)? {
             Constant::Char(c) if c.is_ascii_graphic() && !matches!(c, '\'' | '\\') => {
                 format!("'{c}'")
             }
             Constant::U8(b) => b.to_string(),
+            Constant::Int(n) => n.to_string(),
             _ => return None,
         };
         Some(TypedLiteral {
@@ -176,7 +207,12 @@ impl Checker {
             Some(ty) => match self.resolve(ty) {
                 None => return (None, None),
                 Some(
-                    resolved @ (Type::I64 | Type::U8 | Type::Bool | Type::Char | Type::String),
+                    resolved @ (Type::I64
+                    | Type::U8
+                    | Type::F64
+                    | Type::Bool
+                    | Type::Char
+                    | Type::String),
                 ) => Some(resolved),
                 Some(_) => {
                     self.report(DiagnosticKind::ConstantType { at: ty.span });
@@ -222,12 +258,16 @@ impl Checker {
             parts.filter(|part| !c.gate(part, user, order)).count() == 0
         };
         match &e.kind {
-            ExprKind::Int { .. } | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Str(_) => true,
+            ExprKind::Int { .. }
+            | ExprKind::Float(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Char(_)
+            | ExprKind::Str(_) => true,
             ExprKind::Unary { operand, .. } => self.gate(operand, user, order),
             ExprKind::Binary { lhs, rhs, .. } => all(self, &mut [&**lhs, &**rhs].into_iter()),
             ExprKind::Compare { operands, .. } => all(self, &mut operands.iter()),
             ExprKind::Call { callee, args }
-                if matches!(callee.name.as_str(), "i64" | "u8" | "char") =>
+                if matches!(callee.name.as_str(), "i64" | "u8" | "char" | "f64") =>
             {
                 all(self, &mut args.iter().map(|arg| &arg.value))
             }
@@ -306,6 +346,7 @@ fn evaluate(
         tir::ExprKind::Int(n) => {
             Constant::of(*n, &e.ty).expect("the checker should fit a literal in its type")
         }
+        tir::ExprKind::Float(x) => Constant::F64(*x),
         tir::ExprKind::Bool(b) => Constant::Bool(*b),
         tir::ExprKind::Char(c) => Constant::Char(*c),
         tir::ExprKind::Str(s) => Constant::Str(s.clone()),
@@ -321,6 +362,7 @@ fn evaluate(
             let operand = evaluate(operand, locals)?;
             match op {
                 UnaryOp::Not => Constant::Bool(!operand.bool()),
+                UnaryOp::Neg if e.ty == Type::F64 => Constant::F64(-operand.float()),
                 UnaryOp::Neg => int(operand.int().checked_neg())?,
             }
         }
@@ -334,6 +376,10 @@ fn evaluate(
             lhs,
             rhs,
         } => Constant::Bool(evaluate(lhs, locals)?.bool() || evaluate(rhs, locals)?.bool()),
+        tir::ExprKind::Binary { op, lhs, rhs } if e.ty == Type::F64 => {
+            let l = evaluate(lhs, locals)?.float();
+            Constant::F64(float_binary(*op, l, evaluate(rhs, locals)?.float()))
+        }
         tir::ExprKind::Binary { op, lhs, rhs } => {
             let (l, r) = (evaluate(lhs, locals)?.int(), evaluate(rhs, locals)?.int());
             if matches!(op, BinaryOp::Div | BinaryOp::Rem) && r == 0 {
@@ -355,17 +401,19 @@ fn evaluate(
             let mut lhs = evaluate(&operands[0], locals)?;
             for (op, operand) in ops.iter().zip(&operands[1..]) {
                 let rhs = evaluate(operand, locals)?;
-                // A `string` orders by its bytes, as Rust's does.
+                // A `string` orders by its bytes, as Rust's does, and an `f64` by IEEE 754: `nan`
+                // is unordered, so every comparison with it is false.
                 let order = match (&lhs, &rhs) {
-                    (Constant::Str(l), Constant::Str(r)) => l.cmp(r),
-                    _ => lhs.int().cmp(&rhs.int()),
+                    (Constant::Str(l), Constant::Str(r)) => Some(l.cmp(r)),
+                    (Constant::F64(l), Constant::F64(r)) => l.partial_cmp(r),
+                    _ => Some(lhs.int().cmp(&rhs.int())),
                 };
-                let holds = match op {
+                let holds = order.is_some_and(|order| match op {
                     CompareOp::Lt => order.is_lt(),
                     CompareOp::Le => order.is_le(),
                     CompareOp::Gt => order.is_gt(),
                     CompareOp::Ge => order.is_ge(),
-                };
+                });
                 if !holds {
                     return Ok(Constant::Bool(false));
                 }
@@ -376,8 +424,48 @@ fn evaluate(
         tir::ExprKind::Equal { negated, lhs, rhs } => {
             Constant::Bool((evaluate(lhs, locals)? == evaluate(rhs, locals)?) != *negated)
         }
-        // A conversion that can fail is an error in a constant, so only `i64(x)` gets here.
+        // A conversion that can fail is an error in a constant, so only `i64(x)` from a `u8` or
+        // a `char`, and `f64(n)`, get here. `f64(n)` rounds to the nearest `f64`, as `sitofp`.
+        tir::ExprKind::Convert(operand) if e.ty == Type::F64 => {
+            Constant::F64(rounded(evaluate(operand, locals)?.int()))
+        }
         tir::ExprKind::Convert(operand) => Constant::Int(evaluate(operand, locals)?.int()),
         _ => unreachable!("the gate should let only literals, operators and conversions through"),
     })
+}
+
+/// `l op r` on `f64`s, as LLVM's `fadd`, `fsub`, `fmul`, `fdiv` and `frem` give it.
+fn float_binary(op: BinaryOp, l: f64, r: f64) -> f64 {
+    match op {
+        BinaryOp::Add => l + r,
+        BinaryOp::Sub => l - r,
+        BinaryOp::Mul => l * r,
+        BinaryOp::Div => l / r,
+        // The remainder has the sign of `l`, as LLVM's `frem` and C's `fmod`.
+        BinaryOp::Rem => l % r,
+        BinaryOp::And | BinaryOp::Or => {
+            unreachable!("`&&` and `||` should take the `bool` arms of `evaluate`")
+        }
+    }
+}
+
+/// `f64(n)`: the `f64` nearest `n`, as `sitofp` gives it.
+fn rounded(n: i64) -> f64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "`f64(n)` rounds to the nearest `f64`, as the language defines it"
+    )]
+    let x = n as f64;
+    x
+}
+
+/// `x` as an `i64` when it is a whole number in `i64`'s range, as `i64(x)` gives at run time.
+fn whole(x: f64) -> Option<i64> {
+    // -2^63 and 2^63, exact as `f64`s; `nan` fails both comparisons.
+    let bound = 9_223_372_036_854_775_808.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "`x` is whole and in range, so the cast is exact"
+    )]
+    (x >= -bound && x < bound && x.fract() == 0.0).then_some(x as i64)
 }

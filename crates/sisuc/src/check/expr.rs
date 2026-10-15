@@ -403,7 +403,8 @@ impl Checker {
     /// else `i64`. With none, it is `i64`, so `None + 1` expects an `i64`. An `f64` after an
     /// `i64` or `u8` first operand makes the type `f64`, and that operand is reported against
     /// it, as an operand before a `string` is in `+`. When `expected` is `i64` or `i64?`, an
-    /// `f64` first operand gives `i64`, not `f64`, so an `f64` is reported in either order.
+    /// `f64` first operand gives `i64`, not `f64`, and that first operand is checked against
+    /// `expected`, so an `f64` is reported in either order and at any depth.
     /// Once an operand is `Error`, the later ones are checked against `Error`. An operand of
     /// `arithmetic` that is a `char` is left unreported, as the poison `typed` `char`: its
     /// caller reports the operator, so what the operator's type finds wrong with the other
@@ -429,7 +430,8 @@ impl Checker {
         let mut ty = if literal_type(expected) != Type::I64 {
             Some(literal_type(expected))
         } else if let Some(k) = operands.iter().position(|e| rank(e) == 0) {
-            let checked = self.value(operands[k], None);
+            // An `i64` the context wants reaches an operator inside, so a nested `f64` is reported.
+            let checked = self.value(operands[k], expected.filter(|_| wants_i64));
             let ty = type_of(&checked).map(|ty| match payload(ty) {
                 Type::Char if !arithmetic => Type::Char,
                 Type::String if operator != Operator::Arithmetic => Type::String,
@@ -1040,7 +1042,7 @@ impl Checker {
                     ty: Type::Array(element),
                     ..
                 }) = &receiver
-                    && (name != "sum" || **element == Type::I64)
+                    && (name != "sum" || matches!(**element, Type::I64 | Type::F64))
                 {
                     let element = (**element).clone();
                     let next = rest.first().map(|arg| arg.value.span);

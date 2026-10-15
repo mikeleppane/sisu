@@ -1,0 +1,7 @@
+fn whole(x: f64) -> i64 {
+    i64(x)
+}
+
+fn main() {
+    print(whole(2.0))
+}

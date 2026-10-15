@@ -77,7 +77,7 @@ fn interpolation_spills() {
     );
 }
 
-/// Each part that is not an `i64`, `u8`, `bool`, `char` or `string` is reported at the part; one
+/// Each part that is not an `i64`, `u8`, `f64`, `bool`, `char` or `string` is reported at the part; one
 /// whose type is unknown reports nothing more.
 #[test]
 fn cannot_interpolate() {
@@ -395,7 +395,7 @@ fn chars_and_bytes_are_arrays() {
     // `sum` stays `[i64]`-only.
     codes(
         "fn f(s: string) { print(s.chars().sum()) }\nfn main() {}",
-        &[(Code::SumNeedsI64, (1, 35))],
+        &[(Code::SumNeedsNumbers, (1, 35))],
     );
 }
 
