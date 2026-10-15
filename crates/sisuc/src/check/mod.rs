@@ -669,8 +669,16 @@ impl Checker<'_> {
             .map(|class| (class.as_str(), Definition::Class))
     }
 
-    /// "cannot find binding `name`", offering the closest binding of any open scope.
+    /// "cannot find binding `name`", offering the closest binding of any open scope. A type's
+    /// name, built in or a class's, is in scope, but as a type: that is reported instead.
     fn not_found(&self, name: Symbol, span: Span) -> Diagnostic {
+        if built_in_type(name.as_str()).is_some() || self.class_ids.contains_key(&name) {
+            return DiagnosticKind::TypeAsValue {
+                name: name.to_string(),
+                at: span,
+            }
+            .into();
+        }
         let bindings = self
             .scopes
             .iter()

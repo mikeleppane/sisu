@@ -1,9 +1,12 @@
-//! The methods on `i64` and `f64`.
+//! The methods on `i64` and `f64`, the constants on `f64`, and the warning for a comparison with
+//! `f64.nan`.
 
-use super::expr::{no_member, typed};
-use super::{Checked, Checker, Poisoned};
+use std::f64::consts;
+
+use super::expr::{no_member, postfix, typed};
+use super::{Checked, Checker, Poisoned, built_in_type};
 use crate::ast;
-use crate::diagnostic::{Definition, DiagnosticKind, Span};
+use crate::diagnostic::{Definition, DiagnosticKind, NanFix, Span};
 use crate::tir::{self, MathOp, Type};
 
 /// The receivers of a method.
@@ -45,7 +48,87 @@ const METHODS: [(MathOp, Receivers, usize); 25] = [
     (MathOp::IsInfinite, Receivers::F64, 0),
 ];
 
+/// The constants on `f64`: `f64.pi` is `PI`.
+const CONSTANTS: [(&str, f64); 8] = [
+    ("pi", consts::PI),
+    ("tau", consts::TAU),
+    ("e", consts::E),
+    ("infinity", f64::INFINITY),
+    ("nan", f64::NAN),
+    ("max", f64::MAX),
+    ("min_positive", f64::MIN_POSITIVE),
+    ("epsilon", f64::EPSILON),
+];
+
 impl Checker<'_> {
+    /// `base.member` where `base` names a built-in type that no local shadows: the `f64`
+    /// constant `member`, or, for any other member, an error whose candidates are that type's
+    /// constants (only `f64` has any). `None` when `base` is not a type name.
+    pub(super) fn type_path(
+        &mut self,
+        span: Span,
+        base: &ast::Expr,
+        member: &ast::Ident,
+    ) -> Option<Checked> {
+        let ast::ExprKind::Name(name) = base.kind else {
+            return None;
+        };
+        let ty = built_in_type(name.as_str())?;
+        if self.lookup(name).is_some() {
+            return None;
+        }
+        let constants: &[(&str, f64)] = if ty == Type::F64 { &CONSTANTS } else { &[] };
+        let Some(&(_, x)) = constants
+            .iter()
+            .find(|(constant, _)| *constant == member.name.as_str())
+        else {
+            let names = constants.iter().map(|(constant, _)| *constant);
+            let d = no_member(Definition::Constant, ty.to_string(), member, names);
+            self.diagnostics.push(d);
+            return Some(Err(Poisoned::error()));
+        };
+        Some(Ok(tir::Expr {
+            kind: tir::ExprKind::Float(x),
+            ty: Type::F64,
+            span,
+        }))
+    }
+
+    /// Warns about `lhs == rhs`, or `!=` when `negated`, when a side is `f64.nan`: no number
+    /// equals it, so the answer is fixed. Each side is its source and its checked form. An
+    /// `f64` on the other side is tested with `is_nan()`; an `f64?` is not, as the call would
+    /// not check it. A side that failed, or has another type, is reported elsewhere.
+    pub(super) fn nan_comparison(
+        &mut self,
+        negated: bool,
+        lhs: (&ast::Expr, &Checked),
+        rhs: (&ast::Expr, &Checked),
+    ) {
+        // `f64.nan` is the only member that checks to a `nan`.
+        let is_nan = |(e, checked): (&ast::Expr, &Checked)| {
+            matches!(e.kind, ast::ExprKind::Field { .. })
+                && matches!(checked, Ok(tir::Expr { kind: tir::ExprKind::Float(x), .. }) if x.is_nan())
+        };
+        let other = if is_nan(lhs) {
+            rhs
+        } else if is_nan(rhs) {
+            lhs
+        } else {
+            return;
+        };
+        let fix = match other.1.as_ref().ok().map(|checked| &checked.ty) {
+            Some(Type::F64) => Some(NanFix {
+                other: other.0.span,
+                wrap: !postfix(other.0),
+            }),
+            Some(Type::Optional(payload)) if **payload == Type::F64 => None,
+            _ => return,
+        };
+        let at = lhs.0.span.to(rhs.0.span);
+        self.diagnostics
+            .push(DiagnosticKind::NanComparison { at, negated, fix }.into());
+    }
+
     /// `receiver.method(args)` on an `i64` or an `f64`, `ty`. Each argument is checked with
     /// `ty` as its expected type, so `x.pow(2)` makes the `2` an `f64`.
     pub(super) fn number_method(

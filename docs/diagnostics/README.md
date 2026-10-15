@@ -113,10 +113,12 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0102](E0102.md) | error | exponent without digits |
 | [E0103](E0103.md) | error | float literal out of range for `f64` |
 | [E0104](E0104.md) | error | integer literal not exactly an `f64` |
+| [E0105](E0105.md) | error | a type used as a value |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |
 | [W0004](W0004.md) | warning | unused value |
+| [W0005](W0005.md) | warning | comparison with `f64.nan` |
 
 ## Explanations
 

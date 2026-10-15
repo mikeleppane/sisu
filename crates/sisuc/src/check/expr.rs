@@ -107,6 +107,9 @@ impl Checker<'_> {
                 node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
             }
             ExprKind::Field { base, name, safe } => {
+                if !safe && let Some(checked) = self.type_path(e.span, base, name) {
+                    return checked;
+                }
                 self.member(e.span, *safe, base, name, |c, checked| {
                     c.field(e.span, checked, base, name)
                 })
@@ -571,7 +574,8 @@ impl Checker<'_> {
     /// and the other expects its type made optional. A bare `None` beside a value that is not
     /// optional is reported: the answer is fixed. So is a `u8` beside an `i64`, at the side
     /// checked second, a `char` beside another number, at the side that is not the `char`, and
-    /// an `i64` or a `u8` beside an `f64`, at the side that is not the `f64`.
+    /// an `i64` or a `u8` beside an `f64`, at the side that is not the `f64`. A side that is
+    /// `f64.nan` is warned about.
     fn equal(&mut self, span: Span, negated: bool, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         let swapped = rank(rhs) < rank(lhs);
         let (first, second) = if swapped { (rhs, lhs) } else { (lhs, rhs) };
@@ -612,6 +616,7 @@ impl Checker<'_> {
         } else {
             (checked, other)
         };
+        self.nan_comparison(negated, (lhs, &l), (rhs, &r));
         self.compared(span, l, r, |lhs, rhs| tir::ExprKind::Equal {
             negated,
             lhs,
@@ -1520,7 +1525,7 @@ pub(super) fn path(e: &ast::Expr) -> Option<String> {
 }
 
 /// Whether `expr` takes a `.method()` as written, without parentheses around it.
-fn postfix(expr: &ast::Expr) -> bool {
+pub(super) fn postfix(expr: &ast::Expr) -> bool {
     matches!(
         expr.kind,
         ExprKind::Name(_)

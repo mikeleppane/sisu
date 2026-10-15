@@ -446,3 +446,127 @@ fn method_errors() {
         codes(&src, &[(code, (2, 25))]);
     }
 }
+
+/// `f64.<name>` for each constant gives its Rust value.
+#[test]
+fn f64_constants() {
+    use std::f64::consts::{E, PI, TAU};
+    let rows = [
+        ("pi", PI),
+        ("tau", TAU),
+        ("e", E),
+        ("infinity", f64::INFINITY),
+        ("nan", f64::NAN),
+        ("max", f64::MAX),
+        ("min_positive", f64::MIN_POSITIVE),
+        ("epsilon", f64::EPSILON),
+    ];
+    for (name, x) in rows {
+        let printed = if x.is_nan() {
+            "nan".to_owned()
+        } else {
+            format!("{x:?}")
+        };
+        let src = format!("fn main() {{\n    let y: f64 = f64.{name}\n    print(y)\n}}");
+        contains(&src, &[&format!("(let y#0 {printed})")]);
+    }
+}
+
+#[test]
+fn f64_constant_errors() {
+    let src = "fn main() {\n    let _ = f64.PI\n}";
+    let d = diagnostic(src, Code::NoMember, (2, 17, "PI"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(false, vec![(2, 17, "PI", "pi".to_owned())])]
+    );
+    // An `i64` has no constants, so there is nothing to guess.
+    let src = "fn main() {\n    let _ = i64.max\n}";
+    let d = diagnostic(src, Code::NoMember, (2, 17, "max"), &[]);
+    assert_eq!(fixes(src, &d), []);
+    // Any other type name is the same.
+    codes(
+        "fn main() {\n    let _ = string.len\n}",
+        &[(Code::NoMember, (2, 20))],
+    );
+}
+
+/// A local named `f64` wins, so `f64.pi` reads a field of an `i64`.
+#[test]
+fn shadowed_type_path() {
+    codes(
+        "fn main() {\n    let f64 = 1\n    let _ = f64.pi\n}",
+        &[(Code::NoMember, (3, 17))],
+    );
+}
+
+#[test]
+fn type_as_value() {
+    let class = "class Point {\n    x: i64\n}\nfn main() {\n    let p = Point\n}";
+    let rows = [
+        ("fn main() {\n    let x = f64\n}", (2, 13)),
+        ("fn main() {\n    print(i64)\n}", (2, 11)),
+        ("fn main() {\n    f64 = 1\n}", (2, 5)),
+        (class, (5, 13)),
+    ];
+    for (src, at) in rows {
+        codes(src, &[(Code::TypeAsValue, at)]);
+    }
+}
+
+/// A comparison with `f64.nan` is always false: the warning offers `is_nan` when the other side is
+/// an `f64`, and nothing when it is an `f64?`, which `is_nan` would not check.
+#[test]
+fn nan_comparison() {
+    let program =
+        |expr: &str| format!("fn f(x: f64, o: f64?) {{\n    let _ = {expr}\n}}\nfn main() {{}}");
+    let rows = [
+        ("x == f64.nan", (13, "x == f64.nan"), "x.is_nan()"),
+        ("f64.nan != x", (13, "f64.nan != x"), "!x.is_nan()"),
+        (
+            "x + 1.0 == f64.nan",
+            (13, "x + 1.0 == f64.nan"),
+            "(x + 1.0).is_nan()",
+        ),
+        ("f64.nan == -x", (13, "f64.nan == -x"), "(-x).is_nan()"),
+        ("(x == f64.nan)", (14, "x == f64.nan"), "(x.is_nan())"),
+    ];
+    for (expr, (col, found), fixed) in rows {
+        let src = program(expr);
+        let d = diagnostic(&src, Code::NanComparison, (2, col, found), &[]);
+        assert!(d.fixes().iter().all(Fix::certain), "{src}");
+        let fixed = program(fixed);
+        assert_eq!(applied(&src, &d), fixed);
+        clean(&fixed);
+    }
+    for expr in ["o == f64.nan", "f64.nan != o"] {
+        let src = program(expr);
+        let d = diagnostic(&src, Code::NanComparison, (2, 13, expr), &[]);
+        assert_eq!(fixes(&src, &d), []);
+    }
+    // No other constant, and no other comparison, warns.
+    for expr in ["x == f64.pi", "x < f64.nan", "x == x"] {
+        clean(&program(expr));
+    }
+    // A comparison that is an error is not also a warning.
+    codes(
+        "fn f(n: i64) {\n    let _ = n == f64.nan\n}\nfn main() {}",
+        &[(Code::Mismatch, (2, 13))],
+    );
+}
+
+#[test]
+fn f64_constant_in_const() {
+    let src = "const TWO_PI = 2 * f64.pi\nfn main() {\n    let x: f64 = TWO_PI\n    print(x)\n}";
+    contains(src, &[&format!("{:?}", 2.0 * std::f64::consts::PI)]);
+    // The gate lets the member through, so only the unknown name is reported.
+    codes(
+        "const C = f64.PI\nfn main() {}",
+        &[(Code::NoMember, (1, 15))],
+    );
+    // A constant's own comparison with `nan` still warns, and holds nothing.
+    codes(
+        "const C = f64.nan == f64.nan\nfn main() {}",
+        &[(Code::NanComparison, (1, 11))],
+    );
+}

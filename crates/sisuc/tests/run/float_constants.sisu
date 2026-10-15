@@ -2,12 +2,13 @@
 // starts from `same`, which `-O2` cannot see through, so LLVM computes it at run time at both
 // levels.
 // args: a
-// o2-calls: main same 5
+// o2-calls: main same 6
 const SUM = 0.1 + 0.2
 const REM = -7.5 % 2.0
 const INF = 1.0 / 0.0
 const NEG_ZERO = -0.0
 const TINY = 5e-324
+const TWO_PI = 2 * f64.pi
 
 fn same(x: f64, depth: i64) -> f64 {
     if depth == 0 { x } else { -same(-x, depth - 1) }
@@ -26,4 +27,9 @@ fn main(args: [string]) {
     print(-same(0.0, d))        // -0.0
     print(TINY)                 // 5e-324
     print(same(5e-324, d))      // 5e-324
+    print(TWO_PI)               // 6.283185307179586
+    print(same(2.0, d) * f64.pi) // 6.283185307179586
+    print(f64.max)              // 1.7976931348623157e308
+    print(f64.min_positive)     // 2.2250738585072014e-308
+    print(f64.epsilon)          // 2.220446049250313e-16
 }

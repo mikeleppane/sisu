@@ -146,6 +146,8 @@ codes! {
     ExponentNeedsDigits = "E0102",
     FloatOutOfRange = "E0103",
     NotExactlyF64 = "E0104",
+    TypeAsValue = "E0105",
+    NanComparison = "W0005",
 }
 
 impl Code {
@@ -573,6 +575,23 @@ pub(crate) enum DiagnosticKind {
     },
     /// The expression statement at `at`, whose value of type `ty` nothing uses.
     UnusedValue { ty: String, at: Span },
+    /// The built-in type or class `name`, at `at`, read as a value.
+    TypeAsValue { name: String, at: Span },
+    /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
+    /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
+    NanComparison {
+        at: Span,
+        negated: bool,
+        fix: Option<NanFix>,
+    },
+}
+
+/// The other side of a comparison with `f64.nan`, at `other`, and whether it needs parentheses to
+/// take `.is_nan()`.
+#[derive(Clone, Copy)]
+pub(crate) struct NanFix {
+    pub(crate) other: Span,
+    pub(crate) wrap: bool,
 }
 
 /// A literal that replaces the conversion `call`, the whole value of a constant: `literal` is
@@ -882,6 +901,8 @@ impl DiagnosticKind {
             DiagnosticKind::TodoForm { .. } => Code::TodoForm,
             DiagnosticKind::ConversionInConstant { .. } => Code::ConversionInConstant,
             DiagnosticKind::UnusedValue { .. } => Code::UnusedValue,
+            DiagnosticKind::TypeAsValue { .. } => Code::TypeAsValue,
+            DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
 }
@@ -1929,6 +1950,58 @@ impl From<DiagnosticKind> for Diagnostic {
                         Span::new(at.start(), at.start()),
                         "let _ = ",
                     ))
+            }
+            DiagnosticKind::TypeAsValue { name, at } => {
+                Diagnostic::coded(code, at, format!("`{name}` is a type, not a value"))
+            }
+            DiagnosticKind::NanComparison { at, negated, fix } => {
+                let always = if negated { "true" } else { "false" };
+                let d = Diagnostic::coded(
+                    code,
+                    at,
+                    format!("comparison with `f64.nan` is always {always}"),
+                )
+                .with_help("`nan` is not equal to any number, itself included; test for it with `is_nan()`");
+                match fix {
+                    Some(NanFix { other, wrap }) => {
+                        let (open, close) = if wrap { ("(", ")") } else { ("", "") };
+                        let test = format!("{close}.is_nan()");
+                        let not = if negated { "!" } else { "" };
+                        let mut edits = if other.start() == at.start() {
+                            // `other == f64.nan`: the rest of the comparison becomes the call.
+                            vec![
+                                Edit {
+                                    span: Span::new(at.start(), at.start()),
+                                    replacement: format!("{not}{open}"),
+                                },
+                                Edit {
+                                    span: Span::new(other.end(), at.end()),
+                                    replacement: test,
+                                },
+                            ]
+                        } else {
+                            // `f64.nan == other`: what comes before `other` is dropped.
+                            vec![
+                                Edit {
+                                    span: Span::new(at.start(), other.start()),
+                                    replacement: format!("{not}{open}"),
+                                },
+                                Edit {
+                                    span: Span::new(other.end(), other.end()),
+                                    replacement: test,
+                                },
+                            ]
+                        };
+                        // `x == f64.nan` writes nothing before `x`.
+                        edits.retain(|e| e.span.start() != e.span.end() || !e.replacement.is_empty());
+                        d.with_fix(Fix {
+                            message: "test it with `is_nan()`".to_string(),
+                            certain: true,
+                            edits,
+                        })
+                    }
+                    None => d,
+                }
             }
         }
     }
