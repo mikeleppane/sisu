@@ -993,16 +993,16 @@ impl<'ctx> Codegen<'ctx, '_> {
     ) -> BasicValueEnum<'ctx> {
         let pair = self
             .llvm_type(ty)
-            .expect("the checker should type a scalar optional, which has an LLVM type")
+            .expect("the checker should type a scalar or enum optional, which has an LLVM type")
             .into_struct_type();
         let pair = self
             .builder
             .build_insert_value(pair.const_zero(), some, 0, "some")
-            .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
+            .expect("a scalar or enum optional should be lowered to a `{ flag, value }` pair");
         let pair = self
             .builder
             .build_insert_value(pair, value, 1, "wrap")
-            .expect("a scalar optional should be lowered to a `{ flag, value }` pair");
+            .expect("a scalar or enum optional should be lowered to a `{ flag, value }` pair");
         pair.as_basic_value_enum()
     }
 
@@ -1047,7 +1047,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                         self.builder
                             .build_extract_value(value.into_struct_value(), index, name)
                             .expect(
-                                "a scalar optional should be lowered to a `{ flag, value }` pair",
+                                "a scalar or enum optional should be lowered to a `{ flag, value }` pair",
                             )
                     };
                     (part(0, "some").into_int_value(), part(1, "value"))
