@@ -375,6 +375,7 @@ fn literal(e: &ast::Expr) -> Option<String> {
 fn single_term(e: &ast::Expr) -> bool {
     match &e.kind {
         ExprKind::Int { .. }
+        | ExprKind::Float(_)
         | ExprKind::Bool(_)
         | ExprKind::Char(_)
         | ExprKind::Str(_)

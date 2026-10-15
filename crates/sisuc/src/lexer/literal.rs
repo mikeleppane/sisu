@@ -1,17 +1,20 @@
 //! Literals: numbers (decimal, and `0x`, `0b` and `0o` with digit separators), `char` and
 //! string literals, and the escapes in them.
 
-use super::{Chars, MIN_MAGNITUDE, TokenKind, literal_too_large, take_while};
+use std::fmt;
+
+use super::{Chars, MIN_MAGNITUDE, Token, TokenKind, literal_too_large, take_while};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, LiteralKind, Span};
 
 /// The number or `char` literal that starts at `source[start..]`, whose first char `chars` has
-/// consumed. After an error it records the diagnostic and gives a placeholder token, so that
-/// lexing and parsing go on.
+/// consumed, after the `tokens` before it. After an error it records the diagnostic and gives a
+/// placeholder token, so that lexing and parsing go on.
 pub(super) fn token(
     source: &str,
     start: usize,
     chars: &mut Chars,
     diagnostics: &mut Vec<Diagnostic>,
+    tokens: &[Token],
 ) -> TokenKind {
     let (literal, placeholder) = if source[start..].starts_with('\'') {
         (char_literal(source, start, chars), TokenKind::Char('\0'))
@@ -20,7 +23,10 @@ pub(super) fn token(
             value: 0,
             text: "0".to_string(),
         };
-        (number(source, start, chars), zero)
+        let after_dot = tokens
+            .last()
+            .is_some_and(|t| matches!(t.kind, TokenKind::Dot | TokenKind::QuestionDot));
+        (number(source, start, chars, after_dot), zero)
     };
     literal.unwrap_or_else(|d| {
         diagnostics.push(d);
@@ -28,10 +34,37 @@ pub(super) fn token(
     })
 }
 
+/// A float literal's value. It is never NaN, so equality by bits is equality of values and `Eq`
+/// holds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Float(pub(crate) f64);
+
+impl PartialEq for Float {
+    fn eq(&self, other: &Float) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for Float {}
+
+impl fmt::Display for Float {
+    /// The shortest text that reads back as the same `f64`, always with a `.` or an exponent.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
 /// The literal that starts at the digit `source[start..]`, whose first char `chars` has consumed.
 /// A prefixed literal takes every ASCII letter, digit and `_` after its prefix, so a wrong digit
-/// is reported at that digit and not as the start of an identifier.
-fn number(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKind, Diagnostic> {
+/// is reported at that digit and not as the start of an identifier. A decimal one is a float when
+/// a `.` and a digit, or an exponent, follow its digits, unless `after_dot`: a digit run right
+/// after a `.` is an integer, so that `t.0.1` reads two elements.
+fn number(
+    source: &str,
+    start: usize,
+    chars: &mut Chars,
+    after_dot: bool,
+) -> Result<TokenKind, Diagnostic> {
     let prefix = if source[start..].starts_with('0') {
         chars.next_if(|&(_, c)| matches!(c, 'x' | 'X' | 'b' | 'B' | 'o' | 'O'))
     } else {
@@ -47,39 +80,25 @@ fn number(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKind, Di
             let end = take_while(chars, source, |c| c.is_ascii_alphanumeric() || c == '_');
             (radix, start + 2, end)
         }
-        None => (
-            10,
-            start,
-            take_while(chars, source, |c| c.is_ascii_digit() || c == '_'),
-        ),
+        None => (10, start, take_while(chars, source, is_digit_or_separator)),
     };
     let whole = Span::new(start, end);
-    let digits = &source[digits_at..end];
-    if let Some((_, prefix)) = prefix.filter(|_| digits.is_empty()) {
+    if let Some((_, prefix)) = prefix.filter(|_| digits_at == end) {
         return Err(DiagnosticKind::BasePrefixWithoutDigits { prefix, at: whole }.into());
     }
-    for (i, c) in digits.char_indices() {
-        let at = digits_at + i;
-        let neighbor = |j: Option<usize>| {
-            j.and_then(|j| digits.as_bytes().get(j))
-                .is_some_and(u8::is_ascii_alphanumeric)
-        };
-        if c == '_' {
-            if !neighbor(i.checked_sub(1)) || !neighbor(Some(i + 1)) {
-                return Err(DiagnosticKind::DigitSeparator {
-                    at: Span::new(at, at + 1),
-                }
-                .into());
-            }
-        } else if !c.is_digit(radix) {
-            return Err(DiagnosticKind::DigitOutsideBase {
-                digit: c,
-                radix,
-                at: Span::new(at, at + 1),
-            }
-            .into());
-        }
+    // Everything that belongs to the literal is consumed before the first error is reported, so
+    // that one error leaves nothing of it to lex.
+    let separators = check_digits(source, digits_at, end, radix);
+    let float = if prefix.is_none() && !after_dot {
+        float_rest(source, start, end, chars)
+    } else {
+        Ok(None)
+    };
+    separators?;
+    if let Some(float) = float? {
+        return Ok(float);
     }
+    let digits = &source[digits_at..end];
     let value = u64::from_str_radix(&digits.replace('_', ""), radix)
         .ok()
         .filter(|&n| n <= MIN_MAGNITUDE)
@@ -100,6 +119,105 @@ fn number(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKind, Di
         value,
         text: source[start..end].to_string(),
     })
+}
+
+fn is_digit_or_separator(c: char) -> bool {
+    c.is_ascii_digit() || c == '_'
+}
+
+/// The first error in the digit run `source[at..end]` of base `radix`: a `_` that does not sit
+/// between two letters or digits of the run, or a letter or digit that is not of the base.
+fn check_digits(source: &str, at: usize, end: usize, radix: u32) -> Result<(), Diagnostic> {
+    let digits = &source[at..end];
+    for (i, c) in digits.char_indices() {
+        let at = at + i;
+        let neighbor = |j: Option<usize>| {
+            j.and_then(|j| digits.as_bytes().get(j))
+                .is_some_and(u8::is_ascii_alphanumeric)
+        };
+        if c == '_' {
+            if !neighbor(i.checked_sub(1)) || !neighbor(Some(i + 1)) {
+                return Err(DiagnosticKind::DigitSeparator {
+                    at: Span::new(at, at + 1),
+                }
+                .into());
+            }
+        } else if !c.is_digit(radix) {
+            return Err(DiagnosticKind::DigitOutsideBase {
+                digit: c,
+                radix,
+                at: Span::new(at, at + 1),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// What follows the decimal digits `source[start..end]`, whose last char `chars` has consumed:
+/// the fraction and the exponent of a float, which `chars` then consumes too, or `None` when the
+/// number is an integer. A `.` ends the integer when a `.` or the start of a name follows it, as
+/// in `0..n` and `1.max(2)`; any other char after it is a float that lacks its digits.
+fn float_rest(
+    source: &str,
+    start: usize,
+    end: usize,
+    chars: &mut Chars,
+) -> Result<Option<TokenKind>, Diagnostic> {
+    let mut float_end = end;
+    let mut fraction = None;
+    if source[end..].starts_with('.') {
+        let after = source[end + 1..].chars().next();
+        match after {
+            Some(c) if c.is_ascii_digit() => {
+                chars.next();
+                float_end = take_while(chars, source, is_digit_or_separator);
+                fraction = Some(end + 1);
+            }
+            Some(c) if c == '.' || c.is_ascii_alphabetic() || c == '_' => {}
+            _ => {
+                chars.next();
+                return Err(DiagnosticKind::FloatNeedsDigits {
+                    at: Span::new(end, end + 1),
+                    fix: Span::new(end + 1, end + 1),
+                }
+                .into());
+            }
+        }
+    }
+    let exponent = chars
+        .next_if(|&(_, c)| matches!(c, 'e' | 'E'))
+        .map(|(e, _)| {
+            chars.next_if(|&(_, c)| matches!(c, '+' | '-'));
+            let digits_at = chars.peek().map_or(source.len(), |&(i, _)| i);
+            float_end = take_while(chars, source, is_digit_or_separator);
+            (e, digits_at)
+        });
+    if fraction.is_none() && exponent.is_none() {
+        return Ok(None);
+    }
+    if let Some(at) = fraction {
+        let fraction_end = exponent.map_or(float_end, |(e, _)| e);
+        check_digits(source, at, fraction_end, 10)?;
+    }
+    if let Some((e, digits_at)) = exponent {
+        if digits_at == float_end {
+            return Err(DiagnosticKind::ExponentNeedsDigits {
+                at: Span::new(e, digits_at),
+            }
+            .into());
+        }
+        check_digits(source, digits_at, float_end, 10)?;
+    }
+    let value = source[start..float_end]
+        .replace('_', "")
+        .parse::<f64>()
+        .ok()
+        .filter(|x| x.is_finite())
+        .ok_or_else(|| DiagnosticKind::FloatOutOfRange {
+            at: Span::new(start, float_end),
+        })?;
+    Ok(Some(TokenKind::Float(Float(value))))
 }
 
 /// The `char` literal that starts at the `'` at `source[start..]`, which `chars` has consumed.

@@ -142,6 +142,9 @@ codes! {
     CannotInterpolate = "E0098",
     TodoForm = "E0099",
     ConversionInConstant = "E0100",
+    FloatNeedsDigits = "E0101",
+    ExponentNeedsDigits = "E0102",
+    FloatOutOfRange = "E0103",
 }
 
 impl Code {
@@ -200,6 +203,13 @@ pub(crate) enum DiagnosticKind {
     DigitSeparator { at: Span },
     /// An integer literal at `at` that does not fit `i64`.
     IntegerTooLarge { at: Span },
+    /// The `.` at `at` of a float with no digit on one side of it: `1.` or `.5`. `fix` is where
+    /// the missing `0` goes, after the `.` in the first form and before it in the second.
+    FloatNeedsDigits { at: Span, fix: Span },
+    /// The exponent at `at`, from its `e` or `E` through its sign, with no digit after it.
+    ExponentNeedsDigits { at: Span },
+    /// A float literal at `at` that rounds to infinity in `f64`.
+    FloatOutOfRange { at: Span },
     /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`). `certain` is
     /// false when the lower case literal may still be rejected, as a bare 2^63 is.
     BasePrefixUpperCase {
@@ -768,6 +778,9 @@ impl DiagnosticKind {
             DiagnosticKind::DigitSeparator { .. } => Code::DigitSeparator,
             DiagnosticKind::IntegerTooLarge { .. } => Code::IntegerTooLarge,
             DiagnosticKind::BasePrefixUpperCase { .. } => Code::BasePrefixUpperCase,
+            DiagnosticKind::FloatNeedsDigits { .. } => Code::FloatNeedsDigits,
+            DiagnosticKind::ExponentNeedsDigits { .. } => Code::ExponentNeedsDigits,
+            DiagnosticKind::FloatOutOfRange { .. } => Code::FloatOutOfRange,
             DiagnosticKind::BasePrefixWithoutDigits { .. } => Code::BasePrefixWithoutDigits,
             DiagnosticKind::DigitOutsideBase { .. } => Code::DigitOutsideBase,
             DiagnosticKind::UnexpectedCharacter { .. } => Code::UnexpectedCharacter,
@@ -988,6 +1001,25 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::IntegerTooLarge { at } => {
                 Diagnostic::coded(code, at, "integer literal is too large for `i64`")
+            }
+            DiagnosticKind::FloatNeedsDigits { at, fix } => {
+                let side = if fix.start > at.start { "after" } else { "before" };
+                Diagnostic::coded(code, at, "a float needs digits on both sides of `.`").with_fix(
+                    Fix {
+                        message: format!("write a `0` {side} the `.`"),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: fix,
+                            replacement: "0".to_string(),
+                        }],
+                    },
+                )
+            }
+            DiagnosticKind::ExponentNeedsDigits { at } => {
+                Diagnostic::coded(code, at, "an exponent needs digits")
+            }
+            DiagnosticKind::FloatOutOfRange { at } => {
+                Diagnostic::coded(code, at, "literal out of range for `f64`")
             }
             DiagnosticKind::BasePrefixUpperCase {
                 prefix,
