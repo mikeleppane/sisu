@@ -437,4 +437,12 @@ fn method_errors() {
     );
     // An argument of the wrong type is a mismatch at the argument, whatever the method.
     codes(&scalars("x.pow(n)"), &[(Code::Mismatch, (2, 19))]);
+    // The call that failed is `Error`, so the `bool` it cannot be is not reported too: a bad
+    // argument, or a label, is the whole of the report.
+    for (arg, code) in [("n", Code::Mismatch), ("v: 1.0", Code::LabeledArgument)] {
+        let src = format!(
+            "fn f(n: i64, x: f64) {{\n    let y: bool = x.pow({arg})\n    print(y)\n}}\nfn main() {{}}"
+        );
+        codes(&src, &[(code, (2, 25))]);
+    }
 }
