@@ -1,6 +1,7 @@
 // A `Move` leaves the zero value in a local's slot, which scope end releases. An enum's zero
 // value is its first variant with every field zero, so each release helper must release nothing
-// for a null string, a null object and a nested enum's zero value. `[e; 0]` releases `e` once.
+// for a null string, a null object, a nested enum's zero value and a null box. `[e; 0]` releases
+// `e` once.
 class C {
     n: i64
 }
@@ -13,6 +14,16 @@ enum Inner {
 enum Z {
     Text(string, Inner, C)
     Other
+}
+
+// `Link`'s `Chain` is a box, so the zero value's `Link` holds a null box.
+enum Chain {
+    Link(string, Chain)
+    End
+}
+
+fn ends(c: Chain) -> bool {
+    c == Chain.End
 }
 
 fn other(z: Z) -> bool {
@@ -39,4 +50,6 @@ fn main() {
     let kept = w
     w = Z.Other
     print(kept == w)                                         // false
+    let c = Chain.Link("n" + "o", Chain.Link("p" + "q", Chain.End))
+    print(ends(c))                                           // false: `c` moves into the call
 }

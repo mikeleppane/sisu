@@ -1,0 +1,19 @@
+fn iterations() -> i64 { 1000 }
+
+// `Add`'s two fields close the cycle `Expr` holds `Expr`, so each is a box: building
+// `Add(Num(1), Num(2))` allocates those two boxes and nothing else, since a `Num` is held inline.
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+}
+
+fn main() {
+    let mut built = 0
+    for i in 0..iterations() {
+        let e = Expr.Add(Expr.Num(1), Expr.Num(2))
+        if e != Expr.Num(i) {
+            built += 1
+        }
+    }
+    print(built) // 1000 (0 with no iterations)
+}

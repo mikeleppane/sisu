@@ -135,10 +135,6 @@ pub(crate) struct Enum {
     pub(crate) counted: bool,
     /// The enum's strongly connected component of the holds-inline graph, when that component
     /// has a boxed field.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Task 5's pending list reads it")
-    )]
     pub(crate) cycle: Option<usize>,
 }
 

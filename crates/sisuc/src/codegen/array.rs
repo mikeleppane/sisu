@@ -621,9 +621,13 @@ impl<'ctx> Codegen<'ctx, '_> {
             Helper::Drop => self.define_array_drop(element, function),
             Helper::Eq => self.define_array_eq(element, function),
             Helper::Unique => self.define_array_unique(element, function),
-            Helper::Retain | Helper::Release => {
+            Helper::Retain
+            | Helper::Release
+            | Helper::Walk
+            | Helper::Drain
+            | Helper::EqComponent => {
                 unreachable!(
-                    "`define_helpers` should define every `release` itself, and queue `retain` only for an enum"
+                    "`define_helpers` should define every `release` itself, and queue `retain` and the component helpers only for an enum"
                 )
             }
         }

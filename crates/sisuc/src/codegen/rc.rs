@@ -2,7 +2,8 @@
 //! that do it. Each counted type gets one helper of each kind, declared on first use and
 //! defined by `define_helpers` in one worklist pass. A string, an object or an array is a
 //! pointer, which `@sisu_rc.retain` and its `release` helper take; an enum is a value, which its
-//! `retain`, `release` and `eq` helpers take by address.
+//! `retain`, `release` and `eq` helpers take by address. An enum whose component has boxes also
+//! has `walk`, `drain` and `eq_component` helpers (see `codegen/enums.rs`).
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::Linkage;
@@ -21,6 +22,12 @@ pub(super) enum Helper {
     Drop,
     Eq,
     Unique,
+    /// `@sisu_rc.walk.<F>(value, heads)`: releases a value's counted parts, listing its boxes.
+    Walk,
+    /// `@sisu_rc.drain.<F0>(heads)`: frees the boxes on a component's pending lists.
+    Drain,
+    /// `@sisu_rc.eq_component.<F0>(kind, a, b)`: `==` on values of a component's member `kind`.
+    EqComponent,
 }
 
 /// The type whose helpers a pointer-shaped `ty` uses: a `string`, a class or an array, with any
@@ -35,9 +42,9 @@ pub(super) fn counted_core(ty: &Type) -> Option<&Type> {
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
-    /// Declares `sisu_rc.<retain|release|drop|eq|unique>.<name>` on first use and queues its body;
-    /// `name` is a class's or an enum's name, `string`, or `[<element name>]` for an array
-    /// (`[Node?]`, `[[i64]]`).
+    /// Declares `sisu_rc.<retain|release|drop|eq|unique|walk|drain|eq_component>.<name>` on first
+    /// use and queues its body; `name` is a class's or an enum's name, `string`, or
+    /// `[<element name>]` for an array (`[Node?]`, `[[i64]]`).
     pub(super) fn helper(&self, kind: Helper, ty: &Type) -> FunctionValue<'ctx> {
         let key = (kind, ty.clone());
         if let Some(function) = self.helpers.borrow().get(&key) {
@@ -57,6 +64,24 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .fn_type(&[ptr_type.into(), ptr_type.into()], false),
             ),
             Helper::Unique => ("unique", ptr_type.fn_type(&[ptr_type.into()], false)),
+            Helper::Walk => (
+                "walk",
+                self.context
+                    .void_type()
+                    .fn_type(&[ptr_type.into(), ptr_type.into()], false),
+            ),
+            Helper::Drain => ("drain", takes_object),
+            Helper::EqComponent => (
+                "eq_component",
+                self.context.bool_type().fn_type(
+                    &[
+                        self.context.i32_type().into(),
+                        ptr_type.into(),
+                        ptr_type.into(),
+                    ],
+                    false,
+                ),
+            ),
         };
         let function = self.module.add_function(
             &format!("sisu_rc.{prefix}.{name}"),
@@ -100,6 +125,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                 (Helper::Eq, _) => self.define_eq(function, &ty),
                 (Helper::Unique, _) => {
                     unreachable!("only an array type should be queued for a `unique` helper")
+                }
+                (Helper::Walk | Helper::Drain | Helper::EqComponent, _) => {
+                    unreachable!("only an enum type should be queued for a component helper")
                 }
             }
         }
@@ -322,7 +350,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Whether two pointers of a counted type are equal with no look inside: the same pointer
     /// when the type is `reflexive`, else both `null`. One block or object that holds a `nan`
     /// is not equal to itself, so only a reflexive type may stop at the same pointer.
-    fn equal_at_once(
+    pub(super) fn equal_at_once(
         &self,
         reflexive: bool,
         a: PointerValue<'ctx>,
@@ -343,7 +371,8 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Whether every value of `ty` is `==` to itself: no `f64` is reachable from it, directly,
     /// as an optional's payload, an array's element, or a field of a class or a payload field
-    /// of an enum it reaches.
+    /// of an enum it reaches, boxed or inline. Fields close cycles through classes and boxes,
+    /// so a class or enum met again counts as reflexive until a path from it finds an `f64`.
     pub(super) fn reflexive(&self, ty: &Type) -> bool {
         fn reaches_no_f64(program: &Program, ty: &Type, seen: &mut FxHashSet<Type>) -> bool {
             match ty {
@@ -457,7 +486,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to
     /// `otherwise`.
-    fn decrement(
+    pub(super) fn decrement(
         &self,
         object: PointerValue<'ctx>,
         at_zero: BasicBlock<'ctx>,
