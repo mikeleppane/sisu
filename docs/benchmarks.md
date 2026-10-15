@@ -82,7 +82,7 @@ Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 | [hello](../bench/hello) | Prints `Hello, World!` | The time from source to output: build and startup |
 | [quicksort](../bench/quicksort) | Sorts 10 000 000 pseudo-random integers with a textbook quicksort, then prints a checksum that depends on their order | Element writes, and in Sisu whether an array passed and returned is written in place |
 
-Benchmarks that need floats come with milestone 6.
+Sisu has floats since milestone 6, but no benchmark uses them yet.
 
 ## What the numbers mean
 

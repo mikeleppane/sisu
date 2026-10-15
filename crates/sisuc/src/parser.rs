@@ -3,9 +3,9 @@
 use std::ops::Range;
 
 use crate::ast::{
-    Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Expr, ExprKind, FieldDecl,
-    ForSource, Function, Ident, Item, Member, Param, Program, Stmt, StmtKind, TypeExpr, TypeKind,
-    UnaryOp,
+    Align, Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Expr, ExprKind,
+    FieldDecl, ForSource, FormatSpec, Function, Ident, Item, Member, Param, Part, Program, Stmt,
+    StmtKind, TypeExpr, TypeKind, UnaryOp,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticKind, Join, LetField, PowerFix, SemicolonPlace, Span,
@@ -26,7 +26,8 @@ pub(crate) struct Parsed {
 
 /// Parses `lexed`, whose tokens end with `Eof` and whose brackets balance. An item with a
 /// syntax error, its own or the lexer's, is broken: it reports its earliest error, and the
-/// parser resumes after it.
+/// parser resumes after it. A bad format spec alone does not break its item: the parser reports
+/// it and reads its part without a spec.
 pub(crate) fn parse(lexed: Lexed<'_>) -> Parsed {
     let Lexed {
         source,
@@ -43,6 +44,7 @@ pub(crate) fn parse(lexed: Lexed<'_>) -> Parsed {
         lexer: &diagnostics,
         comments: &comments,
         breaks: &breaks,
+        specs: Vec::new(),
     }
     .program()
 }
@@ -66,6 +68,59 @@ fn earlier(a: Diagnostic, b: Diagnostic) -> Diagnostic {
     } else {
         a
     }
+}
+
+/// The format spec `text`, written at `at` from its `:`: `[<^>][width][.precision]`, with a
+/// width from 1 to 1000 and a precision from 0 to 30.
+fn format_spec(text: &str, at: Span) -> Result<FormatSpec, Diagnostic> {
+    let align = match text.as_bytes().first() {
+        Some(b'<') => Some(Align::Left),
+        Some(b'>') => Some(Align::Right),
+        Some(b'^') => Some(Align::Center),
+        _ => None,
+    };
+    // An alignment is one ASCII byte.
+    let rest = &text[usize::from(align.is_some())..];
+    let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let (width, rest) = rest.split_at(digits(rest));
+    let (precision, rest) = match rest.strip_prefix('.') {
+        Some(after) => {
+            let (precision, rest) = after.split_at(digits(after));
+            (Some(precision), rest)
+        }
+        None => (None, rest),
+    };
+    if !rest.is_empty() || width.starts_with('0') {
+        return Err(DiagnosticKind::UnsupportedFormatSpec { at }.into());
+    }
+    if precision.is_some_and(str::is_empty) || (width.is_empty() && precision.is_none()) {
+        return Err(DiagnosticKind::MalformedFormatSpec { at }.into());
+    }
+    let limit = |width| Diagnostic::from(DiagnosticKind::FormatSpecLimit { at, width });
+    let width = match width {
+        "" => None,
+        w => Some(
+            w.parse::<u16>()
+                .ok()
+                .filter(|&w| w <= 1000)
+                .ok_or_else(|| limit(true))?,
+        ),
+    };
+    let precision = match precision {
+        None => None,
+        Some(p) => Some(
+            p.parse::<u8>()
+                .ok()
+                .filter(|&p| p <= 30)
+                .ok_or_else(|| limit(false))?,
+        ),
+    };
+    Ok(FormatSpec {
+        align,
+        width,
+        precision,
+        span: at,
+    })
 }
 
 /// How deep the syntax tree may nest. Every later stage walks the tree recursively, and so does
@@ -177,6 +232,8 @@ struct Parser<'a> {
     comments: &'a [usize],
     /// Where each line break is.
     breaks: &'a [usize],
+    /// The error of each bad format spec so far that no broken item took.
+    specs: Vec<Diagnostic>,
 }
 
 impl<'a> Parser<'a> {
@@ -437,6 +494,7 @@ impl<'a> Parser<'a> {
             }
             self.skip_newlines();
         }
+        diagnostics.append(&mut self.specs);
         let outside = |at: &usize| !covered.iter().any(|r| r.contains(at));
         diagnostics.extend(
             self.lexer
@@ -571,14 +629,19 @@ impl<'a> Parser<'a> {
         parse: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
     ) -> Result<T, Diagnostic> {
         let bytes = self.bytes(self.pos, end);
+        let specs = self.specs.len();
         let parsed = parse(self);
         let lexed = self.lexer_in(bytes).next().cloned();
-        let error = match (parsed, lexed) {
-            (Ok(parsed), None) => return Ok(parsed),
-            (Ok(_), Some(lexed)) => lexed,
-            (Err(error), None) => error,
-            (Err(error), Some(lexed)) => earlier(lexed, error),
-        };
+        if let (Ok(_), None) = (&parsed, &lexed) {
+            return parsed;
+        }
+        let error = self
+            .specs
+            .drain(specs..)
+            .chain(lexed)
+            .chain(parsed.err())
+            .reduce(earlier)
+            .expect("a broken item should hold an error");
         self.pos = end;
         Err(error)
     }
@@ -588,6 +651,7 @@ impl<'a> Parser<'a> {
     /// breaks the whole class, whose one error is then the earliest in it.
     fn class(&mut self, end: usize) -> Result<(Class, Vec<Diagnostic>), Diagnostic> {
         let bytes = self.bytes(self.pos, end);
+        let specs = self.specs.len();
         let mut errors = Vec::new();
         let mut methods = Vec::new();
         let parsed = self.class_body(&mut errors, &mut methods);
@@ -605,6 +669,7 @@ impl<'a> Parser<'a> {
                 self.pos = end;
                 let error = errors
                     .into_iter()
+                    .chain(self.specs.drain(specs..))
                     .chain(outside)
                     .chain(parsed.err())
                     .reduce(earlier)
@@ -717,6 +782,7 @@ impl<'a> Parser<'a> {
             lexer: self.lexer,
             comments: self.comments,
             breaks: self.breaks,
+            specs: Vec::new(),
         };
         let mutable = rest.eat(&TokenKind::Mut).is_some();
         let mut field = || -> Result<String, Diagnostic> {
@@ -1536,16 +1602,27 @@ impl<'a> Parser<'a> {
     /// text `head`: each expression, and the text after it, up to the `StrTail`.
     fn interpolation(&mut self, start: Span, head: String) -> Result<Expr, Diagnostic> {
         let text = |value: String, span| {
-            (!value.is_empty()).then_some(Expr {
-                kind: ExprKind::Str(value),
-                span,
+            (!value.is_empty()).then_some(Part {
+                value: Expr {
+                    kind: ExprKind::Str(value),
+                    span,
+                },
+                spec: None,
             })
         };
         let base = self.depth;
         let mut reach = base;
-        let mut parts: Vec<Expr> = text(head, start).into_iter().collect();
+        let mut parts: Vec<Part> = text(head, start).into_iter().collect();
         let end = loop {
-            parts.push(self.child(base, &mut reach, Self::expr)?);
+            let value = self.child(base, &mut reach, Self::expr)?;
+            let mut spec = None;
+            if let TokenKind::FormatSpec(written) = &self.peek().kind {
+                let at = self.bump().span;
+                spec = format_spec(written, at)
+                    .map_err(|error| self.specs.push(error))
+                    .ok();
+            }
+            parts.push(Part { value, spec });
             let token = self.peek().clone();
             match token.kind {
                 TokenKind::StrMiddle(value) => parts.extend(text(value, token.span)),
@@ -1887,6 +1964,71 @@ mod tests {
         );
         // Empty text pieces are dropped.
         assert_eq!(expr(r#"print("{x}{y}")"#), "(call print (interp x y))");
+    }
+
+    /// A part with a spec prints as `fmt`, its spec in the order the grammar gives.
+    #[test]
+    fn format_spec_s_expression() {
+        assert_eq!(
+            expr(r#"print("a{x:>8.2}b{y}{z:.1}{w:4}")"#),
+            r#"(call print (interp "a" (fmt x ">8.2") "b" y (fmt z ".1") (fmt w "4")))"#
+        );
+    }
+
+    #[test]
+    fn format_specs() {
+        use crate::ast::Align::{Center, Left, Right};
+        let at = Span::new(0, 0);
+        for (text, align, width, precision) in [
+            (">8.2", Some(Right), Some(8), Some(2)),
+            ("<10", Some(Left), Some(10), None),
+            ("^5", Some(Center), Some(5), None),
+            (".3", None, None, Some(3)),
+            ("7", None, Some(7), None),
+            ("1000.30", None, Some(1000), Some(30)),
+            ("<.0", Some(Left), None, Some(0)),
+        ] {
+            let spec = format_spec(text, at).expect(text);
+            assert_eq!(
+                (spec.align, spec.width, spec.precision),
+                (align, width, precision),
+                "{text}"
+            );
+        }
+        // Each error points at the whole spec, its `:` included.
+        let (malformed, unsupported, limit) = (
+            Code::MalformedFormatSpec,
+            Code::UnsupportedFormatSpec,
+            Code::FormatSpecLimit,
+        );
+        for (spec, code) in [
+            ("", malformed),
+            (">", malformed),
+            (".", malformed),
+            ("8.", malformed),
+            ("^.", malformed),
+            ("03", unsupported),
+            ("0", unsupported),
+            ("+", unsupported),
+            ("e", unsupported),
+            ("x", unsupported),
+            (".2e", unsupported),
+            ("*>5", unsupported),
+            (" 5", unsupported),
+            (">{w}", unsupported),
+            ("1001", limit),
+            ("65536", limit),
+            ("99999999999999999999", limit),
+            (".31", limit),
+            (".256", limit),
+            ("5.99999999999999999999", limit),
+        ] {
+            let src = format!("fn main() {{\n    print(\"{{x:{spec}}}\")\n}}");
+            let d = parse_diagnostic(&src);
+            let (line, col) = line_col(&src, d.span().start());
+            assert_eq!((d.code(), line, col), (code, 2, 14), "{spec}");
+            assert_eq!(&src[d.span().range()], format!(":{spec}"), "{spec}");
+        }
     }
 
     /// An interpolation holds one expression, which ends at its `}`.

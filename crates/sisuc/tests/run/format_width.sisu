@@ -1,0 +1,46 @@
+// Format specs pad a part to a width in code points, by its alignment or its type's default:
+// numbers right, `bool`, `char` and `string` left. Each padded part sits between brackets or
+// other text, so a wrong offset after the padding shows.
+fn first() -> f64 {
+    print("first")
+    1.25
+}
+
+fn second() -> string {
+    print("second")
+    "ab"
+}
+
+fn main() {
+    // A code point is one column, whatever its bytes; centre puts the odd space on the right.
+    print("[{"é":>5}]")                    // [    é]
+    print("[{"日本":^7}]")                  // [  日本   ]
+    // A value longer than its width is not cut.
+    print("[{"héllo":>3}]")                // [héllo]
+
+    // The spec's example.
+    let t = 3.14159
+    let x = -2.5
+    let name = "Väinö"
+    print("t={t:>6.2}  x={x:>8.3}  {name:<10}|")    // t=  3.14  x=  -2.500  Väinö     |
+
+    // Default alignments, and an `f64` padded without a precision.
+    let n = 42
+    let b = true
+    let c = 'ä'
+    print("[{n:5}][{x:7}][{b:6}][{c:3}]")    // [   42][   -2.5][true  ][ä  ]
+    print("[{b:>6}][{c:^5}][{name:^9}]")      // [  true][  ä  ][  Väinö  ]
+
+    // Parts run left to right, and each is written at its own offset.
+    print("[{first():>6.1}|{second():^7}]")   // first, second, then [   1.2|  ab   ]
+
+    // The largest part: 309 digits, a point and 30 decimals, padded to 1000 columns.
+    let big = "{f64.max:>1000.30}"
+    print(big.len())                         // 1000
+    let wide = "{-f64.max:.30}"
+    print(wide.len())                        // 341
+    print(wide)                              // -1797...858368.000000000000000000000000000000
+    // Precision 0 still has room for the sign and the 309 digits.
+    let whole = "{-f64.max:.0}"
+    print(whole.len())                       // 310
+}

@@ -1,0 +1,18 @@
+// A precision prints that many decimals, rounded half to even from the exact binary value, and
+// never in exponent form; `inf`, `-inf` and `nan` ignore it. Each value reaches the
+// interpolation through a parameter, so it is a run-time value.
+fn show(x: f64) {
+    print("{x:.2} {x:.0}")
+}
+
+fn main() {
+    show(2.675)           // 2.67 3: 2.675 is 2.67499999999999982236431605997495353221893310546875
+    show(0.5)             // 0.50 0
+    show(1.5)             // 1.50 2
+    show(2.5)             // 2.50 2
+    show(-0.004)          // -0.00 -0
+    show(1e20)            // 100000000000000000000.00 100000000000000000000
+    show(f64.infinity)    // inf inf
+    show(-f64.infinity)   // -inf -inf
+    show(f64.nan)         // nan nan
+}

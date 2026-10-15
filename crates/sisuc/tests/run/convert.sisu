@@ -1,5 +1,13 @@
 // A conversion that can fail gives an optional: `None` outside the target type, and no panic.
-// Each boundary is converted on both sides.
+// Each boundary is converted on both sides, as a literal that folds away and again as a run-time
+// value: `same_int` returns its argument at a depth that `-O2` does not know, so the range checks
+// run on values LLVM cannot fold. `main(args)` gets `a`, so the depth is 1.
+// args: a
+// o2-calls: main same_int 10
+fn same_int(n: i64, depth: i64) -> i64 {
+    if depth == 0 { n } else { -same_int(-n, depth - 1) }
+}
+
 fn show_u8(b: u8?) {
     if let v = b {
         print(i64(v)) // the value
@@ -16,7 +24,7 @@ fn show_char(c: char?) {
     }
 }
 
-fn main() {
+fn main(args: [string]) {
     show_u8(u8(0))            // 0
     show_u8(u8(255))          // 255
     show_u8(u8(256))          // none
@@ -33,4 +41,17 @@ fn main() {
     print(i64(d))             // 7
     let n = 300
     print(i64(u8(n) ?? 9))    // 9
+    let d = args.len()
+    let minus = same_int(-1, d)
+    show_u8(u8(minus))                // none
+    show_u8(u8(same_int(0, d)))       // 0
+    show_u8(u8(same_int(255, d)))     // 255
+    show_u8(u8(same_int(256, d)))     // none
+    show_char(char(same_int(0xD7FF, d)))   // U+D7FF
+    show_char(char(same_int(0xD800, d)))   // none
+    show_char(char(same_int(0xDFFF, d)))   // none
+    show_char(char(same_int(0xE000, d)))   // U+E000
+    show_char(char(same_int(0x10FFFF, d))) // U+10FFFF
+    show_char(char(same_int(0x110000, d))) // none
+    show_char(char(minus))            // none
 }

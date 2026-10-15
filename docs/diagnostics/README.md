@@ -116,6 +116,10 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0105](E0105.md) | error | a type used as a value |
 | [E0106](E0106.md) | error | math written another way |
 | [E0107](E0107.md) | error | `**` |
+| [E0108](E0108.md) | error | malformed format spec |
+| [E0109](E0109.md) | error | unsupported format spec |
+| [E0110](E0110.md) | error | format spec width or precision above its limit |
+| [E0111](E0111.md) | error | precision on a value that is not an `f64` |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

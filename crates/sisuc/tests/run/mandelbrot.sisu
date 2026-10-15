@@ -1,0 +1,47 @@
+// The Mandelbrot set as text: 57 columns by 21 rows over -2.5..1.0 on the real axis and
+// -1.25..1.25 on the imaginary one. The steps are 1/16 and 1/8, so each pixel maps to an exact
+// `f64` through `f64(...)`. The iteration loop runs in `f64`; a point that stays within radius 2
+// for 50 steps is in the set and prints `#`. A point outside prints the palette character for
+// how fast it escaped, found by converting a scaled count to `i64?`.
+//
+// Checkpoints, from an independent Python run of the same iteration (c = x + 0i):
+//   c = 0.0   (column 40, middle row): never escapes, prints `#`
+//   c = -1.0  (column 24, middle row): never escapes, prints `#`
+//   c = 1.0   (column 56, middle row): escapes at step 3, level floor(sqrt(3)/sqrt(50)*7) = 1, `:`
+//   c = -2.5  (column 0, middle row): escapes at step 1, level 0, `.`
+const MAX = 50
+
+// The step at which `|z|` passes 2, or 0 if it does not within `MAX` steps.
+fn escape(cr: f64, ci: f64) -> i64 {
+    let mut zr = 0.0
+    let mut zi = 0.0
+    let mut n = 0
+    while n < MAX {
+        let next = zr * zr - zi * zi + cr
+        zi = 2.0 * zr * zi + ci
+        zr = next
+        n += 1
+        if zr * zr + zi * zi > 4.0 {
+            return n
+        }
+    }
+    0
+}
+
+fn main() {
+    let palette = ".:-=+*%@".chars()
+    for y in 0..21 {
+        let mut line = ""
+        for x in 0..57 {
+            let n = escape(-2.5 + f64(x) / 16.0, -1.25 + f64(y) / 8.0)
+            if n == 0 {
+                line += "#"
+            } else {
+                let scaled = (f64(n).sqrt() / f64(MAX).sqrt() * 7.0).floor().clamp(0.0, 7.0)
+                let level = i64(scaled) ?? 0
+                line += "{palette[level]}"
+            }
+        }
+        print(line)
+    }
+}

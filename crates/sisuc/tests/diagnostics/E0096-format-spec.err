@@ -1,0 +1,13 @@
+error[E0096]: empty interpolation
+ --> E0096-format-spec.sisu:3:12
+  |
+3 |     print("{:>8} {x}")
+  |            ^^^^^
+  |
+help: write `\{\}` for literal braces
+  |
+3 |     print("\{:>8\} {x}")
+  |            +    +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0096

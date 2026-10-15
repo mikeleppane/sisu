@@ -200,6 +200,56 @@ fn main() {
         );
     }
 
+    /// A bad spec is reported once and breaks nothing around it; a spec that a `"` cuts off is
+    /// not read, and the unclosed literal is its function's one error.
+    #[test]
+    fn format_spec_recovery() {
+        use Code::{
+            EmptyInterpolation, Expected, LiteralNotClosed, Mismatch, UnsupportedFormatSpec,
+        };
+        for (src, expected) in [
+            (
+                "fn main() {\n    let w = 3\n    print(\"{w:>{w}}\")\n}\n",
+                vec![(UnsupportedFormatSpec, (3, 14))],
+            ),
+            (
+                "fn main() {\n    let x = 1.5\n    let s = \"{x:>8\"\n}\nfn f() {\n    let y: i64 = \"a\"\n}\n",
+                vec![(LiteralNotClosed, (3, 13)), (Mismatch, (6, 18))],
+            ),
+            (
+                "fn main() {\n    let x = 1\n    print(\"{x:+\" + \"abc}\")\n}\n",
+                vec![(LiteralNotClosed, (3, 11))],
+            ),
+            // A spec with no expression before it, as Rust and Python allow.
+            (
+                "fn main() {\n    print(\"{:>8}\")\n}\n",
+                vec![(EmptyInterpolation, (2, 12))],
+            ),
+            (
+                "fn main() {\n    let x = 1\n    let y = 2\n    print(\"{x:03} {y:+}\")\n}\n",
+                vec![
+                    (UnsupportedFormatSpec, (4, 14)),
+                    (UnsupportedFormatSpec, (4, 21)),
+                ],
+            ),
+            // An item that another error breaks reports its earliest error, a spec's included.
+            (
+                "fn main() {\n    let x = 1\n    print(\"{x:+}\")\n    let = 2\n}\n",
+                vec![(UnsupportedFormatSpec, (3, 14))],
+            ),
+            (
+                "fn main() {\n    let = 2\n    print(\"{2:+}\")\n}\n",
+                vec![(Expected, (2, 9))],
+            ),
+            (
+                "class A {\n    fn m(self) {\n        print(\"{1:+}\")\n    }\n    let n = 1\n}\nfn main() {}\n",
+                vec![(UnsupportedFormatSpec, (3, 18))],
+            ),
+        ] {
+            assert_eq!(codes(src), expected, "{src}");
+        }
+    }
+
     #[test]
     fn call_to_broken_function_checks_arguments() {
         let src = "fn f() {\n    let = 1\n}\nfn main() {\n    f(nope)\n}\n";

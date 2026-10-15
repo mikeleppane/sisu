@@ -37,7 +37,9 @@ text, so later stages never see the escape text. An integer literal's token
 holds only its value; a diagnostic that quotes the literal as written slices
 the source with its span. A string with `{expr}` parts
 becomes a `StrHead` token, the expression's tokens, and `StrMiddle` or
-`StrTail` tokens for the text between and after them. The lexer interns each
+`StrTail` tokens for the text between and after them. A `:` that ends an
+interpolation's expression starts a `FormatSpec` token, which holds the spec's
+text. The lexer interns each
 name into a `Symbol` (`symbol.rs`), so the parser and checker copy, compare and
 hash names as integers; `tir` and diagnostics hold the text as a `String`. After most errors
 the lexer skips the bad text and goes on, so it records every one of them,
@@ -48,7 +50,8 @@ and checker do not run.
 **Parser** (`parser.rs`, `ast.rs`). Turns tokens into a syntax tree, the AST.
 It reports one error per broken item, then resumes at the next item. The
 intact items go on to the checker, and a broken item keeps its name, so a use
-of it is not reported as missing. It rejects an item that nests deeper than
+of it is not reported as missing. It parses a format spec's text into its alignment, width and precision, and
+reports a malformed or unsupported one without breaking its item. It rejects an item that nests deeper than
 256 levels, because every later stage walks the tree recursively.
 
 **Front end** (`front_end.rs`). Runs the lexer, parser, checker and last-use
@@ -64,7 +67,8 @@ becomes an `Append`. A local keeps `Assign` with `Concat` and appends in place
 through `concat`'s count-1 path. It folds each top-level `const` to a literal
 and replaces every use of its name with that literal. A call to a prelude
 function such as `print` or `panic` has its own rule, and `panic(msg)` and
-`todo` become a `Panic` node of type `never`. A method on a number, such as
+`todo` become a `Panic` node of type `never`. A format spec on a part becomes a padding and a precision, and a precision on a
+value that is not an `f64` is an error. A method on a number, such as
 `x.sqrt()` or `n.max(m)`, becomes a `Math` node, and a constant such as
 `f64.pi` becomes a literal. It reports every error
 in one run: an expression that already failed gets the poison type, so one
@@ -117,8 +121,8 @@ is never reused in place: its count never drops to 1 at `+`. An `Append` reads i
 the count last, so it appends in place only when nothing else holds the string
 or an array on its path. `chars()` and `bytes()` build a new array from the
 string, and `string(cs)` encodes a `[char]` into a new block. An interpolation
-allocates one block sized for the most text each part can give, then writes the
-parts into it. With `--rc-checks`, these helpers check each count before they
+allocates one block sized for the most text each part can give, plus the width
+of each padded part, then writes the parts into it, padding each part in place. With `--rc-checks`, these helpers check each count before they
 change it, and `main` calls `sisu_rc_check_exit` before it returns.
 
 **LLVM 22**. Runs the `mem2reg` pass, which turns stack slots into registers,
@@ -140,7 +144,8 @@ to panic and to allocate and free objects, arrays and strings:
 `sisu_print_char`, `sisu_print_str`, `sisu_eprint_char`, `sisu_eprint_str`,
 `sisu_str_compare`, and `sisu_write_int`, `sisu_write_bool` and
 `sisu_write_char`, which interpolation calls (`float.rs` adds `sisu_write_f64`
-for an `f64`), and
+for an `f64`, and `sisu_write_f64_fixed` for one with a precision), and
+`sisu_pad`, which pads a part with a width in place, and
 `sisu_utf8_count`, `sisu_utf8_decode`, `sisu_utf8_len` and `sisu_utf8_encode`,
 which `chars()` and `string(cs)` call, and `sisu_words_count` and
 `sisu_word_next`, which `words()` calls; `s.words().len()`, written as one

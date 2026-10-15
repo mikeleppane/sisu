@@ -1,0 +1,40 @@
+// A projectile launched at 20 m/s and 45 degrees under gravity, stepped with semi-implicit Euler
+// until it falls below the ground. Prints a table with format specs, then the highest point and
+// the range, whole metres through a conversion to `i64?`.
+//
+// Checkpoints, from an independent Python run of the same steps (dt = 0.1, `hypot` for speed):
+//   first step (1):     t = 0.10, x = 1.414, y = 1.316, speed = 19.319
+//   landing step (28):  t = 2.80, x = 39.598, y = -0.231, speed = 19.431
+//   highest point 9.498 (reached at step 14: y = 9.498), range 40 m
+const G = 9.81
+
+fn main() {
+    let dt = 1e-1
+    let angle = f64.pi / 4.0
+    let vx = 20.0 * angle.cos()
+    let mut vy = 20.0 * angle.sin()
+    let mut x = 0.0
+    let mut y = 0.0
+    let mut t = 0.0
+    let mut top = 0.0
+    let mut step = 0
+    print("  step       t        x        y      speed")
+    while y >= 0.0 {
+        vy -= G * dt
+        x += vx * dt
+        y += vy * dt
+        t += dt
+        step += 1
+        top = top.max(y)
+        let speed = vx.hypot(vy)
+        if step == 1 || step % 4 == 0 || y < 0.0 {
+            print("{step:>6} {t:>7.2} {x:>8.3} {y:>8.3} {speed:>10.3}")
+        }
+    }
+    print("highest point {top:.3} m, landed {y.abs():.3} m below the ground")
+    if let metres = i64(x.round()) {
+        print("range about {metres} m")
+    } else {
+        print("range unknown")
+    }
+}

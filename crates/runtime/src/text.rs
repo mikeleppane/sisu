@@ -123,6 +123,45 @@ pub unsafe extern "C" fn sisu_write_char(c: u32, out: *mut u8) -> usize {
     unsafe { write(char_text(c, &mut [0; 4]), out) }
 }
 
+/// Pads the `len` bytes of UTF-8 text at `text` with spaces to `width` code points, in place,
+/// and returns the new length. `align` 0 puts the text on the left, 1 on the right and 2 in the
+/// centre, with the odd space on the right. Text of `width` code points or more is left as it
+/// is. Interpolation calls this for a part with a width, after writing the part at `text`.
+///
+/// # Safety
+///
+/// `text[..len]` is initialized and `text[..len + width]` is writable.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sisu_pad(text: *mut u8, len: usize, width: usize, align: u8) -> usize {
+    // SAFETY: the caller promises `len` initialized bytes at `text`.
+    let bytes = unsafe { std::slice::from_raw_parts(text, len) };
+    // A code point is every byte but a UTF-8 continuation byte, `0b10xx_xxxx`.
+    let count = bytes
+        .iter()
+        .filter(|&&b| b & 0b1100_0000 != 0b1000_0000)
+        .count();
+    let Some(pad) = width.checked_sub(count) else {
+        return len;
+    };
+    let left = match align {
+        0 => 0,
+        1 => pad,
+        _ => pad / 2,
+    };
+    // SAFETY: the caller promises `len + width` writable bytes, and `len + pad` is no more. The
+    // text moves right by `left` within them, so the ranges overlap and `copy` handles that.
+    unsafe {
+        std::ptr::copy(text, text.add(left), len);
+        std::ptr::write_bytes(text, b' ', left);
+        std::ptr::write_bytes(text.add(left + len), b' ', pad - left);
+    }
+    len + pad
+}
+
 /// The `len` bytes at `bytes` as text. A Sisu string is valid UTF-8, so the arm that aborts is
 /// never reached unless the compiler broke that invariant, which stops the program instead of
 /// being undefined behavior.
@@ -397,10 +436,40 @@ mod tests {
     use std::borrow::Cow;
 
     use super::{
-        repair, sisu_str_compare, sisu_utf8_count, sisu_utf8_decode, sisu_utf8_encode,
+        repair, sisu_pad, sisu_str_compare, sisu_utf8_count, sisu_utf8_decode, sisu_utf8_encode,
         sisu_utf8_len, sisu_word_next, sisu_words_count, sisu_write_bool, sisu_write_char,
         sisu_write_int,
     };
+
+    /// `text` padded to `width` code points by `sisu_pad` with alignment `align`, in a buffer
+    /// with room for exactly `text.len() + width` bytes.
+    fn padded(text: &str, width: usize, align: u8) -> String {
+        let mut out = vec![0; text.len() + width];
+        out[..text.len()].copy_from_slice(text.as_bytes());
+        // SAFETY: `out` has room for `text.len() + width` bytes and starts with `text`.
+        #[expect(unsafe_code, reason = "calls the runtime's C ABI function")]
+        let len = unsafe { sisu_pad(out.as_mut_ptr(), text.len(), width, align) };
+        out.truncate(len);
+        String::from_utf8(out).expect("padding should keep the text UTF-8")
+    }
+
+    /// Width counts code points, not bytes; a text at or past the width is not cut; left
+    /// (0), right (1) and centre (2) alignment, with centre's odd space on the right.
+    #[test]
+    fn pad() {
+        for (text, width, align, want) in [
+            ("é", 5, 1, "    é"),
+            ("日本", 7, 2, "  日本   "),
+            ("abc", 2, 0, "abc"),
+            ("abc", 3, 1, "abc"),
+            ("ab", 4, 0, "ab  "),
+            ("ab", 4, 1, "  ab"),
+            ("ab", 4, 2, " ab "),
+            ("ab", 5, 2, " ab  "),
+        ] {
+            assert_eq!(padded(text, width, align), want, "{text:?} {width} {align}");
+        }
+    }
 
     /// `i64::MIN` fills the 20 bytes that an `i64` may take; the others take fewer.
     #[test]

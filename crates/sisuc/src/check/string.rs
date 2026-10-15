@@ -39,15 +39,19 @@ impl Checker<'_> {
     /// A string literal with interpolations. Each part is checked with no expected type, so that
     /// a `unit` one is reported here, and must be of a type that interpolation writes as text. A
     /// part that never finishes makes the whole never finish.
-    pub(super) fn interpolate(&mut self, span: Span, parts: &[ast::Expr]) -> Checked {
+    pub(super) fn interpolate(&mut self, span: Span, parts: &[ast::Part]) -> Checked {
         let mut ty = Type::String;
         let mut checked = Vec::with_capacity(parts.len());
-        for part in parts {
+        let mut formats = Vec::new();
+        for (i, ast::Part { value: part, spec }) in parts.iter().enumerate() {
             let value = self.expr(part, None);
             let help = match type_of(&value) {
                 None
                 | Some(Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char | Type::String) =>
                 {
+                    if let (Some(spec), Some(found)) = (spec, type_of(&value)) {
+                        formats.push(self.format(i, part, spec, found));
+                    }
                     checked.push(value);
                     continue;
                 }
@@ -71,8 +75,48 @@ impl Checker<'_> {
             checked.push(Err(Poisoned::error()));
         }
         match checked.into_iter().collect::<Result<Vec<_>, _>>() {
-            Ok(parts) => Ok(self.spilled(span, ty, parts, tir::ExprKind::Interpolate)),
+            Ok(parts) => Ok(
+                self.spilled(span, ty, parts, |parts| tir::ExprKind::Interpolate {
+                    parts,
+                    formats,
+                }),
+            ),
             Err(_) => Err(Poisoned::typed(ty)),
+        }
+    }
+
+    /// The format of the part `i`, `part`, of type `ty`, that `spec` gives. Without an alignment,
+    /// a number pads on the left and any other value on the right. Only an `f64` takes a
+    /// precision.
+    fn format(
+        &mut self,
+        i: usize,
+        part: &ast::Expr,
+        spec: &ast::FormatSpec,
+        ty: &Type,
+    ) -> tir::Format {
+        let numeric = matches!(ty, Type::I64 | Type::U8 | Type::F64);
+        let pad = spec.width.map(|width| tir::Pad {
+            align: spec.align.unwrap_or(if numeric {
+                tir::Align::Right
+            } else {
+                tir::Align::Left
+            }),
+            width,
+        });
+        let mut precision = spec.precision;
+        if precision.is_some() && *ty != Type::F64 {
+            self.report(DiagnosticKind::PrecisionNeedsF64 {
+                ty: self.type_name(ty),
+                at: spec.span,
+                fix: (*ty == Type::I64).then_some(part.span),
+            });
+            precision = None;
+        }
+        tir::Format {
+            part: i,
+            pad,
+            precision,
         }
     }
 

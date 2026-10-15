@@ -5,7 +5,7 @@ Status: accepted, 2026-10-15. Integers panic ([ADR 0003](0003-arithmetic-panics.
 answer.
 
 `f64` arithmetic, methods and comparisons never panic. Division by zero gives
-infinity or NaN, `sqrt(-1.0)` gives NaN, and an operation that overflows gives
+infinity or NaN, `(-1.0).sqrt()` gives NaN, and an operation that overflows gives
 infinity, as IEEE 754 says. A program that wants a stop checks the value
 itself.
 

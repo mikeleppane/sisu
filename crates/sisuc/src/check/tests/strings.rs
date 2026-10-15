@@ -97,6 +97,65 @@ fn cannot_interpolate() {
     );
 }
 
+/// A spec's alignment defaults by type: numbers right, the rest left. Precision needs an `f64`;
+/// on an `i64` the certain fix converts it.
+#[test]
+fn format_spec_checks() {
+    let params = "n: i64, b: u8, x: f64, s: string, c: char, t: bool";
+    for (statement, part) in [
+        ("print(\"{n:5}\")", "(fmt n#0 \">5\")"),
+        ("print(\"{b:5}\")", "(fmt b#1 \">5\")"),
+        ("print(\"{x:5}\")", "(fmt x#2 \">5\")"),
+        ("print(\"{s:5}\")", "(fmt s#3 \"<5\")"),
+        ("print(\"{c:5}\")", "(fmt c#4 \"<5\")"),
+        ("print(\"{t:5}\")", "(fmt t#5 \"<5\")"),
+        ("print(\"{n:<5}\")", "(fmt n#0 \"<5\")"),
+        ("print(\"{s:^5}\")", "(fmt s#3 \"^5\")"),
+        ("print(\"{x:.2}\")", "(fmt x#2 \".2\")"),
+        ("print(\"{x:>8.2}\")", "(fmt x#2 \">8.2\")"),
+        // `formats` indexes the parts, text pieces included.
+        (
+            "print(\"a{n}b{x:.2}\")",
+            "(interp \"a\" n#0 \"b\" (fmt x#2 \".2\"))",
+        ),
+    ] {
+        contains(&body(params, statement), &[part]);
+    }
+    let src = body(params, "print(\"{n:.2}\")");
+    let d = diagnostic(&src, Code::PrecisionNeedsF64, (2, 14, ":.2"), &[]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(
+            true,
+            vec![
+                (2, 13, "", "f64(".to_string()),
+                (2, 14, "", ")".to_string())
+            ]
+        )]
+    );
+    assert_eq!(applied(&src, &d), body(params, "print(\"{f64(n):.2}\")"));
+    fix_removes_its_code(&src, &d);
+    for statement in [
+        "print(\"{s:.2}\")",
+        "print(\"{b:.2}\")",
+        "print(\"{c:.2}\")",
+    ] {
+        let src = body(params, statement);
+        let d = diagnostic(&src, Code::PrecisionNeedsF64, (2, 14, ":.2"), &[]);
+        assert_eq!(fixes(&src, &d), [], "{src}");
+    }
+    // A part that is already reported gets no precision error.
+    let params = "xs: [i64], n: i64";
+    codes(
+        &body(params, "print(\"{xs:.2}\")"),
+        &[(Code::CannotInterpolate, (2, 13))],
+    );
+    codes(
+        &body(params, "print(\"{nope:.2}\")"),
+        &[(Code::BindingNotFound, (2, 13))],
+    );
+}
+
 /// `src` with a class `P` and a function `g` after it, on lines that come after `body`'s.
 fn with_items(src: &str) -> String {
     format!("{src}\nclass P {{\n    mut name: string\n}}\nfn g(x: i64) -> i64 {{\n    x\n}}")

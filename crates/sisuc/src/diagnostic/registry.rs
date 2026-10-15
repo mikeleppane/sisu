@@ -149,6 +149,10 @@ codes! {
     TypeAsValue = "E0105",
     MathIdiom = "E0106",
     PowerOperator = "E0107",
+    MalformedFormatSpec = "E0108",
+    UnsupportedFormatSpec = "E0109",
+    FormatSpecLimit = "E0110",
+    PrecisionNeedsF64 = "E0111",
     NanComparison = "W0005",
 }
 
@@ -576,7 +580,7 @@ pub(crate) enum DiagnosticKind {
         at: Span,
         fix: Option<TypedLiteral>,
     },
-    /// The expression statement at `at`, whose value of type `ty` nothing uses.
+    /// The expression statement, or branch or body tail, at `at`, whose value of type `ty` nothing uses.
     UnusedValue { ty: String, at: Span },
     /// The built-in type or class `name`, at `at`, read as a value.
     TypeAsValue { name: String, at: Span },
@@ -586,6 +590,22 @@ pub(crate) enum DiagnosticKind {
     MathIdiom { written: Span, fix: Option<MathFix> },
     /// The `**` at `at`, which Sisu has no operator for; `fix` is the `pow` call that may mean it.
     PowerOperator { at: Span, fix: Option<PowerFix> },
+    /// The format spec at `at`, its `:` included, which the grammar `[<^>][width][.precision]`
+    /// does not hold: it is empty, an alignment alone, or has a `.` without digits.
+    MalformedFormatSpec { at: Span },
+    /// The format spec at `at`, its `:` included, which asks for more than alignment, width and
+    /// precision: a leading `0`, a sign, a type, a fill, a space or a nested `{`.
+    UnsupportedFormatSpec { at: Span },
+    /// The format spec at `at`, its `:` included, whose width, when `width`, or else precision is
+    /// above its limit.
+    FormatSpecLimit { at: Span, width: bool },
+    /// The precision of the spec at `at` on a part of type `ty`, which is not `f64`; `fix` is the
+    /// part, when it is an `i64` that `f64(...)` converts.
+    PrecisionNeedsF64 {
+        ty: String,
+        at: Span,
+        fix: Option<Span>,
+    },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -936,6 +956,10 @@ impl DiagnosticKind {
             DiagnosticKind::TypeAsValue { .. } => Code::TypeAsValue,
             DiagnosticKind::MathIdiom { .. } => Code::MathIdiom,
             DiagnosticKind::PowerOperator { .. } => Code::PowerOperator,
+            DiagnosticKind::MalformedFormatSpec { .. } => Code::MalformedFormatSpec,
+            DiagnosticKind::UnsupportedFormatSpec { .. } => Code::UnsupportedFormatSpec,
+            DiagnosticKind::FormatSpecLimit { .. } => Code::FormatSpecLimit,
+            DiagnosticKind::PrecisionNeedsF64 { .. } => Code::PrecisionNeedsF64,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
@@ -2046,6 +2070,44 @@ impl From<DiagnosticKind> for Diagnostic {
                             },
                             Edit {
                                 span: Span::new(right.end(), right.end()),
+                                replacement: ")".to_string(),
+                            },
+                        ],
+                    }),
+                    None => d,
+                }
+            }
+            DiagnosticKind::MalformedFormatSpec { at } => {
+                Diagnostic::coded(code, at, "a format spec is `[<^>][width][.precision]`")
+            }
+            DiagnosticKind::UnsupportedFormatSpec { at } => Diagnostic::coded(
+                code,
+                at,
+                "Sisu's format specs take only alignment, width and precision",
+            ),
+            DiagnosticKind::FormatSpecLimit { at, width } => Diagnostic::coded(
+                code,
+                at,
+                if width {
+                    "a width is at most 1000"
+                } else {
+                    "a precision is at most 30"
+                },
+            ),
+            DiagnosticKind::PrecisionNeedsF64 { ty, at, fix } => {
+                let d = Diagnostic::coded(code, at, "precision needs an `f64`")
+                    .with_label(format!("the value is `{ty}`"));
+                match fix {
+                    Some(operand) => d.with_fix(Fix {
+                        message: "convert it with `f64(...)`".to_string(),
+                        certain: true,
+                        edits: vec![
+                            Edit {
+                                span: Span::new(operand.start(), operand.start()),
+                                replacement: "f64(".to_string(),
+                            },
+                            Edit {
+                                span: Span::new(operand.end(), operand.end()),
                                 replacement: ")".to_string(),
                             },
                         ],

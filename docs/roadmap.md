@@ -16,7 +16,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 3 | Arrays and `u8` | A prime sieve prints correct answers | Done |
 | 4 | Strings | A program reverses and compares strings | Done |
 | 5 | Standard streams and arguments | A word-count tool reads standard input | Done |
-| 6 | Floats and conversions: `f64`, conversions that can fail return an optional, an unused-value warning, format specs | A Mandelbrot set prints as text, and a projectile table prints with format specs and a conversion to `i64?`, all clean under Valgrind | Planned |
+| 6 | Floats and conversions: `f64`, conversions that can fail return an optional, an unused-value warning, format specs | A Mandelbrot set prints as text, and a projectile table prints with format specs and a conversion to `i64?`, all clean under Valgrind | Done |
 
 ### What works today
 
@@ -42,7 +42,12 @@ These are adopted. Together they give Sisu a working imperative core.
   and interpolation; methods such as `sqrt`, `pow`, `sin`, `is_nan` and
   `hypot` on `f64`, `min`, `max` and `clamp` on `f64` and `i64`, and the
   constants `f64.pi`, `f64.tau`, `f64.e`, `f64.infinity`, `f64.nan`,
-  `f64.max`, `f64.min_positive` and `f64.epsilon`
+  `f64.max`, `f64.min_positive` and `f64.epsilon`; `print` and
+  interpolation show an `f64` as the shortest text that reads back the same
+  (`1.0`, `1e16`, `inf`, `nan`)
+- format specs in interpolation, `{x:>8.2}`: an alignment (`<`, `>`, `^`), a
+  width in code points, and a precision of decimals on an `f64`; a spec is
+  `[align][width][.precision]`, and the interpolation still allocates once
 - `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
   conversions `i64(...)` and `u8(n)`, which is a `u8?` that is `None` when
   `n` does not fit, with no panic
@@ -171,6 +176,30 @@ These came out of the milestone 2 design and are now part of its spec:
   ([ADR 0016](adr/0016-word-functions-trust-the-utf-8-invariant.md); added
   after milestone 5, for the `wc` benchmark).
 
+### Decided in milestone 6
+
+- Floats follow IEEE 754: `f64` arithmetic, methods and comparisons never
+  panic, `nan` is not equal to itself, and `-0.0` equals `0.0`
+  ([ADR 0017](adr/0017-floats-follow-ieee-754.md)).
+- A conversion that can fail returns an optional, and none panics: `i64(x)`
+  on an `f64` is `None` unless `x` is a whole number in range (`i64(2.7)` is
+  `None`), `u8(n)` and `char(n)` are `u8?` and `char?`, and `f64(n)` rounds to
+  the nearest `f64`
+  ([ADR 0018](adr/0018-a-conversion-that-can-fail-returns-an-optional.md)).
+- Methods and constants live on `f64` (`x.sqrt()`, `f64.pi`), not in a `math`
+  module. `f64` prints as the shortest text that reads back the same, with
+  `.0` on whole numbers. Exponent form starts at `1e16` and below `1e-4`:
+  `1e15` prints `1000000000000000.0`, `1e16` prints `1e16`, `0.0001` prints
+  `0.0001`, and `1e-5` prints `1e-5`. `libm`'s
+  results are not correctly rounded, so tests print them through a precision.
+- A bare expression statement whose value nothing uses warns (`W0004`);
+  `let _ = e` drops a value on purpose.
+- A format spec is `[align][width][.precision]`. Width counts code points and
+  never cuts; a precision rounds half to even from the exact binary value and
+  never uses exponent form.
+- The proof programs are `mandelbrot.sisu` and `projectile.sisu` in
+  `crates/sisuc/tests/run/`.
+
 ### What panics
 
 After milestone 6, these are all the ways a Sisu program panics, each with
@@ -181,7 +210,7 @@ how to avoid it. Each milestone keeps the table current.
 | `+ - *`, unary `-` on `i64` or `u8` | the result overflows | check the range first; checked arithmetic is a gap |
 | `/` and `%` on `i64` or `u8` | the divisor is zero, or `i64` minimum divided by `-1` | check the divisor first |
 | `xs[i]`, `xs[i] = v` | `i` is outside the array | check `0 <= i < xs.len()`; an optional `get(i)` is a gap |
-| `[v; n]` | `n` is negative | check `n` first |
+| `[v; n]` | `n` is negative, or the array would be too large to allocate (`[0; 9223372036854775807]`) | check `n` first, and keep it to a size the program can use |
 | `xs.sum()` on `[i64]` | the sum overflows | gap |
 | `panic(msg)`, `todo` | always | they are the deliberate panics |
 | `print`, `eprint`, `read_line` | the write or read fails | none until `Result` (milestone 12) |
@@ -274,7 +303,7 @@ Each item is cheap when its milestone lands and expensive to retrofit:
 | 4 | Integer literals in hexadecimal, binary and octal: `0xFF`, `0b1010`, `0o17`, with digit separators | Bytes and bit masks, which `u8` brings in milestone 3, read as what they are |
 | 4 | A block as an expression: `let x = {`, then statements on their own lines, then `}`. Its value is the last expression, and its names end at the `}`. Parentheses still group operators. | Scopes a temporary without a helper function, and reference counting releases it at the `}`, not at the end of the function. `if` blocks already return values, so the checker mostly supports it |
 | 5 | `panic("msg")` and `todo`, as expressions that never return. `todo` also warns at compile time. Both report the file and line, and exit with code 101 like other panics. Landed in milestone 5, stage 1. | `read_line() ?? panic("no input")` handles a missing value in one line until `Result` arrives in milestone 12. `todo` marks unwritten code that still compiles |
-| 6 | Float literals in scientific notation: `3.0e-4`. Lands in milestone 6. | Physics and graphics constants read as written |
+| 6 | Float literals in scientific notation: `3.0e-4`. Landed in milestone 6. | Physics and graphics constants read as written |
 
 ### Portability rules
 
@@ -446,7 +475,7 @@ settle before work starts.
 | --- | --- | --- |
 | Milestone 4: strings | Done | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
 | Milestone 5: standard streams and arguments | 4 | The word-count tool |
-| Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof prints text, so it lands after 4 |
+| Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof printed text, so it landed after 4 |
 | Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
 | Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), compiler-implemented interfaces (10), the standard library (11) |
 | Milestone 12: `Result` and `?` | 7, 8 | File I/O, the standard library (11), concurrency |
@@ -1015,7 +1044,7 @@ stretch goals" with no date. Each gap gets a milestone once a definition of
 - **Packages.** "Deliberately avoided" defers a registry and lets path and
   Git dependencies come first. A manifest (`sisu.toml`) and dependency
   resolution have no design.
-- **Number types.** Sisu has `i64` and `u8`, and milestone 6 adds a float.
+- **Number types.** Sisu has `i64` and `u8`, and milestone 6 added `f64`.
   The C FFI, binary file formats and hashing need `i32`, `u32`, `u64` and
   `f32`. "Integer widths and wrapping" in "Open decisions" covers only part of
   this.
