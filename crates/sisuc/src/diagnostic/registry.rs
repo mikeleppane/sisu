@@ -655,10 +655,11 @@ pub(crate) enum DiagnosticKind {
     },
     /// The variant `path` (`State.Idle`) built the wrong way. With `payload` it has one and is not
     /// called, and `at` is the variant's name; without, it holds nothing and is called, and `at`
-    /// is the parentheses with what they hold.
+    /// is the parentheses with what they hold, which hold `arguments` or none.
     VariantForm {
         path: String,
         payload: bool,
+        arguments: bool,
         at: Span,
     },
     /// The member `name`, at `at`, of the enum `enum_name`, used as the other kind of member: a
@@ -2385,7 +2386,12 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 suggestion,
             ),
-            DiagnosticKind::VariantForm { path, payload, at } => {
+            DiagnosticKind::VariantForm {
+                path,
+                payload,
+                arguments,
+                at,
+            } => {
                 if payload {
                     Diagnostic::coded(
                         code,
@@ -2396,7 +2402,8 @@ impl From<DiagnosticKind> for Diagnostic {
                     Diagnostic::coded(code, at, format!("`{path}` holds nothing; write `{path}`"))
                         .with_fix(Fix {
                             message: "remove the parentheses".to_string(),
-                            safe: true,
+                            // Arguments would take their own diagnostics and comments with them.
+                            safe: !arguments,
                             edits: vec![Edit {
                                 span: at,
                                 replacement: String::new(),

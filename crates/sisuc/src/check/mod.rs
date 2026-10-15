@@ -732,10 +732,11 @@ impl Checker<'_> {
             .map(|class| (class.as_str(), Definition::Class))
     }
 
-    /// The variant `name`, at `span`, written without its enum: `None` when an item takes the
-    /// name, or no enum has such a variant.
+    /// The variant `name`, at `span`, written without its enum: `None` when a binding or an item
+    /// takes the name, or no enum has such a variant.
     fn bare_variant(&self, name: Symbol, span: Span) -> Option<Diagnostic> {
-        let item = self.class_ids.contains_key(&name)
+        let item = self.scopes.iter().any(|scope| scope.contains_key(&name))
+            || self.class_ids.contains_key(&name)
             || self.function_ids.contains_key(&name)
             || self.enum_ids.contains_key(&name)
             || self.constants.contains_key(&name);

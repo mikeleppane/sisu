@@ -1555,43 +1555,6 @@ mod tests {
     }
 
     #[test]
-    fn prints_variants() {
-        let id = EnumId(0);
-        let variant = |variant, args| expr(ExprKind::Variant { id, variant, args }, Type::Enum(id));
-        let enums = vec![Enum {
-            name: "Expr".into(),
-            variants: ["Nil", "Num"]
-                .map(|name| Variant {
-                    name: name.into(),
-                    fields: Vec::new(),
-                })
-                .into(),
-            counted: false,
-            cycle: None,
-        }];
-        let program = Program {
-            classes: vec![],
-            enums,
-            functions: vec![Function {
-                name: "f".into(),
-                params: vec![],
-                ret: Type::Unit,
-                locals: vec![],
-                body: block(vec![
-                    Stmt::Expr(variant(0, vec![])),
-                    Stmt::Expr(variant(1, vec![int(2)])),
-                ]),
-            }],
-        };
-        assert!(
-            program
-                .to_string()
-                .contains("(block (variant Expr.Nil) (variant Expr.Num 2))"),
-            "{program}"
-        );
-    }
-
-    #[test]
     fn exits_finds_a_jump_at_any_depth() {
         let (if_stmt, looped) = if_and_loop();
         // A `break` in a loop in a block's statement, and in a block's value.

@@ -249,11 +249,12 @@ pub(crate) enum ExprKind {
         name: Ident,
         safe: bool,
     },
-    /// `safe` is `receiver?.method(args)`.
+    /// `safe` is `receiver?.method(args)`; `parens` is the span of `(args)`.
     MethodCall {
         receiver: Box<Expr>,
         method: Ident,
         args: Vec<Arg>,
+        parens: Span,
         safe: bool,
     },
     Unary {
@@ -644,6 +645,7 @@ impl fmt::Display for Expr {
                 method,
                 args,
                 safe,
+                ..
             } => {
                 write!(f, "(call ({} {receiver} {})", dot(*safe), method.name)?;
                 spaced(f, args)?;

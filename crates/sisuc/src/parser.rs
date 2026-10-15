@@ -1565,6 +1565,7 @@ impl<'a> Parser<'a> {
             let name = self.ident("a field or method name")?;
             expr = if self.at(&TokenKind::LParen) {
                 self.depth = base + 1;
+                let open = self.peek().span;
                 let (args, close) = self.args()?;
                 self.depth = self.depth.max(wrapped);
                 Expr {
@@ -1573,6 +1574,7 @@ impl<'a> Parser<'a> {
                         receiver: Box::new(expr),
                         method: name,
                         args,
+                        parens: open.to(close),
                         safe,
                     },
                 }

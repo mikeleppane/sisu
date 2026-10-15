@@ -416,6 +416,73 @@ fn bare_variant_yields_to_items() {
         );
         codes(&src, &[(Code::TypeAsValue, (2, 13))]);
     }
+    // A binding, a function and a constant each take the name of `State.Idle` as they would
+    // without the enum: each row is the statement, and the codes it reports from line 2.
+    let rows: [Row; 4] = [
+        (
+            "let Idle = 1\n    let _ = Idle(2)",
+            &[(Code::FunctionNotFound, (3, 13))],
+        ),
+        ("let Idle = 1\n    let _ = Idle", &[]),
+        (
+            "let _ = Idle\n}\nfn Idle() {",
+            &[(Code::BindingNotFound, (2, 13))],
+        ),
+        (
+            "let _ = Idle()\n}\nconst Idle = 1\nfn h() {",
+            &[(Code::FunctionNotFound, (2, 13))],
+        ),
+    ];
+    for (stmt, expected) in rows {
+        codes(&in_g(stmt), expected);
+    }
+}
+
+/// `State.Idle()` holds nothing: the fix deletes the call's own parentheses, safely only when
+/// they hold no arguments, whose own diagnostics and comments it would delete too.
+#[test]
+fn variant_form_fix() {
+    // Each row: the statement, the column of line 2 and text of the label, and the fix's safety.
+    let rows = [
+        ("let _ = State.Idle()", 23, "()", true),
+        ("let _ = (State.Idle())", 24, "()", true),
+        ("let _ = State.Idle(1)", 23, "(1)", false),
+    ];
+    for (stmt, col, text, safe) in rows {
+        let src = in_g(stmt);
+        let d = diagnostic(&src, Code::VariantForm, (2, col, text), &[]);
+        assert_eq!(
+            fixes(&src, &d),
+            [(safe, vec![(2, col, text, String::new())])],
+            "{stmt}"
+        );
+        if safe {
+            fix_removes_its_code(&src, &d);
+        }
+    }
+}
+
+/// An unlabeled payload given labels: one diagnostic, whose unsafe fix deletes every label.
+#[test]
+fn variant_labels_fix() {
+    let src = in_g("let _ = Expr.Add(a: e, b: e)");
+    let d = diagnostic(&src, Code::LabeledArgument, (2, 22, "a"), &[]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(
+            false,
+            vec![(2, 22, "a: ", String::new()), (2, 28, "b: ", String::new())]
+        )]
+    );
+}
+
+/// `Math` names the enum, so `Math.sqrt` is one of its variants, not the math idiom.
+#[test]
+fn enum_named_math() {
+    codes(
+        "enum Math {\n    Pi\n}\nfn main() {\n    let _ = Math.sqrt(2)\n}",
+        &[(Code::UnknownVariant, (5, 18))],
+    );
 }
 
 /// A variant whose payload mixes labels is reported at its declaration; a construction of it

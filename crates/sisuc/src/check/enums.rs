@@ -1,6 +1,8 @@
 //! Enum declarations: their variants and payloads, the names they cannot take, which enums no
 //! value can be built of, the boxes that break a cycle, and which enums are counted.
 
+use std::fmt;
+
 use rustc_hash::FxHashMap;
 
 use super::{Checked, Checker, Declared, Definition, DiagnosticKind, Poisoned};
@@ -135,14 +137,14 @@ impl Checker<'_> {
         }
     }
 
-    /// `Enum.member`, or `Enum.member(args)` when `call` is given, where `Enum` is the enum
-    /// `id`: the variant `member` built, or an error.
+    /// `Enum.member`, or `Enum.member(args)` when `call` gives the arguments and the span of their
+    /// parentheses, where `Enum` is the enum `id`: the variant `member` built, or an error.
     pub(super) fn enum_path(
         &mut self,
         span: Span,
         id: EnumId,
         member: &ast::Ident,
-        call: Option<&[ast::Arg]>,
+        call: Option<(&[ast::Arg], Span)>,
     ) -> Checked {
         let info = &self.enums[id.0];
         let enum_name = info.name.name.as_str();
@@ -174,22 +176,29 @@ impl Checker<'_> {
                     });
                 }
             }
-            self.stray(call.unwrap_or_default());
+            self.stray(call.map_or(&[], |(args, _)| args));
             return Err(Poisoned::error());
         };
-        let path = format!("{enum_name}.{}", member.name);
+        // Built only for a diagnostic.
+        let path = format_args!("{enum_name}.{}", member.name);
         let v = &info.variants[variant];
         let ty = Type::Enum(id);
         let args = match call {
             None if v.fields.is_empty() => Vec::new(),
-            Some(args) if !v.fields.is_empty() => {
-                let labels = v.labels.clone();
-                let fields: Vec<_> = v.fields.clone();
-                let built = if labels.iter().all(Option::is_some) {
-                    let named: Vec<_> = labels.into_iter().flatten().zip(fields).collect();
+            Some((args, _)) if !v.fields.is_empty() => {
+                // Checking the arguments needs the whole checker, so the field types are copied.
+                let built = if v.labels.iter().all(Option::is_some) {
+                    let named: Vec<_> = v
+                        .labels
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .zip(v.fields.iter().cloned())
+                        .collect();
                     self.construct(span, &path, &named, args)
-                } else if labels.iter().all(Option::is_none) {
-                    self.positional(span, path, &fields, args)
+                } else if v.labels.iter().all(Option::is_none) {
+                    let fields = v.fields.clone();
+                    self.positional(span, &path, &fields, args)
                 } else {
                     // Mixed labels are reported at the declaration.
                     self.stray(args);
@@ -200,11 +209,11 @@ impl Checker<'_> {
                     Err(failed) => return Err(Poisoned::of((!failed).then_some(ty))),
                 }
             }
-            Some(args) => {
-                let parens = Span::new(member.span.end(), span.end());
+            Some((args, parens)) => {
                 self.report(DiagnosticKind::VariantForm {
-                    path,
+                    path: path.to_string(),
                     payload: false,
+                    arguments: !args.is_empty(),
                     at: parens,
                 });
                 self.stray(args);
@@ -212,8 +221,9 @@ impl Checker<'_> {
             }
             None => {
                 self.report(DiagnosticKind::VariantForm {
-                    path,
+                    path: path.to_string(),
                     payload: true,
+                    arguments: false,
                     at: member.span,
                 });
                 return Err(Poisoned::error());
@@ -232,7 +242,7 @@ impl Checker<'_> {
     fn positional(
         &mut self,
         span: Span,
-        path: String,
+        path: &dyn fmt::Display,
         fields: &[Option<Type>],
         args: &[ast::Arg],
     ) -> Result<Vec<tir::Expr>, bool> {
@@ -249,14 +259,14 @@ impl Checker<'_> {
             self.report(DiagnosticKind::LabeledArgument {
                 at: first.span,
                 variant: Some(VariantLabels {
-                    path: path.clone(),
+                    path: path.to_string(),
                     labels,
                 }),
             });
         }
         if fields.len() != args.len() {
             self.report(DiagnosticKind::ArgumentCount {
-                name: path,
+                name: path.to_string(),
                 want: fields.len(),
                 found: args.len(),
                 at: span,

@@ -1,5 +1,6 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
+use std::fmt;
 use std::ops::Range;
 
 use super::number;
@@ -121,8 +122,9 @@ impl Checker<'_> {
                 receiver,
                 method,
                 args,
+                parens,
                 safe,
-            } => self.method_expr(e.span, *safe, receiver, method, args),
+            } => self.method_expr(e.span, *safe, receiver, method, args, *parens),
             ExprKind::Coalesce { lhs, rhs } => self.coalesce(e.span, lhs, rhs),
             ExprKind::Is { lhs, rhs } => self.is(e.span, lhs, rhs),
             ExprKind::Unary { op, operand } => {
@@ -1152,8 +1154,8 @@ impl Checker<'_> {
             })
     }
 
-    /// `receiver.method(args)` as written, which `safe` makes `receiver?.method(args)`. A type or
-    /// `math` before the `.` may make it an idiom.
+    /// `receiver.method(args)` as written, `(args)` at `parens`, which `safe` makes
+    /// `receiver?.method(args)`. A type or `math` before the `.` may make it an idiom.
     fn method_expr(
         &mut self,
         span: Span,
@@ -1161,8 +1163,10 @@ impl Checker<'_> {
         receiver: &ast::Expr,
         method: &ast::Ident,
         args: &[ast::Arg],
+        parens: Span,
     ) -> Checked {
-        if !safe && let Some(checked) = self.type_path(span, receiver, method, Some(args)) {
+        if !safe && let Some(checked) = self.type_path(span, receiver, method, Some((args, parens)))
+        {
             return checked;
         }
         self.member(span, safe, receiver, method, |c, checked| {
@@ -1279,7 +1283,7 @@ impl Checker<'_> {
             .map(|f| (f.name.name, f.ty.clone()))
             .collect();
         let ty = Type::Class(class);
-        match self.construct(span, name, &fields, args) {
+        match self.construct(span, &name, &fields, args) {
             Ok(args) => Ok(self.spilled(span, ty, args, |args| tir::ExprKind::New { class, args })),
             Err(failed) => Err(Poisoned::of((!failed).then_some(ty))),
         }
@@ -1292,7 +1296,7 @@ impl Checker<'_> {
     pub(super) fn construct(
         &mut self,
         span: Span,
-        name: &str,
+        name: &dyn fmt::Display,
         fields: &[(Symbol, Option<Type>)],
         args: &[ast::Arg],
     ) -> Result<Vec<tir::Expr>, bool> {
@@ -1663,7 +1667,12 @@ pub(super) fn no_member<'a>(
 
 /// The mistake in argument `i` of `name(...)`, a class's constructor or a variant with labels,
 /// whose fields are `fields`, if any.
-fn misplaced(name: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
+fn misplaced(
+    name: &dyn fmt::Display,
+    fields: &[Symbol],
+    i: usize,
+    arg: &ast::Arg,
+) -> Option<Diagnostic> {
     let Some(field) = fields.get(i) else {
         let start = arg
             .label
