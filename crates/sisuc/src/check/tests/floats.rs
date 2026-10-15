@@ -594,7 +594,9 @@ fn f64_constant_in_const() {
 #[test]
 fn math_idioms() {
     let program = |expr: &str| {
-        format!("fn f(n: i64, x: f64, y: f64) {{\n    let _ = {expr}\n}}\nfn main() {{}}")
+        format!(
+            "fn f(n: i64, x: f64, y: f64, xs: [i64], ys: [f64]) {{\n    let _ = {expr}\n}}\nfn main() {{}}"
+        )
     };
     let function = Code::MethodAsFunction;
     let math = Code::MathIdiom;
@@ -657,6 +659,16 @@ fn math_idioms() {
     // A name that no method of the type has stays an unknown function, and so does a method of
     // numbers called on a `u8`.
     codes(&program("abs(n)"), &[(Code::FunctionNotFound, (2, 13))]);
+    // An array has only `len`, `sum` and `contains`: a number's method on one is no idiom.
+    for expr in ["sqrt(xs)", "abs(xs)", "max(xs, 3)", "sqrt(ys)"] {
+        codes(&program(expr), &[(Code::FunctionNotFound, (2, 13))]);
+    }
+    // A member that is a method or constant, written with no call, has no fix.
+    for expr in ["math.sqrt", "Math.max", "math.max"] {
+        let src = program(expr);
+        let d = diagnostic(&src, math, (2, 13, expr), &[]);
+        assert_eq!(fixes(&src, &d), [], "{src}");
+    }
     let src = "fn f(b: u8) {\n    let _ = max(b, 3)\n}\nfn main() {}";
     codes(src, &[(Code::FunctionNotFound, (2, 13))]);
     // A call on another type's name is still a type read as a value.
@@ -676,6 +688,30 @@ fn math_idioms() {
     );
 }
 
+/// A class, function or constant named `math` or `Math` is declared, so `math.sqrt` is not the
+/// idiom: the path that reports a class, a function or a constant's field reports it.
+#[test]
+fn declared_math_is_not_the_idiom() {
+    let class = "class Math {\n    a: i64\n}\n";
+    let rows = [
+        (class, "Math.PI", Code::TypeAsValue, (5, 13)),
+        (class, "Math.sqrt(x)", Code::TypeAsValue, (5, 13)),
+        (class, "Math.sqrt", Code::TypeAsValue, (5, 13)),
+        (
+            "fn math() {}\n",
+            "math.sqrt(x)",
+            Code::BindingNotFound,
+            (3, 13),
+        ),
+        ("fn math() {}\n", "math.pi", Code::BindingNotFound, (3, 13)),
+        ("const Math = 1\n", "Math.PI", Code::NoMember, (3, 18)),
+    ];
+    for (item, expr, code, at) in rows {
+        let src = format!("{item}fn f(x: f64) {{\n    let _ = {expr}\n}}\nfn main() {{}}");
+        codes(&src, &[(code, at)]);
+    }
+}
+
 /// A local named `math` is a value, so its members are its own; a name no constant or method has
 /// is left to the unbound-name error at `math`.
 #[test]
@@ -693,7 +729,7 @@ fn math_is_a_name_like_any_other() {
         ),
         &[],
     );
-    for expr in ["math.foo", "Math.foo(x)", "math.sqrt", "math.PI()"] {
+    for expr in ["math.foo", "Math.foo(x)", "math.PI()"] {
         codes(
             &format!("fn f(x: f64) {{\n    let _ = {expr}\n}}\nfn main() {{}}"),
             &[(Code::BindingNotFound, (2, 13))],

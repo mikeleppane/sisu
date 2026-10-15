@@ -1039,7 +1039,8 @@ impl Checker<'_> {
     /// do `sqrt(x)` and `max(a, b)`, where the first argument is a number with it.
     fn unknown_call(&mut self, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
         let name = callee.name.as_str();
-        let idiom = (matches!(name, "len" | "sum" | "contains") || number::is_method(name))
+        let idiom = (matches!(name, "len" | "sum" | "contains")
+            || number::method_name(name).is_some())
             && args.iter().all(|arg| arg.label.is_none());
         let rest = match args.split_first() {
             Some((first, rest)) if idiom => {
@@ -1047,17 +1048,19 @@ impl Checker<'_> {
                 // A poisoned receiver is not known to be an array or a number.
                 let ty = match &receiver {
                     Ok(tir::Expr {
-                        ty: Type::Array(element),
+                        ty: ty @ Type::Array(element),
                         ..
-                    }) if name != "sum" || matches!(**element, Type::I64 | Type::F64) => {
-                        Some((**element).clone())
+                    }) if matches!(name, "len" | "contains")
+                        || name == "sum" && matches!(**element, Type::I64 | Type::F64) =>
+                    {
+                        Some(ty.clone())
                     }
                     Ok(tir::Expr { ty, .. }) if number::method(ty, name).is_some() => {
                         Some(ty.clone())
                     }
                     _ => None,
                 };
-                if let Some(element) = ty {
+                if let Some(ty) = ty {
                     let next = rest.first().map(|arg| arg.value.span);
                     // The rewrite deletes the text before the receiver and between it and
                     // `next`, so a comment there makes it a guess.
@@ -1066,7 +1069,7 @@ impl Checker<'_> {
                         first.value.span.end()..next.map_or(first.value.span.end(), Span::start),
                     ];
                     let certain =
-                        self.idiom_arguments(name, &element, rest) && !self.comment_in(&deleted);
+                        self.idiom_arguments(name, &ty, rest) && !self.comment_in(&deleted);
                     self.report(DiagnosticKind::MethodAsFunction {
                         name: callee.name.to_string(),
                         at: callee.span,
@@ -1113,13 +1116,16 @@ impl Checker<'_> {
     }
 
     /// Checks the arguments after the receiver of an idiom call of the method `name`, each once.
-    /// For a number of type `element`, whether the method takes them (see `number_arguments`).
-    /// For an array of `element`: `contains` takes one of type `element`, or an integer literal
-    /// that fits it, that checked cleanly, and `len` and `sum` none.
-    fn idiom_arguments(&mut self, name: &str, element: &Type, rest: &[ast::Arg]) -> bool {
-        if let Some((_, params)) = number::method(element, name) {
-            return self.number_arguments(element, params, rest);
+    /// `receiver` is the receiver's type. For a number, whether the method takes them (see
+    /// `number_arguments`). For an array: `contains` takes one of the element's type, or an
+    /// integer literal that fits it, that checked cleanly, and `len` and `sum` none.
+    fn idiom_arguments(&mut self, name: &str, receiver: &Type, rest: &[ast::Arg]) -> bool {
+        if let Some((_, params)) = number::method(receiver, name) {
+            return self.number_arguments(receiver, params, rest);
         }
+        let Type::Array(element) = receiver else {
+            unreachable!("an idiom receiver should be a number with the method or an array");
+        };
         let [value] = rest else {
             self.stray(rest);
             return rest.is_empty() && name != "contains";
@@ -1127,9 +1133,9 @@ impl Checker<'_> {
         let checked = self.expr(&value.value, Some(&UNKNOWN));
         name == "contains"
             && checked.is_ok_and(|checked| {
-                checked.ty == *element
+                checked.ty == **element
                     || matches!(
-                        (&value.value.kind, element),
+                        (&value.value.kind, &**element),
                         (ExprKind::Int { value, .. }, Type::U8) if u8::try_from(*value).is_ok()
                     )
             })

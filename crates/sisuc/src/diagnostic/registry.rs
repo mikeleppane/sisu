@@ -483,8 +483,9 @@ pub(crate) enum DiagnosticKind {
     /// A `sum` at `at` of an array of type `ty`, which is neither `[i64]` nor `[f64]`.
     SumNeedsNumbers { ty: String, at: Span },
     /// A call at `at` of the method `name` of an array or a number as a function, with the
-    /// receiver as its first argument. `next` is the next argument, if any. `wrap` is whether `receiver`
-    /// needs parentheses to take a `.name(...)`, and `certain` whether the method call checks.
+    /// receiver as its first argument. `next` is the next argument, if any. `wrap` is whether
+    /// `receiver` needs parentheses to take a `.name(...)`, and `certain` whether the method call
+    /// checks.
     MethodAsFunction {
         name: String,
         at: Span,

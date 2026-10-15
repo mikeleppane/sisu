@@ -60,9 +60,12 @@ const CONSTANTS: [(&str, f64); 8] = [
     ("epsilon", f64::EPSILON),
 ];
 
-/// Whether some number type has a method `name`.
-pub(super) fn is_method(name: &str) -> bool {
-    METHODS.iter().any(|(op, ..)| op.name() == name)
+/// The name of the method `name` that some number type has.
+pub(super) fn method_name(name: &str) -> Option<&'static str> {
+    METHODS
+        .iter()
+        .map(|(op, ..)| op.name())
+        .find(|op| *op == name)
 }
 
 /// The operation and parameter count of the method `name` of a receiver of type `ty`, if it has
@@ -112,12 +115,21 @@ impl Checker<'_> {
             return None;
         }
         let written = base.span.to(member.span);
-        if matches!(name.as_str(), "math" | "Math") && !self.constants.contains_key(&name) {
+        let declared = self.constants.contains_key(&name)
+            || self.function_ids.contains_key(&name)
+            || self.class_ids.contains_key(&name);
+        if matches!(name.as_str(), "math" | "Math") && !declared {
             if let Some(args) = call {
                 return self.math_call(written, member, args);
             }
-            let name = constant_named(member.name.as_str())?;
-            self.report_math(written, Some(MathFix::Constant { name }));
+            // A bare method has no value to write; a constant's name maps to `f64`'s.
+            let fix = match method_name(member.name.as_str()) {
+                Some(_) => None,
+                None => Some(MathFix::Constant {
+                    name: constant_named(member.name.as_str())?,
+                }),
+            };
+            self.report_math(written, fix);
             return Some(Err(Poisoned::error()));
         }
         let ty = built_in_type(name.as_str())?;
@@ -145,6 +157,7 @@ impl Checker<'_> {
         }))
     }
 
+    /// Reports the math idiom written at `written`, with `fix` if it has one.
     fn report_math(&mut self, written: Span, fix: Option<MathFix>) {
         self.report(DiagnosticKind::MathIdiom { written, fix });
     }
@@ -160,16 +173,14 @@ impl Checker<'_> {
         member: &ast::Ident,
         args: &[ast::Arg],
     ) -> Option<Checked> {
-        let name = member.name.as_str();
-        let name = METHODS
-            .iter()
-            .map(|(op, ..)| op.name())
-            .find(|op| *op == name)?;
+        let name = method_name(member.name.as_str())?;
         let fix = self.method_fix(written, name, args);
         self.report_math(written, fix);
         Some(Err(Poisoned::error()))
     }
 
+    /// The fix of `written(args)`, the call of the method `name`, or `None` where it is no
+    /// certain rewrite. Checks each argument once.
     fn method_fix(
         &mut self,
         written: Span,
