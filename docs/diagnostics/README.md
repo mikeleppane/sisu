@@ -23,10 +23,10 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0012](E0012.md) | error | `;` at the end of a statement |
 | [E0013](E0013.md) | error | `var` instead of `let mut` |
 | [E0014](E0014.md) | error | optional of an optional |
-| [E0015](E0015.md) | error | field list on one line |
+| [E0015](E0015.md) | error | field or variant list on one line |
 | [E0016](E0016.md) | error | `let` in front of a field |
 | [E0017](E0017.md) | error | method without `self` |
-| [E0018](E0018.md) | error | `mut self` on a class method |
+| [E0018](E0018.md) | error | `mut self` on a method |
 | [E0019](E0019.md) | error | `mut` parameter |
 | [E0020](E0020.md) | error | `self` that is not the first parameter |
 | [E0021](E0021.md) | error | assignment to something that is not a place |
@@ -34,7 +34,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0023](E0023.md) | error | range outside `for` |
 | [E0024](E0024.md) | error | chained `==`, `!=` or `is` |
 | [E0025](E0025.md) | error | comparison chain that turns around |
-| [E0026](E0026.md) | error | item named like a built-in type |
+| [E0026](E0026.md) | error | name taken by a built-in |
 | [E0027](E0027.md) | error | class that can never be constructed |
 | [E0028](E0028.md) | error | program without `main` |
 | [E0029](E0029.md) | error | `main` with a wrong signature |
@@ -120,6 +120,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0109](E0109.md) | error | unsupported format spec |
 | [E0110](E0110.md) | error | format spec width or precision above its limit |
 | [E0111](E0111.md) | error | precision on a value that is not an `f64` |
+| [E0112](E0112.md) | error | variant after a method |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

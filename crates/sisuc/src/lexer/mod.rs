@@ -52,6 +52,7 @@ pub(crate) enum TokenKind {
     Continue,
     Class,
     Const,
+    Enum,
     NoneKw,
     Is,
     SelfKw,
@@ -137,6 +138,7 @@ impl TokenKind {
             TokenKind::Continue => "Continue",
             TokenKind::Class => "Class",
             TokenKind::Const => "Const",
+            TokenKind::Enum => "Enum",
             TokenKind::NoneKw => "NoneKw",
             TokenKind::Is => "Is",
             TokenKind::SelfKw => "SelfKw",
@@ -210,6 +212,7 @@ impl TokenKind {
             TokenKind::Continue => "continue",
             TokenKind::Class => "class",
             TokenKind::Const => "const",
+            TokenKind::Enum => "enum",
             TokenKind::NoneKw => "None",
             TokenKind::Is => "is",
             TokenKind::SelfKw => "self",
@@ -775,6 +778,7 @@ fn is_header(t: &Token) -> bool {
         t.kind,
         TokenKind::Fn
             | TokenKind::Class
+            | TokenKind::Enum
             | TokenKind::If
             | TokenKind::Else
             | TokenKind::While
@@ -872,7 +876,6 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "var" => TokenKind::Var,
         "import" => TokenKind::Reserved("import"),
         "pub" => TokenKind::Reserved("pub"),
-        "enum" => TokenKind::Reserved("enum"),
         "match" => TokenKind::Reserved("match"),
         "record" => TokenKind::Reserved("record"),
         "type" => TokenKind::Reserved("type"),
@@ -893,6 +896,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "continue" => TokenKind::Continue,
         "class" => TokenKind::Class,
         "const" => TokenKind::Const,
+        "enum" => TokenKind::Enum,
         "None" => TokenKind::NoneKw,
         "is" => TokenKind::Is,
         "self" => TokenKind::SelfKw,
@@ -1065,7 +1069,6 @@ mod tests {
         let words = [
             "import",
             "pub",
-            "enum",
             "match",
             "record",
             "type",
@@ -1087,6 +1090,11 @@ mod tests {
         assert_eq!(
             kinds(&format!("{} matches type_ pubx ask", words.join(" "))),
             expected
+        );
+        // `enum` is a keyword now; `match` stays reserved until it has a meaning.
+        assert_eq!(
+            kinds("enum enums match"),
+            [TokenKind::Enum, ident("enums"), Reserved("match"), Eof]
         );
     }
 
@@ -2616,6 +2624,7 @@ mod tests {
         for (src, gap, at) in [
             ("fn main()\n{\n}", (9, 10), (2, 1)),
             ("class A\n{\n}", (7, 8), (2, 1)),
+            ("enum A\n{\n}", (6, 7), (2, 1)),
             (
                 "fn main() {\n    if true\n    {\n    }\n}",
                 (23, 28),

@@ -67,7 +67,7 @@ codes! {
     RangeOutsideFor = "E0023",
     EqualityChain = "E0024",
     ComparisonDirection = "E0025",
-    BuiltInTypeName = "E0026",
+    BuiltInName = "E0026",
     NeverConstructed = "E0027",
     NoMain = "E0028",
     MainSignature = "E0029",
@@ -153,6 +153,7 @@ codes! {
     UnsupportedFormatSpec = "E0109",
     FormatSpecLimit = "E0110",
     PrecisionNeedsF64 = "E0111",
+    VariantAfterMethod = "E0112",
     NanComparison = "W0005",
 }
 
@@ -240,18 +241,26 @@ pub(crate) enum DiagnosticKind {
     Var { at: Span, field: bool },
     /// The type `ty`, then `?` again, from `at`.
     OptionalNests { ty: String, at: Span },
-    /// A `,` at `at` after a field.
-    FieldComma { at: Span },
+    /// A `,` at `at` after a `member`. `remove` is the comma, and the spaces after it unless the
+    /// comma ends its line; `replacement` is what takes it: nothing, or a line break and the
+    /// indentation of the line.
+    FieldComma {
+        at: Span,
+        member: Member,
+        remove: Span,
+        replacement: String,
+    },
     /// A `let` at `at` in front of a field.
     FieldLet { at: Span, rest: LetField },
     /// A method named at `at` with no `self`.
     MethodNeedsSelf { at: Span },
-    /// A `mut` at `keyword` in front of the `self` at `receiver`; removing it is `safe` when
-    /// `self` is the whole parameter.
+    /// A `mut` at `keyword` in front of the `self` at `receiver`, in a method of `owner`. In a
+    /// class, removing it is `safe` when `self` is the whole parameter; in an enum it never is.
     MutSelf {
         keyword: Span,
         receiver: Span,
         safe: bool,
+        owner: Owner,
     },
     /// A `mut` at `at` in front of the parameter `name`.
     MutParameter { name: String, at: Span },
@@ -267,8 +276,12 @@ pub(crate) enum DiagnosticKind {
     EqualityChain { at: Span },
     /// A comparison at `at` that turns a chain around.
     ComparisonDirection { at: Span },
-    /// The built-in type name `name`, at `at`, taken by a class or function.
-    BuiltInTypeName { name: String, at: Span },
+    /// The built-in `name`, at `at`, taken by a class, function, constant or variant.
+    BuiltInName {
+        name: String,
+        at: Span,
+        kind: BuiltIn,
+    },
     /// The class `class`, which no object can have: its field `field`, at `at`, needs a `target`.
     /// `ty` is the field's type, where a `?` would break the cycle.
     NeverConstructed {
@@ -602,6 +615,8 @@ pub(crate) enum DiagnosticKind {
         at: Span,
         fix: Option<Span>,
     },
+    /// The variant at `at`, which follows the method whose `fn` is at `first_method`.
+    VariantAfterMethod { at: Span, first_method: Span },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -800,6 +815,38 @@ pub(crate) enum SemicolonPlace {
     Repeated,
 }
 
+/// What a comma follows, in a list that puts each on its own line.
+#[derive(Clone, Copy)]
+pub(crate) enum Member {
+    Field,
+    Variant,
+}
+
+impl std::fmt::Display for Member {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Member::Field => "field",
+            Member::Variant => "variant",
+        })
+    }
+}
+
+/// What owns a method.
+#[derive(Clone)]
+pub(crate) enum Owner {
+    Class,
+    Enum(String),
+}
+
+/// What a built-in name is, and so why a program cannot take it.
+#[derive(Clone, Copy)]
+pub(crate) enum BuiltIn {
+    /// The name of a built-in type.
+    Type,
+    /// A keyword.
+    Keyword,
+}
+
 /// What follows the `let` in front of a field.
 pub(crate) enum LetField {
     /// A field that ends the line: deleting `remove`, from the `let` to the next token, fixes it.
@@ -874,7 +921,7 @@ impl DiagnosticKind {
             DiagnosticKind::RangeOutsideFor { .. } => Code::RangeOutsideFor,
             DiagnosticKind::EqualityChain { .. } => Code::EqualityChain,
             DiagnosticKind::ComparisonDirection { .. } => Code::ComparisonDirection,
-            DiagnosticKind::BuiltInTypeName { .. } => Code::BuiltInTypeName,
+            DiagnosticKind::BuiltInName { .. } => Code::BuiltInName,
             DiagnosticKind::NeverConstructed { .. } => Code::NeverConstructed,
             DiagnosticKind::NoMain => Code::NoMain,
             DiagnosticKind::MainSignature { .. } => Code::MainSignature,
@@ -956,6 +1003,7 @@ impl DiagnosticKind {
             DiagnosticKind::UnsupportedFormatSpec { .. } => Code::UnsupportedFormatSpec,
             DiagnosticKind::FormatSpecLimit { .. } => Code::FormatSpecLimit,
             DiagnosticKind::PrecisionNeedsF64 { .. } => Code::PrecisionNeedsF64,
+            DiagnosticKind::VariantAfterMethod { .. } => Code::VariantAfterMethod,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
@@ -1039,7 +1087,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 let d = Diagnostic::coded(
                     code,
                     at,
-                    "`{` must be on the same line as `fn`, `class`, `if`, `else`, `while` or `for`",
+                    "`{` must be on the same line as `fn`, `class`, `enum`, `if`, `else`, `while` or `for`",
                 );
                 match join {
                     Some(join) => d.with_fix(join_fix(
@@ -1182,10 +1230,21 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("`{ty}??` is not a type"))
                     .with_help("optionals do not nest")
             }
-            DiagnosticKind::FieldComma { at } => {
-                Diagnostic::coded(code, at, "a field ends at the end of the line")
-                    .with_help("put each field on its own line")
-            }
+            DiagnosticKind::FieldComma {
+                at,
+                member,
+                remove,
+                replacement,
+            } => Diagnostic::coded(code, at, format!("a {member} ends at the end of the line"))
+                .with_help(format!("put each {member} on its own line"))
+                .with_fix(Fix {
+                    message: "remove the comma and break the line".to_string(),
+                    safe: true,
+                    edits: vec![Edit {
+                        span: remove,
+                        replacement,
+                    }],
+                }),
             DiagnosticKind::FieldLet { at, rest } => {
                 let d = Diagnostic::coded(code, at, "a field takes no `let`");
                 match rest {
@@ -1215,21 +1274,39 @@ impl From<DiagnosticKind> for Diagnostic {
                 keyword,
                 receiver,
                 safe,
-            } => Diagnostic::coded(code, keyword, "a class method takes `self`, not `mut self`")
-                .with_help("an object is shared: `self` can already write every `mut` field")
-                .with_fix(Fix {
-                    message: if safe {
-                        "remove the `mut`"
-                    } else {
-                        "try removing the `mut`; the receiver may need another change"
-                    }
-                    .to_string(),
-                    safe,
-                    edits: vec![Edit {
-                        span: Span::new(keyword.start(), receiver.start()),
-                        replacement: String::new(),
-                    }],
-                }),
+                owner,
+            } => {
+                let remove = Span::new(keyword.start(), receiver.start());
+                match owner {
+                    Owner::Class => Diagnostic::coded(
+                        code,
+                        keyword,
+                        "a class method takes `self`, not `mut self`",
+                    )
+                    .with_help("an object is shared: `self` can already write every `mut` field")
+                    .with_fix(Fix {
+                        message: if safe {
+                            "remove the `mut`"
+                        } else {
+                            "try removing the `mut`; the receiver may need another change"
+                        }
+                        .to_string(),
+                        safe,
+                        edits: vec![Edit {
+                            span: remove,
+                            replacement: String::new(),
+                        }],
+                    }),
+                    // The body may still assign `self`, so the fix is never safe.
+                    Owner::Enum(name) => Diagnostic::coded(
+                        code,
+                        keyword,
+                        format!("`{name}` is an enum, and enum values never change"),
+                    )
+                    .with_help(format!("return a new `{name}`"))
+                    .with_fix(unsafe_fix("remove the `mut`", remove, "")),
+                }
+            }
             DiagnosticKind::MutParameter { name, at } => {
                 Diagnostic::coded(code, at, "a parameter cannot be `mut`").with_help(format!(
                     "copy it into a variable: `let mut {name} = {name}`"
@@ -1255,9 +1332,16 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::ComparisonDirection { at } => {
                 Diagnostic::coded(code, at, "a comparison chain must go in one direction")
             }
-            DiagnosticKind::BuiltInTypeName { name, at } => {
-                Diagnostic::coded(code, at, format!("`{name}` is a built-in type"))
-            }
+            DiagnosticKind::BuiltInName { name, at, kind } => Diagnostic::coded(
+                code,
+                at,
+                match kind {
+                    BuiltIn::Type => format!("`{name}` is a built-in type"),
+                    BuiltIn::Keyword => {
+                        format!("`{name}` is a keyword; a variant cannot take its name")
+                    }
+                },
+            ),
             DiagnosticKind::NeverConstructed {
                 class,
                 field,
@@ -2110,6 +2194,10 @@ impl From<DiagnosticKind> for Diagnostic {
                     }),
                     None => d,
                 }
+            }
+            DiagnosticKind::VariantAfterMethod { at, first_method } => {
+                Diagnostic::coded(code, at, "variants come before methods")
+                    .with_secondary(first_method, "the first method")
             }
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };

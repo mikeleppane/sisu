@@ -1,0 +1,7 @@
+enum E {
+    None
+}
+
+fn main() {
+    print(1)
+}

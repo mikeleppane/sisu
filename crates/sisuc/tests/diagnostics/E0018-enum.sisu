@@ -1,0 +1,10 @@
+enum Counter {
+    Zero
+    One
+
+    fn bump(mut self) -> Counter { Counter.One }
+}
+
+fn main() {
+    print(1)
+}

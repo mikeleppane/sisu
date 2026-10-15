@@ -20,7 +20,7 @@ pub(crate) struct Program {
     pub(crate) breaks: Vec<usize>,
 }
 
-/// A function, class or constant that holds a syntax error, so only its name survives.
+/// A function, class, enum or constant that holds a syntax error, so only its name survives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Broken {
     pub(crate) name: Ident,
@@ -31,6 +31,7 @@ pub(crate) struct Broken {
 pub(crate) enum BrokenKind {
     Function,
     Class,
+    Enum,
     Constant,
 }
 
@@ -38,6 +39,7 @@ pub(crate) enum BrokenKind {
 pub(crate) enum Item {
     Function(Function),
     Class(Class),
+    Enum(Enum),
     Const(Const),
 }
 
@@ -55,6 +57,30 @@ pub(crate) struct Class {
     pub(crate) members: Vec<Member>,
     /// The names of the methods that hold a syntax error; the class itself is intact.
     pub(crate) broken_methods: Vec<Ident>,
+}
+
+/// `enum Name { variants, then methods }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Enum {
+    pub(crate) name: Ident,
+    pub(crate) variants: Vec<Variant>,
+    pub(crate) methods: Vec<Function>,
+    /// The names of the methods that hold a syntax error; the enum itself is intact.
+    pub(crate) broken_methods: Vec<Ident>,
+}
+
+/// A variant and its payload, if it has parentheses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Variant {
+    pub(crate) name: Ident,
+    pub(crate) payload: Option<Vec<PayloadField>>,
+}
+
+/// One field of a variant's payload, with its label if it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PayloadField {
+    pub(crate) label: Option<Ident>,
+    pub(crate) ty: TypeExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,6 +470,7 @@ impl fmt::Display for Program {
             match item {
                 Item::Function(function) => write!(f, "{function}")?,
                 Item::Class(class) => write!(f, "{class}")?,
+                Item::Enum(e) => write!(f, "{e}")?,
                 Item::Const(c) => {
                     write!(f, "(const {}", c.name.name)?;
                     if let Some(ty) = &c.ty {
@@ -468,6 +495,31 @@ impl fmt::Display for Class {
                 }
                 Member::Method(method) => write!(f, " {method}")?,
             }
+        }
+        f.write_str(")")
+    }
+}
+
+impl fmt::Display for Enum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(enum {}", self.name.name)?;
+        for variant in &self.variants {
+            match &variant.payload {
+                None => write!(f, " {}", variant.name.name)?,
+                Some(fields) => {
+                    write!(f, " ({}", variant.name.name)?;
+                    for field in fields {
+                        match &field.label {
+                            Some(label) => write!(f, " ({} {})", label.name, field.ty)?,
+                            None => write!(f, " {}", field.ty)?,
+                        }
+                    }
+                    f.write_str(")")?;
+                }
+            }
+        }
+        for method in &self.methods {
+            write!(f, " {method}")?;
         }
         f.write_str(")")
     }
@@ -784,8 +836,36 @@ mod tests {
             ]),
         );
         let second = func("g", vec![], None, block(vec![]));
+        let shape = Enum {
+            name: ident("Shape"),
+            variants: vec![
+                Variant {
+                    name: ident("Dot"),
+                    payload: None,
+                },
+                Variant {
+                    name: ident("Rect"),
+                    payload: Some(vec![
+                        PayloadField {
+                            label: Some(ident("w")),
+                            ty: ty("i64"),
+                        },
+                        PayloadField {
+                            label: None,
+                            ty: ty("i64"),
+                        },
+                    ]),
+                },
+            ],
+            methods: vec![func("area", vec![], None, block(vec![]))],
+            broken_methods: Vec::new(),
+        };
         let program = Program {
-            items: vec![Item::Function(is_prime), Item::Function(second)],
+            items: vec![
+                Item::Function(is_prime),
+                Item::Enum(shape),
+                Item::Function(second),
+            ],
             broken: Vec::new(),
             comments: Vec::new(),
             quotes: Vec::new(),
@@ -796,6 +876,7 @@ mod tests {
             "(fn is_prime ((n i64)) bool (block (let mut d i64 (- 2)) (= d (+ d 1)) \
              (while (< a b <= c) (block)) \
              (if (! true) (block (return)) (block (return (< a b <= c))))))\n\
+             (enum Shape Dot (Rect (w i64) i64) (fn area () unit (block)))\n\
              (fn g () unit (block))"
         );
     }

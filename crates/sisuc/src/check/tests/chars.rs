@@ -388,7 +388,7 @@ fn char_copy_compound_assignment() {
 #[test]
 fn char_built_in_names() {
     for (src, col) in [("fn char() {}", 4), ("class char {}", 7)] {
-        codes(&with_main(src), &[(Code::BuiltInTypeName, (1, col))]);
+        codes(&with_main(src), &[(Code::BuiltInName, (1, col))]);
     }
 }
 

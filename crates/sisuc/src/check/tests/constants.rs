@@ -301,7 +301,7 @@ fn name_errors() {
         ),
         ("class A {}\nconst A = 1", &[(Code::DefinedTwice, (2, 7))]),
         ("const A = 1\nfn A() {}", &[(Code::DefinedTwice, (2, 4))]),
-        ("const i64 = 1", &[(Code::BuiltInTypeName, (1, 7))]),
+        ("const i64 = 1", &[(Code::BuiltInName, (1, 7))]),
     ]);
 }
 

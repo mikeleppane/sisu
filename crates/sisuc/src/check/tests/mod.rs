@@ -1228,10 +1228,7 @@ fn duplicate_field() {
 
 #[test]
 fn builtin_type_as_class() {
-    codes(
-        "class i64 {}\nfn main() {}",
-        &[(Code::BuiltInTypeName, (1, 7))],
-    );
+    codes("class i64 {}\nfn main() {}", &[(Code::BuiltInName, (1, 7))]);
 }
 
 #[test]

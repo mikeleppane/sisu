@@ -502,11 +502,11 @@ fn string_from_chars() {
 fn string_built_in_names() {
     codes(
         "fn string() {}\nfn main() {}",
-        &[(Code::BuiltInTypeName, (1, 4))],
+        &[(Code::BuiltInName, (1, 4))],
     );
     codes(
         "class string {}\nfn main() {}",
-        &[(Code::BuiltInTypeName, (1, 7))],
+        &[(Code::BuiltInName, (1, 7))],
     );
 }
 

@@ -14,8 +14,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ast;
 use crate::diagnostic::{
-    Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, MismatchFix, Severity, Span,
-    suggestion,
+    BuiltIn, Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, MismatchFix, Severity,
+    Span, suggestion,
 };
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
@@ -313,6 +313,8 @@ impl Checker<'_> {
                     }
                     next_function += 1;
                 }
+                // Task 2 declares enums; until then an enum is skipped.
+                ast::Item::Enum(_) => {}
                 ast::Item::Const(c) => {
                     if !self.built_in(&c.name)
                         && self.first_callable(&mut first, Definition::Constant, &c.name)
@@ -335,6 +337,8 @@ impl Checker<'_> {
                 ast::BrokenKind::Class => {
                     self.class_ids.insert(*name, Declared::Broken);
                 }
+                // Task 2 declares enums; until then a broken enum is skipped.
+                ast::BrokenKind::Enum => {}
                 ast::BrokenKind::Constant => {
                     self.constants.insert(*name, Declared::Broken);
                 }
@@ -358,9 +362,10 @@ impl Checker<'_> {
     fn built_in(&mut self, name: &ast::Ident) -> bool {
         let found = built_in_type(name.name.as_str()).is_some();
         if found {
-            self.report(DiagnosticKind::BuiltInTypeName {
+            self.report(DiagnosticKind::BuiltInName {
                 name: name.name.to_string(),
                 at: name.span,
+                kind: BuiltIn::Type,
             });
         }
         found
@@ -418,7 +423,8 @@ impl Checker<'_> {
                     continue;
                 }
                 ast::Item::Class(class) => class,
-                ast::Item::Const(_) => continue,
+                // Task 2 checks enums; until then an enum is skipped.
+                ast::Item::Enum(_) | ast::Item::Const(_) => continue,
             };
             let id = tir::ClassId(next_class);
             next_class += 1;

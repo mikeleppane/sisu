@@ -417,7 +417,7 @@ fn built_in_names() {
     ] {
         codes(
             &format!("{src}\nfn main() {{}}"),
-            &[(Code::BuiltInTypeName, (1, col))],
+            &[(Code::BuiltInName, (1, col))],
         );
     }
 }

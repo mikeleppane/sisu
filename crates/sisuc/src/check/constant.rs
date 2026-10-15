@@ -185,7 +185,7 @@ impl Checker<'_> {
     pub(super) fn fold_constants(&mut self, program: &ast::Program) {
         let constants = program.items.iter().filter_map(|item| match item {
             ast::Item::Const(c) => Some(c),
-            ast::Item::Function(_) | ast::Item::Class(_) => None,
+            ast::Item::Function(_) | ast::Item::Class(_) | ast::Item::Enum(_) => None,
         });
         for (order, c) in constants.enumerate() {
             let (ty, value) = self.fold(c, order);
