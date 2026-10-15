@@ -878,6 +878,19 @@ These do not make code nicer to write, so they wait:
   called on a field, `obj.pos.move_by(1, 2)`, needs the same check
   (ADR 0011). Until then, copy the field into a local, set the field to `[]`,
   and assign it back. `inout` parameters stay out (ADR 0007).
+- Proving uniqueness at compile time. Roc's Morphic analysis follows each
+  array through the whole program to prove that a write holds the only
+  reference, so the write needs no count check. On quicksort, removing by
+  hand the count checks that codegen still emits took the time from 622 to
+  582 ms, against C's 542
+  ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). That is the most
+  the analysis could gain there, for a whole-program pass.
+- Removing bounds checks that LLVM keeps. On quicksort, removing by hand the
+  bounds checks that codegen still emits took the time from 622 to 586 ms
+  ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). `for j in lo..hi`
+  indexes `a[j]` with no proof that `hi` is below the length. A first step is
+  to find which checks LLVM keeps that a range fact about the loop would
+  remove.
 - Link-time optimization with the runtime. Build `sisu-runtime` as LLVM
   bitcode and link it into the program's module, so LLVM can inline runtime
   calls such as `sisu_alloc` and `sisu_free`. The reference-count helpers

@@ -1399,3 +1399,29 @@ fn integer_min_max_clamp_are_selects() {
         assert!(!body.contains("call"), "{body}");
     }
 }
+
+/// A swap in a loop, as quicksort's partition does it, makes its array unique once: `-O2` keeps
+/// one copy path and at most the bounds checks of `a[j]` and `a[i]`, but drops those of the
+/// writes. It needs both the TBAA tags, so that an element store keeps the count and length,
+/// and `unique` releasing the old block before it allocates the copy; with either alone `-O2`
+/// keeps two copy paths and three bounds checks. One copy path, not none: `unique` is inlined.
+#[test]
+fn partition_makes_its_array_unique_once() {
+    let context = Context::create();
+    let module = compiled(
+        &context,
+        "fn partition(xs: [i64], pivot: i64) -> [i64] {\n    let mut a = xs\n    let mut i = 0\n    for j in 0..a.len() {\n        if a[j] < pivot {\n            let t = a[i]\n            a[i] = a[j]\n            a[j] = t\n            i += 1\n        }\n    }\n    a\n}\n\nfn main() {\n    print(partition([3, 1, 2], 2).sum())\n}",
+    );
+    keep_functions(&module, "partition");
+    let machine = target_machine(true).expect("the host is a target");
+    optimize(&module, &machine, true).expect("the module should optimize");
+    let ir = module.print_to_string().to_string();
+    let partition = function_body(&ir, "@sisu.partition(");
+    assert_eq!(
+        partition.matches("call ptr @sisu_alloc(").count(),
+        1,
+        "{partition}"
+    );
+    let bounds = partition.matches("call void @sisu_panic_bounds(").count();
+    assert!(bounds <= 2, "{bounds} bounds checks in\n{partition}");
+}

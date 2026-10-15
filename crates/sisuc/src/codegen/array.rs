@@ -138,8 +138,8 @@ impl<'ctx> Codegen<'ctx, '_> {
             .basic()
             .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
             .into_pointer_value();
-        self.store(array, i64_type.const_int(1, false).into());
-        self.store(self.len_ptr(array), len.into());
+        self.store_tagged(array, i64_type.const_int(1, false).into(), self.header_tag);
+        self.store_tagged(self.len_ptr(array), len.into(), self.header_tag);
         array
     }
 
@@ -164,10 +164,13 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     pub(super) fn array_len(&self, array: PointerValue<'ctx>) -> IntValue<'ctx> {
-        self.builder
-            .build_load(self.context.i64_type(), self.len_ptr(array), "len")
-            .expect(POSITIONED)
-            .into_int_value()
+        self.load_tagged(
+            self.context.i64_type().into(),
+            self.len_ptr(array),
+            "len",
+            self.header_tag,
+        )
+        .into_int_value()
     }
 
     #[expect(
@@ -210,13 +213,12 @@ impl<'ctx> Codegen<'ctx, '_> {
         index: IntValue<'ctx>,
     ) -> BasicValueEnum<'ctx> {
         let layout = self.array_layout(element);
-        self.builder
-            .build_load(
-                layout.element,
-                self.element_ptr(element, array, index),
-                "element",
-            )
-            .expect(POSITIONED)
+        self.load_tagged(
+            layout.element,
+            self.element_ptr(element, array, index),
+            "element",
+            self.element_tag,
+        )
     }
 
     /// Panics at `span` with `sisu_panic_bounds` when `index uge len`, which is
@@ -284,7 +286,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let array = self.alloc_array(element, i64_type.const_int(len, false), None);
         for (index, value) in (0..).zip(values) {
             let slot = self.element_ptr(element, array, i64_type.const_int(index, false));
-            self.store(slot, value);
+            self.store_tagged(slot, value, self.element_tag);
         }
         array
     }
@@ -300,7 +302,11 @@ impl<'ctx> Codegen<'ctx, '_> {
         let count = self.value(len);
         let array = self.alloc_array(element, count, Some(len.span));
         self.count_loop(count, |index| {
-            self.store(self.element_ptr(element, array, index), filler);
+            self.store_tagged(
+                self.element_ptr(element, array, index),
+                filler,
+                self.element_tag,
+            );
         });
         if element.is_counted() {
             self.share_filler(filler, element, count);
@@ -592,8 +598,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             return;
         };
         let (slot, ty) = self.element_slot(operands.slot, &operands.ty, &operands.indexes);
-        let old = ty.is_counted().then(|| self.load(value.get_type(), slot));
-        self.store(slot, value);
+        let old = ty
+            .is_counted()
+            .then(|| self.load_tagged(value.get_type(), slot, "old", self.element_tag));
+        self.store_tagged(slot, value, self.element_tag);
         self.discard(old, &ty);
         operands.release_object(self);
     }
@@ -668,9 +676,10 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// `@sisu_rc.unique.[T](slot) -> ptr`: the array in `slot` when its count is 1. Otherwise
-    /// a new block of the same length with count 1, the elements copied with `llvm.memcpy`
-    /// and each counted one retained, stored into `slot`; the old block is released. It has no
-    /// `null` early return: the slot is an `alloca`, a field address or an element address.
+    /// the old block is released, and a new block of the same length with count 1, the
+    /// elements copied with `llvm.memcpy` and each counted one retained, is stored into
+    /// `slot`. It has no `null` early return: the slot is an `alloca`, a field address or an
+    /// element address.
     fn define_array_unique(&self, element: &Type, function: FunctionValue<'ctx>) {
         let block = |name| self.context.append_basic_block(function, name);
         let (entry, only, shared) = (block("entry"), block("only"), block("shared"));
@@ -689,9 +698,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         // A dead block, count below 1, would otherwise pass for a shared one and be copied.
         self.check_count(array, 1);
         let count = self
-            .builder
-            .build_load(i64_type, array, "count")
-            .expect(POSITIONED)
+            .load_tagged(i64_type.into(), array, "count", self.header_tag)
             .into_int_value();
         let one = self.int_compare(IntPredicate::EQ, count, i64_type.const_int(1, false));
         self.builder
@@ -701,6 +708,12 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder.build_return(Some(&array)).expect(POSITIONED);
         self.builder.position_at_end(shared);
         let len = self.array_len(array);
+        // The slot's reference moves to the copy. Releasing it never frees the old block: its
+        // count was above 1. Releasing it before the copy exists, not after, leaves the copy's
+        // count and length as the last stores, so that LLVM can forward them past an inlined
+        // `unique` instead of loading them again. With the TBAA tags, that drops the second
+        // count and bounds checks of a swap; see `partition_makes_its_array_unique_once`.
+        self.add_to_count(array, i64_type.const_int((-1_i64).cast_unsigned(), false));
         // The length fit once, so the new block needs no size check.
         let copy = self.alloc_array(element, len, None);
         let layout = self.array_layout(element);
@@ -727,8 +740,6 @@ impl<'ctx> Codegen<'ctx, '_> {
             });
         }
         self.store(slot, copy.into());
-        // Releasing the old block never frees it: its count was above 1.
-        self.add_to_count(array, i64_type.const_int((-1_i64).cast_unsigned(), false));
         self.builder.build_return(Some(&copy)).expect(POSITIONED);
     }
 }

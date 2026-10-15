@@ -8,8 +8,8 @@ with no per-language tuning.
 ## Results
 
 fib and sieve ran at commit 9cbd44e and binary_trees at 7c8d29e (the change
-between them is the runtime's live count), on 2026-10-12. hello and quicksort
-ran at commit 4690caa on 2026-10-15. All ran on an Intel Core i9-14900K under
+between them is the runtime's live count), on 2026-10-12. hello ran at
+commit 4690caa and quicksort at 3dbda29, on 2026-10-15. All ran on an Intel Core i9-14900K under
 Linux 7.0. Each figure is the median of 5 runs, pinned to one CPU. Each table
 runs from fastest to slowest wall time, with Sisu in bold.
 
@@ -61,12 +61,12 @@ runs from fastest to slowest wall time, with Sisu in bold.
 
 | Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| C | 0.53 | 0.52 | 77.3 | 14 | 0.056 |
-| Rust | 0.55 | 0.54 | 77.8 | 330 | 0.122 |
-| Go | 0.57 | 0.56 | 78.4 | 1487 | 0.027 |
-| Java | 0.65 | 0.63 | 117.6 | - | 0.269 |
-| **Sisu** | **0.68** | **0.68** | **77.6** | **353** | **0.059** |
-| Python | 12.75 | 12.74 | 393.7 | - | - |
+| C | 0.53 | 0.52 | 77.3 | 14 | 0.054 |
+| Go | 0.55 | 0.55 | 78.3 | 1487 | 0.069 |
+| Rust | 0.55 | 0.54 | 77.8 | 330 | 0.152 |
+| **Sisu** | **0.62** | **0.61** | **77.6** | **353** | **0.056** |
+| Java | 0.64 | 0.63 | 117.6 | - | 0.196 |
+| Python | 12.66 | 12.65 | 393.7 | - | - |
 
 Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 1.99.0 with `-C opt-level=3`, Go 1.27.2, OpenJDK 25.0.4.1 (Temurin), Python
@@ -152,9 +152,52 @@ holds the only reference and every element write happens in place. Peak
 memory shows it: Sisu holds 77.6 MiB, as C does for its one array of
 10 000 000 `i64`.
 
-Sisu takes 1.28 times as long as C. Each element write checks the index
-against the bounds and the array's count against 1, and each addition checks
-for overflow. How much of the gap each check costs is not measured yet.
+Each element write checks the index against the bounds and the array's
+count against 1, and each addition checks for overflow. To find what each
+check costs, each kind was removed by hand from the program's IR
+(`sisuc --emit ir-raw`), and the result built with the same `default<O2>`
+pipeline. hyperfine timed every build in one session, pinned to one CPU, as
+the mean of 15 runs, and callgrind counted the instructions. "Before" is
+commit c75ef2d; "after" is 3dbda29, which adds the change described below.
+
+| Build | Mean (ms) | Times C | Instructions (billions) |
+| --- | ---: | ---: | ---: |
+| C, for comparison | 542 | 1.00 | 2.82 |
+| Before | 688 | 1.27 | 6.44 |
+| Before, overflow checks removed | 709 | 1.31 | 6.25 |
+| Before, count checks removed | 628 | 1.16 | 5.07 |
+| Before, bounds checks removed | 628 | 1.16 | 4.35 |
+| Before, all three removed | 545 | 1.01 | 2.95 |
+| Before, TBAA tags only | 682 | 1.26 | 6.28 |
+| Before, reordered `unique` only | 685 | 1.26 | 6.68 |
+| After | 622 | 1.15 | 4.82 |
+| After, count checks removed | 582 | 1.07 | 3.99 |
+| After, bounds checks removed | 586 | 1.08 | 3.57 |
+
+The checks are the whole gap to C. The overflow checks cost no measurable
+time: without them the program ran fewer instructions but no faster.
+
+Some checks were redundant. In the swap `a[i] = a[j]` then `a[j] = t`, the
+second write checked the count and the length of the array the first write
+had just made unique. LLVM kept those checks for two reasons:
+
+- It could not tell that storing an element leaves the count and the length
+  alone.
+- On the copy path of `sisu_rc.unique`, the old block's count was written
+  after the copy's header. LLVM could not prove that the old block was not
+  the copy, so it could not prove that the copy's count was still 1.
+
+Codegen now tags the count and the length apart from the elements (TBAA,
+type-based alias analysis), and `unique` releases the old block before it
+allocates the copy. Either change alone keeps those checks and gains no
+time. Together they remove them: quicksort takes 622 ms instead of 688, and
+runs 25% fewer instructions. Marking `sisu_alloc`'s result `noalias` in place
+of the reorder removes none of them.
+
+Two costs remain. Removing the count checks that are left would take the
+time from 622 to 582 ms. That bounds what proving at compile time that an
+array has one holder, as Roc's Morphic analysis does, could gain here.
+Removing the bounds checks that are left would gain about as much.
 
 ## Where a hello build spends its time
 
