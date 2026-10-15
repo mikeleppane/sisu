@@ -154,10 +154,10 @@ files (advisory)" names the rest of those files. It never fails on low
 coverage. Agents run it before the mutants. Commit new files, or
 `git add -N` them, so the diff sees them.
 
-`make verify [BASE=<base>]` runs coverage, then mutants, and ends with one
-line: `verify: PASS` or `verify: FAIL` and why. It skips the mutants when an
-uncovered region touches the changes, since the tests that cover it change
-the mutants' results too.
+`make verify [BASE=<base>]` runs coverage, then mutants, and always ends with
+one line: `verify: PASS`, or `verify: FAIL` and why. PASS needs no uncovered
+region touching the changes and no surviving mutant. A region you explain
+rather than cover still fails it, so read the reasons, not only the word.
 
 Programs that the tests compile link an uninstrumented runtime, built in
 `target/llvm-cov-runtime` and copied next to the instrumented `sisuc`. Runtime

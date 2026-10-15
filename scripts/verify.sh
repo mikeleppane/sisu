@@ -1,35 +1,55 @@
 #!/usr/bin/env bash
 # Runs scripts/coverage.sh, then scripts/mutants.sh, on the changes since <base>,
-# and ends with one verdict line that starts "verify: PASS" or "verify: FAIL".
-# It stops before the mutants when the coverage run fails or an uncovered region
-# touches the changes: the tests that fix that change the mutants' results too.
+# and always ends with one verdict line that starts "verify: PASS" or "verify: FAIL".
+# PASS needs no uncovered region touching the changes and no surviving mutant.
+# A region you explain instead of covering still fails the verdict, so the
+# mutants run anyway: one job reports both. A failing test run stops it early.
 #   scripts/verify.sh [base]
 set -euo pipefail
 
+verdict=
+report=
+# Any early exit, from set -e included, still prints a verdict line.
+trap 'rm -f "$report"; [[ -n $verdict ]] || echo "verify: FAIL: stopped early (see the error above)"' EXIT
+
 cd "$(git rev-parse --show-toplevel)"
 base=${1:-$(git merge-base main HEAD)}
-
 report=$(mktemp)
-trap 'rm -f "$report"' EXIT
 
 if ! scripts/coverage.sh "$base" | tee "$report"; then
-	echo "verify: FAIL: the coverage run failed; mutants not run"
+	verdict="verify: FAIL: the coverage run failed; mutants not run"
+	echo "$verdict"
 	exit 1
 fi
-uncovered=$(sed -n '/^Uncovered regions touching changed code:$/,/^$/p' "$report" |
-	sed '1d;/^$/d;/^(none)$/d' | wc -l)
-if ((uncovered > 0)); then
-	echo "verify: FAIL: $uncovered uncovered regions touch the changes (listed above); mutants not run"
+header='Uncovered regions touching changed code:'
+if ! grep -qxF "$header" "$report"; then
+	verdict="verify: FAIL: the coverage report has no \"$header\" list"
+	echo "$verdict"
 	exit 1
 fi
+uncovered=$(sed -n "/^$header\$/,/^\$/p" "$report" | sed '1d;/^$/d;/^(none)$/d' | wc -l)
 
+# cargo mutants leaves mutants.out alone when it finds nothing to mutate, so
+# drop the last run's counts first.
+rm -rf mutants.out
 status=0
 scripts/mutants.sh "$base" || status=$?
 count() { if [[ -f mutants.out/$1.txt ]]; then wc -l <"mutants.out/$1.txt"; else echo 0; fi; }
-summary="$(count caught) caught, $(count unviable) unviable, $(count missed) missed, $(count timeout) timeouts"
-if ((status == 0)); then
-	echo "verify: PASS: no uncovered region touches the changes; mutants: $summary"
+if [[ -d mutants.out ]]; then
+	mutants="$(count caught) caught, $(count unviable) unviable, $(count missed) missed, $(count timeout) timeouts"
 else
-	echo "verify: FAIL: mutants: $summary (cargo mutants exit $status; see mutants.out/missed.txt)"
-	exit 1
+	mutants='none to test'
 fi
+
+if ((uncovered == 0 && status == 0)); then
+	verdict="verify: PASS: no uncovered region touches the changes; mutants: $mutants"
+	echo "$verdict"
+	exit 0
+fi
+reasons=
+((uncovered == 0)) || reasons="$uncovered uncovered regions touch the changes (listed above): cover or explain each; "
+reasons+="mutants: $mutants"
+((status == 0)) || reasons+=" (cargo mutants exit $status, see mutants.out/)"
+verdict="verify: FAIL: $reasons"
+echo "$verdict"
+exit 1
