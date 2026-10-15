@@ -3114,6 +3114,7 @@ mod tests {
             ("a.b ** f(c)", Some("a.b.pow(f(c))")),
             ("a.m() ** xs[0]", Some("a.m().pow(xs[0])")),
             ("(a + b) ** 2", Some("(a + b).pow(2)")),
+            ("((a) + b) ** 2", Some("((a) + b).pow(2)")),
             ("x ** (a + b)", Some("x.pow((a + b))")),
             ("2 ** 10", None),
             ("None ** 2", None),
