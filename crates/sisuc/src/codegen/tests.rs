@@ -508,6 +508,41 @@ fn eq_loops_on_the_chain_field() {
     }
 }
 
+/// An `eq` helper answers "equal" for one pointer on both sides only when its type's `==` is
+/// reflexive; where an `f64` is reachable, through an optional, an array or a class's fields,
+/// one block or object may hold a `nan`, so only two `null`s are equal at once.
+#[test]
+fn same_pointer_shortcut_only_when_reflexive() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class Node {\n    value: i64\n    next: Node?\n}\nclass Pt {\n    x: f64\n}\nclass Bag {\n    ps: [Pt?]\n}\nfn same(a: Node, b: Node, c: Bag, d: Bag, e: [i64], f: [i64], g: [f64], h: [f64]) -> bool { a == b && c == d && e == f && g == h }\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    for (helper, reflexive) in [
+        // A class whose only cycle is through itself, with no `f64` reached, is reflexive.
+        ("@sisu_rc.eq.Node(ptr", true),
+        ("@\"sisu_rc.eq.[i64]\"(ptr", true),
+        ("@sisu_rc.eq.Pt(ptr", false),
+        ("@sisu_rc.eq.Bag(ptr", false),
+        ("@\"sisu_rc.eq.[Pt?]\"(ptr", false),
+        ("@\"sisu_rc.eq.[f64]\"(ptr", false),
+    ] {
+        let body = function_body(&ir, &format!("define internal i1 {helper}"));
+        // The shortcut is a pointer comparison against another pointer, not against `null`.
+        let between_pointers = body
+            .lines()
+            .any(|line| line.contains("icmp eq ptr ") && !line.ends_with(", null"));
+        assert_eq!(between_pointers, reflexive, "{helper}:\n{body}");
+        // Every helper still tests for `null`, which is all a non-reflexive one may stop at.
+        let against_null = body
+            .lines()
+            .any(|line| line.contains("icmp eq ptr ") && line.ends_with(", null"));
+        assert!(against_null, "{helper}:\n{body}");
+    }
+}
+
 #[test]
 fn helper_names_cannot_collide() {
     let context = Context::create();
@@ -1191,4 +1226,70 @@ fn many_panic_sites_compile_in_linear_time() {
         "    x += 1\n".repeat(100_000)
     );
     compiled(&Context::create(), &src);
+}
+
+/// No float instruction carries a fast-math flag, so `-O2` keeps every result exact to IEEE
+/// 754. The operands come from the arguments' count, so `-O2` cannot fold the operations away,
+/// and each comparison is printed alone: together, `s <= b || s >= b || s != b` folds to true.
+#[test]
+fn float_ops_have_no_fast_math() {
+    let context = Context::create();
+    let module = compiled(
+        &context,
+        "fn ops(a: f64, b: f64) -> bool {\n    let s = -(a + b - a * b / a % b)\n    print(s < a)\n    print(s <= b)\n    print(s > a)\n    print(s >= b)\n    print(s == a)\n    s != b\n}\n\nfn main(args: [string]) {\n    let n = args.len()\n    print(ops(f64(n), f64(n + 1)))\n}",
+    );
+    let machine = target_machine(true).expect("the host is a target");
+    optimize(&module, &machine, true).expect("the module should optimize");
+    let ir = module.print_to_string().to_string();
+    for wanted in ["fadd", "frem", "fcmp une"] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+    let opcodes = ["fadd", "fsub", "fmul", "fdiv", "frem", "fneg", "fcmp"];
+    let flags = [
+        "fast", "nnan", "ninf", "nsz", "arcp", "contract", "afn", "reassoc",
+    ];
+    let mut seen = 0;
+    for line in ir.lines() {
+        let Some((_, text)) = line.split_once(" = ") else {
+            continue;
+        };
+        let mut words = text.split_whitespace();
+        if !words.next().is_some_and(|op| opcodes.contains(&op)) {
+            continue;
+        }
+        seen += 1;
+        // The words between the opcode and the type: `fcmp`'s predicate, or a flag.
+        for word in words.take_while(|w| *w != "double") {
+            assert!(!flags.contains(&word), "{line}");
+        }
+    }
+    assert!(seen >= 7, "{ir}");
+}
+
+/// `i64(x)` from an `f64` converts with the saturating `llvm.fptosi.sat`, never a plain
+/// `fptosi`, which is poison out of range: the range check and the round trip decide the flag.
+#[test]
+fn float_to_int_saturates() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(x: f64) -> i64? { i64(x) }\n\nfn main() {\n    print(f(2.0) ?? 0)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "define internal { i1, i64 } @sisu.f(");
+    assert!(body.contains("@llvm.fptosi.sat.i64.f64"), "{body}");
+    assert!(
+        !body.lines().any(|l| l.contains(" fptosi ")),
+        "a plain `fptosi` in\n{body}"
+    );
+    // The range check is ordered, so `nan` is out of range, and the round trip is `oeq`.
+    for wanted in [
+        "fcmp oge double",
+        "fcmp olt double", // spellchecker:disable-line
+        "sitofp",
+        "fcmp oeq double",
+    ] {
+        assert!(body.contains(wanted), "missing {wanted:?} in\n{body}");
+    }
 }

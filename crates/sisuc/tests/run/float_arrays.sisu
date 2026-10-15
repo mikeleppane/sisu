@@ -1,0 +1,24 @@
+// `[f64]` and `[f64?]`: a literal that mixes an integer and a float, `sum`, `==`, `contains`, and
+// an `f64` in interpolation.
+fn main() {
+    let xs = [1, 2.5]                   // an `[f64]`: the `1` is `1.0`
+    print(xs[0])                        // 1.0
+    print([0.1, 0.2, 0.3].sum())        // 0.6000000000000001: added in order
+    let e: [f64] = []
+    print(e.sum())                      // 0.0: the sum starts at `0.0`
+    print([-0.0].sum())                 // 0.0: `0.0 + -0.0` is `0.0`
+    print([1.0, 2.0] == [1.0, 2.0])     // true
+    print([1.0, 2.0] == [1.0, 2.5])     // false
+    print(xs.contains(2.5))             // true
+    print(xs.contains(2.0))             // false
+    let x = 2.5
+    let n = 3
+    let s = "m"
+    print("{x} * {n} {s}")              // 2.5 * 3 m
+    // The longest text of an `f64`, 24 bytes, fills its part of the string.
+    let small = -2.2250738585072014e-308
+    print("[{small}]")                  // [-2.2250738585072014e-308]
+    let os: [f64?] = [None, 1.5]
+    print(os[0] ?? -1.0)                // -1.0
+    print(os[1] ?? -1.0)                // 1.5
+}

@@ -1,0 +1,15 @@
+error[E0100]: a constant cannot use a conversion that can fail
+ --> E0100-float.sisu:1:11
+  |
+1 | const N = i64(2.0)
+  |           ^^^^^^^^ `i64(...)` gives an `i64?`
+  |
+  = help: write the literal with its type: `const B: u8 = 200`
+help: write the literal with its type
+  |
+1 - const N = i64(2.0)
+1 + const N: i64 = 2
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0100

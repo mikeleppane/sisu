@@ -1,0 +1,29 @@
+// A folded `f64` constant prints what the same computation prints at run time. The run-time side
+// starts from `same`, which `-O2` cannot see through, so LLVM computes it at run time at both
+// levels.
+// args: a
+// o2-calls: main same 5
+const SUM = 0.1 + 0.2
+const REM = -7.5 % 2.0
+const INF = 1.0 / 0.0
+const NEG_ZERO = -0.0
+const TINY = 5e-324
+
+fn same(x: f64, depth: i64) -> f64 {
+    if depth == 0 { x } else { -same(-x, depth - 1) }
+}
+
+fn main(args: [string]) {
+    let d = args.len()
+    print(SUM)                  // 0.30000000000000004
+    let a = same(0.1, d)
+    print(a + 0.2)              // 0.30000000000000004
+    print(REM)                  // -1.5
+    print(same(-7.5, d) % 2.0)  // -1.5
+    print(INF)                  // inf
+    print(1.0 / same(0.0, d))   // inf
+    print(NEG_ZERO)             // -0.0
+    print(-same(0.0, d))        // -0.0
+    print(TINY)                 // 5e-324
+    print(same(5e-324, d))      // 5e-324
+}

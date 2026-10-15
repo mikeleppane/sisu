@@ -10,6 +10,9 @@ pub(crate) fn link(object: &Path, output: &Path) -> Result<(), String> {
     let out = Command::new("cc")
         .arg(object)
         .arg(&runtime)
+        // libm, after the runtime, for the C math functions. Not for `fmod`, which `frem`
+        // lowers to: the runtime's compiler_builtins defines it, weakly, and is linked first.
+        .arg("-lm")
         .arg("-o")
         .arg(output)
         .output()

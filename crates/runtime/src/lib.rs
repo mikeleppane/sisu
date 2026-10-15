@@ -1,6 +1,7 @@
 //! The Sisu runtime: functions that compiled Sisu programs call over the C ABI.
 
 pub mod args;
+pub mod float;
 pub mod stdin;
 pub mod text;
 
@@ -30,6 +31,17 @@ pub extern "C" fn sisu_print_int(value: i64) {
     print_bytes(text::int_text(value, &mut [0; 20]));
 }
 
+/// Prints `value` and a newline to standard output. Sisu's `print` calls this for an `f64`
+/// argument.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_print_f64(value: f64) {
+    print_bytes(float::shortest(value, &mut [0; 24]));
+}
+
 /// Prints `true` or `false` and a newline to standard output. Sisu's `print` calls this
 /// for a `bool` argument.
 #[expect(
@@ -50,6 +62,17 @@ pub extern "C" fn sisu_print_bool(value: bool) {
 #[unsafe(no_mangle)]
 pub extern "C" fn sisu_eprint_int(value: i64) {
     eprint_bytes(text::int_text(value, &mut [0; 20]));
+}
+
+/// Writes `value` and a newline to standard error. Sisu's `eprint` calls this for an `f64`
+/// argument.
+#[expect(
+    unsafe_code,
+    reason = "generated code calls this function by its unmangled symbol name"
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn sisu_eprint_f64(value: f64) {
+    eprint_bytes(float::shortest(value, &mut [0; 24]));
 }
 
 /// Writes `true` or `false` and a newline to standard error. Sisu's `eprint` calls this for a
@@ -480,8 +503,9 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 mod tests {
     use super::{
         BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_eprint_bool,
-        sisu_eprint_int, sisu_flush_stdout, sisu_free, sisu_panic_bounds, sisu_print_bool,
-        sisu_print_int, sisu_rc_check_exit, sisu_rc_fault, sisu_realloc,
+        sisu_eprint_f64, sisu_eprint_int, sisu_flush_stdout, sisu_free, sisu_panic_bounds,
+        sisu_print_bool, sisu_print_f64, sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
+        sisu_realloc,
     };
     use crate::text::{sisu_eprint_char, sisu_eprint_str};
     use std::os::fd::AsRawFd;
@@ -612,6 +636,7 @@ mod tests {
             return;
         }
         sisu_eprint_int(-42);
+        sisu_eprint_f64(-0.5);
         sisu_eprint_bool(true);
         sisu_eprint_char(u32::from('ä'));
         let text = b"a\0b";
@@ -632,7 +657,7 @@ mod tests {
             .output()
             .expect("spawn child test");
         assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
-        assert_eq!(out.stderr, "-42\ntrue\nä\na\0b\n\n".as_bytes());
+        assert_eq!(out.stderr, "-42\n-0.5\ntrue\nä\na\0b\n\n".as_bytes());
     }
 
     #[test]
@@ -741,6 +766,7 @@ mod tests {
             "fault7" => sisu_rc_fault(7),
             "print_then_fault" => {
                 sisu_print_int(5);
+                sisu_print_f64(2.5);
                 sisu_rc_fault(1);
             }
             "dup_fails" => {
@@ -915,6 +941,7 @@ mod tests {
         // The libtest child also prints to stdout; the line it buffered is among it.
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.lines().any(|line| line == "5"), "{stdout}");
+        assert!(stdout.lines().any(|line| line == "2.5"), "{stdout}");
     }
 
     #[test]

@@ -565,8 +565,8 @@ impl Checker<'_> {
                     Type::Class(id)
                 } else {
                     let span = Span::new(ty.span.start(), ty.span.start() + name.as_str().len());
-                    let types =
-                        ["i64", "u8", "bool", "char", "string"].map(|ty| (ty, Definition::Type));
+                    let types = ["i64", "u8", "f64", "bool", "char", "string"]
+                        .map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
                     self.report(DiagnosticKind::UnknownType {
                         name: name.to_string(),
@@ -704,9 +704,11 @@ impl Checker<'_> {
         got: &Type,
     ) -> Diagnostic {
         let optional = matches!(want, Type::Optional(_));
-        // `u8` and `char` convert into each other through `i64`.
+        // `u8` and `char` convert into each other through `i64`, and into `f64` through it.
         let (to, through) = match (payload(want), got) {
             (Type::I64, Type::U8 | Type::Char) => (Some("i64"), None),
+            (Type::F64, Type::I64) => (Some("f64"), None),
+            (Type::F64, Type::U8 | Type::Char) => (Some("f64"), Some("i64")),
             (Type::U8, Type::I64) if optional => (Some("u8"), None),
             (Type::Char, Type::I64) if optional => (Some("char"), None),
             (Type::U8, Type::Char) if optional => (Some("u8"), Some("i64")),
@@ -740,9 +742,10 @@ impl Checker<'_> {
     }
 }
 
-/// Whether `e` is a call of a conversion that can fail: `u8(...)` or `char(...)`.
+/// Whether `e` is a call of a conversion that can fail: `u8(...)`, `char(...)`, or `i64(...)`,
+/// which can fail only from an `f64`, the one argument that makes it an optional.
 fn can_fail(e: &ast::Expr) -> bool {
-    matches!(&e.kind, ast::ExprKind::Call { callee, .. } if matches!(callee.name.as_str(), "u8" | "char"))
+    matches!(&e.kind, ast::ExprKind::Call { callee, .. } if matches!(callee.name.as_str(), "u8" | "char" | "i64"))
 }
 
 /// The type a built-in type name names.
@@ -750,6 +753,7 @@ fn built_in_type(name: &str) -> Option<Type> {
     match name {
         "i64" => Some(Type::I64),
         "u8" => Some(Type::U8),
+        "f64" => Some(Type::F64),
         "bool" => Some(Type::Bool),
         "char" => Some(Type::Char),
         "string" => Some(Type::String),

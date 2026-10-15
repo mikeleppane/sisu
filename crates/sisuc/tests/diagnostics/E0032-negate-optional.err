@@ -1,0 +1,8 @@
+error[E0032]: expected `f64`, found `f64?`
+ --> E0032-negate-optional.sisu:2:6
+  |
+2 |     -x
+  |      ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

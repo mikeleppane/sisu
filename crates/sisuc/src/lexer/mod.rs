@@ -9,6 +9,7 @@ use std::str::CharIndices;
 use crate::diagnostic::{Code, Diagnostic, DiagnosticKind, Join, LineIndex, Span};
 use crate::symbol::Symbol;
 use literal::End;
+pub(crate) use literal::Float;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
@@ -18,6 +19,8 @@ pub(crate) enum TokenKind {
     /// An integer literal: its magnitude, at most `MIN_MAGNITUDE`, which only a unary `-`
     /// accepts. Its text as written is `source[token.span.range()]`.
     Int(u64),
+    /// A float literal: its value, rounded to the nearest `f64`.
+    Float(Float),
     /// A `char` literal, decoded.
     Char(char),
     /// A string literal without interpolation, decoded.
@@ -108,6 +111,7 @@ impl TokenKind {
             TokenKind::Ident(_) => "Ident",
             TokenKind::Underscore => "Underscore",
             TokenKind::Int(_) => "Int",
+            TokenKind::Float(_) => "Float",
             TokenKind::Char(_) => "Char",
             TokenKind::Str(_) => "Str",
             TokenKind::StrHead(_) => "StrHead",
@@ -182,6 +186,7 @@ impl TokenKind {
             TokenKind::Ident(name) => name.as_str(),
             TokenKind::Underscore => "_",
             TokenKind::Int(_) => return "an integer literal".to_string(),
+            TokenKind::Float(x) => return format!("`{x}`"),
             TokenKind::Char(c) => return format!("`{c:?}`"),
             TokenKind::Str(_) | TokenKind::StrHead(_) => return "a string literal".to_string(),
             TokenKind::Fn => "fn",
@@ -322,7 +327,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed<'_>, Diagnostic> {
                 keyword_or_ident(&source[start..end])
             }
             c if c.is_ascii_digit() || c == '\'' => {
-                literal::token(source, start, &mut chars, &mut diagnostics)
+                literal::token(source, start, &mut chars, &mut diagnostics, &tokens)
             }
             // A `}` that closes no bracket opened in an interpolation ends it, and the literal's
             // text goes on after it.
@@ -613,8 +618,8 @@ fn ends_statement(tokens: &[Token], open: &[Open]) -> bool {
 /// Whether `token` can end a statement (Go's rule).
 fn can_end_statement(token: Option<&Token>) -> bool {
     use TokenKind::{
-        Break, Char, Continue, False, Ident, Int, NoneKw, Question, RBrace, RBracket, RParen,
-        Return, SelfKw, Str, StrTail, Todo, True, Underscore,
+        Break, Char, Continue, False, Float, Ident, Int, NoneKw, Question, RBrace, RBracket,
+        RParen, Return, SelfKw, Str, StrTail, Todo, True, Underscore,
     };
     token.is_some_and(|t| {
         matches!(
@@ -622,6 +627,7 @@ fn can_end_statement(token: Option<&Token>) -> bool {
             Ident(_)
                 | Underscore
                 | Int(_)
+                | Float(_)
                 | Char(_)
                 | Str(_)
                 | StrTail(_)
@@ -1195,6 +1201,134 @@ mod tests {
     #[test]
     fn digit_separators() {
         assert_eq!(kinds("100_000"), [int(100_000), TokenKind::Eof]);
+    }
+
+    fn float(value: f64) -> TokenKind {
+        TokenKind::Float(Float(value))
+    }
+
+    /// Each literal is the nearest `f64` to its text; the expected values are Rust literals.
+    #[test]
+    fn float_literals() {
+        for (src, expected) in [
+            ("1.0", 1.0),
+            ("0.5", 0.5),
+            ("9.81", 9.81),
+            ("6.674e-11", 6.674e-11),
+            ("1.5E+3", 1500.0),
+            ("1e9", 1e9),
+            ("2e-3", 0.002),
+            ("1_000.25", 1000.25),
+            ("1e1_0", 1e10),
+            ("0.1", 0.1),
+            ("1e-400", 0.0),
+        ] {
+            assert_eq!(kinds(src), [float(expected), TokenKind::Eof], "{src}");
+        }
+    }
+
+    /// A float literal is one token that spans all its text.
+    #[test]
+    fn float_literal_span() {
+        let t = &tokens("1_0.5e+1_0")[0];
+        assert_eq!((t.span.start(), t.span.end()), (0, 10));
+    }
+
+    /// A `.` belongs to a number only when a digit follows it, and a digit run right after a
+    /// `.` or `?.` is an integer.
+    #[test]
+    fn dot_after_integer() {
+        use TokenKind::{Dot, DotDot, Eof, LParen, QuestionDot, RParen};
+        for (src, expected) in [
+            ("0..n", vec![int(0), DotDot, ident("n"), Eof]),
+            (
+                "1.max(2)",
+                vec![int(1), Dot, ident("max"), LParen, int(2), RParen, Eof],
+            ),
+            ("1.e5", vec![int(1), Dot, ident("e5"), Eof]),
+            ("1._5", vec![int(1), Dot, ident("_5"), Eof]),
+            ("t.0.1", vec![ident("t"), Dot, int(0), Dot, int(1), Eof]),
+            ("a?.0", vec![ident("a"), QuestionDot, int(0), Eof]),
+            (
+                "a?.0.1",
+                vec![ident("a"), QuestionDot, int(0), Dot, int(1), Eof],
+            ),
+            ("t.0e3", vec![ident("t"), Dot, int(0), ident("e3"), Eof]),
+            ("1.5.max", vec![float(1.5), Dot, ident("max"), Eof]),
+            ("1e5.max", vec![float(1e5), Dot, ident("max"), Eof]),
+        ] {
+            assert_eq!(kinds(src), expected, "{src}");
+        }
+    }
+
+    /// Each error is at its text, which the last column measures; the lexer goes on after it.
+    #[test]
+    fn float_errors() {
+        use Code::{DigitSeparator, ExponentNeedsDigits, FloatNeedsDigits, FloatOutOfRange};
+        for (src, code, col, len) in [
+            ("1.", FloatNeedsDigits, 2, 1),
+            ("1. + 2", FloatNeedsDigits, 2, 1),
+            ("f(1.)", FloatNeedsDigits, 4, 1),
+            ("1.\n", FloatNeedsDigits, 2, 1),
+            ("1_0.", FloatNeedsDigits, 4, 1),
+            ("1e", ExponentNeedsDigits, 2, 1),
+            ("1e+", ExponentNeedsDigits, 2, 2),
+            ("1e-", ExponentNeedsDigits, 2, 2),
+            ("1.5E", ExponentNeedsDigits, 4, 1),
+            ("1.5e+ 2", ExponentNeedsDigits, 4, 2),
+            ("1e400", FloatOutOfRange, 1, 5),
+            ("1.5e+400", FloatOutOfRange, 1, 8),
+            ("1_.5", DigitSeparator, 2, 1),
+            ("1.5_", DigitSeparator, 4, 1),
+            ("1e_5", DigitSeparator, 3, 1),
+            ("1__0.5", DigitSeparator, 2, 1),
+            ("1.5__0", DigitSeparator, 4, 1),
+            ("1e5_", DigitSeparator, 4, 1),
+            ("1e+_5", DigitSeparator, 4, 1),
+        ] {
+            let d = only(src);
+            let (line, found_col) = line_col(src, d.span().start());
+            assert_eq!(
+                (d.code(), line, found_col, d.span().end() - d.span().start()),
+                (code, 1, col, len),
+                "{src}"
+            );
+        }
+    }
+
+    /// After an error the rest of the line lexes on, with a placeholder for the literal.
+    #[test]
+    fn a_float_error_leaves_a_placeholder() {
+        use TokenKind::{Eof, Plus};
+        for src in ["1. + 2", "1e + 2", "1e400 + 2", "1_.5 + 2"] {
+            let lexed = lex(src).expect("the lexer recovers");
+            let found: Vec<_> = lexed
+                .tokens
+                .into_iter()
+                .map(|t| t.kind)
+                .filter(|k| *k != TokenKind::Newline)
+                .collect();
+            assert_eq!(found, [int(0), Plus, int(2), Eof], "{src}");
+        }
+    }
+
+    /// Only the dot's error is certain: it writes the `0` that is missing.
+    #[test]
+    fn float_dot_fix_is_certain() {
+        for (src, fixed) in [("1.", "1.0"), ("1. + 2", "1.0 + 2"), ("12_3.", "12_3.0")] {
+            let d = only(src);
+            assert!(fix_edits(&d).is_some_and(|(certain, _)| certain), "{src}");
+            assert_eq!(apply_fix(src, &d), fixed);
+        }
+        for src in ["1e", "1e400"] {
+            assert!(fix_edits(&only(src)).is_none(), "{src}");
+        }
+    }
+
+    /// A prefixed integer reads every letter as a digit, so there is no exponent in it.
+    #[test]
+    fn based_integers_have_no_exponent() {
+        assert_eq!(kinds("0x1e5"), [TokenKind::Int(0x1e5), TokenKind::Eof]);
     }
 
     #[test]

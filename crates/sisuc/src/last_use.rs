@@ -109,6 +109,7 @@ impl Walk {
         }
         match &mut e.kind {
             ExprKind::Int(_)
+            | ExprKind::Float(_)
             | ExprKind::Bool(_)
             | ExprKind::Char(_)
             | ExprKind::Str(_)

@@ -77,7 +77,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0066](E0066.md) | error | constructor that names its fields out of order |
 | [E0067](E0067.md) | error | array filled with one object |
 | [E0068](E0068.md) | error | index of something that is not an array |
-| [E0069](E0069.md) | error | `sum` of an array that is not `[i64]` |
+| [E0069](E0069.md) | error | `sum` of an array that is not `[i64]` or `[f64]` |
 | [E0070](E0070.md) | error | array method called as a function |
 | [E0071](E0071.md) | error | nesting too deep |
 | [E0072](E0072.md) | error | source that is not valid UTF-8 |
@@ -109,6 +109,10 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0098](E0098.md) | error | value that cannot be interpolated |
 | [E0099](E0099.md) | error | `todo` written another way |
 | [E0100](E0100.md) | error | conversion that can fail, in a constant |
+| [E0101](E0101.md) | error | float without digits on both sides of `.` |
+| [E0102](E0102.md) | error | exponent without digits |
+| [E0103](E0103.md) | error | float literal out of range for `f64` |
+| [E0104](E0104.md) | error | integer literal not exactly an `f64` |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

@@ -394,26 +394,38 @@ impl<'ctx> Codegen<'ctx, '_> {
         len
     }
 
-    /// `Sum`: the elements of `base`, an `[i64]`, added in order with the checked add of `+`,
-    /// which panics at `span`; then the base is released.
-    pub(super) fn sum(&mut self, base: &Expr, span: Span) -> IntValue<'ctx> {
+    /// `Sum`: the elements of `base`, an `[i64]` or an `[f64]` as `ty` says, added in order
+    /// from zero; then the base is released. An `i64` adds with the checked add of `+`, which
+    /// panics at `span`, and an `f64` with `fadd` from `+0.0`, so an empty `[f64]` sums to
+    /// `0.0` and the order of the additions is the order of the elements.
+    pub(super) fn sum(&mut self, ty: &Type, base: &Expr, span: Span) -> BasicValueEnum<'ctx> {
         let array = self
             .expr(base)
             .expect("the checker should only call `sum` on an array, which lowers to a pointer")
             .into_pointer_value();
-        let i64_type = self.context.i64_type();
-        let total = self.entry_alloca(i64_type.into(), "total");
-        self.store(total, i64_type.const_zero().into());
+        let llvm_type = self.array_layout(ty).element;
+        let total = self.entry_alloca(llvm_type, "total");
+        self.store(total, llvm_type.const_zero());
         self.count_loop(self.array_len(array), |index| {
-            let element = self.load_element(&Type::I64, array, index).into_int_value();
-            let so_far = self.load(i64_type.into(), total).into_int_value();
-            self.store(
-                total,
-                self.checked("llvm.sadd.with.overflow", so_far, element, span)
-                    .into(),
-            );
+            let element = self.load_element(ty, array, index);
+            let so_far = self.load(llvm_type, total);
+            let added = if *ty == Type::F64 {
+                self.builder
+                    .build_float_add(so_far.into_float_value(), element.into_float_value(), "sum")
+                    .expect(POSITIONED)
+                    .into()
+            } else {
+                self.checked(
+                    "llvm.sadd.with.overflow",
+                    so_far.into_int_value(),
+                    element.into_int_value(),
+                    span,
+                )
+                .into()
+            };
+            self.store(total, added);
         });
-        let sum = self.load(i64_type.into(), total).into_int_value();
+        let sum = self.load(llvm_type, total);
         self.release(array.into(), &base.ty);
         sum
     }
@@ -632,7 +644,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `@sisu_rc.eq.[T](a, b)`: see `eq_entry` for the same pointer and `null`; otherwise the
     /// lengths, then each pair of elements by `T`'s `==`, up to the first difference.
     fn define_array_eq(&self, element: &Type, function: FunctionValue<'ctx>) {
-        let (a, b, equal, unequal) = self.eq_entry(function);
+        let (a, b, equal, unequal) = self.eq_entry(function, self.reflexive(element));
         let len = self.array_len(a);
         let same_len = self.int_compare(IntPredicate::EQ, len, self.array_len(b));
         let elements = self.context.append_basic_block(function, "elements");

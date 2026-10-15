@@ -1,0 +1,41 @@
+// `i64(x)` gives the whole number `x` is, or `None` when `x` has a fractional part, is `nan` or
+// infinite, or lies outside `i64`; `f64(n)` rounds to the nearest `f64`. Every input comes back
+// from `same` or `same_int` at a depth that `-O2` does not know, so each conversion runs at both
+// levels on a value LLVM cannot fold.
+// args: a
+// o2-calls: main same 10
+// o2-calls: main same_int 1
+fn same(x: f64, depth: i64) -> f64 {
+    if depth == 0 { x } else { -same(-x, depth - 1) }
+}
+
+fn same_int(n: i64, depth: i64) -> i64 {
+    if depth == 0 { n } else { -same_int(-n, depth - 1) }
+}
+
+// The payload or `none`, so that `-1` and `None` stay apart.
+fn show(n: i64?) {
+    if let v = n {
+        print(v)
+    } else {
+        print("none")
+    }
+}
+
+fn main(args: [string]) {
+    let d = args.len()
+    show(i64(same(9223372036854775808.0, d)))   // none: 2^63 saturates to the largest `i64`
+    show(i64(same(-9223372036854775808.0, d)))  // -9223372036854775808: exactly -2^63
+    show(i64(same(9223372036854774784.0, d)))   // 9223372036854774784: the largest `f64` below 2^63
+    let zero = same(0.0, d)
+    show(i64(zero / zero))                      // none: nan
+    show(i64(1.0 / zero))                       // none: inf
+    show(i64(-1.0 / zero))                      // none: -inf
+    show(i64(same(-0.0, d)))                    // 0
+    show(i64(same(2.5, d)))                     // none: not a whole number
+    show(i64(same(-1.0, d)))                    // -1
+    show(i64(same(-2.5, d)))                    // none
+    show(i64(same(1e300, d)))                   // none: whole, but outside `i64`
+    show(i64(same(42.0, d)))                    // 42
+    print(f64(same_int(9007199254740993, d)))   // 9007199254740992.0: rounded to the nearest
+}

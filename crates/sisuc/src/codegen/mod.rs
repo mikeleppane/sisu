@@ -22,7 +22,8 @@ use inkwell::targets::{
 };
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue,
+    PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
@@ -178,14 +179,15 @@ fn declare_noreturn<'ctx>(
 #[derive(Clone, Copy)]
 struct Printers<'ctx> {
     int: FunctionValue<'ctx>,
+    f64: FunctionValue<'ctx>,
     bool: FunctionValue<'ctx>,
     char: FunctionValue<'ctx>,
     str: FunctionValue<'ctx>,
 }
 
-/// `<prefix>_int`, `_bool`, `_char` and `_str`, which takes the string's `bytes_len`. `zeroext`
-/// keeps the C `bool` ABI: the callee may read all 8 bits of the argument, so the caller must
-/// extend the `i1` with zeros.
+/// `<prefix>_int`, `_f64`, `_bool`, `_char` and `_str`, which takes the string's `bytes_len`.
+/// `zeroext` keeps the C `bool` ABI: the callee may read all 8 bits of the argument, so the
+/// caller must extend the `i1` with zeros.
 fn declare_printers<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -203,6 +205,11 @@ fn declare_printers<'ctx>(
             module,
             &format!("{prefix}_int"),
             &[context.i64_type().into()],
+        ),
+        f64: declare_print(
+            module,
+            &format!("{prefix}_f64"),
+            &[context.f64_type().into()],
         ),
         bool,
         char: declare_print(
@@ -331,6 +338,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         match ty {
             Type::I64 => Some(self.context.i64_type().into()),
             Type::U8 => Some(self.context.i8_type().into()),
+            Type::F64 => Some(self.context.f64_type().into()),
             Type::Bool => Some(self.context.bool_type().into()),
             Type::Char => Some(self.context.i32_type().into()),
             Type::Unit | Type::Never => None,
@@ -788,6 +796,13 @@ impl<'ctx> Codegen<'ctx, '_> {
             .into_int_value()
     }
 
+    /// An expression the checker typed `f64`.
+    fn float(&mut self, e: &Expr) -> FloatValue<'ctx> {
+        self.expr(e)
+            .expect("the checker should type this expression `f64`, so it has a value")
+            .into_float_value()
+    }
+
     /// The expression's value, `None` for `unit` or `never`.
     #[expect(
         clippy::too_many_lines,
@@ -800,6 +815,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect("the checker should type an integer literal as an integer type, which has an LLVM type")
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
+            ExprKind::Float(x) => return Some(self.context.f64_type().const_float(*x).into()),
             ExprKind::Bool(v) => self.context.bool_type().const_int(u64::from(*v), false),
             ExprKind::Char(c) => self.context.i32_type().const_int(u64::from(*c), false),
             ExprKind::Str(text) => return Some(self.string_lit(text).into()),
@@ -815,7 +831,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Bytes(base) => return Some(self.bytes(base).into()),
             ExprKind::Words(base) => return Some(self.words(base).into()),
             ExprKind::FromChars(base) => return Some(self.string_from_chars(base).into()),
-            ExprKind::Sum(base) => self.sum(base, e.span),
+            ExprKind::Sum(base) => return Some(self.sum(&e.ty, base, e.span)),
             ExprKind::Contains { base, value } => self.contains(base, value),
             ExprKind::Local(local) => {
                 let value = self.load_local(*local)?;
@@ -836,6 +852,11 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.print(*stream, operand);
                 return None;
             }
+            ExprKind::Unary { operand, .. } if e.ty == Type::F64 => {
+                let operand = self.float(operand);
+                let negated = self.builder.build_float_neg(operand, "neg");
+                return Some(negated.expect(POSITIONED).into());
+            }
             ExprKind::Unary { op, operand } => {
                 let operand = self.value(operand);
                 match op {
@@ -848,6 +869,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                         .build_not(operand, "not")
                         .expect(POSITIONED),
                 }
+            }
+            ExprKind::Binary { op, lhs, rhs } if e.ty == Type::F64 => {
+                return Some(self.float_binary(*op, lhs, rhs).into());
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Compare { operands, ops } => self.compare(operands, ops),
@@ -1036,6 +1060,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.print_string(stream, operand);
             return;
         }
+        let printers = self.printers[stream.index()];
+        if operand.ty == Type::F64 {
+            let arg = self.float(operand);
+            self.builder
+                .build_call(printers.f64, &[arg.into()], "")
+                .expect(POSITIONED);
+            return;
+        }
         let mut arg = self.value(operand);
         if operand.ty == Type::U8 {
             arg = self
@@ -1044,7 +1076,6 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect(POSITIONED);
         }
         let is_bool = operand.ty == Type::Bool;
-        let printers = self.printers[stream.index()];
         let print = match operand.ty {
             Type::Bool => printers.bool,
             Type::Char => printers.char,
@@ -1152,16 +1183,16 @@ impl<'ctx> Codegen<'ctx, '_> {
         let function = self.current_function();
         let mut false_from = Vec::new();
         let signed = !matches!(operands[0].ty, Type::U8 | Type::Char);
-        let mut lhs = self.value(&operands[0]);
+        let mut lhs = self.operand(&operands[0]);
         for (op, operand) in first_ops.iter().zip(&operands[1..]) {
-            let rhs = self.value(operand);
+            let rhs = self.operand(operand);
             let holds = self.compare_pair(*op, signed, lhs, rhs);
             let next = self.context.append_basic_block(function, "chain.next");
             false_from.push((holds, self.current_block(), next));
             self.builder.position_at_end(next);
             lhs = rhs;
         }
-        let rhs = self.value(
+        let rhs = self.operand(
             operands
                 .last()
                 .expect("a comparison chain should have at least two operands"),

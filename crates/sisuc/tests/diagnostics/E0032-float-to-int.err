@@ -1,0 +1,10 @@
+error[E0032]: expected `i64`, found `i64?`
+ --> E0032-float-to-int.sisu:2:5
+  |
+2 |     i64(x)
+  |     ^^^^^^
+  |
+  = help: a conversion that can fail gives an optional: give a default with `??`, or unwrap it with `if let`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

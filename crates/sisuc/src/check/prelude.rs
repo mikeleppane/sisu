@@ -154,7 +154,10 @@ impl Checker<'_> {
             Some(Type::String) | None => return checked,
             Some(got) => got,
         };
-        let printed = matches!(got, Type::I64 | Type::U8 | Type::Bool | Type::Char);
+        let printed = matches!(
+            got,
+            Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char
+        );
         self.report(DiagnosticKind::Mismatch {
             want: vec![self.type_name(&Type::String)],
             got: self.type_name(got),

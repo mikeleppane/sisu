@@ -1299,6 +1299,19 @@ impl<'a> Parser<'a> {
                     literal: token.span,
                 }
             }
+            TokenKind::Float(x) => {
+                self.bump();
+                ExprKind::Float(x)
+            }
+            // A `.` that opens an operand and touches a decimal integer is `.5`, which lacks its
+            // leading zero. The item is broken, so nothing after the dot cascades.
+            TokenKind::Dot if self.leading_dot_float() => {
+                return Err(DiagnosticKind::FloatNeedsDigits {
+                    at: token.span,
+                    fix: Span::new(token.span.start(), token.span.start()),
+                }
+                .into());
+            }
             TokenKind::True | TokenKind::False => {
                 self.bump();
                 ExprKind::Bool(token.kind == TokenKind::True)
@@ -1376,6 +1389,17 @@ impl<'a> Parser<'a> {
             kind,
             span: token.span,
         })
+    }
+
+    /// Whether the `.` here is followed, with no gap, by an integer written in decimal.
+    fn leading_dot_float(&self) -> bool {
+        // `Dot` is never `Eof`, so the token after it exists.
+        let next = &self.tokens[self.pos + 1];
+        matches!(next.kind, TokenKind::Int(_))
+            && next.span.start() == self.peek().span.end()
+            && self.source[next.span.range()]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'_')
     }
 
     /// `todo` or `todo(args)`. Rust's `todo!` and `todo!(...)`, with the `!` on the keyword's
@@ -1655,6 +1679,59 @@ mod tests {
             ("fn f {}", 1, 6),
         ] {
             assert_eq!(parse_err(src), (Code::Expected, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn float_literal_is_an_expression() {
+        assert_eq!(
+            body("fn main() { 1.5e3 + 0.25 }"),
+            "(block (+ 1500.0 0.25))"
+        );
+        assert_eq!(body("fn main() { -2.5 }"), "(block (- 2.5))");
+    }
+
+    /// A `.` that opens an operand and is followed at once by a decimal integer is the missing
+    /// leading zero of a float, wherever an operand stands.
+    #[test]
+    fn leading_dot_float_is_reported_at_the_dot() {
+        for (src, line, col) in [
+            ("fn main() {\n    let x = .5\n}", 2, 13),
+            ("fn main() {\n    f(.5)\n}", 2, 7),
+            ("fn main() {\n    let x = 1 + .5\n}", 2, 17),
+            ("fn main() {\n    let x = -.5\n}", 2, 14),
+            ("fn main() {\n    let x = .1_0\n}", 2, 13),
+        ] {
+            assert_eq!(parse_err(src), (Code::FloatNeedsDigits, line, col), "{src}");
+        }
+    }
+
+    /// Anything else after a leading `.` is an expression that is missing.
+    #[test]
+    fn leading_dot_without_a_decimal_integer_is_not_a_float() {
+        for src in [
+            "fn main() {\n    let x = . 5\n}",
+            "fn main() {\n    let x = .0x5\n}",
+            "fn main() {\n    let x = .x\n}",
+        ] {
+            assert_eq!(parse_err(src), (Code::Expected, 2, 13), "{src}");
+        }
+    }
+
+    /// Each float error has one certain fix that leaves a program that parses; the lexer finds
+    /// `1.` and the parser `.5`.
+    #[test]
+    fn float_fixes() {
+        for (src, fixed_src) in [
+            ("let x = 1.", "let x = 1.0"),
+            ("let x = .5", "let x = 0.5"),
+            ("let x = .5e3", "let x = 0.5e3"),
+        ] {
+            let wrap = |s: &str| format!("fn main() {{\n    {s}\n}}");
+            assert_eq!(parse_diagnostic(&wrap(src)).code(), Code::FloatNeedsDigits);
+            let result = fixed(&wrap(src));
+            assert_eq!(result, wrap(fixed_src));
+            parse_ok(&result);
         }
     }
 

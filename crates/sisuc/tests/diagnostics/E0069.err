@@ -1,4 +1,4 @@
-error[E0069]: `sum` needs an `[i64]`, found `[bool]`
+error[E0069]: `sum` needs an `[i64]` or an `[f64]`, found `[bool]`
  --> E0069.sisu:3:17
   |
 3 |     print(flags.sum())

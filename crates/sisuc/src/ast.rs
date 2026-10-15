@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::diagnostic::Span;
+use crate::lexer::Float;
 use crate::symbol::Symbol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +194,8 @@ pub(crate) enum ExprKind {
         value: i64,
         literal: Span,
     },
+    /// A float literal.
+    Float(Float),
     Bool(bool),
     /// A `char` literal, decoded.
     Char(char),
@@ -505,6 +508,7 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             ExprKind::Int { value, .. } => write!(f, "{value}"),
+            ExprKind::Float(x) => write!(f, "{x}"),
             ExprKind::Bool(b) => write!(f, "{b}"),
             ExprKind::Char(c) => write!(f, "{c:?}"),
             ExprKind::Str(s) => write!(f, "{s:?}"),
@@ -669,6 +673,14 @@ mod tests {
             main.to_string(),
             "(fn main () unit (block (let x 1) (call print x)))"
         );
+    }
+
+    #[test]
+    fn display_float() {
+        let float = |x| expr(ExprKind::Float(Float(x)));
+        assert_eq!(float(1.5).to_string(), "1.5");
+        assert_eq!(float(1e16).to_string(), "1e16");
+        assert_eq!(float(0.1).to_string(), "0.1");
     }
 
     #[test]

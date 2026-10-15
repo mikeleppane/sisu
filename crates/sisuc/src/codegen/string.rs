@@ -317,8 +317,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_int_nuw_add(a, b, "len")
                 .expect(POSITIONED)
         };
-        // The most bytes each part's text takes: see `sisu_write_int`, `_bool` and `_char`. A
-        // string's length is below 2^47 on x86-64, so the sum cannot overflow.
+        // The most bytes each part's text takes: see `sisu_write_int`, `_f64`, `_bool` and
+        // `_char`. A string's length is below 2^47 on x86-64, so the sum cannot overflow.
         let cap = parts
             .iter()
             .zip(&values)
@@ -329,8 +329,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                     Type::U8 => 3,
                     Type::Bool => 5,
                     Type::Char => 4,
+                    Type::F64 => 24,
                     _ => unreachable!(
-                        "the checker should accept only text, integers, `bool` and `char`"
+                        "the checker should accept only text, numbers, `bool` and `char`"
                     ),
                 };
                 add(cap, i64_type.const_int(bound, false))
@@ -354,6 +355,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     self.write_text("sisu_write_int", widened.into(), at)
                 }
                 Type::I64 => self.write_text("sisu_write_int", *value, at),
+                Type::F64 => self.write_text("sisu_write_f64", *value, at),
                 Type::Bool => self.write_text("sisu_write_bool", *value, at),
                 _ => self.write_text("sisu_write_char", *value, at),
             };
@@ -623,7 +625,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     ) -> IntValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let order = self.str_compare(l.into_pointer_value(), r.into_pointer_value());
-        let holds = self.compare_pair(op, true, order, self.context.i64_type().const_zero());
+        let zero = self.context.i64_type().const_zero();
+        let holds = self.compare_pair(op, true, order.into(), zero.into());
         self.release(l, &lhs.ty);
         self.release(r, &rhs.ty);
         holds
@@ -708,7 +711,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `@sisu_rc.eq.string(a, b)`: see `eq_entry` for the same pointer and `null`; otherwise
     /// the lengths, then the bytes by `sisu_str_compare`.
     fn define_string_eq(&self, function: FunctionValue<'ctx>) {
-        let (a, b, equal, unequal) = self.eq_entry(function);
+        let (a, b, equal, unequal) = self.eq_entry(function, true);
         let same_len = self.int_compare(IntPredicate::EQ, self.string_len(a), self.string_len(b));
         let bytes = self.context.append_basic_block(function, "bytes");
         self.builder

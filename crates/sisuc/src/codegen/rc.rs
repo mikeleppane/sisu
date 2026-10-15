@@ -5,10 +5,10 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::Linkage;
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
-use inkwell::{AddressSpace, IntPredicate};
+use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
 use super::{Codegen, POSITIONED};
-use crate::tir::Type;
+use crate::tir::{Program, Type};
 
 /// A kind of helper that a counted type has.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -168,19 +168,20 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder.build_return(None).expect(POSITIONED);
     }
 
-    /// `@sisu_rc.eq.<C>(a, b)`: `true` when `a` and `b` are the same pointer (two `null`s
-    /// included), `false` when one is `null`, otherwise whether each pair of fields is equal,
-    /// comparing the chain field last and stopping at the first difference. It neither
-    /// retains nor releases. Like `define_drop`, it does not recurse on the chain field: it
-    /// compares the other fields of the pair, then steps both objects to the objects their
-    /// chain fields hold and repeats the same-pointer and `null` checks, in one frame.
+    /// `@sisu_rc.eq.<C>(a, b)`: see `eq_entry` for the same pointer and `null`; otherwise
+    /// whether each pair of fields is equal, comparing the chain field last and stopping at the
+    /// first difference. It neither retains nor releases. Like `define_drop`, it does not
+    /// recurse on the chain field: it compares the other fields of the pair, then steps both
+    /// objects to the objects their chain fields hold and repeats the checks of `eq_entry`, in
+    /// one frame.
     fn define_eq(&self, function: FunctionValue<'ctx>, ty: &Type) {
         let Type::Class(id) = ty else {
             unreachable!("only a class type should reach the class helper bodies")
         };
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let block = |name| self.context.append_basic_block(function, name);
-        let (a, b, equal, unequal) = self.eq_entry(function);
+        let reflexive = self.reflexive(ty);
+        let (a, b, equal, unequal) = self.eq_entry(function, reflexive);
         let branch = |cond, then, other| {
             self.builder
                 .build_conditional_branch(cond, then, other)
@@ -232,7 +233,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         let (next_a, next_b) = (load(a), load(b));
         let (differ, step) = (block("differ"), block("step"));
-        branch(self.same_object(next_a, next_b), equal, differ);
+        branch(self.equal_at_once(reflexive, next_a, next_b), equal, differ);
         self.builder.position_at_end(differ);
         let null = |object| {
             self.builder
@@ -250,13 +251,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.branch_to(body);
     }
 
-    /// Starts `eq` helper `function`: returns its two parameters and the blocks that return
-    /// `true` and `false`. It returns `true` at once for the same pointer (two `null`s
-    /// included) and `false` when one is `null`; the builder is left where both are real and
-    /// distinct.
+    /// Starts `eq` helper `function` for a type that is `reflexive` or not: returns its two
+    /// parameters and the blocks that return `true` and `false`. It returns `true` at once for
+    /// what `equal_at_once` finds equal and `false` when one is `null`; the builder is left
+    /// where both are real, and distinct when `reflexive`.
     pub(super) fn eq_entry(
         &self,
         function: FunctionValue<'ctx>,
+        reflexive: bool,
     ) -> (
         PointerValue<'ctx>,
         PointerValue<'ctx>,
@@ -286,7 +288,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect(POSITIONED);
         };
         self.builder.position_at_end(entry);
-        branch(self.same_object(a, b), equal, differ);
+        branch(self.equal_at_once(reflexive, a, b), equal, differ);
         self.builder.position_at_end(differ);
         let null = |object| {
             self.builder
@@ -300,6 +302,54 @@ impl<'ctx> Codegen<'ctx, '_> {
         branch(either_null, unequal, distinct);
         self.builder.position_at_end(distinct);
         (a, b, equal, unequal)
+    }
+
+    /// Whether two pointers of a counted type are equal with no look inside: the same pointer
+    /// when the type is `reflexive`, else both `null`. One block or object that holds a `nan`
+    /// is not equal to itself, so only a reflexive type may stop at the same pointer.
+    fn equal_at_once(
+        &self,
+        reflexive: bool,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        if reflexive {
+            return self.same_object(a, b);
+        }
+        let null = |object| {
+            self.builder
+                .build_is_null(object, "null")
+                .expect(POSITIONED)
+        };
+        self.builder
+            .build_and(null(a), null(b), "both_null")
+            .expect(POSITIONED)
+    }
+
+    /// Whether every value of `ty` is `==` to itself: no `f64` is reachable from it, directly,
+    /// as an optional's payload, an array's element or a field of a class it reaches.
+    pub(super) fn reflexive(&self, ty: &Type) -> bool {
+        fn reaches_no_f64(program: &Program, ty: &Type, seen: &mut [bool]) -> bool {
+            match ty {
+                Type::F64 => false,
+                Type::Optional(inner) | Type::Array(inner) => reaches_no_f64(program, inner, seen),
+                // A class already seen is being checked further up, or was found reflexive.
+                Type::Class(id) if seen[id.0] => true,
+                Type::Class(id) => {
+                    seen[id.0] = true;
+                    program.classes[id.0]
+                        .fields
+                        .iter()
+                        .all(|field| reaches_no_f64(program, &field.ty, seen))
+                }
+                _ => true,
+            }
+        }
+        reaches_no_f64(
+            self.program,
+            ty,
+            &mut vec![false; self.program.classes.len()],
+        )
     }
 
     /// Whether `lhs` and `rhs`, of type `ty`, are equal: `==` without releasing them.
@@ -324,18 +374,17 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_int_value();
         }
         if !matches!(ty, Type::Optional(_)) {
-            return self.int_compare(IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value());
+            return self.scalar_equal(lhs, rhs);
         }
         // `fa == fb && (!fa || va == vb)` on flags `f` and values `v`, with no branch.
         let part = |pair: BasicValueEnum<'ctx>, index| {
             self.builder
                 .build_extract_value(pair.into_struct_value(), index, "part")
                 .expect("a scalar optional should be lowered to a `{ flag, value }` pair")
-                .into_int_value()
         };
-        let (fa, fb) = (part(lhs, 0), part(rhs, 0));
+        let (fa, fb) = (part(lhs, 0).into_int_value(), part(rhs, 0).into_int_value());
         let flags = self.int_compare(IntPredicate::EQ, fa, fb);
-        let values = self.int_compare(IntPredicate::EQ, part(lhs, 1), part(rhs, 1));
+        let values = self.scalar_equal(part(lhs, 1), part(rhs, 1));
         let none = self.builder.build_not(fa, "none").expect(POSITIONED);
         let values = self
             .builder
@@ -344,6 +393,17 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_and(flags, values, "equal")
             .expect(POSITIONED)
+    }
+
+    /// Whether two scalars are equal: an `f64` to IEEE 754, so `nan` equals nothing and `-0.0`
+    /// equals `0.0`.
+    fn scalar_equal(&self, lhs: BasicValueEnum<'ctx>, rhs: BasicValueEnum<'ctx>) -> IntValue<'ctx> {
+        match (lhs, rhs) {
+            (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
+                self.float_compare(FloatPredicate::OEQ, l, r)
+            }
+            _ => self.int_compare(IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value()),
+        }
     }
 
     /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to

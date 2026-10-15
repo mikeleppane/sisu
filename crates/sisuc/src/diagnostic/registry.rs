@@ -110,7 +110,7 @@ codes! {
     FieldOutOfOrder = "E0066",
     SameObject = "E0067",
     CannotIndex = "E0068",
-    SumNeedsI64 = "E0069",
+    SumNeedsNumbers = "E0069",
     MethodAsFunction = "E0070",
     NestingTooDeep = "E0071",
     InvalidUtf8 = "E0072",
@@ -142,6 +142,10 @@ codes! {
     CannotInterpolate = "E0098",
     TodoForm = "E0099",
     ConversionInConstant = "E0100",
+    FloatNeedsDigits = "E0101",
+    ExponentNeedsDigits = "E0102",
+    FloatOutOfRange = "E0103",
+    NotExactlyF64 = "E0104",
 }
 
 impl Code {
@@ -200,6 +204,13 @@ pub(crate) enum DiagnosticKind {
     DigitSeparator { at: Span },
     /// An integer literal at `at` that does not fit `i64`.
     IntegerTooLarge { at: Span },
+    /// The `.` at `at` of a float with no digit on one side of it: `1.` or `.5`. `fix` is where
+    /// the missing `0` goes, after the `.` in the first form and before it in the second.
+    FloatNeedsDigits { at: Span, fix: Span },
+    /// The exponent at `at`, from its `e` or `E` through its sign, with no digit after it.
+    ExponentNeedsDigits { at: Span },
+    /// A float literal at `at` that rounds to infinity in `f64`.
+    FloatOutOfRange { at: Span },
     /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`). `certain` is
     /// false when the lower case literal may still be rejected, as a bare 2^63 is.
     BasePrefixUpperCase {
@@ -317,6 +328,13 @@ pub(crate) enum DiagnosticKind {
     /// The integer literal `text` as written, at `at`, which does not fit the `u8` its position
     /// expects.
     IntegerDoesNotFit { text: String, at: Span },
+    /// The integer literal `text` as written, at `at`, which the `f64` its position expects
+    /// does not hold exactly; `nearest` is the text of the `f64` it rounds to.
+    NotExactlyF64 {
+        text: String,
+        nearest: String,
+        at: Span,
+    },
     /// A `self` at `at`, outside a method.
     SelfOutsideMethod { at: Span },
     /// A unary `-` at `at` on a `u8`.
@@ -458,8 +476,8 @@ pub(crate) enum DiagnosticKind {
     SameObject { class: String, at: Span },
     /// An index into the value at `at`, of type `ty`, which is no array.
     CannotIndex { ty: String, at: Span },
-    /// A `sum` at `at` of an array of type `ty`, which is not `[i64]`.
-    SumNeedsI64 { ty: String, at: Span },
+    /// A `sum` at `at` of an array of type `ty`, which is neither `[i64]` nor `[f64]`.
+    SumNeedsNumbers { ty: String, at: Span },
     /// A call at `at` of the array method `name` as a function, with the array `receiver` as
     /// its first argument. `next` is the next argument, if any. `wrap` is whether `receiver`
     /// needs parentheses to take a `.name(...)`, and `certain` whether the method call checks.
@@ -768,6 +786,9 @@ impl DiagnosticKind {
             DiagnosticKind::DigitSeparator { .. } => Code::DigitSeparator,
             DiagnosticKind::IntegerTooLarge { .. } => Code::IntegerTooLarge,
             DiagnosticKind::BasePrefixUpperCase { .. } => Code::BasePrefixUpperCase,
+            DiagnosticKind::FloatNeedsDigits { .. } => Code::FloatNeedsDigits,
+            DiagnosticKind::ExponentNeedsDigits { .. } => Code::ExponentNeedsDigits,
+            DiagnosticKind::FloatOutOfRange { .. } => Code::FloatOutOfRange,
             DiagnosticKind::BasePrefixWithoutDigits { .. } => Code::BasePrefixWithoutDigits,
             DiagnosticKind::DigitOutsideBase { .. } => Code::DigitOutsideBase,
             DiagnosticKind::UnexpectedCharacter { .. } => Code::UnexpectedCharacter,
@@ -801,6 +822,7 @@ impl DiagnosticKind {
             DiagnosticKind::JumpOutsideLoop { .. } => Code::JumpOutsideLoop,
             DiagnosticKind::AlreadyDeclared { .. } => Code::AlreadyDeclared,
             DiagnosticKind::IntegerDoesNotFit { .. } => Code::IntegerDoesNotFit,
+            DiagnosticKind::NotExactlyF64 { .. } => Code::NotExactlyF64,
             DiagnosticKind::SelfOutsideMethod { .. } => Code::SelfOutsideMethod,
             DiagnosticKind::NegatedU8 { .. } => Code::NegatedU8,
             DiagnosticKind::NoValue { .. } => Code::NoValue,
@@ -829,7 +851,7 @@ impl DiagnosticKind {
             DiagnosticKind::FieldOutOfOrder { .. } => Code::FieldOutOfOrder,
             DiagnosticKind::SameObject { .. } => Code::SameObject,
             DiagnosticKind::CannotIndex { .. } => Code::CannotIndex,
-            DiagnosticKind::SumNeedsI64 { .. } => Code::SumNeedsI64,
+            DiagnosticKind::SumNeedsNumbers { .. } => Code::SumNeedsNumbers,
             DiagnosticKind::MethodAsFunction { .. } => Code::MethodAsFunction,
             DiagnosticKind::NestingTooDeep { .. } => Code::NestingTooDeep,
             DiagnosticKind::InvalidUtf8 { .. } => Code::InvalidUtf8,
@@ -988,6 +1010,25 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::IntegerTooLarge { at } => {
                 Diagnostic::coded(code, at, "integer literal is too large for `i64`")
+            }
+            DiagnosticKind::FloatNeedsDigits { at, fix } => {
+                let side = if fix.start > at.start { "after" } else { "before" };
+                Diagnostic::coded(code, at, "a float needs digits on both sides of `.`").with_fix(
+                    Fix {
+                        message: format!("write a `0` {side} the `.`"),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: fix,
+                            replacement: "0".to_string(),
+                        }],
+                    },
+                )
+            }
+            DiagnosticKind::ExponentNeedsDigits { at } => {
+                Diagnostic::coded(code, at, "an exponent needs digits")
+            }
+            DiagnosticKind::FloatOutOfRange { at } => {
+                Diagnostic::coded(code, at, "literal out of range for `f64`")
             }
             DiagnosticKind::BasePrefixUpperCase {
                 prefix,
@@ -1177,7 +1218,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 suggestion,
             } => similar(
                 Diagnostic::coded(code, at, format!("cannot find type `{name}`")).with_help(
-                    "the types are `i64`, `u8`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
+                    "the types are `i64`, `u8`, `f64`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
                 ),
                 at,
                 suggestion,
@@ -1195,12 +1236,16 @@ impl From<DiagnosticKind> for Diagnostic {
                 fix,
                 conversion,
             } => {
-                let want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
-                let mut d = Diagnostic::coded(
-                    code,
-                    at,
-                    format!("expected {}, found `{got}`", want.join(" or ")),
-                );
+                let mut want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
+                // `a`, `b` or `c`.
+                let last = want.pop().expect("a mismatch should want at least one type");
+                let want = if want.is_empty() {
+                    last
+                } else {
+                    format!("{} or {last}", want.join(", "))
+                };
+                let mut d =
+                    Diagnostic::coded(code, at, format!("expected {want}, found `{got}`"));
                 if let Some(other) = other {
                     d = d.with_secondary(other, "`+` joins this `string`");
                 }
@@ -1357,6 +1402,18 @@ impl From<DiagnosticKind> for Diagnostic {
             .with_secondary(first, "first declared here"),
             DiagnosticKind::IntegerDoesNotFit { text, at } => {
                 Diagnostic::coded(code, at, format!("`{text}` does not fit in `u8`"))
+            }
+            DiagnosticKind::NotExactlyF64 { text, nearest, at } => {
+                Diagnostic::coded(code, at, format!("`{text}` is not exactly an `f64`")).with_fix(
+                    Fix {
+                        message: format!("write `{nearest}`"),
+                        certain: true,
+                        edits: vec![Edit {
+                            span: at,
+                            replacement: nearest,
+                        }],
+                    },
+                )
             }
             DiagnosticKind::SelfOutsideMethod { at } => {
                 Diagnostic::coded(code, at, "`self` is only available in a method")
@@ -1519,7 +1576,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 class,
             } => {
-                let takes = format!("`{function}` takes one `i64`, `u8`, `bool`, `char` or `string`");
+                let takes = format!("`{function}` takes one `i64`, `u8`, `f64`, `bool`, `char` or `string`");
                 match class {
                     Some(class) => {
                         Diagnostic::coded(code, at, format!("cannot {function} `{class}`"))
@@ -1611,8 +1668,8 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("cannot index `{ty}`"))
                     .with_help("only arrays can be indexed")
             }
-            DiagnosticKind::SumNeedsI64 { ty, at } => {
-                Diagnostic::coded(code, at, format!("`sum` needs an `[i64]`, found `{ty}`"))
+            DiagnosticKind::SumNeedsNumbers { ty, at } => {
+                Diagnostic::coded(code, at, format!("`sum` needs an `[i64]` or an `[f64]`, found `{ty}`"))
             }
             DiagnosticKind::MethodAsFunction {
                 name,
@@ -1716,7 +1773,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 })
             }
             DiagnosticKind::ConstantType { at } => {
-                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `bool`, `char` or `string`")
+                Diagnostic::coded(code, at, "a constant is `i64`, `u8`, `f64`, `bool`, `char` or `string`")
             }
             DiagnosticKind::ConstantNotKnown { at } => {
                 Diagnostic::coded(code, at, "a constant's value must be known at compile time")
@@ -1833,7 +1890,10 @@ impl From<DiagnosticKind> for Diagnostic {
             }),
             DiagnosticKind::ConversionInConstant { to, at, fix } => {
                 let d = Diagnostic::coded(code, at, "a constant cannot use a conversion that can fail")
-                    .with_label(format!("`{to}(...)` gives a `{to}?`"))
+                    .with_label(format!(
+                        "`{to}(...)` gives {} `{to}?`",
+                        if to == "i64" { "an" } else { "a" }
+                    ))
                     .with_help("write the literal with its type: `const B: u8 = 200`");
                 match fix {
                     Some(TypedLiteral {
