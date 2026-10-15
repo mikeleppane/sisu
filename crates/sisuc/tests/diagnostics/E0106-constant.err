@@ -1,0 +1,14 @@
+error[E0106]: math in Sisu is methods and constants on `f64`
+ --> E0106-constant.sisu:2:11
+  |
+2 |     print(Math.PI)
+  |           ^^^^^^^
+  |
+help: write `f64.pi`
+  |
+2 -     print(Math.PI)
+2 +     print(f64.pi)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0106

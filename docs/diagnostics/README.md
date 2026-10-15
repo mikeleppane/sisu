@@ -78,7 +78,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0067](E0067.md) | error | array filled with one object |
 | [E0068](E0068.md) | error | index of something that is not an array |
 | [E0069](E0069.md) | error | `sum` of an array that is not `[i64]` or `[f64]` |
-| [E0070](E0070.md) | error | array method called as a function |
+| [E0070](E0070.md) | error | method called as a function |
 | [E0071](E0071.md) | error | nesting too deep |
 | [E0072](E0072.md) | error | source that is not valid UTF-8 |
 | [E0073](E0073.md) | error | assignment to `self` |
@@ -114,6 +114,8 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0103](E0103.md) | error | float literal out of range for `f64` |
 | [E0104](E0104.md) | error | integer literal not exactly an `f64` |
 | [E0105](E0105.md) | error | a type used as a value |
+| [E0106](E0106.md) | error | math written another way |
+| [E0107](E0107.md) | error | `**` |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

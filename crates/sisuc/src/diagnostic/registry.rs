@@ -147,6 +147,8 @@ codes! {
     FloatOutOfRange = "E0103",
     NotExactlyF64 = "E0104",
     TypeAsValue = "E0105",
+    MathIdiom = "E0106",
+    PowerOperator = "E0107",
     NanComparison = "W0005",
 }
 
@@ -480,8 +482,8 @@ pub(crate) enum DiagnosticKind {
     CannotIndex { ty: String, at: Span },
     /// A `sum` at `at` of an array of type `ty`, which is neither `[i64]` nor `[f64]`.
     SumNeedsNumbers { ty: String, at: Span },
-    /// A call at `at` of the array method `name` as a function, with the array `receiver` as
-    /// its first argument. `next` is the next argument, if any. `wrap` is whether `receiver`
+    /// A call at `at` of the method `name` of an array or a number as a function, with the
+    /// receiver as its first argument. `next` is the next argument, if any. `wrap` is whether `receiver`
     /// needs parentheses to take a `.name(...)`, and `certain` whether the method call checks.
     MethodAsFunction {
         name: String,
@@ -577,6 +579,12 @@ pub(crate) enum DiagnosticKind {
     UnusedValue { ty: String, at: Span },
     /// The built-in type or class `name`, at `at`, read as a value.
     TypeAsValue { name: String, at: Span },
+    /// The member of `math`, `Math` or `f64`, written at `written`, which is not how Sisu writes
+    /// math: a method or constant of another language, or `f64.max(a, b)` for `a.max(b)`; `fix`
+    /// is the form Sisu uses, when it surely checks.
+    MathIdiom { written: Span, fix: Option<MathFix> },
+    /// The `**` at `at`, which Sisu has no operator for; `fix` is the `pow` call that may mean it.
+    PowerOperator { at: Span, fix: Option<PowerFix> },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -592,6 +600,29 @@ pub(crate) enum DiagnosticKind {
 pub(crate) struct NanFix {
     pub(crate) other: Span,
     pub(crate) wrap: bool,
+}
+
+/// What replaces a `math` idiom written at `written`.
+pub(crate) enum MathFix {
+    /// The constant `f64.<name>`.
+    Constant { name: &'static str },
+    /// The method call `receiver.<name>(next...)` for `written(receiver, next...)`. `wrap` is
+    /// whether `receiver` needs parentheses to take the call, and `form` is the call as it
+    /// reads.
+    Method {
+        name: &'static str,
+        form: String,
+        receiver: Span,
+        next: Option<Span>,
+        wrap: bool,
+    },
+}
+
+/// The operands of a `**`, which `left.pow(right)` replaces.
+#[derive(Clone, Copy)]
+pub(crate) struct PowerFix {
+    pub(crate) left: Span,
+    pub(crate) right: Span,
 }
 
 /// A literal that replaces the conversion `call`, the whole value of a constant: `literal` is
@@ -902,6 +933,8 @@ impl DiagnosticKind {
             DiagnosticKind::ConversionInConstant { .. } => Code::ConversionInConstant,
             DiagnosticKind::UnusedValue { .. } => Code::UnusedValue,
             DiagnosticKind::TypeAsValue { .. } => Code::TypeAsValue,
+            DiagnosticKind::MathIdiom { .. } => Code::MathIdiom,
+            DiagnosticKind::PowerOperator { .. } => Code::PowerOperator,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
@@ -1704,7 +1737,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(
                     code,
                     at,
-                    format!("`{name}` is a method of arrays, not a function"),
+                    format!("`{name}` is a method, not a function"),
                 )
                 .with_fix(Fix {
                     message: if certain {
@@ -1953,6 +1986,71 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::TypeAsValue { name, at } => {
                 Diagnostic::coded(code, at, format!("`{name}` is a type, not a value"))
+            }
+            DiagnosticKind::MathIdiom { written, fix } => {
+                let d = Diagnostic::coded(
+                    code,
+                    written,
+                    "math in Sisu is methods and constants on `f64`",
+                );
+                let Some(fix) = fix else { return d };
+                let (form, edits) = match fix {
+                    MathFix::Constant { name } => (
+                        format!("f64.{name}"),
+                        vec![Edit {
+                            span: written,
+                            replacement: format!("f64.{name}"),
+                        }],
+                    ),
+                    MathFix::Method {
+                        name,
+                        form,
+                        receiver,
+                        next,
+                        wrap,
+                    } => {
+                        let (open, close) = if wrap { ("(", ")") } else { ("", "") };
+                        let edits = vec![
+                            Edit {
+                                span: Span::new(written.start(), receiver.start()),
+                                replacement: open.to_string(),
+                            },
+                            Edit {
+                                span: Span::new(
+                                    receiver.end(),
+                                    next.map_or(receiver.end(), Span::start),
+                                ),
+                                replacement: format!("{close}.{name}("),
+                            },
+                        ];
+                        (form, edits)
+                    }
+                };
+                d.with_fix(Fix {
+                    message: format!("write `{form}`"),
+                    certain: true,
+                    edits,
+                })
+            }
+            DiagnosticKind::PowerOperator { at, fix } => {
+                let d = Diagnostic::coded(code, at, "Sisu has no `**`").with_help("use `x.pow(y)`");
+                match fix {
+                    Some(PowerFix { left, right }) => d.with_fix(Fix {
+                        message: "try a `pow` call, which needs an `f64` on the left".to_string(),
+                        certain: false,
+                        edits: vec![
+                            Edit {
+                                span: Span::new(left.end(), right.start()),
+                                replacement: ".pow(".to_string(),
+                            },
+                            Edit {
+                                span: Span::new(right.end(), right.end()),
+                                replacement: ")".to_string(),
+                            },
+                        ],
+                    }),
+                    None => d,
+                }
             }
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };

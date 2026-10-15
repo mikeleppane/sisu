@@ -1,5 +1,8 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
+use std::ops::Range;
+
+use super::number;
 use super::prelude::PRELUDE;
 use super::{
     Binding, Checked, CheckedBlock, Checker, Declared, Poisoned, UNKNOWN, block_expr, block_type,
@@ -107,7 +110,7 @@ impl Checker<'_> {
                 node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
             }
             ExprKind::Field { base, name, safe } => {
-                if !safe && let Some(checked) = self.type_path(e.span, base, name) {
+                if !safe && let Some(checked) = self.type_path(e.span, base, name, None) {
                     return checked;
                 }
                 self.member(e.span, *safe, base, name, |c, checked| {
@@ -119,9 +122,7 @@ impl Checker<'_> {
                 method,
                 args,
                 safe,
-            } => self.member(e.span, *safe, receiver, method, |c, checked| {
-                c.method_call(e.span, checked, receiver, method, args)
-            }),
+            } => self.method_expr(e.span, *safe, receiver, method, args),
             ExprKind::Coalesce { lhs, rhs } => self.coalesce(e.span, lhs, rhs),
             ExprKind::Is { lhs, rhs } => self.is(e.span, lhs, rhs),
             ExprKind::Unary { op, operand } => {
@@ -1034,34 +1035,38 @@ impl Checker<'_> {
     }
 
     /// A call of `callee`, which names nothing callable. `len(xs)`, `sum(xs)` and
-    /// `contains(xs, v)`, where `xs` is an array with that method, point to the method.
+    /// `contains(xs, v)`, where `xs` is an array with that method, point to the method, and so
+    /// do `sqrt(x)` and `max(a, b)`, where the first argument is a number with it.
     fn unknown_call(&mut self, callee: &ast::Ident, args: &[ast::Arg]) -> Checked {
         let name = callee.name.as_str();
-        let idiom = matches!(name, "len" | "sum" | "contains")
+        let idiom = (matches!(name, "len" | "sum" | "contains") || number::is_method(name))
             && args.iter().all(|arg| arg.label.is_none());
         let rest = match args.split_first() {
             Some((first, rest)) if idiom => {
                 let receiver = self.expr(&first.value, Some(&UNKNOWN));
-                // A poisoned array is not known to be one.
-                if let Ok(tir::Expr {
-                    ty: Type::Array(element),
-                    ..
-                }) = &receiver
-                    && (name != "sum" || matches!(**element, Type::I64 | Type::F64))
-                {
-                    let element = (**element).clone();
+                // A poisoned receiver is not known to be an array or a number.
+                let ty = match &receiver {
+                    Ok(tir::Expr {
+                        ty: Type::Array(element),
+                        ..
+                    }) if name != "sum" || matches!(**element, Type::I64 | Type::F64) => {
+                        Some((**element).clone())
+                    }
+                    Ok(tir::Expr { ty, .. }) if number::method(ty, name).is_some() => {
+                        Some(ty.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(element) = ty {
                     let next = rest.first().map(|arg| arg.value.span);
-                    // The rewrite deletes the text before the array and between it and `next`,
-                    // so a comment there makes it a guess.
+                    // The rewrite deletes the text before the receiver and between it and
+                    // `next`, so a comment there makes it a guess.
                     let deleted = [
                         callee.span.start()..first.value.span.start(),
                         first.value.span.end()..next.map_or(first.value.span.end(), Span::start),
                     ];
-                    let certain = self.idiom_arguments(name, &element, rest)
-                        && !self
-                            .comments
-                            .iter()
-                            .any(|c| deleted.iter().any(|d| d.contains(c)));
+                    let certain =
+                        self.idiom_arguments(name, &element, rest) && !self.comment_in(&deleted);
                     self.report(DiagnosticKind::MethodAsFunction {
                         name: callee.name.to_string(),
                         at: callee.span,
@@ -1100,10 +1105,21 @@ impl Checker<'_> {
         Err(Poisoned::error())
     }
 
-    /// Checks the arguments after the array of an idiom call of the method `name` on an array of
-    /// `element`, each once. Whether the method takes them: `contains` one of type `element`, or
-    /// an integer literal that fits it, that checked cleanly, and `len` and `sum` none.
+    /// Whether a comment starts in one of the byte ranges `deleted`.
+    pub(super) fn comment_in(&self, deleted: &[Range<usize>]) -> bool {
+        self.comments
+            .iter()
+            .any(|c| deleted.iter().any(|d| d.contains(c)))
+    }
+
+    /// Checks the arguments after the receiver of an idiom call of the method `name`, each once.
+    /// For a number of type `element`, whether the method takes them (see `number_arguments`).
+    /// For an array of `element`: `contains` takes one of type `element`, or an integer literal
+    /// that fits it, that checked cleanly, and `len` and `sum` none.
     fn idiom_arguments(&mut self, name: &str, element: &Type, rest: &[ast::Arg]) -> bool {
+        if let Some((_, params)) = number::method(element, name) {
+            return self.number_arguments(element, params, rest);
+        }
         let [value] = rest else {
             self.stray(rest);
             return rest.is_empty() && name != "contains";
@@ -1117,6 +1133,24 @@ impl Checker<'_> {
                         (ExprKind::Int { value, .. }, Type::U8) if u8::try_from(*value).is_ok()
                     )
             })
+    }
+
+    /// `receiver.method(args)` as written, which `safe` makes `receiver?.method(args)`. A type or
+    /// `math` before the `.` may make it an idiom.
+    fn method_expr(
+        &mut self,
+        span: Span,
+        safe: bool,
+        receiver: &ast::Expr,
+        method: &ast::Ident,
+        args: &[ast::Arg],
+    ) -> Checked {
+        if !safe && let Some(checked) = self.type_path(span, receiver, method, Some(args)) {
+            return checked;
+        }
+        self.member(span, safe, receiver, method, |c, checked| {
+            c.method_call(span, checked, receiver, method, args)
+        })
     }
 
     /// `receiver.method(args)`, `receiver` checked from `receiver_expr`.

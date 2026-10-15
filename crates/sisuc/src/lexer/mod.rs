@@ -58,6 +58,7 @@ pub(crate) enum TokenKind {
     Plus,
     Minus,
     Star,
+    StarStar,
     Slash,
     Percent,
     PlusEq,
@@ -141,6 +142,7 @@ impl TokenKind {
             TokenKind::Plus => "Plus",
             TokenKind::Minus => "Minus",
             TokenKind::Star => "Star",
+            TokenKind::StarStar => "StarStar",
             TokenKind::Slash => "Slash",
             TokenKind::Percent => "Percent",
             TokenKind::PlusEq => "PlusEq",
@@ -213,6 +215,7 @@ impl TokenKind {
             TokenKind::Plus => "+",
             TokenKind::Minus => "-",
             TokenKind::Star => "*",
+            TokenKind::StarStar => "**",
             TokenKind::Slash => "/",
             TokenKind::Percent => "%",
             TokenKind::PlusEq => "+=",
@@ -867,6 +870,7 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
         AndAnd, Arrow, Bang, Colon, Comma, Dot, DotDot, Eq, EqEq, Ge, Gt, LBrace, LBracket, LParen,
         Le, Lt, Minus, MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq, QuestionDot,
         QuestionQuestion, RBrace, RBracket, RParen, Semicolon, Slash, SlashEq, Star, StarEq,
+        StarStar,
     };
     let mut eat = |want| chars.next_if(|&(_, n)| n == want).is_some();
     Some(match c {
@@ -876,6 +880,7 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
         '-' if eat('>') => Arrow,
         '-' => Minus,
         '*' if eat('=') => StarEq,
+        '*' if eat('*') => StarStar,
         '*' => Star,
         '/' if eat('=') => SlashEq,
         '/' => Slash,
@@ -1196,6 +1201,15 @@ mod tests {
                 EqEq, NotEq, Lt, Le, Gt, Ge, AndAnd, OrOr, Bang, Eq, Comma, Eof
             ]
         );
+    }
+
+    #[test]
+    fn star_star() {
+        use TokenKind::{Eof, Eq, Star, StarEq, StarStar};
+        assert_eq!(kinds("** * *="), [StarStar, Star, StarEq, Eof]);
+        // `**=` is `**` and then `=`, which the parser skips.
+        assert_eq!(kinds("**="), [StarStar, Eq, Eof]);
+        assert_eq!(kinds("***"), [StarStar, Star, Eof]);
     }
 
     #[test]

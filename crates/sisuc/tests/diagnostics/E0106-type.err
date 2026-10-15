@@ -1,0 +1,14 @@
+error[E0106]: math in Sisu is methods and constants on `f64`
+ --> E0106-type.sisu:4:11
+  |
+4 |     print(f64.max(a, b))
+  |           ^^^^^^^
+  |
+help: write `a.max(b)`
+  |
+4 -     print(f64.max(a, b))
+4 +     print(a.max(b))
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0106

@@ -494,10 +494,9 @@ fn f64_constant_errors() {
 /// A local named `f64` wins, so `f64.pi` reads a field of an `i64`.
 #[test]
 fn shadowed_type_path() {
-    codes(
-        "fn main() {\n    let f64 = 1\n    let _ = f64.pi\n}",
-        &[(Code::NoMember, (3, 17))],
-    );
+    let src = "fn main() {\n    let f64 = 1\n    let _ = f64.pi\n}";
+    // The fixture `E0063-shadowed-type` pins the wording: a field of the local's `i64`, no constant.
+    diagnostic(src, Code::NoMember, (3, 17, "pi"), &[]);
 }
 
 #[test]
@@ -587,4 +586,112 @@ fn f64_constant_in_const() {
         "const C = f64.nan == f64.nan\nfn main() {}",
         &[(Code::NanComparison, (1, 11))],
     );
+}
+
+/// Math the way other languages write it: a method of `f64` named as a function (E0070), or as a
+/// member of `math`, `Math` or `f64` (the new code). Each row's fix is applied, and a certain one
+/// leaves a program that checks.
+#[test]
+fn math_idioms() {
+    let program = |expr: &str| {
+        format!("fn f(n: i64, x: f64, y: f64) {{\n    let _ = {expr}\n}}\nfn main() {{}}")
+    };
+    let function = Code::MethodAsFunction;
+    let math = Code::MathIdiom;
+    let rows = [
+        ("sqrt(x)", function, "sqrt", Some("x.sqrt()")),
+        ("pow(x, 2)", function, "pow", Some("x.pow(2)")),
+        ("max(n, 3)", function, "max", Some("n.max(3)")),
+        (
+            "math.sqrt(x + 1.0)",
+            math,
+            "math.sqrt",
+            Some("(x + 1.0).sqrt()"),
+        ),
+        ("Math.pow(x, 2)", math, "Math.pow", Some("x.pow(2)")),
+        ("math.atan2(y, x)", math, "math.atan2", Some("y.atan2(x)")),
+        ("math.max(n, 3)", math, "math.max", Some("n.max(3)")),
+        (
+            "math.sqrt(x).abs()",
+            math,
+            "math.sqrt",
+            Some("x.sqrt().abs()"),
+        ),
+        ("Math.PI", math, "Math.PI", Some("f64.pi")),
+        ("Math.E", math, "Math.E", Some("f64.e")),
+        ("math.pi", math, "math.pi", Some("f64.pi")),
+        ("math.inf", math, "math.inf", Some("f64.infinity")),
+        ("Math.INFINITY", math, "Math.INFINITY", Some("f64.infinity")),
+        ("math.NaN", math, "math.NaN", Some("f64.nan")),
+        ("f64.max(x, y)", math, "f64.max", Some("x.max(y)")),
+        (
+            "f64.sqrt(x - 1.0)",
+            math,
+            "f64.sqrt",
+            Some("(x - 1.0).sqrt()"),
+        ),
+        // No fix where the method call would not check.
+        ("math.sqrt(n)", math, "math.sqrt", None),
+        ("math.sqrt(x, 2.0)", math, "math.sqrt", None),
+        ("math.pow(x)", math, "math.pow", None),
+        ("math.pow(x, n)", math, "math.pow", None),
+        ("f64.pow(n, 2.0)", math, "f64.pow", None),
+        ("math.sqrt()", math, "math.sqrt", None),
+        ("math.sqrt(v: x)", math, "math.sqrt", None),
+    ];
+    for (expr, code, found, fixed) in rows {
+        let src = program(expr);
+        let d = diagnostic(&src, code, (2, 13, found), &[]);
+        match fixed {
+            Some(fixed) => {
+                if code == math {
+                    assert!(d.fixes().iter().all(Fix::certain), "{src}");
+                }
+                let fixed = program(fixed);
+                assert_eq!(applied(&src, &d), fixed);
+                clean(&fixed);
+            }
+            None => assert_eq!(fixes(&src, &d), [], "{src}"),
+        }
+    }
+    // A name that no method of the type has stays an unknown function.
+    codes(&program("abs(n)"), &[(Code::FunctionNotFound, (2, 13))]);
+    // The rewrite would delete the comment.
+    let src = "fn f(x: f64) {\n    let _ = math.sqrt( // root\n        x)\n}\nfn main() {}";
+    let d = diagnostic(src, math, (2, 13, "math.sqrt"), &[]);
+    assert_eq!(fixes(src, &d), []);
+    // A bad argument is reported once, beside the idiom.
+    codes(
+        &program("math.sqrt(y_)"),
+        &[(Code::MathIdiom, (2, 13)), (Code::BindingNotFound, (2, 23))],
+    );
+    codes(
+        &program("math.pow(x, z_)"),
+        &[(Code::MathIdiom, (2, 13)), (Code::BindingNotFound, (2, 25))],
+    );
+}
+
+/// A local named `math` is a value, so its members are its own; a name no constant or method has
+/// is left to the unbound-name error at `math`.
+#[test]
+fn math_is_a_name_like_any_other() {
+    let class = "class M {\n    a: i64\n}\n";
+    codes(
+        &format!(
+            "{class}fn f(x: f64) {{\n    let math = M(a: 1)\n    let _ = math.sqrt(x)\n}}\nfn main() {{}}"
+        ),
+        &[(Code::NoMember, (6, 18))],
+    );
+    codes(
+        &format!(
+            "{class}fn f() {{\n    let Math = M(a: 1)\n    let _ = Math.a\n}}\nfn main() {{}}"
+        ),
+        &[],
+    );
+    for expr in ["math.foo", "Math.foo(x)", "math.sqrt", "math.PI()"] {
+        codes(
+            &format!("fn f(x: f64) {{\n    let _ = {expr}\n}}\nfn main() {{}}"),
+            &[(Code::BindingNotFound, (2, 13))],
+        );
+    }
 }

@@ -87,6 +87,22 @@ fn emit_tokens_float() {
 }
 
 #[test]
+fn emit_tokens_star_star() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("emit_tokens_star_star.sisu"), "x ** 2\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_star_star.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1:1 Ident x\n1:3 StarStar **\n1:6 Int 2\n1:7 Newline\n1:7 Eof\n"
+    );
+}
+
+#[test]
 fn emit_tokens_todo() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::write(dir.join("emit_tokens_todo.sisu"), "todo\n").expect("writes");

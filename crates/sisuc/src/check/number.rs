@@ -1,12 +1,12 @@
-//! The methods on `i64` and `f64`, the constants on `f64`, and the warning for a comparison with
-//! `f64.nan`.
+//! The methods on `i64` and `f64`, the constants on `f64`, the math written another way, and the
+//! warning for a comparison with `f64.nan`.
 
 use std::f64::consts;
 
 use super::expr::{no_member, postfix, typed};
-use super::{Checked, Checker, Poisoned, built_in_type};
+use super::{Checked, Checker, Poisoned, UNKNOWN, built_in_type};
 use crate::ast;
-use crate::diagnostic::{Definition, DiagnosticKind, NanFix, Span};
+use crate::diagnostic::{Definition, DiagnosticKind, MathFix, NanFix, Span};
 use crate::tir::{self, MathOp, Type};
 
 /// The receivers of a method.
@@ -60,22 +60,73 @@ const CONSTANTS: [(&str, f64); 8] = [
     ("epsilon", f64::EPSILON),
 ];
 
+/// Whether some number type has a method `name`.
+pub(super) fn is_method(name: &str) -> bool {
+    METHODS.iter().any(|(op, ..)| op.name() == name)
+}
+
+/// The operation and parameter count of the method `name` of a receiver of type `ty`, if it has
+/// one.
+pub(super) fn method(ty: &Type, name: &str) -> Option<(MathOp, usize)> {
+    METHODS
+        .iter()
+        .find(|(op, receivers, _)| {
+            op.name() == name
+                && match receivers {
+                    Receivers::F64 => *ty == Type::F64,
+                    Receivers::Number => matches!(ty, Type::I64 | Type::F64),
+                }
+        })
+        .map(|&(op, _, params)| (op, params))
+}
+
+/// The constant that another language's name means: `PI`, `Infinity` and `inf` are `pi` and
+/// `infinity`.
+fn constant_named(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    let lower = if lower == "inf" { "infinity" } else { &lower };
+    CONSTANTS
+        .iter()
+        .map(|(constant, _)| *constant)
+        .find(|constant| *constant == lower)
+}
+
 impl Checker<'_> {
-    /// `base.member` where `base` names a built-in type that no local shadows: the `f64`
-    /// constant `member`, or, for any other member, an error whose candidates are that type's
-    /// constants (only `f64` has any). `None` when `base` is not a type name.
+    /// `base.member`, or `base.member(args)` when `call` is given, where `base` names no local:
+    /// - a built-in type: the `f64` constant `member`, or, for any other member, an error whose
+    ///   candidates are that type's constants (only `f64` has any);
+    /// - `math` or `Math`, or `f64` in a call: the math idiom of another language, reported.
+    ///
+    /// `None` when `base` is no such name, or `member` is no constant or method of the idiom.
     pub(super) fn type_path(
         &mut self,
         span: Span,
         base: &ast::Expr,
         member: &ast::Ident,
+        call: Option<&[ast::Arg]>,
     ) -> Option<Checked> {
         let ast::ExprKind::Name(name) = base.kind else {
             return None;
         };
-        let ty = built_in_type(name.as_str())?;
         if self.lookup(name).is_some() {
             return None;
+        }
+        let written = base.span.to(member.span);
+        if matches!(name.as_str(), "math" | "Math") && !self.constants.contains_key(&name) {
+            if let Some(args) = call {
+                return self.math_call(written, member, args);
+            }
+            let name = constant_named(member.name.as_str())?;
+            self.report_math(written, Some(MathFix::Constant { name }));
+            return Some(Err(Poisoned::error()));
+        }
+        let ty = built_in_type(name.as_str())?;
+        if let Some(args) = call {
+            return if ty == Type::F64 {
+                self.math_call(written, member, args)
+            } else {
+                None
+            };
         }
         let constants: &[(&str, f64)] = if ty == Type::F64 { &CONSTANTS } else { &[] };
         let Some(&(_, x)) = constants
@@ -92,6 +143,88 @@ impl Checker<'_> {
             ty: Type::F64,
             span,
         }))
+    }
+
+    fn report_math(&mut self, written: Span, fix: Option<MathFix>) {
+        self.report(DiagnosticKind::MathIdiom { written, fix });
+    }
+
+    /// `written(args)`, where `written` is `math.member`, `Math.member` or `f64.member`: the
+    /// idiom when `member` is a method of `f64`, else `None`. The fix is `receiver.member(rest)`,
+    /// offered only where that surely checks and the rewrite deletes no comment: the first
+    /// argument checks and has the method, and the others fit its parameters. Each argument is
+    /// checked once.
+    fn math_call(
+        &mut self,
+        written: Span,
+        member: &ast::Ident,
+        args: &[ast::Arg],
+    ) -> Option<Checked> {
+        let name = member.name.as_str();
+        let name = METHODS
+            .iter()
+            .map(|(op, ..)| op.name())
+            .find(|op| *op == name)?;
+        let fix = self.method_fix(written, name, args);
+        self.report_math(written, fix);
+        Some(Err(Poisoned::error()))
+    }
+
+    fn method_fix(
+        &mut self,
+        written: Span,
+        name: &'static str,
+        args: &[ast::Arg],
+    ) -> Option<MathFix> {
+        let labeled = args.iter().any(|arg| arg.label.is_some());
+        let Some((first, rest)) = args.split_first().filter(|_| !labeled) else {
+            self.stray(args);
+            return None;
+        };
+        let receiver = self.expr(&first.value, Some(&UNKNOWN));
+        let Some((ty, params)) = receiver.ok().and_then(|r| {
+            let (_, params) = method(&r.ty, name)?;
+            Some((r.ty, params))
+        }) else {
+            self.stray(rest);
+            return None;
+        };
+        let (receiver, next) = (first.value.span, rest.first().map(|arg| arg.value.span));
+        let deleted = [
+            written.start()..receiver.start(),
+            receiver.end()..next.map_or(receiver.end(), Span::start),
+        ];
+        let arguments = self.number_arguments(&ty, params, rest);
+        if !arguments || self.comment_in(&deleted) {
+            return None;
+        }
+        let wrap = !postfix(&first.value);
+        let (open, close) = if wrap { ("(", ")") } else { ("", "") };
+        let text = &self.source[receiver.range()];
+        let tail = rest.last().map_or("", |last| {
+            &self.source[rest[0].value.span.start()..last.value.span.end()]
+        });
+        Some(MathFix::Method {
+            name,
+            form: format!("{open}{text}{close}.{name}({tail})"),
+            receiver,
+            next,
+            wrap,
+        })
+    }
+
+    /// Checks `rest`, the arguments after a receiver of type `ty` of a method with `params`
+    /// parameters, each once. Whether the method takes them: as many as it has, each of type `ty`
+    /// (an integer literal for an `f64`), and none failed.
+    pub(super) fn number_arguments(&mut self, ty: &Type, params: usize, rest: &[ast::Arg]) -> bool {
+        let checked: Vec<_> = rest
+            .iter()
+            .map(|arg| self.expr(&arg.value, Some(ty)))
+            .collect();
+        rest.len() == params
+            && checked
+                .iter()
+                .all(|checked| checked.as_ref().is_ok_and(|checked| checked.ty == *ty))
     }
 
     /// Warns about `lhs == rhs`, or `!=` when `negated`, when a side is `f64.nan`: no number
