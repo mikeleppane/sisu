@@ -33,7 +33,7 @@ fn panic_in_parentheses() {
         .value
         .as_ref()
         .expect("the `panic` should be the body's value");
-    assert_eq!(&src[panic.span.start..][..5], "panic", "{src}");
+    assert_eq!(&src[panic.span.start()..][..5], "panic", "{src}");
     codes(&body("", "(panic())"), &[(Code::ArgumentCount, (2, 6))]);
 }
 
@@ -358,7 +358,7 @@ fn todo_in_parentheses() {
             .value
             .as_ref()
             .expect("the `todo` should be the body's value");
-        assert_eq!(&src[panic.span.start..][..4], "todo", "{src}");
+        assert_eq!(&src[panic.span.start()..][..4], "todo", "{src}");
     }
 }
 

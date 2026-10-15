@@ -12,7 +12,7 @@ use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
 use crate::symbol::Symbol;
 use crate::tir::{self, ExprKind, Type};
 
-impl Checker {
+impl Checker<'_> {
     /// `never` once a statement is `never`, else the type of the last statement (`unit` when
     /// there is none). Warns "unreachable code" on the first statement after a `never` one.
     /// Every statement is checked, also after one fails. `expected` is for the block's value.
@@ -691,5 +691,5 @@ fn lower_loop(
 
 /// The `keyword` that starts a loop statement at `span`.
 fn keyword_span(span: Span, keyword: &str) -> Span {
-    Span::new(span.start, span.start + keyword.len())
+    Span::new(span.start(), span.start() + keyword.len())
 }

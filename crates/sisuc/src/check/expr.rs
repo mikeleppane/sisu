@@ -12,7 +12,7 @@ use crate::diagnostic::{
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 
-impl Checker {
+impl Checker<'_> {
     /// `expected` is the type the context wants, `None` when it wants none. It only types a
     /// `None`, a `[]` and an integer literal, and flows into `if` and `if let` branches, a
     /// block's value, array elements, arithmetic and unary `-`; it never wraps.
@@ -29,9 +29,9 @@ impl Checker {
         checked
     }
 
-    /// The integer literal `value`, written as `text`, typed by `expected`. An `f64` must hold
-    /// it exactly.
-    fn integer(&mut self, at: Span, value: i64, text: &str, expected: Option<&Type>) -> Checked {
+    /// The integer literal `value` at `at`, whose token is `literal`, typed by `expected`. An
+    /// `f64` must hold it exactly.
+    fn integer(&mut self, at: Span, value: i64, literal: Span, expected: Option<&Type>) -> Checked {
         let ty = literal_type(expected);
         if ty == Type::F64 {
             // Through `i128`: 2^63, the nearest `f64` to `i64::MAX`, saturates back to it.
@@ -43,7 +43,7 @@ impl Checker {
             let (x, exact) = (value as f64, (value as f64) as i128 == i128::from(value));
             if !exact {
                 self.report(DiagnosticKind::NotExactlyF64 {
-                    text: text.to_string(),
+                    text: self.source[literal.range()].to_string(),
                     nearest: format!("{x:?}"),
                     at,
                 });
@@ -61,7 +61,7 @@ impl Checker {
                 DiagnosticKind::NegatedU8 { at }.into()
             } else {
                 DiagnosticKind::IntegerDoesNotFit {
-                    text: text.to_string(),
+                    text: self.source[literal.range()].to_string(),
                     at,
                 }
                 .into()
@@ -85,7 +85,7 @@ impl Checker {
             })
         };
         match &e.kind {
-            ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
+            ExprKind::Int { value, literal } => self.integer(e.span, *value, *literal, expected),
             ExprKind::Float(x) => node(tir::ExprKind::Float(x.0), Type::F64),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
             ExprKind::Char(c) => node(tir::ExprKind::Char(*c), Type::Char),
@@ -759,7 +759,7 @@ impl Checker {
                 let kind = DiagnosticKind::SafeAccessNotOptional {
                     value: path(receiver),
                     at: receiver.span,
-                    access: Span::new(receiver.span.end, name.span.start),
+                    access: Span::new(receiver.span.end(), name.span.start()),
                 };
                 self.diagnostics.push(kind.into());
             }
@@ -1049,8 +1049,8 @@ impl Checker {
                     // The rewrite deletes the text before the array and between it and `next`,
                     // so a comment there makes it a guess.
                     let deleted = [
-                        callee.span.start..first.value.span.start,
-                        first.value.span.end..next.map_or(first.value.span.end, |n| n.start),
+                        callee.span.start()..first.value.span.start(),
+                        first.value.span.end()..next.map_or(first.value.span.end(), Span::start),
                     ];
                     let certain = self.idiom_arguments(name, &element, rest)
                         && !self
@@ -1498,7 +1498,7 @@ fn may_be_none(receiver: &ast::Expr, name: &ast::Ident, fix: bool) -> Diagnostic
     DiagnosticKind::MayBeNone {
         value: path(receiver),
         at: receiver.span,
-        access: fix.then(|| Span::new(receiver.span.end, name.span.start)),
+        access: fix.then(|| Span::new(receiver.span.end(), name.span.start())),
     }
     .into()
 }
@@ -1553,12 +1553,16 @@ pub(super) fn no_member<'a>(
 /// The mistake in argument `i` of a constructor of `class`, whose fields are `fields`, if any.
 fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
     let Some(field) = fields.get(i) else {
-        let start = arg.label.as_ref().map_or(arg.value.span, |l| l.span).start;
+        let start = arg
+            .label
+            .as_ref()
+            .map_or(arg.value.span, |l| l.span)
+            .start();
         return Some(
             DiagnosticKind::TooManyArguments {
                 class: class.to_string(),
                 fields: fields.len(),
-                at: Span::new(start, arg.value.span.end),
+                at: Span::new(start, arg.value.span.end()),
             }
             .into(),
         );

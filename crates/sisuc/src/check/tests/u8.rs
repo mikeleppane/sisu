@@ -128,7 +128,7 @@ fn failed_conversion_as_value() {
             panic!("{src}: {ds:?}")
         };
         assert_eq!(d.code(), Code::Mismatch, "{src}");
-        assert_eq!(&src[d.span().start..d.span().end], found, "{src}");
+        assert_eq!(&src[d.span().range()], found, "{src}");
         assert!(d.help().is_none(), "{src}");
     }
 }
@@ -211,6 +211,11 @@ fn u8_cannot_be_negative() {
     // The smallest `i64` is one literal that is negative, not a `u8` that does not fit.
     codes(
         "fn main() { let x: u8 = -9223372036854775808 }",
+        &[(Code::NegatedU8, (1, 25))],
+    );
+    // Parenthesized, it is reported at the whole expression, the `(`, not at the literal.
+    codes(
+        "fn main() { let x: u8 = (-9223372036854775808) }",
         &[(Code::NegatedU8, (1, 25))],
     );
     codes(
@@ -316,9 +321,13 @@ fn mismatch_fix_converts_the_expression_found() {
         };
         assert_eq!(open.replacement(), format!("{to}("), "{src}");
         assert_eq!(close.replacement(), ")", "{src}");
-        assert!(open.span().start == open.span().end, "{src}");
-        assert!(close.span().start == close.span().end, "{src}");
-        assert_eq!(&src[open.span().start..close.span().start], found, "{src}");
+        assert!(open.span().start() == open.span().end(), "{src}");
+        assert!(close.span().start() == close.span().end(), "{src}");
+        assert_eq!(
+            &src[open.span().start()..close.span().start()],
+            found,
+            "{src}"
+        );
         // The conversion is what the types need.
         clean(&applied(src, d));
     }

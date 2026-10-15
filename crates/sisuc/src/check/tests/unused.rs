@@ -29,7 +29,7 @@ fn warns(src: &str, expected: &[(usize, usize, &str)]) {
         .map(|d| {
             let span = d.span();
             let (line, col) = at(src, span);
-            (d.code(), line, col, &src[span.start..span.end])
+            (d.code(), line, col, &src[span.range()])
         })
         .collect();
     let expected: Vec<_> = expected

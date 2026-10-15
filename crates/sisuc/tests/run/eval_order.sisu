@@ -11,9 +11,27 @@ class Pair {
     b: i64
 }
 
+// Codegen sorts fields by alignment, so `b` moves ahead of `a` in memory; the arguments still
+// run in source order.
+class Moved {
+    a: bool
+    b: i64
+    c: bool
+}
+
 fn n(m: i64) -> i64 {
     print(m)
     m
+}
+
+fn t(m: i64) -> bool {
+    print(m)
+    true
+}
+
+fn f(m: i64) -> bool {
+    print(m)
+    false
 }
 
 fn o(m: i64) -> Obj {
@@ -50,4 +68,8 @@ fn main() {
     let p = Pair(a: o(20), b: n(21))  // 20, 21
     print(p.a.v + p.b)                // 41
     print(Pair(a: o(30), b: n(31)).b) // 30, 31, 31
+    let m = Moved(a: t(10), b: n(11), c: f(12)) // 10, 11, 12
+    print(m.a)                        // true
+    print(m.b)                        // 11
+    print(m.c)                        // false
 }

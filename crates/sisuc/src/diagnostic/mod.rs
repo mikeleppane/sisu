@@ -14,21 +14,45 @@ pub(crate) use registry::{
 };
 pub(crate) use suggest::{Suggestion, alias, suggestion};
 
-/// A byte range of the source.
+/// A byte range of the source. The offsets are stored as `u32`s, which `MAX_SOURCE` keeps
+/// them within; `new` is the one place that converts them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Span {
-    pub(crate) start: usize,
-    pub(crate) end: usize,
+    start: u32,
+    end: u32,
 }
+
+const _: () = assert!(size_of::<Span>() == 8);
 
 impl Span {
     pub(crate) fn new(start: usize, end: usize) -> Span {
-        Span { start, end }
+        let offset = |at: usize| {
+            u32::try_from(at).expect(
+                "a source is at most `MAX_SOURCE` bytes, so a span offset should fit in `u32`",
+            )
+        };
+        Span {
+            start: offset(start),
+            end: offset(end),
+        }
+    }
+
+    pub(crate) fn start(self) -> usize {
+        self.start as usize
+    }
+
+    pub(crate) fn end(self) -> usize {
+        self.end as usize
+    }
+
+    /// `start()..end()`, to slice the source with.
+    pub(crate) fn range(self) -> std::ops::Range<usize> {
+        self.start()..self.end()
     }
 
     /// The span from the start of `self` to the end of `other`.
     pub(crate) fn to(self, other: Span) -> Span {
-        Span::new(self.start, other.end)
+        Span::new(self.start(), other.end())
     }
 }
 
@@ -173,10 +197,10 @@ impl Fix {
     /// `source` with the edits applied. Two insertions at one offset keep their order.
     pub(crate) fn apply(&self, source: &str) -> String {
         let mut edits: Vec<&Edit> = self.edits.iter().collect();
-        edits.sort_by_key(|e| e.span.start);
+        edits.sort_by_key(|e| e.span.start());
         let mut out = source.to_string();
         for edit in edits.iter().rev() {
-            out.replace_range(edit.span.start..edit.span.end, &edit.replacement);
+            out.replace_range(edit.span.range(), &edit.replacement);
         }
         out
     }
@@ -243,6 +267,27 @@ pub(crate) fn line_col(source: &str, offset: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn span_offsets_reach_u32_max() {
+        let max = usize::try_from(u32::MAX).expect("`u32::MAX` should fit in `usize` here");
+        let empty = Span::new(max, max);
+        assert_eq!(empty.start(), max);
+        assert_eq!(empty.end(), max);
+        assert_eq!(empty.range(), max..max);
+        assert_eq!(
+            Span::new(0, 5).to(Span::new(max - 1, max)),
+            Span::new(0, max)
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    #[should_panic(expected = "should fit in `u32`")]
+    fn span_offset_past_u32_max_panics() {
+        let max = usize::try_from(u32::MAX).expect("`u32::MAX` should fit in `usize` here");
+        Span::new(0, max + 1);
+    }
 
     #[test]
     fn line_col_counts_chars_not_bytes() {

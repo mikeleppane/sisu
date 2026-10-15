@@ -19,14 +19,10 @@ pub(super) fn token(
     let (literal, placeholder) = if source[start..].starts_with('\'') {
         (char_literal(source, start, chars), TokenKind::Char('\0'))
     } else {
-        let zero = TokenKind::Int {
-            value: 0,
-            text: "0".to_string(),
-        };
         let after_dot = tokens
             .last()
             .is_some_and(|t| matches!(t.kind, TokenKind::Dot | TokenKind::QuestionDot));
-        (number(source, start, chars, after_dot), zero)
+        (number(source, start, chars, after_dot), TokenKind::Int(0))
     };
     literal.unwrap_or_else(|d| {
         diagnostics.push(d);
@@ -115,10 +111,7 @@ fn number(
         }
         .into());
     }
-    Ok(TokenKind::Int {
-        value,
-        text: source[start..end].to_string(),
-    })
+    Ok(TokenKind::Int(value))
 }
 
 fn is_digit_or_separator(c: char) -> bool {

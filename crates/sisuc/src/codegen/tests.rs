@@ -11,7 +11,7 @@ fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
 /// `compiled`, with the RC checks if `rc_checks`.
 fn compiled_with<'ctx>(context: &'ctx Context, src: &str, rc_checks: bool) -> Module<'ctx> {
     let program = parse_ok(src);
-    let (program, diagnostics) = check(&program);
+    let (program, diagnostics) = check(&program, src);
     let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
     crate::last_use::mark(&mut program);
     let machine = target_machine(false).expect("the host is a target");
@@ -288,20 +288,50 @@ fn class_layout_comes_from_the_data_layout() {
     .print_to_string()
     .to_string();
     for wanted in [
-        "%sisu.P = type { i64, i64, i1, ptr }",
+        "%sisu.P = type { i64, i64, ptr, i1 }",
         "call ptr @sisu_alloc(i64 32, i64 8)",
     ] {
         assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
     }
-    // Element 0 is the count, so field `i` is element `i + 1`.
-    for element in 1..=3 {
-        let gep = format!("i32 0, i32 {element}");
-        assert!(
-            ir.lines().any(|l| l.contains("getelementptr")
-                && l.contains("%sisu.P, ptr ")
-                && l.ends_with(&gep)),
-            "no field GEP to element {element} in\n{ir}"
-        );
+}
+
+/// Each constructor argument is stored through the struct element of its field, after the
+/// fields are sorted by alignment: `S`'s `b` moves ahead of `a`.
+#[test]
+fn class_fields_follow_their_elements() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class S {\n    a: bool\n    b: i64\n    c: bool\n}\nfn main() {\n    let s = S(a: true, b: 7, c: false)\n    print(s.b)\n}",
+    )
+    .print_to_string()
+    .to_string();
+    for wanted in [
+        "%sisu.S = type { i64, i64, i1, i1 }",
+        "call ptr @sisu_alloc(i64 24, i64 8)",
+    ] {
+        assert!(ir.contains(wanted), "missing {wanted:?} in\n{ir}");
+    }
+    let main = function_body(&ir, "define internal void @sisu.main()");
+    let lines: Vec<&str> = main.lines().map(str::trim).collect();
+    // The struct element each field GEP in `main` reaches, by the value it defines.
+    let elements: FxHashMap<&str, &str> = lines
+        .iter()
+        .filter_map(|line| {
+            let (value, text) = line.split_once(" = ")?;
+            let (_, operands) = text.split_once("%sisu.S, ptr ")?;
+            let (_, element) = operands.rsplit_once(", i32 0, i32 ")?;
+            Some((value, element))
+        })
+        .collect();
+    // Each value goes to the element its field moved to: `b` first, then `a` and `c`.
+    for (stored, element) in [("i64 7", "1"), ("i1 true", "2"), ("i1 false", "3")] {
+        let store = format!("store {stored}, ptr ");
+        let field = lines
+            .iter()
+            .find_map(|l| l.strip_prefix(&store)?.split(',').next())
+            .unwrap_or_else(|| panic!("no {store:?} in\n{main}"));
+        assert_eq!(elements.get(field), Some(&element), "{stored} in\n{main}");
     }
 }
 
@@ -385,7 +415,7 @@ fn drop_frees_with_the_allocated_layout() {
     let context = Context::create();
     let ir = compiled(
         &context,
-        "class Q {}\nclass P {\n    x: i64\n    mut y: bool\n    q: Q\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    let a = [1, 2, 3]\n    let b = [true, false]\n    let c: [i64?] = [None, 1]\n    print(p.x + a[0])\n}",
+        "class Q {}\nclass P {\n    x: i64\n    mut y: bool\n    q: Q\n}\nclass S {\n    a: bool\n    b: i64\n    c: bool\n}\nfn main() {\n    let p = P(x: 1, y: true, q: Q())\n    let s = S(a: true, b: 7, c: false)\n    print(s.b)\n    let a = [1, 2, 3]\n    let b = [true, false]\n    let c: [i64?] = [None, 1]\n    print(p.x + a[0])\n}",
     )
     .print_to_string()
     .to_string();
@@ -401,16 +431,25 @@ fn drop_frees_with_the_allocated_layout() {
         };
         (pointer.into(), size.into(), align.into())
     };
-    // The class: `P` is 32 bytes aligned to 8 (see `class_layout_comes_from_the_data_layout`),
-    // and the block is the drop function's own argument.
-    assert!(ir.contains("call ptr @sisu_alloc(i64 32, i64 8)"), "{ir}");
-    let class = function_body(&ir, "define internal void @sisu_rc.drop.P(ptr");
-    let (pointer, size, align) = free(class);
-    assert!(
-        class.trim_start().starts_with(&format!("{pointer})")),
-        "{class}"
-    );
-    assert_eq!((size.as_str(), align.as_str()), ("32", "8"), "{class}");
+    // The classes: `P` is 32 bytes aligned to 8 (see `class_layout_comes_from_the_data_layout`),
+    // and `S` 24, with its fields sorted (see `class_fields_follow_their_elements`); the block
+    // is the drop function's own argument.
+    for (name, bytes) in [("P", "32"), ("S", "24")] {
+        assert!(
+            ir.contains(&format!("call ptr @sisu_alloc(i64 {bytes}, i64 8)")),
+            "{name}: no alloc of {bytes} bytes in\n{ir}"
+        );
+        let class = function_body(
+            &ir,
+            &format!("define internal void @sisu_rc.drop.{name}(ptr"),
+        );
+        let (pointer, size, align) = free(class);
+        assert!(
+            class.trim_start().starts_with(&format!("{pointer})")),
+            "{class}"
+        );
+        assert_eq!((size.as_str(), align.as_str()), (bytes, "8"), "{class}");
+    }
     // An array: the 16-byte header plus `len` elements, aligned to 8; the element sizes are
     // those of `literal_allocates_header_and_elements`, recomputed from the length. The literal
     // of each type in `main` allocates `16 + len * element_size` bytes, the size the drop frees.

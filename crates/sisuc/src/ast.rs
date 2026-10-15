@@ -187,10 +187,12 @@ pub(crate) struct Expr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExprKind {
-    /// An integer literal: its value and its `text` as written, which a diagnostic quotes.
+    /// An integer literal: its value, and the span of its token, whose text as written a
+    /// diagnostic quotes. The expression's span can be wider: a parenthesized literal's starts at
+    /// `(`, and `-9223372036854775808`'s at the `-`.
     Int {
         value: i64,
-        text: String,
+        literal: Span,
     },
     /// A float literal.
     Float(Float),
@@ -622,7 +624,7 @@ mod tests {
     fn int(n: i64) -> Expr {
         expr(ExprKind::Int {
             value: n,
-            text: n.to_string(),
+            literal: sp(),
         })
     }
 

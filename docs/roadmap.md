@@ -527,6 +527,17 @@ Each is small once its milestone's main feature exists:
   prelude. What depends on a value's layout, such as an array's length,
   element access and allocation, stays built in. Milestone 11 turns the
   prelude into the standard library's first module.
+- Milestone 8: two data-oriented changes wait for generics (agreed
+  2026-10-14). Niches: `Option<T>` stores `None` as a value `T` can never
+  hold, so `char?` becomes an `i32` with `0x110000` for `None` (8 bytes to
+  4) and `bool?` an `i8` with 2. One rule covers every `Option`-shaped
+  enum; `char?` gets no special case before it, since milestone 7's enums
+  take no niche. `i64?` and `u8?` have no spare value and keep `{ i1, T }`.
+  A `None` sentinel never reaches the runtime: printing decodes it first.
+  Interned types: `tir::Type` becomes a `TypeId(u32)` handle into one
+  table, as `Symbol` is for names, so copying, comparing and hashing a type
+  cost an integer operation. Monomorphization multiplies the types the
+  checker builds; interning before it would design `TypeId` twice.
 - Milestone 9: `for` over any iterator. Milestone 3's `for` lowers to a loop
   over an array or a range. An iterator `for` lowers to a loop that calls
   `next()` until it returns `None`, before the last-use pass runs, so a
@@ -768,6 +779,11 @@ These do not make code nicer to write, so they wait:
 - C FFI: `extern fn` to call libc or a C library. A C pointer is an opaque
   `CPtr` that Sisu code passes back to C, with no arithmetic and no
   dereference. Basic I/O does not need it: the runtime owns that (ADR 0009).
+  - A class's memory layout is unspecified: codegen orders its fields by
+    alignment, largest first, so that less padding sits between them. A class
+    that must match a C struct therefore asks for a C layout explicitly, in
+    declared order. That choice serves the FFI and costs the padding back,
+    the cost ADR 0006 asks a language-level choice to name.
 - Linking with `lld` (`-fuse-ld=lld`) when it is installed, because linking
   time grows with the program.
 - Parser error recovery, so a syntax error does not hide the next one.
@@ -1017,10 +1033,14 @@ standard library. The milestones after 12 then follow from it.
     }
     ```
 
-  - A type declares its interfaces after its name, `record Point: Hash {`,
-    as milestone 10 writes them. Implementing an interface for a type
-    declared elsewhere, as Rust's `impl` blocks and Swift's extensions do,
-    waits. Adding it later breaks no program.
+  - A type declares its interfaces after its name: `class Tree: Display {`,
+    and `record Point: Hash {` as milestone 10 writes them.
+  - An `extend` block adds to a type declared elsewhere, as Swift's
+    extensions do (agreed 2026-10-15). `extend string { ... }` holds extra
+    methods. `extend string: Display { ... }` holds exactly `Display`'s
+    methods: one interface per block. For now only the prelude may extend
+    the built-in types; letting programs use `extend` later breaks no
+    program.
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
   `a.plus(b)` or `a.value + b.value`, the same boilerplate Rust newtypes
   carry. An opt-in such as Haskell's `deriving` would let a newtype keep its

@@ -16,9 +16,9 @@ fn window(
 ) -> (Range<usize>, usize) {
     let first = spans
         .clone()
-        .map(|s| lines.render_line(source, s.start))
+        .map(|s| lines.render_line(source, s.start()))
         .min();
-    let last = spans.map(|s| lines.render_line(source, s.end)).max();
+    let last = spans.map(|s| lines.render_line(source, s.end())).max();
     let (first, last) = (
         first.expect("a snippet should have a span"),
         last.expect("a snippet should have a span"),
@@ -49,7 +49,7 @@ impl Diagnostic {
         let edits = self.fixes().iter().flat_map(Fix::edits).map(Edit::span);
         for span in labelled.clone().chain(edits) {
             debug_assert!(
-                source.is_char_boundary(span.start) && source.is_char_boundary(span.end),
+                source.is_char_boundary(span.start()) && source.is_char_boundary(span.end()),
                 "span {span:?} does not sit on char boundaries"
             );
         }
@@ -57,7 +57,7 @@ impl Diagnostic {
         // may cover one.
         for span in labelled.clone() {
             debug_assert!(
-                span.start == span.end || !source[..span.end].ends_with('\n'),
+                span.start() == span.end() || !source[..span.end()].ends_with('\n'),
                 "span {span:?} ends with a line break"
             );
         }
@@ -67,7 +67,7 @@ impl Diagnostic {
         };
         let title = level.primary_title(self.message()).id(self.code().as_str());
         let (range, first) = window(source, lines, labelled.clone());
-        let rebased = |span: Span| span.start - range.start..span.end - range.start;
+        let rebased = |span: Span| span.start() - range.start..span.end() - range.start;
         let mut primary = AnnotationKind::Primary.span(rebased(self.span()));
         if let Some(label) = self.label() {
             primary = primary.label(label);
@@ -89,7 +89,7 @@ impl Diagnostic {
             let offset = range.start;
             let patches = fix.edits().iter().map(|e| {
                 Patch::new(
-                    e.span().start - offset..e.span().end - offset,
+                    e.span().start() - offset..e.span().end() - offset,
                     e.replacement(),
                 )
             });
@@ -279,17 +279,13 @@ error[E0011]: expected `=`, found end of line
             Severity::Error => Level::ERROR,
             Severity::Warning => Level::WARNING,
         };
-        let mut primary = AnnotationKind::Primary.span(d.span().start..d.span().end);
+        let mut primary = AnnotationKind::Primary.span(d.span().range());
         if let Some(label) = d.label() {
             primary = primary.label(label);
         }
         let mut snippet = Snippet::source(source).path(path).annotation(primary);
         for (span, text) in d.secondary() {
-            snippet = snippet.annotation(
-                AnnotationKind::Context
-                    .span(span.start..span.end)
-                    .label(text),
-            );
+            snippet = snippet.annotation(AnnotationKind::Context.span(span.range()).label(text));
         }
         let title = level.primary_title(d.message()).id(d.code().as_str());
         let mut group = title.element(snippet);
@@ -301,7 +297,7 @@ error[E0011]: expected `=`, found end of line
             let patches = fix
                 .edits()
                 .iter()
-                .map(|e| Patch::new(e.span().start..e.span().end, e.replacement()));
+                .map(|e| Patch::new(e.span().range(), e.replacement()));
             let snippet = Snippet::source(source).path(path).patches(patches);
             groups.push(Level::HELP.secondary_title(fix.message()).element(snippet));
         }

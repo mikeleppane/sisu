@@ -104,11 +104,11 @@ impl<'a> Location<'a> {
         span: Span,
         label: Option<&'a str>,
     ) -> Self {
-        let (line, column) = lines.line_col(source, span.start);
+        let (line, column) = lines.line_col(source, span.start());
         Location {
             file,
-            start: span.start,
-            end: span.end,
+            start: span.start(),
+            end: span.end(),
             line,
             column,
             label,
@@ -132,10 +132,10 @@ impl<'a> FixObject<'a> {
 
 impl<'a> EditObject<'a> {
     fn new(edit: &'a Edit, source: &str, lines: &LineIndex) -> Self {
-        let (line, column) = lines.line_col(source, edit.span().start);
+        let (line, column) = lines.line_col(source, edit.span().start());
         EditObject {
-            start: edit.span().start,
-            end: edit.span().end,
+            start: edit.span().start(),
+            end: edit.span().end(),
             line,
             column,
             replacement: edit.replacement(),

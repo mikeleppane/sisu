@@ -1,8 +1,9 @@
 //! End to end: the `sisuc` command line.
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 #[test]
 fn emit_tokens() {
@@ -392,6 +393,47 @@ fn unreadable_input_exits_1() {
         String::from_utf8_lossy(&out.stderr)
             .starts_with("sisuc: cannot read no_such_dir/unreadable_input_exits_1.sisu: ")
     );
+}
+
+#[test]
+fn oversized_input_is_a_tool_error() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let name = "oversized_input_is_a_tool_error.sisu";
+    let file = fs::File::create(dir.join(name)).expect("creates");
+    // `MAX_SOURCE` plus 1; the constant is private to the crate. The file is sparse.
+    file.set_len((1 << 30) + 1).expect("sets the length");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--check", name])
+        .output()
+        .expect("sisuc starts");
+    fs::remove_file(dir.join(name)).expect("removes");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("sisuc: cannot read {name}: the file is larger than 1 GiB\n")
+    );
+}
+
+#[test]
+fn check_reads_a_pipe() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .args(["--check", "/dev/stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("sisuc starts");
+    // Dropping the handle closes the pipe, so sisuc sees the end of the source.
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(b"fn main() {\n    print(1)\n}\n")
+        .expect("writes");
+    let out = child.wait_with_output().expect("sisuc runs");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 }
 
 /// Runs `sisuc --check` on a file named `name` that holds `bytes`; returns the exit code and stderr.

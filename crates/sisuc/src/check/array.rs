@@ -6,7 +6,7 @@ use crate::ast;
 use crate::diagnostic::{Definition, Diagnostic, DiagnosticKind, Literal, Span};
 use crate::tir::{self, Type};
 
-impl Checker {
+impl Checker<'_> {
     /// `[a, b, ...]`. With an expected `[E]` or `[E]?`, each element is checked against `E`.
     /// Without one, the elements join (see `joined`). A `[]` takes its type from `expected`.
     pub(super) fn array_lit(
