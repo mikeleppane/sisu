@@ -925,7 +925,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     message: "declare it with `let`".to_string(),
                     certain: true,
                     edits: vec![Edit {
-                        span: Span::new(keyword.start, at.start),
+                        span: Span::new(keyword.start(), at.start()),
                         replacement: String::new(),
                     }],
                 })
@@ -998,7 +998,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     message: "write the prefix in lower case".to_string(),
                     certain,
                     edits: vec![Edit {
-                        span: Span::new(at.end - 1, at.end),
+                        span: Span::new(at.end() - 1, at.end()),
                         replacement: prefix.to_ascii_lowercase().to_string(),
                     }],
                 })
@@ -1019,7 +1019,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 match c {
                     '&' => d.with_fix(guess("if you meant logical and, use `&&`", at, "&&")),
                     '|' => d.with_fix(guess("if you meant logical or, use `||`", at, "||")),
-                    '\u{FEFF}' if at.start == 0 => d.with_fix(Fix {
+                    '\u{FEFF}' if at.start() == 0 => d.with_fix(Fix {
                         message: "remove the byte order mark at the start of the file".to_string(),
                         certain: true,
                         edits: vec![Edit {
@@ -1110,7 +1110,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     .to_string(),
                     certain,
                     edits: vec![Edit {
-                        span: Span::new(keyword.start, receiver.start),
+                        span: Span::new(keyword.start(), receiver.start()),
                         replacement: String::new(),
                     }],
                 }),
@@ -1157,7 +1157,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 message: format!("if the field can be absent, make it optional: `{target}?`"),
                 certain: false,
                 edits: vec![Edit {
-                    span: Span::new(ty.end, ty.end),
+                    span: Span::new(ty.end(), ty.end()),
                     replacement: "?".to_string(),
                 }],
             }),
@@ -1219,13 +1219,13 @@ impl From<DiagnosticKind> for Diagnostic {
                         certain: false,
                         edits: vec![
                             Edit {
-                                span: Span::new(operand.start, operand.start),
+                                span: Span::new(operand.start(), operand.start()),
                                 replacement: through.map_or(format!("{to}("), |through| {
                                     format!("{to}({through}(")
                                 }),
                             },
                             Edit {
-                                span: Span::new(operand.end, operand.end),
+                                span: Span::new(operand.end(), operand.end()),
                                 replacement: ")".repeat(1 + usize::from(through.is_some())),
                             },
                         ],
@@ -1234,14 +1234,14 @@ impl From<DiagnosticKind> for Diagnostic {
                         // The text between the operands goes, with a literal's quote beside it;
                         // any other operand is wrapped in braces, and the outer ones get quotes.
                         let (start, close) = if lhs.literal {
-                            (lhs.span.end - 1, "")
+                            (lhs.span.end() - 1, "")
                         } else {
-                            (lhs.span.end, "}")
+                            (lhs.span.end(), "}")
                         };
                         let (end, open) = if rhs.literal {
-                            (rhs.span.start + 1, "")
+                            (rhs.span.start() + 1, "")
                         } else {
-                            (rhs.span.start, "{")
+                            (rhs.span.start(), "{")
                         };
                         let mut edits = vec![Edit {
                             span: Span::new(start, end),
@@ -1251,14 +1251,14 @@ impl From<DiagnosticKind> for Diagnostic {
                             edits.insert(
                                 0,
                                 Edit {
-                                    span: Span::new(lhs.span.start, lhs.span.start),
+                                    span: Span::new(lhs.span.start(), lhs.span.start()),
                                     replacement: "\"{".to_string(),
                                 },
                             );
                         }
                         if !rhs.literal {
                             edits.push(Edit {
-                                span: Span::new(rhs.span.end, rhs.span.end),
+                                span: Span::new(rhs.span.end(), rhs.span.end()),
                                 replacement: "}\"".to_string(),
                             });
                         }
@@ -1274,11 +1274,11 @@ impl From<DiagnosticKind> for Diagnostic {
                         certain: false,
                         edits: vec![
                             Edit {
-                                span: Span::new(call.start, arg.start),
+                                span: Span::new(call.start(), arg.start()),
                                 replacement: "\"{".to_string(),
                             },
                             Edit {
-                                span: Span::new(arg.end, call.end),
+                                span: Span::new(arg.end(), call.end()),
                                 replacement: "}\"".to_string(),
                             },
                         ],
@@ -1288,11 +1288,11 @@ impl From<DiagnosticKind> for Diagnostic {
                         certain: true,
                         edits: vec![
                             Edit {
-                                span: Span::new(value.start, value.start),
+                                span: Span::new(value.start(), value.start()),
                                 replacement: "\"{".to_string(),
                             },
                             Edit {
-                                span: Span::new(value.end, value.end),
+                                span: Span::new(value.end(), value.end()),
                                 replacement: "}\"".to_string(),
                             },
                         ],
@@ -1455,11 +1455,11 @@ impl From<DiagnosticKind> for Diagnostic {
                     replacement: replacement.to_string(),
                 };
                 // The head, `T(` and what sits before the value, then the `)` after it.
-                let head = Span::new(conversion.start, at.start);
+                let head = Span::new(conversion.start(), at.start());
                 let edits = if grouped {
                     vec![edit(head, "(")]
                 } else {
-                    vec![edit(head, ""), edit(Span::new(at.end, conversion.end), "")]
+                    vec![edit(head, ""), edit(Span::new(at.end(), conversion.end()), "")]
                 };
                 let d = Diagnostic::coded(code, at, format!("{} is already `{ty}`", named(value)));
                 if labeled {
@@ -1502,7 +1502,7 @@ impl From<DiagnosticKind> for Diagnostic {
                         },
                         certain,
                         edits: vec![Edit {
-                            span: Span::new(at.end, at.end),
+                            span: Span::new(at.end(), at.end()),
                             replacement: "()".to_string(),
                         }],
                     }),
@@ -1583,7 +1583,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     message: "label it with its field".to_string(),
                     certain: true,
                     edits: vec![Edit {
-                        span: Span::new(at.start, at.start),
+                        span: Span::new(at.start(), at.start()),
                         replacement: format!("{field}: "),
                     }],
                 })
@@ -1637,11 +1637,11 @@ impl From<DiagnosticKind> for Diagnostic {
                     certain,
                     edits: vec![
                         Edit {
-                            span: Span::new(at.start, receiver.start),
+                            span: Span::new(at.start(), receiver.start()),
                             replacement: open.to_string(),
                         },
                         Edit {
-                            span: Span::new(receiver.end, next.map_or(receiver.end, |n| n.start)),
+                            span: Span::new(receiver.end(), next.map_or(receiver.end(), Span::start)),
                             replacement: format!("{close}.{name}("),
                         },
                     ],
@@ -1668,7 +1668,7 @@ impl From<DiagnosticKind> for Diagnostic {
                         message: "use `let _`".to_string(),
                         certain: true,
                         edits: vec![Edit {
-                            span: Span::new(keyword.start, at.start),
+                            span: Span::new(keyword.start(), at.start()),
                             replacement: String::new(),
                         }],
                     },
@@ -1681,7 +1681,7 @@ impl From<DiagnosticKind> for Diagnostic {
                         message: "bind it with `let _`".to_string(),
                         certain: true,
                         edits: vec![Edit {
-                            span: Span::new(at.start, at.start),
+                            span: Span::new(at.start(), at.start()),
                             replacement: "let ".to_string(),
                         }],
                     })
@@ -1750,7 +1750,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     )
                     .with_fix(guess(
                         r"if you meant a backslash, write `\\`",
-                        Span::new(at.start, at.start),
+                        Span::new(at.start(), at.start()),
                         "\\",
                     ))
             }
@@ -1772,7 +1772,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     d.with_fix(Fix {
                         message: "if you meant a string, write it in double quotes".to_string(),
                         certain: false,
-                        edits: vec![quote(at.start), quote(at.end - 1)],
+                        edits: vec![quote(at.start()), quote(at.end() - 1)],
                     })
                 } else {
                     d
@@ -1792,14 +1792,14 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "a `}` in a string must be escaped").with_fix(Fix {
                     message: r"write `\}`".to_string(),
                     certain: true,
-                    edits: vec![backslash(at.start)],
+                    edits: vec![backslash(at.start())],
                 })
             }
             DiagnosticKind::EmptyInterpolation { at } => {
                 Diagnostic::coded(code, at, "empty interpolation").with_fix(Fix {
                     message: r"write `\{\}` for literal braces".to_string(),
                     certain: false,
-                    edits: vec![backslash(at.start), backslash(at.end - 1)],
+                    edits: vec![backslash(at.start()), backslash(at.end() - 1)],
                 })
             }
             DiagnosticKind::CommentInInterpolation { at } => {
@@ -1866,7 +1866,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     .with_help("use it, or write `let _ =` to drop it on purpose")
                     .with_fix(guess(
                         "drop it on purpose",
-                        Span::new(at.start, at.start),
+                        Span::new(at.start(), at.start()),
                         "let _ = ",
                     ))
             }
@@ -1965,7 +1965,7 @@ fn insert_mut(message: &str, declared: Span) -> Fix {
         message: message.to_string(),
         certain: true,
         edits: vec![Edit {
-            span: Span::new(declared.start, declared.start),
+            span: Span::new(declared.start(), declared.start()),
             replacement: "mut ".to_string(),
         }],
     }

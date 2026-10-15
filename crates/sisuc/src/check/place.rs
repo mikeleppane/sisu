@@ -41,7 +41,7 @@ impl CheckedPlace {
     }
 }
 
-impl Checker {
+impl Checker<'_> {
     /// `target = value`; a root that cannot be written is reported, and `value` still checked.
     pub(super) fn assign(
         &mut self,

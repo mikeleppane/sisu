@@ -8,6 +8,7 @@ mod string;
 
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
+use std::cmp::Reverse;
 
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
@@ -28,8 +29,8 @@ use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 use self::rc::Helper;
 use crate::diagnostic::{LineIndex, Span};
 use crate::tir::{
-    Block, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt, Stream,
-    Type, UnaryOp,
+    Block, Class, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt,
+    Stream, Type, UnaryOp,
 };
 
 /// The `expect` message for a builder call: codegen positions the builder before it emits code.
@@ -58,7 +59,7 @@ pub(crate) fn compile<'ctx>(
     let void = context.void_type();
 
     // Every class type exists before any body is set, so a field can name any class.
-    let classes: Vec<StructType> = program
+    let types: Vec<StructType> = program
         .classes
         .iter()
         .map(|class| context.opaque_struct_type(&format!("sisu.{}", class.name)))
@@ -122,23 +123,22 @@ pub(crate) fn compile<'ctx>(
         path,
         source,
         lines: LineIndex::new(source),
-        classes,
+        classes: Vec::new(),
         functions: Vec::new(),
         locals: Vec::new(),
         types: Vec::new(),
         live: Vec::new(),
         loops: Vec::new(),
     };
-    // A class is `{ i64 count, fields... }`: field `i` is element `i + 1`.
-    for (class, ty) in program.classes.iter().zip(&codegen.classes) {
-        let body: Vec<BasicTypeEnum> = std::iter::once(i64_type.into())
-            .chain(class.fields.iter().map(|field| {
-                codegen
-                    .llvm_type(&field.ty)
-                    .expect("the checker should give every class field a value type, never `unit` or `never`")
-            }))
-            .collect();
+    // A class is `{ i64 count, fields... }`, its fields sorted by alignment.
+    let layouts: Vec<_> = program
+        .classes
+        .iter()
+        .map(|class| codegen.class_body(class))
+        .collect();
+    for (ty, (body, element)) in types.into_iter().zip(layouts) {
         ty.set_body(&body, false);
+        codegen.classes.push(ClassLayout { ty, element });
     }
     // Every class gets its helpers, used or not, as in milestone 2.
     for helper in [Helper::Release, Helper::Eq] {
@@ -277,6 +277,13 @@ struct LoopFrame<'ctx> {
     depth: usize,
 }
 
+/// A class's LLVM type, and where its fields sit in it.
+struct ClassLayout<'ctx> {
+    ty: StructType<'ctx>,
+    /// `element[i]` is the struct element of declared field `i`; element 0 is the count.
+    element: Box<[u32]>,
+}
+
 struct Codegen<'ctx, 'src> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -305,8 +312,8 @@ struct Codegen<'ctx, 'src> {
     source: &'src str,
     /// The line starts of `source`, so that a panic site costs a binary search.
     lines: LineIndex,
-    /// `%sisu.<Class>`, indexed by `ClassId`.
-    classes: Vec<StructType<'ctx>>,
+    /// `%sisu.<Class>` and its field elements, indexed by `ClassId`.
+    classes: Vec<ClassLayout<'ctx>>,
     /// Indexed by `FuncId`.
     functions: Vec<FunctionValue<'ctx>>,
     /// The current function's locals, indexed by `LocalId`; `None` until bound, and for `unit`.
@@ -346,9 +353,35 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
     }
 
+    /// The body of `class`, the count and then its fields, and the struct element of each
+    /// declared field. Fields go largest alignment first, so that less padding sits between them.
+    fn class_body(&self, class: &Class) -> (Vec<BasicTypeEnum<'ctx>>, Box<[u32]>) {
+        let fields: Vec<BasicTypeEnum> = class
+            .fields
+            .iter()
+            .map(|field| {
+                self.llvm_type(&field.ty)
+                    .expect("the checker should give every class field a value type, never `unit` or `never`")
+            })
+            .collect();
+        // Largest alignment first; `sort_by_key` is stable, so ties keep declared order.
+        let mut order: Vec<usize> = (0..fields.len()).collect();
+        order.sort_by_key(|&i| Reverse(self.target_data.get_abi_alignment(&fields[i])));
+        let body = std::iter::once(self.context.i64_type().into())
+            .chain(order.iter().map(|&i| fields[i]))
+            .collect();
+        let mut element = vec![0; fields.len()].into_boxed_slice();
+        for (k, &i) in order.iter().enumerate() {
+            element[i] = u32::try_from(k + 1).expect(
+                "a class should have fewer than 2^32 fields, since field indexes are `u32` in LLVM",
+            );
+        }
+        (body, element)
+    }
+
     /// The ABI size and alignment of an object of class `id`, from the target's data layout.
     fn class_layout(&self, id: ClassId) -> (u64, u32) {
-        let ty = &self.classes[id.0];
+        let ty = &self.classes[id.0].ty;
         (
             self.target_data.get_abi_size(ty),
             self.target_data.get_abi_alignment(ty),
@@ -360,12 +393,9 @@ impl<'ctx> Codegen<'ctx, '_> {
         let Type::Class(id) = ty else {
             unreachable!("the checker should only allow field access on a class-typed value")
         };
-        // Element 0 is the count.
-        let element = u32::try_from(index + 1).expect(
-            "a class should have fewer than 2^32 fields, since field indexes are `u32` in LLVM",
-        );
+        let layout = &self.classes[id.0];
         self.builder
-            .build_struct_gep(self.classes[id.0], object, element, "field")
+            .build_struct_gep(layout.ty, object, layout.element[index], "field")
             .expect("the checker should only emit a field index that the class has")
     }
 
@@ -1038,7 +1068,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `<path>:<line>:<col>` for the start of `span`.
     fn location(&self, span: Span) -> String {
-        let (line, col) = self.lines.line_col(self.source, span.start);
+        let (line, col) = self.lines.line_col(self.source, span.start());
         format!("{}:{line}:{col}", self.path)
     }
 

@@ -25,14 +25,16 @@ pub(crate) struct Parsed {
 /// Parses `lexed`, whose tokens end with `Eof` and whose brackets balance. An item with a
 /// syntax error, its own or the lexer's, is broken: it reports its earliest error, and the
 /// parser resumes after it.
-pub(crate) fn parse(lexed: Lexed) -> Parsed {
+pub(crate) fn parse(lexed: Lexed<'_>) -> Parsed {
     let Lexed {
+        source,
         tokens,
         diagnostics,
         comments,
         breaks,
     } = lexed;
     Parser {
+        source,
         tokens: &tokens,
         pos: 0,
         depth: 0,
@@ -57,7 +59,7 @@ pub(crate) fn parse_ok(source: &str) -> Program {
 
 /// The earlier of `a` and `b`; `a` on a tie.
 fn earlier(a: Diagnostic, b: Diagnostic) -> Diagnostic {
-    if b.span().start < a.span().start {
+    if b.span().start() < a.span().start() {
         b
     } else {
         a
@@ -113,6 +115,8 @@ fn compare_op(kind: &TokenKind) -> Option<CompareOp> {
 }
 
 struct Parser<'a> {
+    /// The text the token spans index.
+    source: &'a str,
     tokens: &'a [Token],
     pos: usize,
     /// While a node's children are parsed: the levels above them. When a parse function returns:
@@ -219,6 +223,11 @@ impl<'a> Parser<'a> {
             },
             TokenKind::Reserved(word) => DiagnosticKind::ReservedWord {
                 word,
+                at: found.span,
+            },
+            TokenKind::Int(_) => DiagnosticKind::Expected {
+                what: what.to_string(),
+                found: format!("`{}`", &self.source[found.span.range()]),
                 at: found.span,
             },
             _ => DiagnosticKind::Expected {
@@ -345,7 +354,7 @@ impl<'a> Parser<'a> {
             );
             // An unnamed item starts where its line does, so text skipped before its first
             // token is its own.
-            let line = previous.map_or(0, |t| t.span.end);
+            let line = previous.map_or(0, |t| t.span.end());
             let mut bytes = self.bytes(start, end);
             if header.is_none() {
                 bytes.start = line;
@@ -374,7 +383,7 @@ impl<'a> Parser<'a> {
                         diagnostics.push(error);
                         broken.push(header);
                     } else {
-                        let skipped = self.lexer_in(line..error.span().start).next().cloned();
+                        let skipped = self.lexer_in(line..error.span().start()).next().cloned();
                         diagnostics.push(skipped.unwrap_or(error));
                         checkable = false;
                     }
@@ -386,10 +395,10 @@ impl<'a> Parser<'a> {
         diagnostics.extend(
             self.lexer
                 .iter()
-                .filter(|d| outside(&d.span().start))
+                .filter(|d| outside(&d.span().start()))
                 .cloned(),
         );
-        diagnostics.sort_by_key(|d| d.span().start);
+        diagnostics.sort_by_key(|d| d.span().start());
         Parsed {
             program: Program {
                 items,
@@ -399,7 +408,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .iter()
                     .filter(|t| matches!(t.kind, TokenKind::Str(_) | TokenKind::StrHead(_)))
-                    .map(|t| t.span.start)
+                    .map(|t| t.span.start())
                     .collect(),
                 breaks: self.breaks.to_vec(),
             },
@@ -422,7 +431,7 @@ impl<'a> Parser<'a> {
         let TokenKind::Ident(name) = &self.tokens[start + 1].kind else {
             return None;
         };
-        let header = self.tokens[start].span.start..self.tokens[start + 2].span.start;
+        let header = self.tokens[start].span.start()..self.tokens[start + 2].span.start();
         if self.lexer_in(header).next().is_some() {
             return None;
         }
@@ -492,19 +501,19 @@ impl<'a> Parser<'a> {
         let line = self.tokens[start].kind == TokenKind::Const;
         let last = &self.tokens[end - 1];
         let stop = match (&last.kind, &self.tokens[end].kind) {
-            (TokenKind::RBrace, _) if !line => last.span.end,
+            (TokenKind::RBrace, _) if !line => last.span.end(),
             // `Eof` sits just after the last code, before any skipped text.
             (_, TokenKind::Eof) => usize::MAX,
-            _ => self.tokens[end].span.start,
+            _ => self.tokens[end].span.start(),
         };
-        self.tokens[start].span.start..stop
+        self.tokens[start].span.start()..stop
     }
 
     /// The lexer diagnostics that start in `bytes`, in order.
     fn lexer_in(&self, bytes: Range<usize>) -> impl Iterator<Item = &Diagnostic> {
         self.lexer
             .iter()
-            .filter(move |d| bytes.contains(&d.span().start))
+            .filter(move |d| bytes.contains(&d.span().start()))
     }
 
     /// Parses with `parse` the item or member that starts here and runs to `end`. Its error is
@@ -541,7 +550,7 @@ impl<'a> Parser<'a> {
             .find(|d| {
                 !methods
                     .iter()
-                    .any(|m: &Range<usize>| m.contains(&d.span().start))
+                    .any(|m: &Range<usize>| m.contains(&d.span().start()))
             })
             .cloned();
         match (parsed, outside) {
@@ -655,6 +664,7 @@ impl<'a> Parser<'a> {
     /// shown as `name: Type` or, when no field follows, that placeholder.
     fn field_after_let(&self) -> LetField {
         let mut rest = Parser {
+            source: self.source,
             tokens: self.tokens,
             pos: self.pos + 1,
             depth: self.depth,
@@ -671,7 +681,10 @@ impl<'a> Parser<'a> {
         match field() {
             Ok(_) if matches!(rest.peek().kind, TokenKind::Newline | TokenKind::RBrace) => {
                 LetField::Whole {
-                    remove: Span::new(self.peek().span.start, self.tokens[self.pos + 1].span.start),
+                    remove: Span::new(
+                        self.peek().span.start(),
+                        self.tokens[self.pos + 1].span.start(),
+                    ),
                 }
             }
             Ok(field) => LetField::Other { mutable, field },
@@ -903,7 +916,7 @@ impl<'a> Parser<'a> {
         );
         // `lacks_else` means the statement ends with the `}` just before the `else` and any
         // line breaks. The join deletes the gap, so a comment in it makes the join a guess.
-        let gap = self.last_code_end()..at.start;
+        let gap = self.last_code_end()..at.start();
         let join = (lacks_else && takes_block).then(|| Join {
             gap: Span::new(gap.start, gap.end),
             certain: !self.comments.iter().any(|c| gap.contains(c)),
@@ -916,7 +929,7 @@ impl<'a> Parser<'a> {
         self.tokens[..self.pos]
             .iter()
             .rfind(|t| t.kind != TokenKind::Newline)
-            .map_or(0, |t| t.span.end)
+            .map_or(0, |t| t.span.end())
     }
 
     /// The span of the token just consumed.
@@ -1155,15 +1168,12 @@ impl<'a> Parser<'a> {
         let start = self.bump().span;
         if matches!(op, UnaryOp::Neg) && self.at_min_literal() {
             // `i64::MIN` has no positive twin, so `-9223372036854775808` is one literal.
-            let TokenKind::Int { text, .. } = self.peek().kind.clone() else {
-                unreachable!("`at_min_literal` saw an `Int`")
-            };
             let literal = self.bump().span;
             return Ok(Expr {
                 span: start.to(literal),
                 kind: ExprKind::Int {
                     value: i64::MIN,
-                    text: format!("-{text}"),
+                    literal,
                 },
             });
         }
@@ -1181,13 +1191,8 @@ impl<'a> Parser<'a> {
     /// `?.` or `[` would apply to the literal before the `-` does, so that literal is too large.
     fn at_min_literal(&self) -> bool {
         // `Int` is never `Eof`, so the token after it exists.
-        matches!(
-            self.peek().kind,
-            TokenKind::Int {
-                value: MIN_MAGNITUDE,
-                ..
-            }
-        ) && !starts_postfix(&self.tokens[self.pos + 1].kind)
+        matches!(self.peek().kind, TokenKind::Int(MIN_MAGNITUDE))
+            && !starts_postfix(&self.tokens[self.pos + 1].kind)
     }
 
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
@@ -1285,11 +1290,14 @@ impl<'a> Parser<'a> {
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.peek().clone();
         let kind = match token.kind {
-            TokenKind::Int { value, text } => {
+            TokenKind::Int(value) => {
                 // `MIN_MAGNITUDE` fits only as the operand of a `-`, which `unary` takes first.
                 let value = i64::try_from(value).map_err(|_| literal_too_large(token.span))?;
                 self.bump();
-                ExprKind::Int { value, text }
+                ExprKind::Int {
+                    value,
+                    literal: token.span,
+                }
             }
             TokenKind::True | TokenKind::False => {
                 self.bump();
@@ -1380,8 +1388,10 @@ impl<'a> Parser<'a> {
         // token ends the line, one on a later line is the next token's business.
         // `breaks` is sorted, so the lookup is a binary search, and only a `!` pays for it.
         let same_line = matches!(next(0).kind, TokenKind::Bang) && {
-            let at = self.breaks.partition_point(|&b| b < keyword.end);
-            self.breaks.get(at).is_none_or(|&b| b >= next(0).span.start)
+            let at = self.breaks.partition_point(|&b| b < keyword.end());
+            self.breaks
+                .get(at)
+                .is_none_or(|&b| b >= next(0).span.start())
         };
         let (at, delete) = match (&next(0).kind, &next(1).kind, &next(2).kind) {
             (TokenKind::Bang, TokenKind::LParen, TokenKind::RParen) if same_line => {
@@ -1603,7 +1613,7 @@ mod tests {
 
     fn parse_err(src: &str) -> (Code, usize, usize) {
         let d = parse_diagnostic(src);
-        let (line, col) = line_col(src, d.span().start);
+        let (line, col) = line_col(src, d.span().start());
         (d.code(), line, col)
     }
 
@@ -1673,7 +1683,7 @@ mod tests {
             panic!("expected an expression statement")
         };
         assert_eq!(sum.to_string(), "(- 1 -9223372036854775808)");
-        assert_eq!((sum.span.start, sum.span.end), (12, 36));
+        assert_eq!((sum.span.start(), sum.span.end()), (12, 36));
     }
 
     /// The magnitude of `i64::MIN` is `i64::MIN` after a `-` in any base, and too large without.
@@ -1811,7 +1821,7 @@ mod tests {
         ] {
             let d = parse_diagnostic(src);
             assert_eq!(d.code(), Code::ElseOnNewLine, "{src}");
-            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(line_col(src, d.span().start()), position, "{src}");
             assert_eq!(
                 fix_edits(&d),
                 Some((true, vec![(gap.0, gap.1, " ".to_string())])),
@@ -1837,7 +1847,7 @@ mod tests {
         let src = "fn main() {\n    if a {\n    } // done\n    else {\n    }\n}";
         let d = parse_diagnostic(src);
         assert_eq!(
-            (d.code(), line_col(src, d.span().start)),
+            (d.code(), line_col(src, d.span().start())),
             (Code::ElseOnNewLine, (4, 5))
         );
         assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
@@ -2072,7 +2082,7 @@ mod tests {
             let full = format!("fn main() {{ {src} }}");
             assert_eq!(parse_err(&full), (Code::AssignToSelf, 1, 13), "{src}");
             let span = parse_diagnostic(&full).span();
-            assert_eq!(span.end - span.start, 4, "{src}");
+            assert_eq!(span.end() - span.start(), 4, "{src}");
         }
     }
 
@@ -2405,7 +2415,7 @@ mod tests {
             let d = parse_diagnostic(src);
             assert_eq!(d.code(), Code::OptionalNests, "{src}");
             assert_eq!(d.span(), span, "{src}");
-            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(line_col(src, d.span().start()), position, "{src}");
         }
     }
 
@@ -2511,7 +2521,7 @@ mod tests {
         ] {
             let d = parse_diagnostic(src);
             assert_eq!(d.code(), Code::Semicolon, "{src}");
-            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(line_col(src, d.span().start()), position, "{src}");
             assert_eq!(
                 fix_edits(&d),
                 Some((true, vec![(at, at + 1, String::new())])),
@@ -2559,7 +2569,7 @@ mod tests {
         let src = "fn main() { let x = 1;; }";
         let d = parse_diagnostic(src);
         assert_eq!(d.code(), Code::Semicolon);
-        assert_eq!(line_col(src, d.span().start), (1, 22));
+        assert_eq!(line_col(src, d.span().start()), (1, 22));
         assert!(d.help().is_none());
         assert_eq!(fix_edits(&d), None);
     }
@@ -2576,7 +2586,7 @@ mod tests {
         ] {
             let d = parse_diagnostic(src);
             assert_eq!(d.code(), Code::Expected, "{src}");
-            assert_eq!(line_col(src, d.span().start), (1, col), "{src}");
+            assert_eq!(line_col(src, d.span().start()), (1, col), "{src}");
             assert!(d.help().is_none(), "{src}");
             assert_eq!(fix_edits(&d), None, "{src}");
         }
@@ -2748,7 +2758,7 @@ mod tests {
         ] {
             let d = parse_diagnostic(src);
             assert_eq!(d.code(), Code::FieldLet, "{src}");
-            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(line_col(src, d.span().start()), position, "{src}");
             assert_eq!(
                 fix_edits(&d),
                 Some((true, vec![(edit.0, edit.1, String::new())])),
@@ -2780,7 +2790,7 @@ mod tests {
         ] {
             let d = parse_diagnostic(src);
             assert_eq!(d.code(), Code::FieldLet, "{src}");
-            assert_eq!(line_col(src, d.span().start), position, "{src}");
+            assert_eq!(line_col(src, d.span().start()), position, "{src}");
             assert!(d.help().is_some(), "{src}");
             assert_eq!(fix_edits(&d), None, "{src}");
         }
@@ -2791,7 +2801,7 @@ mod tests {
         let src = "class P {\n    x: i64, y: i64\n}";
         let d = parse_diagnostic(src);
         assert_eq!(d.code(), Code::FieldComma);
-        assert_eq!(line_col(src, d.span().start), (2, 11));
+        assert_eq!(line_col(src, d.span().start()), (2, 11));
         assert!(d.help().is_some());
         assert_eq!(fix_edits(&d), None);
     }
@@ -2818,7 +2828,7 @@ mod tests {
         ] {
             let d = parse_diagnostic(src);
             assert_eq!(d.code(), Code::MutSelf, "{src}");
-            assert_eq!(line_col(src, d.span().start), (2, 10), "{src}");
+            assert_eq!(line_col(src, d.span().start()), (2, 10), "{src}");
             assert_eq!(
                 fix_edits(&d),
                 Some((certain, vec![(edit.0, edit.1, String::new())])),
@@ -2853,7 +2863,7 @@ mod tests {
         let src = "fn f(a: i64, mut n: i64) {}";
         let d = parse_diagnostic(src);
         assert_eq!(d.code(), Code::MutParameter);
-        assert_eq!(line_col(src, d.span().start), (1, 14));
+        assert_eq!(line_col(src, d.span().start()), (1, 14));
         // Removing the `mut` would make the body assign to a parameter.
         assert!(d.help().is_some());
         assert_eq!(fix_edits(&d), None);

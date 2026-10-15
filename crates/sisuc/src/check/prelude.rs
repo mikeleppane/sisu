@@ -12,7 +12,7 @@ use crate::tir::{self, Stream, Type};
 /// The prelude's names.
 pub(super) const PRELUDE: [&str; 4] = ["print", "eprint", "panic", "read_line"];
 
-impl Checker {
+impl Checker<'_> {
     /// A call of the prelude function `callee`; `None` when `callee` names none.
     pub(super) fn prelude_call(
         &mut self,
@@ -24,7 +24,7 @@ impl Checker {
             "print" => Some(self.print(span, args, Stream::Stdout)),
             "eprint" => Some(self.print(span, args, Stream::Stderr)),
             // The panic is the callee's, not the parentheses' around the call.
-            "panic" => Some(self.panic(Span::new(callee.span.start, span.end), args)),
+            "panic" => Some(self.panic(Span::new(callee.span.start(), span.end()), args)),
             "read_line" => Some(self.read_line(span, args)),
             _ => None,
         }

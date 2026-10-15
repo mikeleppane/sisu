@@ -132,7 +132,9 @@ enum LoopContext {
     Header(Span),
 }
 
-struct Checker {
+struct Checker<'src> {
+    /// The text the program's spans index.
+    source: &'src str,
     /// The first function of each name, and every broken one.
     function_ids: FxHashMap<Symbol, Declared<tir::FuncId>>,
     /// Indexed by `FuncId`, so a duplicate function has a signature of its own.
@@ -173,8 +175,12 @@ struct Checker {
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
-pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagnostic>) {
+pub(crate) fn check(
+    program: &ast::Program,
+    source: &str,
+) -> (Option<tir::Program>, Vec<Diagnostic>) {
     let mut checker = Checker {
+        source,
         function_ids: FxHashMap::default(),
         signatures: Vec::new(),
         classes: Vec::new(),
@@ -207,7 +213,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         .collect();
     let classes = checker.classes.iter().map(lower_class).collect();
     let mut diagnostics = checker.diagnostics;
-    diagnostics.sort_by_key(|d| d.span().start);
+    diagnostics.sort_by_key(|d| d.span().start());
     let failed = diagnostics.iter().any(|d| d.severity() == Severity::Error);
     let broken = !program.broken.is_empty()
         || program.items.iter().any(
@@ -262,7 +268,7 @@ fn block_type(checked: &CheckedBlock) -> Option<&Type> {
     }
 }
 
-impl Checker {
+impl Checker<'_> {
     /// Records a coded diagnostic.
     fn report(&mut self, kind: DiagnosticKind) {
         self.diagnostics.push(kind.into());
@@ -558,7 +564,7 @@ impl Checker {
                 } else if let Some(&Declared::Known(id)) = self.class_ids.get(name) {
                     Type::Class(id)
                 } else {
-                    let span = Span::new(ty.span.start, ty.span.start + name.as_str().len());
+                    let span = Span::new(ty.span.start(), ty.span.start() + name.as_str().len());
                     let types =
                         ["i64", "u8", "bool", "char", "string"].map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
@@ -632,7 +638,7 @@ impl Checker {
                 if *want != Type::Unit && *got != Type::Never && got != want =>
             {
                 let d = if *got == Type::Unit {
-                    let end = f.body.span.end;
+                    let end = f.body.span.end();
                     DiagnosticKind::BodyHasNoValue {
                         function: f.name.name.to_string(),
                         want: self.type_name(want),

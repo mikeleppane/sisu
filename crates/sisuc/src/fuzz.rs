@@ -32,16 +32,16 @@ fn assert_spans(source: &str, diagnostics: &[Diagnostic]) {
         let edits = d.fixes().iter().flat_map(Fix::edits).map(Edit::span);
         for span in std::iter::once(d.span()).chain(secondary).chain(edits) {
             assert!(
-                span.start <= span.end,
+                span.start() <= span.end(),
                 "{code}: span {span:?} starts after it ends, in a source of {len} bytes"
             );
             // `is_char_boundary` is false past the end, so this also rejects such a span.
             assert!(
-                source.is_char_boundary(span.start),
+                source.is_char_boundary(span.start()),
                 "{code}: span {span:?} starts inside a char, in a source of {len} bytes"
             );
             assert!(
-                source.is_char_boundary(span.end),
+                source.is_char_boundary(span.end()),
                 "{code}: span {span:?} ends inside a char, in a source of {len} bytes"
             );
         }
@@ -63,8 +63,8 @@ fn assert_spans(source: &str, diagnostics: &[Diagnostic]) {
 /// Edit `a`, listed before edit `b` in one fix, conflicts with it: they overlap, or `b` inserts at
 /// the start of a non-empty `a`, where `Fix::apply` would let `a` replace the insertion.
 fn conflict(a: Span, b: Span) -> bool {
-    (a.start < b.end && b.start < a.end)
-        || (b.start == b.end && b.start == a.start && a.start < a.end)
+    (a.start() < b.end() && b.start() < a.end())
+        || (b.start() == b.end() && b.start() == a.start() && a.start() < a.end())
 }
 
 #[cfg(test)]

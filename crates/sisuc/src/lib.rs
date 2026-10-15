@@ -16,7 +16,7 @@ mod tir;
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, ErrorKind, IsTerminal, Stderr, Write};
+use std::io::{self, ErrorKind, IsTerminal, Read, Stderr, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -201,13 +201,35 @@ fn explain(reporter: &mut Report, code: &str) -> ExitCode {
     }
 }
 
-/// Reads the bytes of `input`, or reports why it cannot.
+/// Reads the bytes of `input`, at most `MAX_SOURCE` of them, or reports why it cannot.
 fn read_bytes(reporter: &mut Report, input: &Path) -> Option<Vec<u8>> {
-    fs::read(input)
-        .inspect_err(|e| {
-            reporter.tool_error(&format!("cannot read {}: {e}", input.to_string_lossy()));
-        })
-        .ok()
+    let read = fs::File::open(input)
+        .and_then(|file| read_at_most(&file, file.metadata()?.len(), front_end::MAX_SOURCE));
+    let path = input.to_string_lossy();
+    match read {
+        Ok(Some(bytes)) => return Some(bytes),
+        Ok(None) => reporter.tool_error(&format!(
+            "cannot read {path}: the file is larger than 1 GiB"
+        )),
+        Err(e) => reporter.tool_error(&format!("cannot read {path}: {e}")),
+    }
+    None
+}
+
+/// The bytes of `reader`, or `None` if there are more than `limit`. `len` is the length the
+/// file's metadata gives, 0 for a pipe: a longer one is rejected before reading, and it sizes
+/// the buffer. The read stops one byte past `limit`, for a source whose length `len` misses.
+fn read_at_most(reader: impl Read, len: u64, limit: usize) -> io::Result<Option<Vec<u8>>> {
+    let limit64 =
+        u64::try_from(limit).expect("a `usize` should fit in `u64` on every supported target");
+    if len > limit64 {
+        return Ok(None);
+    }
+    let capacity = usize::try_from(len)
+        .expect("`len` is at most `limit`, a `usize`, so it should fit in `usize`");
+    let mut bytes = Vec::with_capacity(capacity);
+    reader.take(limit64 + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() <= limit).then_some(bytes))
 }
 
 /// Reads `input`, or reports why it cannot. Text that is not UTF-8 is a diagnostic at its first
@@ -345,6 +367,9 @@ pub(crate) struct Checked {
 
 /// Decodes `bytes`, runs the front end on the source, and reports every diagnostic as read
 /// from `path`. Bytes that are not UTF-8 are the one `InvalidUtf8` diagnostic instead.
+///
+/// `bytes` are at most `MAX_SOURCE` long, so every span offset fits in a `u32`: `read_bytes`
+/// ensures it for the command line, and the fuzz target's `-max_len=16384` for fuzzing.
 pub(crate) fn check_bytes<W: Write>(
     reporter: &mut Reporter<W>,
     path: &str,
@@ -484,6 +509,32 @@ fn create_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_at_most_stops_one_past_the_limit() {
+        struct Failing;
+        impl Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("fails"))
+            }
+        }
+
+        let read = |len: u64, bytes: &[u8]| read_at_most(bytes, len, 4).expect("reads");
+        // The metadata length, then the bytes read when it says 0, as for a pipe.
+        assert_eq!(read(4, b"abcd").as_deref(), Some(&b"abcd"[..]));
+        assert_eq!(read(5, b""), None);
+        assert_eq!(read(0, b""), Some(vec![]));
+        assert_eq!(read(0, b"abcd").as_deref(), Some(&b"abcd"[..]));
+        assert_eq!(read(0, b"abcde"), None);
+
+        // A longer stream is read only one byte past the limit.
+        let mut long = io::Cursor::new(vec![0; 64]);
+        assert_eq!(read_at_most(&mut long, 0, 4).expect("reads"), None);
+        assert_eq!(long.position(), 5);
+
+        let e = read_at_most(Failing, 0, 4).expect_err("the read fails");
+        assert_eq!(e.kind(), ErrorKind::Other);
+    }
 
     #[cfg(unix)]
     #[test]

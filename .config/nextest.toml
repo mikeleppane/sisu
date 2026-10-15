@@ -55,6 +55,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'binary(programs) & test(words_is_linear)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Without a size check, sisuc reads the whole 1 GiB file and reports each of its NUL bytes, so
+# this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(oversized_input_is_a_tool_error)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 [[profile.default.scripts]]
 filter = "package(sisuc) & kind(test)"
 setup = "build-runtime"
