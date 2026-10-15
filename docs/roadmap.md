@@ -36,12 +36,14 @@ These are adopted. Together they give Sisu a working imperative core.
 - optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
   `while let`
 - `u8`, a byte whose arithmetic panics on overflow like `i64`'s, and the
-  conversions `u8(...)` and `i64(...)`
+  conversions `i64(...)` and `u8(n)`, which is a `u8?` that is `None` when
+  `n` does not fit, with no panic
 - arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
   read and written by index, compared with `==`, and walked with `for x in xs`
   or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
 - `char`, one Unicode scalar value such as `'ä'`, compared by code point and
-  converted with `i64(c)` and `char(n)`
+  converted with `i64(c)` and `char(n)`, a `char?` that is `None` for a
+  surrogate or a value above `0x10FFFF`, with no panic
 - `string`: UTF-8 literals with escapes, `+` and `+=`, comparison by bytes,
   `len()` in bytes, and interpolation such as `"n = {n}"`; `+=` on a string
   that nothing else holds appends in place, whether it is a local, a `mut`
@@ -60,6 +62,9 @@ These are adopted. Together they give Sisu a working imperative core.
 - `let _ = e` and `for _ in ...`, which drop a value without a name;
   shadowing in the same scope; `0x`, `0b` and `0o` integer literals; block
   expressions such as `let a = { ... }`; and top-level `const`
+- a warning, `W0004`, for an expression statement whose value nothing uses,
+  such as a bare `u8(n)` or `twice(21)`; `let _ = e` drops the value on
+  purpose
 - error messages in the style of `rustc`, pointing at the code, each with a
   stable code that `sisuc --explain` describes, a JSON form, and fixes where
   the checker can offer one
@@ -469,15 +474,16 @@ the decisions it needs are settled:
   `let mut` replacing `var` (land it first: it touches every test program),
   reserved keywords, `const`, `_`, hexadecimal literals, block expressions
   and `todo`. All but `todo` landed in milestone 4, stage 1; `todo` landed
-  with `panic("msg")` in milestone 5, stage 1, so `test` blocks can panic. Scheduled right after milestone 6:
-  tests in the source file, `test "add handles negatives" { assert(add(-1, 1) == 0) }`,
-  with a built-in `assert`. A normal build drops `test` blocks; `sisuc --test`,
-  later `sisu test`, builds a `main` that runs each one and reports which
-  panicked. A test is in the same module, so it sees private names. A panic
-  ends the whole process (`sisu_panic`), so the spec decides how the other
-  tests still run: one child process per test, or stopping at the first
-  failure. Tests sit next to the code, as in Rust and Zig, with no test module
-  or attribute, and the compiler's own `tests/run` cases can use `assert`.
+  with `panic("msg")` in milestone 5, stage 1, so `test` blocks can panic.
+  Scheduled right after milestone 6: tests in the source file,
+  `test "add handles negatives" { assert(add(-1, 1) == 0) }`, with a built-in
+  `assert`. A normal build drops `test` blocks; `sisuc --test`, later
+  `sisu test`, builds a `main` that runs each one and reports which panicked.
+  A test is in the same module, so it sees private names. A panic ends the
+  whole process (`sisu_panic`), so the spec decides how the other tests still
+  run: one child process per test, or stopping at the first failure. Tests
+  sit next to the code, as in Rust and Zig, with no test module or attribute,
+  and the compiler's own `tests/run` cases can use `assert`.
 - **Tooling**: everything under "Early tooling", and from "Later and stretch
   goals" parser error recovery, the lints whose features exist, linking with
   `lld`, and debug info.
@@ -1119,8 +1125,9 @@ standard library. The milestones after 12 then follow from it.
     do. Code after the catch can see class objects left half changed, and
     it is a second way to handle errors beside `Result`.
 
-  Milestone 6's `test` blocks do not wait for this: running each test in a
-  child process isolates its panic with no runtime support.
+  The `test` blocks scheduled right after milestone 6 do not wait for this:
+  running each test in a child process isolates its panic with no runtime
+  support.
 - **Nested optionals.** Decide before milestone 8. Milestone 2 rejects
   `T??` and treats an optional of an optional as the same optional. The
   library `Option<Option<T>>` nests: a `Map<K, V?>` lookup returns one. Decide
@@ -1139,9 +1146,10 @@ standard library. The milestones after 12 then follow from it.
     `Hash` or `Ord`, and only values (numbers, `bool`, strings, enums,
     records and tuples) do. A value that holds a class reference needs the
     same rule.
-  - Floats: NaN is not equal to itself, and `-0.0 == 0.0`. Decide whether
-    `f64` implements `Ord` and `Hash`, or a total order is used, before
-    "built-in types implement both" is promised.
+  - Floats: [ADR 0017](adr/0017-floats-follow-ieee-754.md) settles equality:
+    NaN is not equal to itself, and `-0.0 == 0.0`. `Ord` and `Hash` stay
+    open: decide whether `f64` implements them, or a total order is used,
+    before "built-in types implement both" is promised.
   - Function values: whether they have `==` and `print`, and so what a
     record or class that holds one gets.
 - **Integer widths and wrapping.** Decide before milestone 8. Sisu has
