@@ -60,6 +60,8 @@ fn unused_value_warns() {
         ("while c { f() }", &[(15, "f()")]),
         ("while let v = o { v }", &[(23, "v")]),
         ("for x in xs { x }", &[(19, "x")]),
+        // A block is not the value either: its tail is.
+        ("({ 1 })", &[(8, "1")]),
         // A `?.` call lowers to an `if let`, whose value is the call's, as an optional.
         ("a?.k()", &[(5, "a?.k()")]),
         ("\"a\" + \"b\"", &[(5, "\"a\" + \"b\"")]),
