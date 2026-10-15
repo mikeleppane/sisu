@@ -102,7 +102,7 @@ impl Checker {
             literal: matches!(e.kind, ExprKind::Str(_) | ExprKind::Interpolate(_))
                 && self.quotes.binary_search(&e.span.start).is_ok(),
         };
-        let guess = !(compound || self.in_constant || !printed || commented || lines);
+        let guess = !(compound || self.in_constant.is_some() || !printed || commented || lines);
         let other = if e.span == lhs.span {
             rhs.span
         } else {
@@ -117,6 +117,7 @@ impl Checker {
                 lhs: operand(lhs),
                 rhs: operand(rhs),
             }),
+            conversion: false,
         }
         .into()
     }
@@ -216,7 +217,8 @@ impl Checker {
 
     /// `to(arg)`: `i64(x)` takes a `u8` or a `char`; `u8(x)` and `char(x)` take an `i64`; and
     /// `string(x)` takes a `[char]`. The argument of a scalar conversion expects no type, so a
-    /// literal one is an `i64`; `string([])` is the empty string.
+    /// literal one is an `i64`; `string([])` is the empty string. `u8(x)` and `char(x)` can
+    /// fail, so they give an optional, and in a constant they are an error, typed as `to`.
     pub(super) fn convert(&mut self, span: Span, to: Type, args: &[ast::Arg]) -> Checked {
         let labeled = self.labels(args);
         let [arg] = args else {
@@ -271,9 +273,22 @@ impl Checker {
                     at: arg.value.span,
                     other: None,
                     fix: None,
+                    conversion: false,
                 }
                 .into(),
             },
+            _ if matches!(to, Type::U8 | Type::Char) && self.in_constant.is_some() => {
+                let fix = self.in_constant.as_ref().and_then(|site| {
+                    let arg = checked.as_ref().ok()?;
+                    site.literal(span, &to, arg)
+                });
+                self.report(DiagnosticKind::ConversionInConstant {
+                    to: self.type_name(&to),
+                    at: span,
+                    fix,
+                });
+                return Err(Poisoned::typed(to));
+            }
             _ => {
                 let node = if to == Type::String {
                     tir::ExprKind::FromChars
@@ -284,7 +299,12 @@ impl Checker {
                     .ok()
                     .filter(|_| !labeled)
                     .map(|arg| node(Box::new(arg)));
-                return typed(span, to, labeled, kind);
+                let ty = if matches!(to, Type::U8 | Type::Char) {
+                    Type::Optional(Box::new(to))
+                } else {
+                    to
+                };
+                return typed(span, ty, labeled, kind);
             }
         };
         self.diagnostics.push(d);
@@ -321,6 +341,7 @@ impl Checker {
                 call,
                 arg: arg.span,
             }),
+            conversion: false,
         }
         .into()
     }

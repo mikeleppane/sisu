@@ -4,7 +4,7 @@ fn main() {
     let n = 4
     print(1)                  // stdout: 1
     eprint(2)                 // stderr: 2
-    eprint(u8(3))             // stderr: 3
+    eprint(u8(3) ?? 0)        // stderr: 3
     eprint(true)              // stderr: true
     eprint('ä')               // stderr: ä
     eprint("a" + "b")         // stderr: ab

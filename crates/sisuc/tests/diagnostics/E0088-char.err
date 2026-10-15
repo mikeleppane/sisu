@@ -1,8 +1,0 @@
-error[E0088]: value is not a valid `char`
- --> E0088-char.sisu:1:19
-  |
-1 | const SURROGATE = char(55296)
-  |                   ^^^^^^^^^^^
-
-sisuc: 1 error
-sisuc: for more on a code, run `sisuc --explain <code>`: E0088

@@ -28,8 +28,8 @@ fn only_fix<'a>(
 #[test]
 fn char_values() {
     contains(
-        "fn f(c: char, m: char?) {\n    print(c)\n    print(i64(c))\n    print(char(228))\n    print(c < 'z' <= c)\n    print(m == 'a')\n    let cs: [char] = ['a']\n}\nfn main() {\n    let c = 'ä'\n}",
-        &["'ä'", "(i64 c#0)", "(char 228)"],
+        "fn f(c: char, m: char?) {\n    print(c)\n    print(i64(c))\n    let _ = char(228)\n    print(c < 'z' <= c)\n    print(m == 'a')\n    let cs: [char] = ['a']\n}\nfn main() {\n    let c = 'ä'\n}",
+        &["'ä'", "(i64 c#0)", "(char? 228)"],
     );
 }
 
@@ -46,161 +46,80 @@ fn char_comparison_takes_chars() {
     );
 }
 
+/// Arithmetic on a `char` has no fix: converting the result back gives a `char?`.
 #[test]
 fn char_arithmetic() {
-    let edit = |line, col, replacement: &str| (line, col, "", replacement.to_owned());
     let rows = [
-        (
-            "fn f(c: char) {\n    print(c + 1)\n}",
-            (2, 13, "+"),
-            Some(vec![
-                edit(2, 11, "char(i64("),
-                edit(2, 12, ")"),
-                edit(2, 16, ")"),
-            ]),
-        ),
-        (
-            "fn f(c: char) {\n    print(1 + c)\n}",
-            (2, 13, "+"),
-            Some(vec![
-                edit(2, 11, "char("),
-                edit(2, 15, "i64("),
-                edit(2, 16, "))"),
-            ]),
-        ),
-        (
-            "fn f(c: char) {\n    print(c * c)\n}",
-            (2, 13, "*"),
-            Some(vec![
-                edit(2, 11, "char(i64("),
-                edit(2, 12, ")"),
-                edit(2, 15, "i64("),
-                edit(2, 16, "))"),
-            ]),
-        ),
-        // A compound assignment is a statement, which a rewrite would break.
+        ("fn f(c: char) {\n    let d = c + 1\n}", (2, 15, "+")),
+        ("fn f(c: char) {\n    print(c + 1)\n}", (2, 13, "+")),
+        ("fn f(c: char) {\n    print(1 + c)\n}", (2, 13, "+")),
+        ("fn f(c: char) {\n    print(c * c)\n}", (2, 13, "*")),
+        // A compound assignment is reported at its operator.
         (
             "fn f(c: char) {\n    let mut d = c\n    d += 1\n}",
             (3, 7, "+="),
-            None,
         ),
         (
             "class P {\n    mut c: char\n}\nfn f(p: P) {\n    p.c -= 1\n}",
             (5, 9, "-="),
-            None,
         ),
         // A `char` on the right of a number's compound assignment is reported at the operator,
         // in each place the number can be: a local, a field and an element.
         (
             "fn f(c: char) {\n    let mut n = 1\n    n += c\n}",
             (3, 7, "+="),
-            None,
         ),
         (
             "class P {\n    mut n: i64\n}\nfn f(p: P, c: char) {\n    p.n += c\n}",
             (5, 9, "+="),
-            None,
         ),
         (
             "fn f(c: char) {\n    let mut a = [1]\n    a[0] += c\n}",
             (3, 10, "+="),
-            None,
         ),
         // A `char` place is reported once, whatever stands on the right.
         (
             "fn f(c: char) {\n    let mut d = c\n    d += c\n}",
             (3, 7, "+="),
-            None,
         ),
         (
             "fn f(c: char) {\n    let mut a = [c]\n    a[0] *= 2\n}",
             (3, 10, "*="),
-            None,
         ),
         // A place nested through a field and an element.
         (
             "class P {\n    mut cs: [char]\n}\nfn f(p: P) {\n    p.cs[0] += 1\n}",
             (5, 13, "+="),
-            None,
         ),
         // A compound assignment nested in the value leaves the outer one a statement still.
         (
             "fn f(c: char) {\n    let mut n = 1\n    let mut m = 1\n    n += {\n        m += 1\n        c\n    }\n}",
             (4, 7, "+="),
-            None,
         ),
         (
             "fn f(c: char) {\n    let mut n = 1\n    let mut m = 1\n    n += if true {\n        m += 1\n        c\n    } else {\n        c\n    }\n}",
             (4, 7, "+="),
-            None,
         ),
     ];
-    for (src, pos, edits) in rows {
+    for (src, pos) in rows {
         let src = with_main(src);
-        let (d, found) = only_fix(&src, Code::ArithmeticOnChar, pos);
-        match edits {
-            Some(edits) => {
-                assert_eq!(found, [(false, edits)], "{src}");
-                // Whatever else the guess leaves, it is no longer arithmetic on a `char`.
-                let result = applied(&src, &d);
-                assert!(
-                    !diags(&result)
-                        .iter()
-                        .any(|d| d.code() == Code::ArithmeticOnChar)
-                );
-            }
-            None => assert_eq!(found, [], "{src}"),
-        }
+        let (_, found) = only_fix(&src, Code::ArithmeticOnChar, pos);
+        assert_eq!(found, [], "{src}");
     }
 }
 
-/// A compound assignment inside an ordinary `+` is reported without a fix, and the `+` keeps
-/// its guess.
+/// A compound assignment inside an ordinary `+` is reported as well as the `+`.
 #[test]
 fn char_compound_inside_arithmetic() {
-    let src = with_main(
-        "fn f(c: char) {\n    let mut n = 1\n    print(c + {\n        n += c\n        1\n    })\n}",
-    );
-    let ds = diags(&src);
-    let found: Vec<_> = ds
-        .iter()
-        .map(|d| {
-            (
-                d.code(),
-                at(&src, d.span()),
-                fixes(&src, d).iter().map(|f| f.0).collect::<Vec<_>>(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        found,
-        [
-            (Code::ArithmeticOnChar, (3, 13), vec![false]),
-            (Code::ArithmeticOnChar, (4, 11), vec![]),
-        ]
-    );
-}
-
-/// The rewrite is what the types need, in each place the operator stands.
-#[test]
-fn char_arithmetic_fix_types() {
-    for (src, at, fixed) in [
-        (
-            "fn f(c: char) {\n    let d = c + 1\n}",
-            (2, 15, "+"),
-            "fn f(c: char) {\n    let d = char(i64(c) + 1)\n}",
+    codes(
+        &with_main(
+            "fn f(c: char) {\n    let mut n = 1\n    print(c + {\n        n += c\n        1\n    })\n}",
         ),
-        (
-            "fn f(c: char, n: i64) {\n    let d: char = n - c\n}",
-            (2, 21, "-"),
-            "fn f(c: char, n: i64) {\n    let d: char = char(n - i64(c))\n}",
-        ),
-    ] {
-        let (src, fixed) = (with_main(src), with_main(fixed));
-        let d = diagnostic(&src, Code::ArithmeticOnChar, at, &[]);
-        assert_eq!(applied(&src, &d), fixed);
-        clean(&fixed);
-    }
+        &[
+            (Code::ArithmeticOnChar, (3, 13)),
+            (Code::ArithmeticOnChar, (4, 11)),
+        ],
+    );
 }
 
 #[test]
@@ -262,16 +181,16 @@ fn char_conversions() {
             vec![(true, vec![edit(11, "char(", ""), edit(17, ")", "")])],
         ),
         (
-            "print(char(b))",
-            (Code::Mismatch, (2, 16, "b")),
-            "print(char(i64(b)))",
-            vec![(false, vec![edit(16, "", "i64("), edit(17, "", ")")])],
+            "let _ = char(b)",
+            (Code::Mismatch, (2, 18, "b")),
+            "let _ = char(i64(b))",
+            vec![(false, vec![edit(18, "", "i64("), edit(19, "", ")")])],
         ),
         (
-            "print(u8(c))",
-            (Code::Mismatch, (2, 14, "c")),
-            "print(u8(i64(c)))",
-            vec![(false, vec![edit(14, "", "i64("), edit(15, "", ")")])],
+            "let _ = u8(c)",
+            (Code::Mismatch, (2, 16, "c")),
+            "let _ = u8(i64(c))",
+            vec![(false, vec![edit(16, "", "i64("), edit(17, "", ")")])],
         ),
         ("print(i64(x))", (Code::Mismatch, (2, 15, "x")), "", vec![]),
         (
@@ -380,16 +299,13 @@ fn already_converted_with_a_label_has_no_fix() {
     assert_eq!(fixes(&src, &ds[1]), []);
 }
 
+/// A comparison wants a `char`, which `char(...)` does not give: no conversion is offered.
 #[test]
 fn char_comparison_mismatch() {
-    let edit = |col, replacement: &str| (2, col, "", replacement.to_owned());
     for (body, col) in [("print(c == 1)", 16), ("print(c < n)", 15)] {
         let src = scalars(body);
         let d = diagnostic(&src, Code::Mismatch, (2, col, &body[col - 5..col - 4]), &[]);
-        assert_eq!(
-            fixes(&src, &d),
-            [(false, vec![edit(col, "char("), edit(col + 1, ")")])]
-        );
+        assert_eq!(fixes(&src, &d), [], "{src}");
     }
     // Another type beside a `char` is a different comparison, not a missing conversion.
     codes(
@@ -416,18 +332,11 @@ fn char_beside_a_number_in_equality() {
     ] {
         codes(&scalars(body), &[(Code::Mismatch, at)]);
     }
-    // Its fix converts that number to a `char`.
-    for (body, col, open, close) in [
-        ("print(n < c)", 11, "char(", ")"),
-        ("print(b < c)", 11, "char(i64(", "))"),
-    ] {
+    // It wants a `char`, which converting it to one does not give: no fix.
+    for body in ["print(n < c)", "print(b < c)"] {
         let src = scalars(body);
-        let d = diagnostic(&src, Code::Mismatch, (2, col, &body[col - 5..col - 4]), &[]);
-        let edit = |col, replacement: &str| (2, col, "", replacement.to_owned());
-        assert_eq!(
-            fixes(&src, &d),
-            [(false, vec![edit(col, open), edit(col + 1, close)])]
-        );
+        let d = diagnostic(&src, Code::Mismatch, (2, 11, &body[6..7]), &[]);
+        assert_eq!(fixes(&src, &d), [], "{src}");
     }
 }
 
@@ -487,11 +396,11 @@ fn char_built_in_names() {
 fn char_mismatch() {
     let edit = |col, replacement: &str| (2, col, "", replacement.to_owned());
     let rows = [
-        ("let x: char = b", 19, "char(i64(", "))"),
-        ("let y: u8 = c", 17, "u8(i64(", "))"),
+        ("let x: char? = b", 20, "char(i64(", "))"),
+        ("let y: u8? = c", 18, "u8(i64(", "))"),
         ("let z: i64 = c", 18, "i64(", ")"),
-        ("let w: char = n", 19, "char(", ")"),
-        ("let v: char = 1", 19, "char(", ")"),
+        ("let w: char? = n", 20, "char(", ")"),
+        ("let v: char? = 1", 20, "char(", ")"),
     ];
     for (body, col, open, close) in rows {
         let src = scalars(body);
@@ -518,7 +427,7 @@ fn char_names_leave_the_did_you_mean_candidates() {
         fixes("fn f(n: i64) {\n    print(chr(n))\n}\nfn main() {}", &d),
         [(false, vec![(2, 11, "chr", "char".to_owned())])]
     );
-    clean(&with_main("fn f(n: i64) {\n    print(char(n))\n}"));
+    clean(&with_main("fn f(n: i64) {\n    let _ = char(n)\n}"));
 }
 
 #[test]

@@ -162,6 +162,7 @@ impl Checker {
             other: None,
             fix: (printed && self.one_line(arg.span))
                 .then_some(MismatchFix::WrapInString(arg.span)),
+            conversion: false,
         });
         Err(Poisoned::error())
     }

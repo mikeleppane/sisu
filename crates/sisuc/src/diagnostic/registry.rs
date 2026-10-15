@@ -140,6 +140,7 @@ codes! {
     CommentInInterpolation = "E0097",
     CannotInterpolate = "E0098",
     TodoForm = "E0099",
+    ConversionInConstant = "E0100",
 }
 
 impl Code {
@@ -279,13 +280,15 @@ pub(crate) enum DiagnosticKind {
     },
     /// A value of type `got`, at `at`, where one of the types `want` is expected; `fix` is the
     /// rewrite that would fit. `other` is the `string` operand of the `+` that expects a
-    /// `string` of it, if that is what does.
+    /// `string` of it, if that is what does. `conversion` is whether the value is a conversion
+    /// that can fail, whose optional stands where its payload is expected.
     Mismatch {
         want: Vec<String>,
         got: String,
         at: Span,
         other: Option<Span>,
         fix: Option<MismatchFix>,
+        conversion: bool,
     },
     /// The binding `name`, at `at`, which no scope holds.
     BindingNotFound {
@@ -522,12 +525,8 @@ pub(crate) enum DiagnosticKind {
     NotOneCodePoint { at: Span, string: bool },
     /// The literal of `kind` that starts at `at` and stops at a line break or the end of the file.
     LiteralNotClosed { kind: LiteralKind, at: Span },
-    /// Arithmetic on the `char` at `at`; `convert` is the rewrite through `i64`, when the
-    /// expression can be rewritten in place.
-    ArithmeticOnChar {
-        at: Span,
-        convert: Option<CharArithmetic>,
-    },
+    /// Arithmetic on the `char` at `at`.
+    ArithmeticOnChar { at: Span },
     /// The `}` at `at` in the text of a string literal, which no interpolation opened.
     BraceInString { at: Span },
     /// The interpolation at `at`, its braces included, which holds only spaces.
@@ -546,6 +545,21 @@ pub(crate) enum DiagnosticKind {
     /// A `todo` written as Rust's `todo!` or as `todo()`: `at` is the first extra token, and
     /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`.
     TodoForm { at: Span, delete: Span },
+    /// The conversion to `to` at `at`, in a constant's value, which can fail; `fix` is the
+    /// literal that replaces it, when the value is known and a literal shows it plainly.
+    ConversionInConstant {
+        to: String,
+        at: Span,
+        fix: Option<TypedLiteral>,
+    },
+}
+
+/// A literal that replaces the conversion `call`, the whole value of a constant: `literal` is
+/// its text, and `annotate`, when the constant declares no type, inserts `: <type>` at an offset.
+pub(crate) struct TypedLiteral {
+    pub(crate) call: Span,
+    pub(crate) literal: String,
+    pub(crate) annotate: Option<(usize, String)>,
 }
 
 /// What a literal that is not closed is the literal of.
@@ -560,8 +574,6 @@ pub(crate) enum LiteralKind {
 pub(crate) enum Panic {
     Overflow,
     DivisionByZero,
-    NotU8,
-    NotChar,
 }
 
 impl Panic {
@@ -570,8 +582,6 @@ impl Panic {
         match self {
             Panic::Overflow => "integer overflow",
             Panic::DivisionByZero => "division by zero",
-            Panic::NotU8 => "value does not fit in `u8`",
-            Panic::NotChar => "value is not a valid `char`",
         }
     }
 }
@@ -681,15 +691,6 @@ pub(crate) enum MismatchFix {
 pub(crate) struct Operand {
     pub(crate) span: Span,
     pub(crate) literal: bool,
-}
-
-/// Arithmetic done on `char`s by converting each to `i64` and the result back: `operands` is the
-/// expression from its left operand to its right one, and `chars` are the operands that are
-/// `char`s, in source order.
-#[derive(Clone)]
-pub(crate) struct CharArithmetic {
-    pub(crate) operands: Span,
-    pub(crate) chars: Vec<Span>,
 }
 
 /// Moving a token up to the code before it: the `gap` between them becomes a space.
@@ -854,6 +855,7 @@ impl DiagnosticKind {
             DiagnosticKind::CannotInterpolate { .. } => Code::CannotInterpolate,
             DiagnosticKind::TodoLeft { .. } => Code::TodoLeft,
             DiagnosticKind::TodoForm { .. } => Code::TodoForm,
+            DiagnosticKind::ConversionInConstant { .. } => Code::ConversionInConstant,
         }
     }
 }
@@ -1187,6 +1189,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 other,
                 fix,
+                conversion,
             } => {
                 let want: Vec<_> = want.iter().map(|ty| format!("`{ty}`")).collect();
                 let mut d = Diagnostic::coded(
@@ -1196,6 +1199,11 @@ impl From<DiagnosticKind> for Diagnostic {
                 );
                 if let Some(other) = other {
                     d = d.with_secondary(other, "`+` joins this `string`");
+                }
+                if conversion {
+                    d = d.with_help(
+                        "a conversion that can fail gives an optional: give a default with `??`, or unwrap it with `if let`",
+                    );
                 }
                 match fix {
                     Some(MismatchFix::Convert(Conversion {
@@ -1771,16 +1779,10 @@ impl From<DiagnosticKind> for Diagnostic {
                 LiteralKind::String => Diagnostic::coded(code, at, "string literal is not closed")
                     .with_help(r"write `\n` for a line break"),
             },
-            DiagnosticKind::ArithmeticOnChar { at, convert } => {
-                let d = Diagnostic::coded(code, at, "arithmetic does not apply to `char`");
-                match convert {
-                    Some(CharArithmetic { operands, chars }) => d.with_fix(Fix {
-                        message: "convert to `i64` and back".to_string(),
-                        certain: false,
-                        edits: char_arithmetic_edits(operands, &chars),
-                    }),
-                    None => d,
-                }
+            DiagnosticKind::ArithmeticOnChar { at } => {
+                Diagnostic::coded(code, at, "arithmetic does not apply to `char`").with_help(
+                    "convert through `i64`, then give a default: `char(i64(c) + 1) ?? c`",
+                )
             }
             DiagnosticKind::BraceInString { at } => {
                 Diagnostic::coded(code, at, "a `}` in a string must be escaped").with_fix(Fix {
@@ -1825,6 +1827,36 @@ impl From<DiagnosticKind> for Diagnostic {
                     replacement: String::new(),
                 }],
             }),
+            DiagnosticKind::ConversionInConstant { to, at, fix } => {
+                let d = Diagnostic::coded(code, at, "a constant cannot use a conversion that can fail")
+                    .with_label(format!("`{to}(...)` gives a `{to}?`"))
+                    .with_help("write the literal with its type: `const B: u8 = 200`");
+                match fix {
+                    Some(TypedLiteral {
+                        call,
+                        literal,
+                        annotate,
+                    }) => {
+                        let mut edits: Vec<Edit> = annotate
+                            .into_iter()
+                            .map(|(at, ty)| Edit {
+                                span: Span::new(at, at),
+                                replacement: format!(": {ty}"),
+                            })
+                            .collect();
+                        edits.push(Edit {
+                            span: call,
+                            replacement: literal,
+                        });
+                        d.with_fix(Fix {
+                            message: "write the literal with its type".to_string(),
+                            certain: true,
+                            edits,
+                        })
+                    }
+                    None => d,
+                }
+            }
         }
     }
 }
@@ -1835,26 +1867,6 @@ fn backslash(at: usize) -> Edit {
         span: Span::new(at, at),
         replacement: "\\".to_string(),
     }
-}
-
-/// The edits that turn the expression `operands` into `char(...)` of the same arithmetic on
-/// `i64`s, wrapping each of `chars` in `i64(...)`. Insertions at one offset are one edit.
-fn char_arithmetic_edits(operands: Span, chars: &[Span]) -> Vec<Edit> {
-    let mut edits: Vec<Edit> = Vec::new();
-    let mut insert = |at: usize, text: &str| match edits.last_mut() {
-        Some(last) if last.span.start == at => last.replacement.push_str(text),
-        _ => edits.push(Edit {
-            span: Span::new(at, at),
-            replacement: text.to_string(),
-        }),
-    };
-    insert(operands.start, "char(");
-    for c in chars {
-        insert(c.start, "i64(");
-        insert(c.end, ")");
-    }
-    insert(operands.end, ")");
-    edits
 }
 
 /// The help that lists a class's `fields` in declaration order.

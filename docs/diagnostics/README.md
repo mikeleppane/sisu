@@ -108,6 +108,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0097](E0097.md) | error | comment inside an interpolation |
 | [E0098](E0098.md) | error | value that cannot be interpolated |
 | [E0099](E0099.md) | error | `todo` written another way |
+| [E0100](E0100.md) | error | conversion that can fail, in a constant |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

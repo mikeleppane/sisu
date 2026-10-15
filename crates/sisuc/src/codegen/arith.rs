@@ -3,7 +3,7 @@
 
 use inkwell::IntPredicate;
 use inkwell::intrinsics::Intrinsic;
-use inkwell::values::IntValue;
+use inkwell::values::{BasicValueEnum, IntValue};
 
 use super::{Codegen, POSITIONED};
 use crate::diagnostic::{Panic, Span};
@@ -155,40 +155,47 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.int_compare(predicate, lhs, rhs)
     }
 
-    /// `i64(u8)`, `i64(char)`, `u8(i64)` and `char(i64)`, the target being `e.ty`. Narrowing
-    /// panics at `e.span`: `u8` unless the value is in `0..=255`, and `char` unless it is a
-    /// scalar value, `0..=0x10FFFF` without `0xD800..=0xDFFF`. One unsigned compare also
+    /// `i64(u8)`, `i64(char)`, `u8(i64)` and `char(i64)`, the type `e.ty` saying which. A `u8?`
+    /// or `char?` is a `{ i1, T }` pair of whether the value fits and the value truncated, with
+    /// no branch: `u8` fits `0..=255`, and `char` a scalar value. One unsigned compare also
     /// catches the negatives.
-    pub(super) fn convert(&mut self, e: &Expr) -> IntValue<'ctx> {
+    pub(super) fn convert(&mut self, e: &Expr) -> BasicValueEnum<'ctx> {
         let ExprKind::Convert(operand) = &e.kind else {
             unreachable!("`convert` should be called on a `Convert` node");
         };
         let value = self.value(operand);
-        if e.ty == Type::I64 {
-            return self
-                .builder
-                .build_int_z_extend(value, self.context.i64_type(), "widened")
-                .expect(POSITIONED);
-        }
-        if e.ty == Type::Char {
-            return self.narrow_to_char(value, e.span);
-        }
-        let too_big = self.int_compare(
-            IntPredicate::UGT,
-            value,
-            value.get_type().const_int(u64::from(u8::MAX), false),
-        );
-        self.panic_if(too_big, e.span, Panic::NotU8.message());
-        self.builder
-            .build_int_truncate(value, self.context.i8_type(), "narrowed")
-            .expect(POSITIONED)
+        let (fits, payload) = match &e.ty {
+            Type::Optional(payload) if **payload == Type::Char => {
+                (self.scalar(value), self.context.i32_type())
+            }
+            Type::Optional(_) => {
+                let max = value.get_type().const_int(u64::from(u8::MAX), false);
+                (
+                    self.int_compare(IntPredicate::ULE, value, max),
+                    self.context.i8_type(),
+                )
+            }
+            _ => {
+                return self
+                    .builder
+                    .build_int_z_extend(value, self.context.i64_type(), "widened")
+                    .expect(POSITIONED)
+                    .into();
+            }
+        };
+        let narrowed = self
+            .builder
+            .build_int_truncate(value, payload, "narrowed")
+            .expect(POSITIONED);
+        self.pair(&e.ty, fits, narrowed.into())
     }
 
-    /// Panics at `span` unless the `i64` `value` is a Unicode scalar value, then truncates it.
-    fn narrow_to_char(&self, value: IntValue<'ctx>, span: Span) -> IntValue<'ctx> {
+    /// Whether the `i64` `value` is a Unicode scalar value: at most `0x10FFFF`, and not a
+    /// surrogate.
+    fn scalar(&self, value: IntValue<'ctx>) -> IntValue<'ctx> {
         let i64_type = value.get_type();
-        let above = self.int_compare(
-            IntPredicate::UGT,
+        let in_range = self.int_compare(
+            IntPredicate::ULE,
             value,
             i64_type.const_int(u64::from(char::MAX), false),
         );
@@ -197,15 +204,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             .builder
             .build_int_sub(value, i64_type.const_int(0xD800, false), "shifted")
             .expect(POSITIONED);
-        let surrogate =
-            self.int_compare(IntPredicate::ULT, shifted, i64_type.const_int(0x800, false));
-        let invalid = self
-            .builder
-            .build_or(above, surrogate, "invalid")
-            .expect(POSITIONED);
-        self.panic_if(invalid, span, Panic::NotChar.message());
+        let not_surrogate =
+            self.int_compare(IntPredicate::UGE, shifted, i64_type.const_int(0x800, false));
         self.builder
-            .build_int_truncate(value, self.context.i32_type(), "narrowed")
+            .build_and(in_range, not_surrogate, "scalar")
             .expect(POSITIONED)
     }
 }

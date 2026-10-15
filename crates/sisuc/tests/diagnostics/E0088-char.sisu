@@ -1,5 +1,0 @@
-const SURROGATE = char(55296)
-
-fn main() {
-    print(SURROGATE)
-}

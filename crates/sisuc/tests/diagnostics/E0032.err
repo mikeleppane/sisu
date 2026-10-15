@@ -1,13 +1,13 @@
-error[E0032]: expected `u8`, found `i64`
- --> E0032.sisu:3:17
+error[E0032]: expected `u8?`, found `i64`
+ --> E0032.sisu:3:18
   |
-3 |     let b: u8 = n
-  |                 ^
+3 |     let b: u8? = n
+  |                  ^
   |
 help: if the types are right, convert it with `u8(...)`
   |
-3 |     let b: u8 = u8(n)
-  |                 +++ +
+3 |     let b: u8? = u8(n)
+  |                  +++ +
 
 sisuc: 1 error
 sisuc: for more on a code, run `sisuc --explain <code>`: E0032

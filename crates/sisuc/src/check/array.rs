@@ -33,6 +33,7 @@ impl Checker {
                         at: span,
                         other: None,
                         fix: None,
+                        conversion: false,
                     },
                     true,
                 ),

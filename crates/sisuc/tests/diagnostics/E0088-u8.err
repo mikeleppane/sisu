@@ -1,8 +1,0 @@
-error[E0088]: value does not fit in `u8`
- --> E0088-u8.sisu:2:15
-  |
-2 | const SMALL = u8(LIMIT)
-  |               ^^^^^^^^^
-
-sisuc: 1 error
-sisuc: for more on a code, run `sisuc --explain <code>`: E0088

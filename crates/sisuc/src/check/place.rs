@@ -180,13 +180,10 @@ impl Checker {
         Ok(tir::Stmt::Expr(block_expr(lets, None, Type::Unit, span)))
     }
 
-    /// Reports the compound assignment, at its operator `op_span`, to a `char` place, with no
-    /// fix, and checks `value` for its own mistakes.
+    /// Reports the compound assignment, at its operator `op_span`, to a `char` place, and checks
+    /// `value` for its own mistakes.
     fn char_compound(&mut self, op_span: Span, value: &ast::Expr) {
-        self.report(DiagnosticKind::ArithmeticOnChar {
-            at: op_span,
-            convert: None,
-        });
+        self.report(DiagnosticKind::ArithmeticOnChar { at: op_span });
         // Only its diagnostics matter.
         let _ = self.expr(value, Some(&UNKNOWN));
     }

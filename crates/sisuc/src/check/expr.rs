@@ -7,8 +7,7 @@ use super::{
 };
 use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
 use crate::diagnostic::{
-    CharArithmetic, Definition, Diagnostic, DiagnosticKind, Literal, Span, Suggestion, Unwrap,
-    alias, suggestion,
+    Definition, Diagnostic, DiagnosticKind, Literal, Span, Suggestion, Unwrap, alias, suggestion,
 };
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
@@ -309,19 +308,8 @@ impl Checker {
             Operator::Arithmetic
         };
         let (checked, ty, mismatched) = self.binary_operands(span, &[lhs, rhs], expected, operator);
-        let chars: Vec<Span> = [lhs, rhs]
-            .iter()
-            .zip(&checked)
-            .filter(|(_, c)| type_of(c) == Some(&Type::Char))
-            .map(|(e, _)| e.span)
-            .collect();
-        if !chars.is_empty() {
-            let operands = lhs.span.to(rhs.span);
-            let convert = (!compound).then_some(CharArithmetic { operands, chars });
-            self.report(DiagnosticKind::ArithmeticOnChar {
-                at: op_span,
-                convert,
-            });
+        if checked.iter().any(|c| type_of(c) == Some(&Type::Char)) {
+            self.report(DiagnosticKind::ArithmeticOnChar { at: op_span });
             return Err(Poisoned::error());
         }
         let [l, r]: [Checked; 2] = checked
@@ -511,10 +499,7 @@ impl Checker {
         let checked = self.value(rhs, Some(expected.unwrap_or(&UNKNOWN)));
         // Only a compound assignment's number gets here with a `char` to its right.
         if want != Type::Bool && type_of(&checked) == Some(&Type::Char) {
-            self.report(DiagnosticKind::ArithmeticOnChar {
-                at: op_span,
-                convert: None,
-            });
+            self.report(DiagnosticKind::ArithmeticOnChar { at: op_span });
             return Err(Poisoned::error());
         }
         let (r, r_mismatched) = self.settled(rhs, checked, expected);
@@ -764,6 +749,7 @@ impl Checker {
                     at: span,
                     other: None,
                     fix: None,
+                    conversion: false,
                 },
                 true,
             ),

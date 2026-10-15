@@ -45,9 +45,9 @@ fn panic_message_must_be_string() {
         ("panic(1)", (2, 11, "1"), Some("panic(\"{1}\")")),
         ("panic(true)", (2, 11, "true"), Some("panic(\"{true}\")")),
         (
-            "let b = u8(1)\n    panic(b)",
+            "let b: u8 = 1\n    panic(b)",
             (3, 11, "b"),
-            Some("let b = u8(1)\n    panic(\"{b}\")"),
+            Some("let b: u8 = 1\n    panic(\"{b}\")"),
         ),
         (
             "let c = 'a'\n    panic(c)",

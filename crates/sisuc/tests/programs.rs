@@ -268,28 +268,6 @@ fn panic_cases() {
         print_case("u8_sub", "let a: u8 = 0", "a - 1", "integer overflow"),
         print_case("u8_mul", "let a: u8 = 16", "a * a", "integer overflow"),
         print_case("u8_div_zero", "let a: u8 = 0", "7 / a", "division by zero"),
-        print_case(
-            "u8_convert",
-            "let a = 300",
-            "u8(a)",
-            "value does not fit in `u8`",
-        ),
-        print_case(
-            "u8_convert_256",
-            "let a = 256",
-            "u8(a)",
-            "value does not fit in `u8`",
-        ),
-        print_case(
-            "u8_convert_negative",
-            "let a = -1",
-            "u8(a)",
-            "value does not fit in `u8`",
-        ),
-        char_case("char_negative", "-1"),
-        char_case("char_d800", "0xD800"),
-        char_case("char_dfff", "0xDFFF"),
-        char_case("char_above", "0x110000"),
         sum_case("sum_overflow", "9_223_372_036_854_775_807, 1"),
         // The total fits, but the running sum overflows at the second element.
         sum_case("sum_overflow_midway", "9_223_372_036_854_775_807, 1, -1"),
@@ -371,16 +349,6 @@ fn print_case(
         name,
         format!("fn main() {{\n    {binding}\n    print({expr})\n}}\n"),
         format!("3:11: {message}"),
-    )
-}
-
-/// A `panic_cases` row whose `char(a)` panics for `a` set to `value`.
-fn char_case(name: &'static str, value: &str) -> (&'static str, String, String) {
-    print_case(
-        name,
-        &format!("let a = {value}"),
-        "char(a)",
-        "value is not a valid `char`",
     )
 }
 
@@ -1592,7 +1560,7 @@ mod arithmetic {
         fn render(&self) -> String {
             match self {
                 Expr::Lit(Value::I64(n)) if *n < 0 => format!("(-{})", n.unsigned_abs()),
-                Expr::Lit(Value::U8(n)) => format!("u8({n})"),
+                Expr::Lit(Value::U8(n)) => format!("(u8({n}) ?? 0)"),
                 Expr::Lit(v) => v.to_string(),
                 Expr::Neg(e) => format!("(-{})", e.render()),
                 Expr::Arith(op, l, r) | Expr::Compare(op, l, r) | Expr::Logic(op, l, r) => {
