@@ -23,6 +23,11 @@ _Avoid_: lvalue
 The value of a block's last statement when that statement is an expression;
 otherwise the block has no value.
 
+**Unused value**:
+The value of an expression statement that nothing uses. The compiler warns
+about one; `let _ = e` discards a value on purpose.
+_Avoid_: dropped value (dropping is what a reference count does)
+
 **Comparison chain**:
 Two or more comparisons in one direction written together, such as
 `a < b <= c`, meaning each adjacent pair holds.
@@ -34,6 +39,12 @@ _Avoid_: void
 **`never`**:
 The type of an expression that does not finish, such as `return`; it matches
 any type.
+
+**Conversion**:
+A call written with a type's name, `T(x)`, that turns a value into an
+adjacent type, such as `u8(n)` or `i64(c)`. A conversion that can fail
+returns `T?`.
+_Avoid_: cast, fallible conversion, `as`
 
 **Panic**:
 The program stopping at runtime with `sisu: panic at <file>:<line>:<col>:
@@ -92,6 +103,11 @@ several scalar values)
 A `{expr}` inside a string literal. The expression is evaluated and turned
 into text, and the whole literal becomes one new `string`.
 _Avoid_: formatting, templating
+
+**Format spec**:
+The `[align][width][.precision]` after a `:` that ends an interpolation, as
+in `{x:>8.2}`.
+_Avoid_: format string, format specifier
 
 **Shadowing**:
 Declaring a `let` or `let mut` with the name of a binding that is already

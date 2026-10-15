@@ -3,6 +3,8 @@
 Status: accepted, 2026-10-12. It answers the open question of ADR 0009 and
 the roadmap's "What a string is". [ADR 0016](0016-word-functions-trust-the-utf-8-invariant.md)
 amends its first rule for the word functions.
+[ADR 0018](0018-a-conversion-that-can-fail-returns-an-optional.md)
+supersedes its statement that `char(n)` panics: `char(n)` returns a `char?`.
 
 A `string` is a sequence of bytes that is always valid UTF-8. Four rules
 follow from that.
