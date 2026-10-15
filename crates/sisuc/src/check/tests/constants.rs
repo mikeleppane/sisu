@@ -392,7 +392,7 @@ fn conversion_in_constant() {
     // The source, the codes it reports, and the program the fix gives, if there is one.
     type Case<'a> = (&'a str, &'a [(Code, (usize, usize))], Option<&'a str>);
     let error = |col| (Code::ConversionInConstant, (1, col));
-    let rows: [Case<'_>; 16] = [
+    let rows: [Case<'_>; 19] = [
         ("const B = u8(200)", &[error(11)], Some("const B: u8 = 200")),
         (
             "const C = char(65)",
@@ -411,6 +411,13 @@ fn conversion_in_constant() {
         ("const C = char(0xD7FF)", &[error(11)], None),
         // A value that does not convert.
         ("const B = u8(300)", &[error(11)], None),
+        // An argument that does not fold, or has its own error, gives no fix.
+        ("const B = u8(1 / 0)", &[error(11)], None),
+        (
+            "const B = u8(1 + true)",
+            &[error(11), (Code::Mismatch, (1, 18))],
+            None,
+        ),
         ("const B = u8(-1)", &[error(11)], None),
         ("const C = char(0xD800)", &[error(11)], None),
         ("const C = char(0x110000)", &[error(11)], None),
@@ -437,6 +444,11 @@ fn conversion_in_constant() {
         (
             "const N = i64(2)",
             &[(Code::AlreadyConverted, (1, 15))],
+            None,
+        ),
+        (
+            "const M: u8 = 200\nconst N = i64(M + M)",
+            &[(Code::ConstantPanics, (2, 15))],
             None,
         ),
     ];

@@ -103,14 +103,34 @@ fn conversion_types() {
 /// since the default is not known.
 #[test]
 fn failed_conversion_as_value() {
-    let src = "fn main() {\n    let n = 1\n    let b: u8 = u8(n)\n}";
-    let d = diagnostic(src, Code::Mismatch, (3, 17, "u8(n)"), &[]);
-    assert!(d.help().is_some(), "{d:?}");
-    assert_eq!(fixes(src, &d), []);
-    // Any other optional where its payload is expected has no such help.
-    let src = "fn f(m: u8?) {\n    let b: u8 = m\n}\nfn main() {}";
-    let d = diagnostic(src, Code::Mismatch, (2, 17, "m"), &[]);
-    assert!(d.help().is_none(), "{d:?}");
+    for (decl, found) in [("b: u8", "u8(n)"), ("c: char", "char(n)")] {
+        let src = format!("fn main() {{\n    let n = 1\n    let {decl} = {found}\n}}");
+        let col = 12 + decl.len();
+        let d = diagnostic(&src, Code::Mismatch, (3, col, found), &[]);
+        assert!(d.help().is_some(), "{d:?}");
+        assert_eq!(fixes(&src, &d), []);
+    }
+    // Any other optional where its payload is expected has no such help: a name, a call of a
+    // function, and a conversion whose optional is not of the type expected.
+    for (src, found) in [
+        ("fn f(m: u8?) {\n    let b: u8 = m\n}\nfn main() {}", "m"),
+        (
+            "fn g() -> u8? { 1 }\nfn f() {\n    let b: u8 = g()\n}\nfn main() {}",
+            "g()",
+        ),
+        (
+            "fn f(n: i64) {\n    let b: char = u8(n)\n}\nfn main() {}",
+            "u8(n)",
+        ),
+    ] {
+        let ds = diags(src);
+        let [d] = ds.as_slice() else {
+            panic!("{src}: {ds:?}")
+        };
+        assert_eq!(d.code(), Code::Mismatch, "{src}");
+        assert_eq!(&src[d.span().start..d.span().end], found, "{src}");
+        assert!(d.help().is_none(), "{src}");
+    }
 }
 
 /// A literal argument is no special case: the conversion is still an optional.
