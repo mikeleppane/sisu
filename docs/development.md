@@ -7,6 +7,7 @@ running the same checks as CI. Sisu builds and runs on x86-64 Linux.
 
 - The Rust toolchain pinned in `rust-toolchain.toml`. rustup installs it on
   first use.
+- GNU Make, which runs the commands below.
 - A C compiler on `PATH` as `cc`. `sisuc` uses it to link programs.
 - On Ubuntu: `libzstd-dev`, `libxml2-dev` and `zlib1g-dev`, which LLVM links
   against.
@@ -30,13 +31,10 @@ LLVM is left alone. [Upgrading LLVM](llvm.md) covers moving to a new major.
 
 ## Set up a clone
 
-Run these once per clone:
+Run this once per clone:
 
 ```console
-$ ./scripts/install-llvm.sh             # LLVM 22 into .llvm/22
-$ prek install                          # run the checks on every commit
-$ cargo install --locked cargo-mutants  # mutation testing
-$ cargo install --locked cargo-llvm-cov # coverage
+$ make setup   # LLVM 22 into .llvm/22, the pre-commit hook, cargo-mutants, cargo-llvm-cov, cargo-fuzz
 ```
 
 ## Build and test
@@ -421,5 +419,6 @@ must accept any syntax those programs use.
 | `crates/sisuc/tests/programs` | The programs the small-stack tests run. |
 | `crates/runtime` | `sisu-runtime`, a static library with a C ABI linked into every compiled program. |
 | `fuzz` | The front-end fuzz target, its own Cargo workspace, run by `scripts/fuzz.sh`. |
-| `scripts` | `install-llvm.sh`, `mutants.sh`, `coverage.sh`, `codspeed-prep.sh`, `fuzz.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
+| `Makefile` | The entry point for the commands; `make help` lists its targets. |
+| `scripts` | `install-llvm.sh`, `mutants.sh`, `coverage.sh`, `verify.sh`, `codspeed-prep.sh`, `fuzz.sh`, and `check-expect-messages.sh`, which a prek hook runs. |
 | `docs` | Architecture, roadmap, decisions (`adr/`) and agent guides (`agents/`). |
