@@ -691,5 +691,5 @@ fn lower_loop(
 
 /// The `keyword` that starts a loop statement at `span`.
 fn keyword_span(span: Span, keyword: &str) -> Span {
-    Span::new(span.start, span.start + keyword.len())
+    Span::new(span.start(), span.start() + keyword.len())
 }

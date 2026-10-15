@@ -93,14 +93,14 @@ impl Checker {
         let [lhs, rhs] = operands else {
             unreachable!("`+` should have two operands");
         };
-        let between = lhs.span.end..rhs.span.start;
+        let between = lhs.span.end()..rhs.span.start();
         let commented = self.comments.iter().any(|c| between.contains(c));
         let lines = operands.iter().any(|e| !self.one_line(e.span));
         // A literal in parentheses starts at its `(`, and is wrapped whole like any other value.
         let operand = |e: &ast::Expr| Operand {
             span: e.span,
             literal: matches!(e.kind, ExprKind::Str(_) | ExprKind::Interpolate(_))
-                && self.quotes.binary_search(&e.span.start).is_ok(),
+                && self.quotes.binary_search(&e.span.start()).is_ok(),
         };
         let guess = !(compound || self.in_constant.is_some() || !printed || commented || lines);
         let other = if e.span == lhs.span {
@@ -125,8 +125,8 @@ impl Checker {
     /// Whether `span` holds no line break, which a string literal cannot hold. A comment inside
     /// it would end at one, so it holds no comment either, and fits inside `{}`.
     pub(super) fn one_line(&self, span: Span) -> bool {
-        let next = self.breaks.partition_point(|&b| b < span.start);
-        self.breaks.get(next).is_none_or(|&b| b >= span.end)
+        let next = self.breaks.partition_point(|&b| b < span.start());
+        self.breaks.get(next).is_none_or(|&b| b >= span.end())
     }
 
     /// A chain over the `string`s `operands`, which codegen compares two at a time. Two make
@@ -239,8 +239,8 @@ impl Checker {
         };
         let checked = self.value(&arg.value, (to == Type::String).then_some(&chars[0]));
         // The head, `to(`, and the tail, `)`, are the text a rewrite of the call deletes.
-        let head = span.start..arg.value.span.start;
-        let tail = arg.value.span.end..span.end;
+        let head = span.start()..arg.value.span.start();
+        let tail = arg.value.span.end()..span.end();
         let d = match type_of(&checked) {
             Some(ty) if *ty == to => {
                 let grouped = !single_term(&arg.value);
@@ -327,8 +327,8 @@ impl Checker {
             .comments
             .iter()
             .any(|c| deleted.iter().any(|d| d.contains(c)));
-        let next = self.breaks.partition_point(|&b| b < arg.span.start);
-        let lines = self.breaks.get(next).is_some_and(|&b| b < arg.span.end);
+        let next = self.breaks.partition_point(|&b| b < arg.span.start());
+        let lines = self.breaks.get(next).is_some_and(|&b| b < arg.span.end());
         if !printed || commented || lines {
             return self.mismatch(arg.span, Some(arg), want, got);
         }
@@ -394,7 +394,7 @@ fn single_term(e: &ast::Expr) -> bool {
         }
         // A `bool`, which no conversion holds: never reached, and grouping is always right.
         ExprKind::Is { .. } | ExprKind::Compare { .. } => false,
-        ExprKind::Unary { operand, .. } => e.span.end != operand.span.end,
+        ExprKind::Unary { operand, .. } => e.span.end() != operand.span.end(),
         ExprKind::Block(block) => e.span != block.span,
         ExprKind::If {
             then_block,
@@ -405,7 +405,7 @@ fn single_term(e: &ast::Expr) -> bool {
             then_block,
             else_block,
             ..
-        } => e.span.end != else_block.as_ref().unwrap_or(then_block).span.end,
+        } => e.span.end() != else_block.as_ref().unwrap_or(then_block).span.end(),
     }
 }
 

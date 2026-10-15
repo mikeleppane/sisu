@@ -100,6 +100,10 @@ pub(crate) struct Token {
     pub(crate) span: Span,
 }
 
+// This size holds only on 64-bit targets: `TokenKind` holds `String`s, sized by the pointer width.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<Token>() == 40);
+
 impl TokenKind {
     /// The variant name, as `--emit tokens` prints it.
     pub(crate) fn name(&self) -> &'static str {
@@ -543,7 +547,7 @@ fn eof(tokens: &[Token]) -> Token {
     let after_code = tokens
         .iter()
         .rfind(|t| t.kind != TokenKind::Newline)
-        .map_or(0, |t| t.span.end);
+        .map_or(0, |t| t.span.end());
     Token {
         kind: TokenKind::Eof,
         span: Span::new(after_code, after_code),
@@ -564,7 +568,7 @@ fn after_skip(source: &str, tokens: &[Token], skipped: Option<usize>) -> bool {
     skipped.zip(code).is_some_and(|(s, code)| {
         // `None` when the skip comes after the code token.
         source
-            .get(s..code.span.start)
+            .get(s..code.span.start())
             .is_none_or(|before| !before.contains('\n'))
     })
 }
@@ -665,10 +669,10 @@ fn check_line_start(
                         && statement.first().is_some_and(is_header)
                         && header_awaits_brace(statement))
                     .then(|| Join {
-                        gap: Span::new(code.span.end, span.start),
+                        gap: Span::new(code.span.end(), span.start()),
                         // The join deletes the gap, so a comment in it makes the join a guess.
                         certain: header_awaits_brace(line_of(source, tokens, code))
-                            && source[code.span.end..span.start].trim().is_empty(),
+                            && source[code.span.end()..span.start()].trim().is_empty(),
                     });
                     Some(DiagnosticKind::BraceOnNewLine { at: span, join }.into())
                 }
@@ -688,7 +692,7 @@ fn check_line_start(
                 .last()
                 .filter(|t| t.kind == TokenKind::RBrace)
                 .map(|brace| Join {
-                    gap: Span::new(brace.span.end, span.start),
+                    gap: Span::new(brace.span.end(), span.start()),
                     certain: false,
                 });
             Some(DiagnosticKind::ElseOnNewLine { at: span, join }.into())
@@ -699,9 +703,9 @@ fn check_line_start(
 
 /// The tokens on the line of `code`, up to the end of `tokens`.
 fn line_of<'t>(source: &str, tokens: &'t [Token], code: &Token) -> &'t [Token] {
-    let before = tokens
-        .iter()
-        .rposition(|t| source[t.span.start.min(code.span.start)..code.span.start].contains('\n'));
+    let before = tokens.iter().rposition(|t| {
+        source[t.span.start().min(code.span.start())..code.span.start()].contains('\n')
+    });
     &tokens[before.map_or(0, |i| i + 1)..]
 }
 
@@ -788,11 +792,11 @@ pub(crate) fn dump(source: &str, tokens: &[Token]) -> String {
     let mut out = String::new();
     let lines = LineIndex::new(source);
     for t in tokens {
-        let (line, col) = lines.line_col(source, t.span.start);
+        let (line, col) = lines.line_col(source, t.span.start());
         write!(out, "{line}:{col} {}", t.kind.name())
             .expect("writing to a `String` should never fail");
         if !matches!(t.kind, TokenKind::Newline | TokenKind::Eof) {
-            write!(out, " {}", &source[t.span.start..t.span.end])
+            write!(out, " {}", &source[t.span.range()])
                 .expect("writing to a `String` should never fail");
         }
         out.push('\n');
@@ -941,7 +945,7 @@ mod tests {
     }
 
     fn at(src: &str, d: &Diagnostic) -> (Code, usize, usize) {
-        let (line, col) = line_col(src, d.span().start);
+        let (line, col) = line_col(src, d.span().start());
         (d.code(), line, col)
     }
 
@@ -1266,7 +1270,7 @@ mod tests {
     #[test]
     fn base_literal_span() {
         let t = &tokens("0xFF")[0];
-        assert_eq!((t.span.start, t.span.end), (0, 4));
+        assert_eq!((t.span.start(), t.span.end()), (0, 4));
     }
 
     #[test]
@@ -1419,7 +1423,7 @@ mod tests {
         ] {
             let d = only(src);
             assert_eq!(at(src, &d), expected, "{src:?}");
-            assert_eq!(&src[d.span().start..d.span().end], text, "{src:?}");
+            assert_eq!(&src[d.span().range()], text, "{src:?}");
         }
     }
 
@@ -1455,12 +1459,12 @@ mod tests {
         let src = "'ab' 7";
         let lexed = lex(src).expect("the lexer recovers");
         let span = lexed.diagnostics[0].span();
-        assert_eq!((span.start, span.end), (0, 4));
+        assert_eq!((span.start(), span.end()), (0, 4));
         assert_eq!(lexed.tokens[1].kind, int(7));
         let src = "'a 7\nx";
         let lexed = lex(src).expect("the lexer recovers");
         let span = lexed.diagnostics[0].span();
-        assert_eq!((span.start, span.end), (0, 1));
+        assert_eq!((span.start(), span.end()), (0, 1));
         assert_eq!(lexed.tokens[1].kind, TokenKind::Newline);
     }
 
@@ -1566,7 +1570,7 @@ mod tests {
         ] {
             let d = only(src);
             assert_eq!(at(src, &d), expected, "{src:?}");
-            assert_eq!(&src[d.span().start..d.span().end], text, "{src:?}");
+            assert_eq!(&src[d.span().range()], text, "{src:?}");
         }
         // A literal that is not closed keeps the errors before it.
         assert_eq!(
@@ -1684,8 +1688,8 @@ mod tests {
             let [(open, _)] = d.secondary() else {
                 panic!("one secondary span, got {:?}", d.secondary());
             };
-            assert_eq!(line_col(src, open.start), opened, "{src}");
-            assert_eq!(open.end, open.start + 1, "{src}");
+            assert_eq!(line_col(src, open.start()), opened, "{src}");
+            assert_eq!(open.end(), open.start() + 1, "{src}");
         }
     }
 
@@ -1815,7 +1819,7 @@ mod tests {
         for (src, doubled) in [("a & b", "&&"), ("a | b", "||")] {
             let d = only(src);
             assert_eq!(d.code(), Code::UnexpectedCharacter, "{src}");
-            assert_eq!(line_col(src, d.span().start), (1, 3), "{src}");
+            assert_eq!(line_col(src, d.span().start()), (1, 3), "{src}");
             assert_eq!(
                 fix_edits(&d),
                 Some((false, vec![(2, 3, doubled.to_string())])),
@@ -1834,7 +1838,7 @@ mod tests {
         let src = "// ä\nlet é = 1";
         let d = only(src);
         assert_eq!(d.code(), Code::UnexpectedCharacter);
-        assert_eq!(line_col(src, d.span().start), (2, 5));
+        assert_eq!(line_col(src, d.span().start()), (2, 5));
         // The span covers the whole two-byte char, so rendering does not panic.
         assert!(
             d.render("t.sisu", src, &LineIndex::new(src), false)
@@ -2129,7 +2133,7 @@ mod tests {
         let [(open, _)] = d.secondary() else {
             panic!("one secondary span, got {:?}", d.secondary());
         };
-        assert_eq!(line_col("(}", open.start), (1, 1));
+        assert_eq!(line_col("(}", open.start()), (1, 1));
         // With nothing open, there is nothing to point at.
         let d = fatal("}");
         assert_eq!(d.secondary(), []);
@@ -2350,7 +2354,7 @@ mod tests {
         ] {
             let d = only(src);
             assert_eq!(d.code(), Code::BraceOnNewLine, "{src}");
-            assert_eq!(line_col(src, d.span().start), at, "{src}");
+            assert_eq!(line_col(src, d.span().start()), at, "{src}");
             assert_eq!(
                 fix_edits(&d),
                 Some((true, vec![(gap.0, gap.1, " ".to_string())])),
@@ -2366,7 +2370,7 @@ mod tests {
         let src = "fn main() {\n    if c // check it\n    {\n    }\n}";
         let d = only(src);
         assert_eq!(
-            (d.code(), line_col(src, d.span().start)),
+            (d.code(), line_col(src, d.span().start())),
             (Code::BraceOnNewLine, (3, 5))
         );
         assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
@@ -2393,7 +2397,7 @@ mod tests {
         ] {
             let d = only(src);
             assert_eq!(d.code(), Code::BraceOnNewLine, "{src}");
-            assert_eq!(line_col(src, d.span().start), at, "{src}");
+            assert_eq!(line_col(src, d.span().start()), at, "{src}");
             assert!(
                 fix_edits(&d).is_some_and(|(certain, _)| !certain),
                 "{src}: {:?}",
@@ -2445,7 +2449,7 @@ mod tests {
         ] {
             let d = only(src);
             assert_eq!(d.code(), Code::BraceOnNewLine, "{src}");
-            assert_eq!(line_col(src, d.span().start), at, "{src}");
+            assert_eq!(line_col(src, d.span().start()), at, "{src}");
             assert_eq!(fix_edits(&d), None, "{src}");
         }
     }
@@ -2574,7 +2578,7 @@ mod tests {
                 Eof
             ]
         );
-        assert_eq!(line_col(src, lexed.tokens[5].span.start), (2, 1));
+        assert_eq!(line_col(src, lexed.tokens[5].span.start()), (2, 1));
     }
 
     #[test]

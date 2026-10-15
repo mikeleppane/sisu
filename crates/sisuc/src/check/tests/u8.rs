@@ -128,7 +128,7 @@ fn failed_conversion_as_value() {
             panic!("{src}: {ds:?}")
         };
         assert_eq!(d.code(), Code::Mismatch, "{src}");
-        assert_eq!(&src[d.span().start..d.span().end], found, "{src}");
+        assert_eq!(&src[d.span().range()], found, "{src}");
         assert!(d.help().is_none(), "{src}");
     }
 }
@@ -316,9 +316,13 @@ fn mismatch_fix_converts_the_expression_found() {
         };
         assert_eq!(open.replacement(), format!("{to}("), "{src}");
         assert_eq!(close.replacement(), ")", "{src}");
-        assert!(open.span().start == open.span().end, "{src}");
-        assert!(close.span().start == close.span().end, "{src}");
-        assert_eq!(&src[open.span().start..close.span().start], found, "{src}");
+        assert!(open.span().start() == open.span().end(), "{src}");
+        assert!(close.span().start() == close.span().end(), "{src}");
+        assert_eq!(
+            &src[open.span().start()..close.span().start()],
+            found,
+            "{src}"
+        );
         // The conversion is what the types need.
         clean(&applied(src, d));
     }

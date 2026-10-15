@@ -191,7 +191,7 @@ impl Checker {
         let locals = self.locals.len();
         self.in_constant = Some(ConstantSite {
             value: c.value.span,
-            name_end: c.name.span.end,
+            name_end: c.name.span.end(),
             declared: declared.clone(),
         });
         let checked = match &declared {

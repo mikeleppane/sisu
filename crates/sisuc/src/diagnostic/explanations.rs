@@ -18,18 +18,18 @@ pub(crate) fn apply(source: &str, edits: &[&Edit]) -> String {
             taken.push(edit);
         }
     }
-    taken.sort_by_key(|e| (e.span().start, e.span().end));
+    taken.sort_by_key(|e| (e.span().start(), e.span().end()));
     for pair in taken.windows(2) {
         assert!(
-            pair[0].span().end <= pair[1].span().start,
+            pair[0].span().end() <= pair[1].span().start(),
             "edits {:?} and {:?} overlap",
             pair[0],
             pair[1]
         );
         assert!(
-            pair[0].span().start != pair[1].span().start
-                || pair[0].span().end != pair[0].span().start
-                || pair[1].span().end != pair[1].span().start,
+            pair[0].span().start() != pair[1].span().start()
+                || pair[0].span().end() != pair[0].span().start()
+                || pair[1].span().end() != pair[1].span().start(),
             "insertions {:?} and {:?} share an offset",
             pair[0],
             pair[1]
@@ -37,7 +37,7 @@ pub(crate) fn apply(source: &str, edits: &[&Edit]) -> String {
     }
     let mut out = source.to_string();
     for edit in taken.iter().rev() {
-        out.replace_range(edit.span().start..edit.span().end, edit.replacement());
+        out.replace_range(edit.span().range(), edit.replacement());
     }
     out
 }
@@ -55,7 +55,13 @@ pub(crate) fn fix_edits(d: &Diagnostic) -> Option<(bool, FixEdits)> {
     let edits = fix
         .edits()
         .iter()
-        .map(|e| (e.span().start, e.span().end, e.replacement().to_string()))
+        .map(|e| {
+            (
+                e.span().start(),
+                e.span().end(),
+                e.replacement().to_string(),
+            )
+        })
         .collect();
     Some((fix.certain(), edits))
 }

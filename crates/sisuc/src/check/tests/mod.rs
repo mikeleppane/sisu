@@ -73,10 +73,7 @@ fn diagnostic(
         "only an error withholds the `tir`"
     );
     let span = d.span();
-    assert_eq!(
-        (at(src, span), &src[span.start..span.end]),
-        ((pos.0, pos.1), pos.2)
-    );
+    assert_eq!((at(src, span), &src[span.range()]), ((pos.0, pos.1), pos.2));
     let found: Vec<_> = d.secondary().iter().map(|(s, _)| at(src, *s)).collect();
     assert_eq!(found, secondary);
     d
@@ -96,7 +93,7 @@ fn fixes<'a>(src: &'a str, d: &Diagnostic) -> Vec<FixAt<'a>> {
                 .map(|e| {
                     let s = e.span();
                     let (line, col) = at(src, s);
-                    (line, col, &src[s.start..s.end], e.replacement().to_string())
+                    (line, col, &src[s.range()], e.replacement().to_string())
                 })
                 .collect();
             (f.certain(), edits)
@@ -127,7 +124,7 @@ fn applied(src: &str, d: &Diagnostic) -> String {
 }
 
 fn at(src: &str, span: Span) -> (usize, usize) {
-    line_col(src, span.start)
+    line_col(src, span.start())
 }
 
 fn clean(src: &str) {
@@ -655,7 +652,7 @@ fn break_in_header() {
     ] {
         let d = diagnostic(src, Code::JumpInLoopHeader, jump, &[(lp.0, lp.1)]);
         let span = d.secondary()[0].0;
-        assert_eq!(&src[span.start..span.end], lp.2, "{src}");
+        assert_eq!(&src[span.range()], lp.2, "{src}");
     }
 }
 
@@ -2419,7 +2416,7 @@ fn unknown_optional_type_underlines_the_name() {
     let ds = diags(src);
     assert_eq!(ds.len(), 1, "{ds:?}");
     assert_eq!(ds[0].code(), Code::UnknownType);
-    assert_eq!(&src[ds[0].span().start..ds[0].span().end], "Foo");
+    assert_eq!(&src[ds[0].span().range()], "Foo");
 }
 
 #[test]
@@ -2528,7 +2525,7 @@ fn safe_call_fix_replaces_the_gap_for_each_receiver() {
             panic!("{src}: {:?}", fix.edits())
         };
         assert_eq!(edit.replacement(), ".", "{src}");
-        assert_eq!(&src[edit.span().start..edit.span().end], gap, "{src}");
+        assert_eq!(&src[edit.span().range()], gap, "{src}");
         // The edited source parses, and has no `?.` error left.
         let result = applied(&src, d);
         let left: Vec<_> = diags(&result).iter().map(Diagnostic::code).collect();

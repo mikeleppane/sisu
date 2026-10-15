@@ -207,7 +207,7 @@ pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagno
         .collect();
     let classes = checker.classes.iter().map(lower_class).collect();
     let mut diagnostics = checker.diagnostics;
-    diagnostics.sort_by_key(|d| d.span().start);
+    diagnostics.sort_by_key(|d| d.span().start());
     let failed = diagnostics.iter().any(|d| d.severity() == Severity::Error);
     let broken = !program.broken.is_empty()
         || program.items.iter().any(
@@ -558,7 +558,7 @@ impl Checker {
                 } else if let Some(&Declared::Known(id)) = self.class_ids.get(name) {
                     Type::Class(id)
                 } else {
-                    let span = Span::new(ty.span.start, ty.span.start + name.as_str().len());
+                    let span = Span::new(ty.span.start(), ty.span.start() + name.as_str().len());
                     let types =
                         ["i64", "u8", "bool", "char", "string"].map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
@@ -632,7 +632,7 @@ impl Checker {
                 if *want != Type::Unit && *got != Type::Never && got != want =>
             {
                 let d = if *got == Type::Unit {
-                    let end = f.body.span.end;
+                    let end = f.body.span.end();
                     DiagnosticKind::BodyHasNoValue {
                         function: f.name.name.to_string(),
                         want: self.type_name(want),

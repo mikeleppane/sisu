@@ -24,7 +24,7 @@ impl Checker {
             "print" => Some(self.print(span, args, Stream::Stdout)),
             "eprint" => Some(self.print(span, args, Stream::Stderr)),
             // The panic is the callee's, not the parentheses' around the call.
-            "panic" => Some(self.panic(Span::new(callee.span.start, span.end), args)),
+            "panic" => Some(self.panic(Span::new(callee.span.start(), span.end()), args)),
             "read_line" => Some(self.read_line(span, args)),
             _ => None,
         }
