@@ -256,6 +256,9 @@ fn float_constants() {
         ("const C = 0.0 / 0.0", "nan"),
         ("const C = 7.0 - 0.5 / 2.0", "6.75"),
         ("const N = 3\nconst C = f64(N)", "3.0"),
+        // Negation flips the sign, so it is not `0.0 - x`: `-(0.0)` is `-0.0`.
+        ("const C = -(1.0 + 1.5)", "-2.5"),
+        ("const C = -(1.0 - 1.0)", "-0.0"),
         // Comparisons are IEEE: `nan` compares false, `-0.0` equals `0.0`.
         ("const C = 0.0 / 0.0 < 1.0", "false"),
         ("const C = 0.0 / 0.0 == 0.0 / 0.0", "false"),
@@ -268,6 +271,17 @@ fn float_constants() {
     for (constant, value) in rows {
         let src = format!("{constant}\nfn main() {{\n    let x = C\n    print(x)\n}}");
         contains(&src, &[&format!("(let x#0 {value})")]);
+    }
+    // An integer that overflows inside an `f64` value still panics, on either side of an operator.
+    for (src, column) in [
+        ("const C = f64(9223372036854775807 + 1)", 15),
+        ("const C = f64(9223372036854775807 + 1) * 2.0", 15),
+        ("const C = 2.0 * f64(9223372036854775807 + 1)", 21),
+    ] {
+        codes(
+            &format!("{src}\nfn main() {{}}"),
+            &[(Code::ConstantPanics, (1, column))],
+        );
     }
     // A declared type other than `f64` still holds an `f64` value to it.
     codes(
