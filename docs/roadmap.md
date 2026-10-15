@@ -774,6 +774,11 @@ These do not make code nicer to write, so they wait:
 - C FFI: `extern fn` to call libc or a C library. A C pointer is an opaque
   `CPtr` that Sisu code passes back to C, with no arithmetic and no
   dereference. Basic I/O does not need it: the runtime owns that (ADR 0009).
+  - A class's memory layout is unspecified: codegen orders its fields by
+    alignment, largest first, so that less padding sits between them. A class
+    that must match a C struct therefore asks for a C layout explicitly, in
+    declared order. That choice serves the FFI and costs the padding back,
+    the cost ADR 0006 asks a language-level choice to name.
 - Linking with `lld` (`-fuse-ld=lld`) when it is installed, because linking
   time grows with the program.
 - Parser error recovery, so a syntax error does not hide the next one.
