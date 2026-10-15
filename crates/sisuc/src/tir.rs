@@ -743,7 +743,6 @@ impl Printer<'_> {
         f.write_str(")")
     }
 
-    /// Writes each expression after a space.
     /// `(head e1 e2 ...)`.
     fn list(
         &self,
@@ -780,6 +779,7 @@ impl Printer<'_> {
         f.write_str(")")
     }
 
+    /// Writes each expression after a space.
     fn each(&self, f: &mut fmt::Formatter<'_>, exprs: &[Expr]) -> fmt::Result {
         exprs.iter().try_for_each(|e| {
             f.write_str(" ")?;

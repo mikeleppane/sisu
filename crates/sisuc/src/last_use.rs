@@ -5,8 +5,8 @@
 //! The walk goes backward through each function, in the order codegen evaluates nodes, with
 //! the set of locals live after the current point. It must match codegen exactly:
 //! - `Call`, `New`, `ArrayLit` and `Math` evaluate their arguments left to right, and
-//!   `Interpolate` its parts; `Index` evaluates base then index; `Contains` base then value; `ArrayFill` value
-//!   then length; `Equal`, `Is`, `Concat` and arithmetic lhs then rhs.
+//!   `Interpolate` its parts; `Index` evaluates base then index; `Contains` base then value;
+//!   `ArrayFill` value then length; `Equal`, `Is`, `Concat` and arithmetic lhs then rhs.
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.

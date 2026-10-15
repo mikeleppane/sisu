@@ -117,8 +117,8 @@ is never reused in place: its count never drops to 1 at `+`. An `Append` reads i
 the count last, so it appends in place only when nothing else holds the string
 or an array on its path. `chars()` and `bytes()` build a new array from the
 string, and `string(cs)` encodes a `[char]` into a new block. An interpolation
-allocates one block sized for the most text each part can give, then writes the
-parts into it. With `--rc-checks`, these helpers check each count before they
+allocates one block sized for the most text each part can give, plus the width
+of each padded part, then writes the parts into it, padding each part in place. With `--rc-checks`, these helpers check each count before they
 change it, and `main` calls `sisu_rc_check_exit` before it returns.
 
 **LLVM 22**. Runs the `mem2reg` pass, which turns stack slots into registers,

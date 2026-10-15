@@ -580,7 +580,7 @@ pub(crate) enum DiagnosticKind {
         at: Span,
         fix: Option<TypedLiteral>,
     },
-    /// The expression statement at `at`, whose value of type `ty` nothing uses.
+    /// The expression statement, or branch or body tail, at `at`, whose value of type `ty` nothing uses.
     UnusedValue { ty: String, at: Span },
     /// The built-in type or class `name`, at `at`, read as a value.
     TypeAsValue { name: String, at: Span },
@@ -594,7 +594,7 @@ pub(crate) enum DiagnosticKind {
     /// does not hold: it is empty, an alignment alone, or has a `.` without digits.
     MalformedFormatSpec { at: Span },
     /// The format spec at `at`, its `:` included, which asks for more than alignment, width and
-    /// precision: a leading `0`, a sign, a type, a fill or a nested `{`.
+    /// precision: a leading `0`, a sign, a type, a fill, a space or a nested `{`.
     UnsupportedFormatSpec { at: Span },
     /// The format spec at `at`, its `:` included, whose width, when `width`, or else precision is
     /// above its limit.

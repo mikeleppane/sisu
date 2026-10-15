@@ -1,4 +1,5 @@
-//! Printing an `f64`: the shortest text that reads back as the same value.
+//! Printing an `f64`: the shortest text that reads back as the same value, or with a fixed number
+//! of decimals.
 
 use std::io::Write;
 

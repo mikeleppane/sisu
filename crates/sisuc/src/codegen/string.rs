@@ -321,7 +321,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_int_nuw_add(a, b, "len")
                 .expect(POSITIONED)
         };
-        let format_of = |i| formats.iter().find(|format| format.part == i);
+        // The formats are in part order, so one pass over them meets each in turn.
+        let mut formats_in_order = formats.iter().peekable();
         let bound = |bytes| i64_type.const_int(bytes, false);
         // The most bytes each part's text takes: see `sisu_write_int`, `_f64`, `_f64_fixed`,
         // `_bool` and `_char`, plus the width when it is padded. A string's length is below
@@ -329,7 +330,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let cap = parts.iter().zip(&values).enumerate().fold(
             i64_type.const_zero(),
             |cap, (i, (part, value))| {
-                let format = format_of(i);
+                let format = formats_in_order.next_if(|format| format.part == i);
                 let text = match part.ty {
                     Type::String => self.string_len(value.into_pointer_value()),
                     Type::I64 => bound(20),
@@ -353,9 +354,10 @@ impl<'ctx> Codegen<'ctx, '_> {
             },
         );
         let result = self.new_string(cap);
+        let mut formats_in_order = formats.iter().peekable();
         let mut len = i64_type.const_zero();
         for (i, (part, value)) in parts.iter().zip(&values).enumerate() {
-            let format = format_of(i);
+            let format = formats_in_order.next_if(|format| format.part == i);
             let at = self.string_byte(result, len);
             let written = match part.ty {
                 Type::String => {
