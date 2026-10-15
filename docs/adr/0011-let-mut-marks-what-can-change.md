@@ -106,3 +106,6 @@ bindings, the point of ADR 0002.
   exclusivity rule, the same one that handing an array field to a call needs
   (roadmap, "Open decisions").
 - A closure inside a `mut self` method cannot capture `self` (milestone 9).
+- The error for a record that contains itself covers cycles made of records
+  alone. A cycle that runs through an enum gets a box on the enum's field
+  instead ([ADR 0019](0019-enums-are-values-named-through-their-enum.md)).

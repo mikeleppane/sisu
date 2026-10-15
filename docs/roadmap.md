@@ -404,8 +404,8 @@ The compiler is fuzzed in two stages:
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 7 | Enums with payloads, `match` with destructuring and an exhaustiveness check, `if let` with enum patterns | An evaluator over a recursive `enum Expr` of `Num(i64)`, `Add` and `Mul` prints correct results; a non-exhaustive `match` is a compile error. The shape sample runs once milestones 4 to 6 are done too |
-| 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
+| 7 | Enums with payloads, `match` with destructuring, alternatives, guards, literal and range patterns and an exhaustiveness check, `if let` and `while let` with enum patterns, and `..=` in `for` | An evaluator over a recursive `enum Expr` of `Num(i64)`, `Add` and `Mul` prints correct results; a non-exhaustive `match` is a compile error |
+| 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface; `Option` and `Result` join the prelude, with the bare names `Some`, `None`, `Ok` and `Err` in expressions and patterns, and on a `T?` a pattern whose outermost name is `Some` or `None` matches the optional itself while any other pattern matches the value inside it | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
 | 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`), including `os.env(name)`, `os.exit(code)`, and an `io` module with `read_lines()`, read-everything and `read_bytes()` | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
@@ -420,6 +420,9 @@ Order matters in these places:
   things must also stay: an optional class reference is a pointer that is
   null for `None`, and `T?` of an optional is the same optional (see "Open
   decisions").
+- Milestone 7 has both `..` and `..=` in `for` and in range patterns, as
+  Rust does. `..` already leaves out its end in `for`, so Swift's `...` or
+  Kotlin's inclusive `..` would change the meaning of existing loops.
 - Milestone 8 comes before the standard library, which needs generic
   collections.
 - Milestone 12 needs only enums and generics, so it can start as soon as
@@ -433,15 +436,18 @@ Order matters in these places:
 
 ### The growing proof program
 
-Status: agreed 2026-10-14. Each milestone's proof program is a few dozen
+Status: agreed 2026-10-14; it starts in milestone 8, not 7 (the user's
+decision, 2026-10-15). Each milestone's proof program is a few dozen
 lines, too small to show what goes wrong at size: error handling that
 nests, awkward module boundaries, missing collection methods, slow builds.
-So from milestone 7 on, one program grows with the language: Sisu's own
+So from milestone 8 on, one program grows with the language: Sisu's own
 lexer, written in Sisu, and later its parser. It turns the self-hosting
 stretch goal into steps.
 
-- Milestone 7 starts it, with tokens as an enum and the lexer over the
-  `chars()` of its input, read from standard input (milestone 5).
+- Milestone 8 starts it, with tokens as an enum and the lexer over the
+  `chars()` of its input, read from standard input (milestone 5). It waits
+  for generics and interfaces, which make the token type and its printing
+  read well.
 - From then on, a milestone is done only when the program uses its feature
   where the feature fits: generics and interfaces (8), closures and iterator
   methods (9), records (10), modules (11) and `Result` for lexer errors (12).
@@ -451,7 +457,7 @@ stretch goal into steps.
   lexes without errors, the program prints the same tokens as
   `sisuc --emit tokens`. The parser, once it exists, is checked against
   `--emit ast` the same way.
-- Milestone 7's spec settles where the program lives and how the tests run
+- Milestone 8's spec settles where the program lives and how the tests run
   it.
 
 ## Dependencies and parallel work
@@ -975,7 +981,7 @@ These do not make code nicer to write, so they wait:
   so they wait for the formatter, which must keep comments anyway, and for
   the language server, which can show them.
 - Self-hosting: the Sisu lexer and parser written in Sisu. They start as
-  the growing proof program from milestone 7 (see "The growing proof
+  the growing proof program from milestone 8 (see "The growing proof
   program"); a compiler written in Sisu stays a stretch goal.
 
 ## Gaps before production

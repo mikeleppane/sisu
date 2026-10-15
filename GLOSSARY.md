@@ -189,6 +189,37 @@ equal.
 Whether two references refer to the same object, tested with `is`.
 _Avoid_: reference equality, `===`
 
+## Enums and patterns
+
+**Enum**:
+A type whose every value is one of a fixed list of variants, declared with
+`enum`. An enum value never changes after it is built.
+_Avoid_: tagged union, sum type, discriminated union
+
+**Variant**:
+One case of an enum, such as `Expr.Num`. It may carry a payload.
+_Avoid_: case, constructor, member
+
+**Payload**:
+The fields a variant carries, all labeled or none: `Num(i64)`,
+`Rect(w: i64, h: i64)`.
+_Avoid_: associated value, data
+
+**Pattern**:
+The shape a `match` arm, `if let` or `while let` tests a value against. A
+pattern can bind names to the parts it matches.
+_Avoid_: matcher, case
+
+**Guard**:
+An `if` condition after an arm's pattern. The arm runs only when the pattern
+matches and the guard holds.
+_Avoid_: filter, where clause
+
+**Exhaustive**:
+Covering every value of the scrutinee's type. Every `match` must be
+exhaustive, or the program does not compile.
+_Avoid_: total, complete
+
 ## Optionals
 
 **Optional**:
@@ -270,11 +301,19 @@ reads as `None` once the object has been dropped.
 _Avoid_: unowned
 
 **Counted type**:
-A type whose values are shared blocks carrying a reference count: classes,
-arrays and strings, and optionals of them. Copying such a value copies a
-pointer and raises the count; `i64`, `f64`, `u8`, `bool` and `char` are copied whole and are not counted.
+A type whose values hold counted parts: classes, arrays, strings and boxes,
+an enum with a variant that holds one, and optionals of these. Copying such a
+value retains each counted part. `i64`, `f64`, `u8`, `bool`, `char` and enums
+whose variants hold none are copied whole and are not counted.
 _Avoid_: reference type, heap type
+
+**Box**:
+The counted heap block the compiler puts behind a payload field that closes
+a recursion cycle, such as each `Expr` in `Add(Expr, Expr)`. A program never
+names one.
+_Avoid_: indirection, `Box<T>`, pointer
 
 **Owned reference**:
 A reference that its holder must release exactly once. Every expression of a
-counted type yields one.
+counted type yields one; for an enum value, that is one reference to each of
+its counted parts.
