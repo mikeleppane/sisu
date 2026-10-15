@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/sisu-logo.png" alt="Sisu logo: a steel letter S with glowing orange seams" width="160">
+  <img src="docs/images/sisu-logo.png" alt="Sisu logo: a letter S folded from a ribbon that shades from blue to orange, with the word sisu on its lower curve" width="160">
 </p>
 
 # Sisu
