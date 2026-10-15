@@ -179,7 +179,7 @@ fn enum_named_local() {
 
 #[test]
 fn never_built() {
-    let rows: [Row<'_>; 9] = [
+    let rows: [Row<'_>; 10] = [
         (
             "enum Bad { Wrap(Bad) }",
             &[(Code::NeverConstructed, (1, 6))],
@@ -206,6 +206,11 @@ fn never_built() {
         ),
         // An enum whose error is reported already is not reported again.
         ("enum E {}\nenum F { G(E) }", &[(Code::EmptyEnum, (1, 6))]),
+        // The empty enum's node lies past the classes and the enums before it.
+        (
+            "class C { n: i64 }\nenum A { X }\nenum E {}\nenum F { G(E) }",
+            &[(Code::EmptyEnum, (3, 6))],
+        ),
         ("enum A { X(B) }\nenum B {\n    Y(A)\n    Z\n}", &[]),
         ("enum L { Cons([L]) }", &[]),
         ("enum L { Cons(L?) }", &[]),
