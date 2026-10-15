@@ -35,6 +35,12 @@ These are adopted. Together they give Sisu a working imperative core.
 - `==` that compares objects field by field, and `is` that tests identity
 - optionals such as `i64?` and `Node?`, with `None`, `?.`, `??`, `if let` and
   `while let`
+- enums, declared with `enum` and a list of variants, each with no payload,
+  labeled fields (`Rect(w: i64, h: i64)`) or unlabeled ones (`Num(i64)`);
+  `Expr.Num(2)` builds a value, an enum has methods and compares with `==`,
+  and a recursive enum such as `Add(Expr, Expr)` works with no annotation,
+  its recursive fields stored behind counted boxes; enum values never change,
+  and nothing takes one apart yet, since `match` is not in
 - `f64`, written `2.5`, `1e-3` or `3.0e8`, with IEEE 754 arithmetic and
   comparisons (`nan` is not equal to itself, and `-0.0` equals `0.0`);
   `i64(x)`, an `i64?` that is `None` unless `x` is a whole number in range,

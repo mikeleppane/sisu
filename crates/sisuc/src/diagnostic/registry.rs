@@ -654,8 +654,8 @@ pub(crate) enum DiagnosticKind {
         suggestion: Option<Suggestion>,
     },
     /// The variant `path` (`State.Idle`) built the wrong way. With `payload` it has one and is not
-    /// called, and `at` is the variant's name; without, it holds nothing and is called, and `at`
-    /// is the parentheses with what they hold, which hold something (`held`) or are empty.
+    /// called, and `at` is the variant's name. Without, it holds nothing and is called, and `at`
+    /// is the parentheses with what they hold; `held` says whether they hold anything.
     VariantForm {
         path: String,
         payload: bool,
@@ -2321,7 +2321,7 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::VariantCase { name, at } => {
                 let message = "a variant name starts with an upper-case letter";
-                // Only a lower-case first letter has a certain fix; `_Foo` would still break the rule.
+                // Only a lower-case first letter gets a fix; `_Foo` would still break the rule.
                 let mut chars = name.chars();
                 let capitalized = chars
                     .next()
@@ -2501,8 +2501,8 @@ fn named(path: Option<String>) -> String {
     path.map_or_else(|| "this value".to_string(), |path| format!("`{path}`"))
 }
 
-/// The fix that replaces the gap of `join` with a space: `message`, or `unsafe_message` when `join` is
-/// not safe.
+/// The fix that replaces the gap of `join` with a space: `message`, or `unsafe_message` when `join`
+/// is not safe.
 fn join_fix(message: &str, unsafe_message: &str, join: Join) -> Fix {
     Fix {
         message: if join.safe { message } else { unsafe_message }.to_string(),
