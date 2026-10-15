@@ -1,0 +1,8 @@
+enum Direction {
+    north
+    South
+}
+
+fn main() {
+    print(1)
+}

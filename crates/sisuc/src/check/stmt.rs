@@ -533,7 +533,9 @@ impl Checker<'_> {
     /// every exit. The bindings, and the operands with those reads in place.
     pub(super) fn spill(&mut self, operands: Vec<tir::Expr>) -> (Vec<tir::Stmt>, Vec<tir::Expr>) {
         let last_exit = operands.iter().rposition(tir::Expr::exits);
-        let first_counted = operands.iter().position(|e| e.ty.is_counted());
+        let first_counted = operands
+            .iter()
+            .position(|e| e.ty.is_counted(&self.lowered_enums));
         let Some(last_exit) = last_exit.filter(|&exit| first_counted.is_some_and(|c| c < exit))
         else {
             return (Vec::new(), operands);
@@ -560,7 +562,8 @@ impl Checker<'_> {
 
     /// Adds `name` to the innermost scope as a new local; `keyword` is the `mut` of a
     /// `let mut`. It replaces a binding of that name in the scope, except that a parameter whose
-    /// name another parameter has is reported and poisoned.
+    /// name another parameter has is reported and poisoned. A name that milestone 8's prelude
+    /// or an enum takes is reported, and the binding still takes it.
     pub(super) fn declare(
         &mut self,
         name: &ast::Ident,
@@ -568,6 +571,12 @@ impl Checker<'_> {
         kind: BindingKind,
         keyword: Option<Span>,
     ) -> tir::LocalId {
+        if !self.reserved(name) && self.enum_ids.contains_key(&name.name) {
+            self.report(DiagnosticKind::EnumNamedLocal {
+                name: name.name.to_string(),
+                at: name.span,
+            });
+        }
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
             name: Some(name.name.to_string()),

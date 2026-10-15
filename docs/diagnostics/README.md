@@ -121,6 +121,10 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0110](E0110.md) | error | format spec width or precision above its limit |
 | [E0111](E0111.md) | error | precision on a value that is not an `f64` |
 | [E0112](E0112.md) | error | variant after a method |
+| [E0113](E0113.md) | error | variant name not capitalized |
+| [E0114](E0114.md) | error | payload labels mixed |
+| [E0115](E0115.md) | error | enum without variants |
+| [E0116](E0116.md) | error | local named like an enum |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

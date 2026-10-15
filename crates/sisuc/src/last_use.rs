@@ -25,7 +25,11 @@ use crate::tir::{BinaryOp, Block, Expr, ExprKind, LocalId, Place, Program, Stmt}
 pub(crate) fn mark(program: &mut Program) {
     for function in &mut program.functions {
         let mut walk = Walk {
-            counted: function.locals.iter().map(|l| l.ty.is_counted()).collect(),
+            counted: function
+                .locals
+                .iter()
+                .map(|l| l.ty.is_counted(&program.enums))
+                .collect(),
             live: vec![false; function.locals.len()],
             rewrite: true,
             loops: Vec::new(),

@@ -16,6 +16,9 @@ pub(crate) struct FuncId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ClassId(pub(crate) usize);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct EnumId(pub(crate) usize);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Type {
     I64,
@@ -27,9 +30,10 @@ pub(crate) enum Type {
     Unit,
     Never,
     Class(ClassId),
+    Enum(EnumId),
     /// `[T]`.
     Array(Box<Type>),
-    /// Holds `I64`, `U8`, `F64`, `Bool`, `Char`, `String`, `Class` or `Array`.
+    /// Holds `I64`, `U8`, `F64`, `Bool`, `Char`, `String`, `Class`, `Enum` or `Array`.
     Optional(Box<Type>),
 }
 
@@ -112,6 +116,7 @@ impl MathOp {
 #[derive(Debug)]
 pub(crate) struct Program {
     pub(crate) classes: Vec<Class>,
+    pub(crate) enums: Vec<Enum>,
     pub(crate) functions: Vec<Function>,
 }
 
@@ -119,6 +124,36 @@ pub(crate) struct Program {
 pub(crate) struct Class {
     pub(crate) name: String,
     pub(crate) fields: Vec<Field>,
+}
+
+/// An enum: a tag and its variant's payload, held inline.
+#[derive(Debug)]
+pub(crate) struct Enum {
+    pub(crate) name: String,
+    pub(crate) variants: Vec<Variant>,
+    /// Whether a value has counted parts: a boxed field, or a field of a counted type.
+    pub(crate) counted: bool,
+    /// The enum's strongly connected component of the holds-inline graph, when that component
+    /// has a boxed field.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Task 5's pending list reads it")
+    )]
+    pub(crate) cycle: Option<usize>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Variant {
+    pub(crate) name: String,
+    pub(crate) fields: Vec<Payload>,
+}
+
+/// A payload field. A `boxed` one is stored behind a counted pointer, since its enum, or the
+/// enum of its optional, holds the declaring enum inline.
+#[derive(Debug)]
+pub(crate) struct Payload {
+    pub(crate) ty: Type,
+    pub(crate) boxed: bool,
 }
 
 #[derive(Debug)]
@@ -375,11 +410,13 @@ pub(crate) enum ExprKind {
 }
 
 impl Type {
-    /// Whether a value of this type is an owned reference, which codegen counts.
-    pub(crate) fn is_counted(&self) -> bool {
+    /// Whether a value of this type is an owned reference, or an enum with counted parts,
+    /// which codegen counts. `enums` are the program's.
+    pub(crate) fn is_counted(&self, enums: &[Enum]) -> bool {
         match self {
             Type::String | Type::Class(_) | Type::Array(_) => true,
-            Type::Optional(payload) => payload.is_counted(),
+            Type::Enum(id) => enums[id.0].counted,
+            Type::Optional(payload) => payload.is_counted(enums),
             _ => false,
         }
     }
@@ -499,6 +536,7 @@ impl fmt::Display for Type {
             Type::Never => "never",
             // A class's name lives in the program: `Program::type_name` prints it.
             Type::Class(id) => return write!(f, "class#{}", id.0),
+            Type::Enum(id) => return write!(f, "enum#{}", id.0),
             Type::Array(element) => return write!(f, "[{element}]"),
             Type::Optional(payload) => return write!(f, "{payload}?"),
         })
@@ -798,10 +836,11 @@ impl Program {
         })
     }
 
-    /// A type as `--emit tir` prints it: a class by its name.
+    /// A type as `--emit tir` prints it: a class or an enum by its name.
     pub(crate) fn type_name(&self, ty: &Type) -> String {
         match ty {
             Type::Class(id) => self.classes[id.0].name.clone(),
+            Type::Enum(id) => self.enums[id.0].name.clone(),
             Type::Array(element) => format!("[{}]", self.type_name(element)),
             Type::Optional(payload) => format!("{}?", self.type_name(payload)),
             ty => ty.to_string(),
@@ -811,7 +850,7 @@ impl Program {
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Classes first, then functions, one per line.
+        // Classes first, then enums, then functions, one per line.
         let mut separator = "";
         for class in &self.classes {
             write!(f, "{separator}(class {}", class.name)?;
@@ -819,6 +858,27 @@ impl fmt::Display for Program {
                 let keyword = if field.mutable { "mut " } else { "" };
                 let ty = self.type_name(&field.ty);
                 write!(f, " ({keyword}{} {ty})", field.name)?;
+            }
+            f.write_str(")")?;
+            separator = "\n";
+        }
+        for e in &self.enums {
+            write!(f, "{separator}(enum {}", e.name)?;
+            for variant in &e.variants {
+                if variant.fields.is_empty() {
+                    write!(f, " {}", variant.name)?;
+                    continue;
+                }
+                write!(f, " ({}", variant.name)?;
+                for field in &variant.fields {
+                    let ty = self.type_name(&field.ty);
+                    if field.boxed {
+                        write!(f, " (box {ty})")?;
+                    } else {
+                        write!(f, " {ty}")?;
+                    }
+                }
+                f.write_str(")")?;
             }
             f.write_str(")")?;
             separator = "\n";
@@ -973,6 +1033,7 @@ mod tests {
         let ret = expr(ExprKind::Return(Some(Box::new(local(1)))), Type::Never);
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
@@ -1074,6 +1135,7 @@ mod tests {
         };
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![first, second],
         };
         assert_eq!(
@@ -1104,6 +1166,7 @@ mod tests {
         let float = |x| expr(ExprKind::Float(x), Type::F64);
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
@@ -1135,6 +1198,7 @@ mod tests {
         let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
@@ -1161,6 +1225,7 @@ mod tests {
         );
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
@@ -1178,6 +1243,7 @@ mod tests {
         let read_line = expr(ExprKind::ReadLine, Type::Optional(Box::new(Type::String)));
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
@@ -1196,6 +1262,7 @@ mod tests {
         let words = expr(ExprKind::Words(s), Type::Array(Box::new(Type::String)));
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
@@ -1222,6 +1289,7 @@ mod tests {
         let print = print_of(expr(concat, Type::String));
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
@@ -1254,6 +1322,7 @@ mod tests {
         let print = print_of(interp);
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0), LocalId(1)],
@@ -1301,6 +1370,7 @@ mod tests {
         let print = print_of(interp);
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0), LocalId(1)],
@@ -1329,6 +1399,7 @@ mod tests {
         let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
@@ -1370,6 +1441,7 @@ mod tests {
         };
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
@@ -1401,6 +1473,7 @@ mod tests {
         let panic = expr(ExprKind::Panic(Box::new(message)), Type::Never);
         let program = Program {
             classes: vec![],
+            enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
@@ -1459,10 +1532,17 @@ mod tests {
                 class("A", vec![field("b", optional(5))]),
                 class("B", vec![field("a", optional(4))]),
             ],
+            enums: vec![],
             functions: vec![],
         };
         let chains = [0, 1, 2, 4].map(|id| program.chain_field(ClassId(id)));
         assert_eq!(chains, [Some(1), Some(1), Some(0), None]);
+    }
+
+    #[test]
+    fn prints_an_enum_type_by_its_id() {
+        let ty = Type::Optional(Box::new(Type::Enum(EnumId(2))));
+        assert_eq!(ty.to_string(), "enum#2?");
     }
 
     #[test]

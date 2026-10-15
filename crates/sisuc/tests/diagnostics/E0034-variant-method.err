@@ -1,0 +1,11 @@
+error[E0034]: `Red` is already a variant of `Light`
+ --> E0034-variant-method.sisu:4:8
+  |
+2 |     Red
+  |     --- first defined here
+3 |
+4 |     fn Red(self) -> i64 { 1 }
+  |        ^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0034

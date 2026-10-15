@@ -136,7 +136,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .expect(POSITIONED)
         };
         for (index, field) in self.program.classes[id.0].fields.iter().enumerate() {
-            if field.ty.is_counted() && chain != Some(index) {
+            if field.ty.is_counted(&self.program.enums) && chain != Some(index) {
                 self.release(load_field(index), &field.ty);
             }
         }
@@ -512,7 +512,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Adds 1 to the count of `value` when `ty` is counted.
     pub(super) fn retain(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
-        if ty.is_counted() {
+        if ty.is_counted(&self.program.enums) {
             self.call(self.rc_retain, &[value.into()]);
         }
     }

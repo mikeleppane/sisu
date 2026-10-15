@@ -1,0 +1,14 @@
+error[E0030]: cannot find type `Shap`
+ --> E0030-enum.sisu:5:9
+  |
+5 | fn f(s: Shap) {}
+  |         ^^^^
+  |
+  = help: the types are `i64`, `u8`, `f64`, `bool`, `char`, `string`, classes, enums and arrays such as `[i64]`
+help: an enum with a similar name exists: `Shape`
+  |
+5 | fn f(s: Shape) {}
+  |             +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0030

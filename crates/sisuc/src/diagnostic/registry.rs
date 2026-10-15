@@ -154,6 +154,10 @@ codes! {
     FormatSpecLimit = "E0110",
     PrecisionNeedsF64 = "E0111",
     VariantAfterMethod = "E0112",
+    VariantCase = "E0113",
+    MixedLabels = "E0114",
+    EmptyEnum = "E0115",
+    EnumNamedLocal = "E0116",
     NanComparison = "W0005",
 }
 
@@ -276,20 +280,18 @@ pub(crate) enum DiagnosticKind {
     EqualityChain { at: Span },
     /// A comparison at `at` that turns a chain around.
     ComparisonDirection { at: Span },
-    /// The built-in `name`, at `at`, taken by a class, function, constant or variant.
+    /// The built-in `name`, at `at`, taken by a class, function, constant, enum, variant or
+    /// binding.
     BuiltInName {
         name: String,
         at: Span,
         kind: BuiltIn,
     },
-    /// The class `class`, which no object can have: its field `field`, at `at`, needs a `target`.
-    /// `ty` is the field's type, where a `?` would break the cycle.
+    /// The class or enum `name`, which no value can have, reported at `at` for `cause`.
     NeverConstructed {
-        class: String,
-        field: String,
-        target: String,
+        name: String,
         at: Span,
-        ty: Span,
+        cause: Unbuilt,
     },
     /// A program with no `main`.
     NoMain,
@@ -617,6 +619,15 @@ pub(crate) enum DiagnosticKind {
     },
     /// The variant at `at`, which follows the method whose `fn` is at `first_method`.
     VariantAfterMethod { at: Span, first_method: Span },
+    /// The variant `name`, at `at`, which starts with no upper-case letter.
+    VariantCase { name: String, at: Span },
+    /// A payload of the variant `variant` that labels some fields and not others; `at` is the
+    /// first field labeled differently from the first.
+    MixedLabels { variant: String, at: Span },
+    /// The enum `name`, at `at`, which declares no variant.
+    EmptyEnum { name: String, at: Span },
+    /// A local, parameter or binding at `at` named `name`, which names an enum.
+    EnumNamedLocal { name: String, at: Span },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -731,9 +742,19 @@ pub(crate) enum Definition {
     Binding,
     Type,
     Constant,
+    Enum,
+    Variant,
 }
 
 impl Definition {
+    /// The indefinite article before `word`.
+    fn article(self) -> &'static str {
+        match self {
+            Definition::Enum => "an",
+            _ => "a",
+        }
+    }
+
     fn word(self) -> &'static str {
         match self {
             Definition::Function => "function",
@@ -743,6 +764,8 @@ impl Definition {
             Definition::Binding => "binding",
             Definition::Type => "type",
             Definition::Constant => "constant",
+            Definition::Enum => "enum",
+            Definition::Variant => "variant",
         }
     }
 }
@@ -845,6 +868,22 @@ pub(crate) enum BuiltIn {
     Type,
     /// A keyword.
     Keyword,
+    /// A constructor milestone 8's prelude takes: `Some`, `Ok` or `Err`.
+    Constructor,
+}
+
+/// Why no value of a class or enum can be built.
+pub(crate) enum Unbuilt {
+    /// A class whose field `field`, at the diagnostic's span, needs a `target`; `ty` is the
+    /// field's type, where a `?` would break the cycle.
+    Field {
+        field: String,
+        target: String,
+        ty: Span,
+    },
+    /// An enum, and the links that lead from it back to it: each holder (`D.Q` or `K.d`) and
+    /// the type it holds.
+    Chain(Vec<(String, String)>),
 }
 
 /// What follows the `let` in front of a field.
@@ -1004,6 +1043,10 @@ impl DiagnosticKind {
             DiagnosticKind::FormatSpecLimit { .. } => Code::FormatSpecLimit,
             DiagnosticKind::PrecisionNeedsF64 { .. } => Code::PrecisionNeedsF64,
             DiagnosticKind::VariantAfterMethod { .. } => Code::VariantAfterMethod,
+            DiagnosticKind::VariantCase { .. } => Code::VariantCase,
+            DiagnosticKind::MixedLabels { .. } => Code::MixedLabels,
+            DiagnosticKind::EmptyEnum { .. } => Code::EmptyEnum,
+            DiagnosticKind::EnumNamedLocal { .. } => Code::EnumNamedLocal,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
@@ -1337,30 +1380,36 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 match kind {
                     BuiltIn::Type => format!("`{name}` is a built-in type"),
+                    BuiltIn::Constructor => format!("`{name}` is a built-in name"),
                     BuiltIn::Keyword => {
                         format!("`{name}` is a keyword; a variant cannot take its name")
                     }
                 },
             ),
-            DiagnosticKind::NeverConstructed {
-                class,
-                field,
-                target,
-                at,
-                ty,
-            } => Diagnostic::coded(
-                code,
-                at,
-                format!("`{class}` can never be constructed: field `{field}` needs a value of type `{target}`"),
-            )
-            .with_fix(Fix {
-                message: format!("if the field can be absent, make it optional: `{target}?`"),
-                safe: false,
-                edits: vec![Edit {
-                    span: Span::new(ty.end(), ty.end()),
-                    replacement: "?".to_string(),
-                }],
-            }),
+            DiagnosticKind::NeverConstructed { name, at, cause } => match cause {
+                Unbuilt::Field { field, target, ty } => Diagnostic::coded(
+                    code,
+                    at,
+                    format!("`{name}` can never be constructed: field `{field}` needs a value of type `{target}`"),
+                )
+                .with_fix(Fix {
+                    message: format!("if the field can be absent, make it optional: `{target}?`"),
+                    safe: false,
+                    edits: vec![Edit {
+                        span: Span::new(ty.end(), ty.end()),
+                        replacement: "?".to_string(),
+                    }],
+                }),
+                Unbuilt::Chain(links) => {
+                    let chain = links
+                        .iter()
+                        .map(|(holder, held)| format!("`{holder}` holds a `{held}`"))
+                        .collect::<Vec<_>>()
+                        .join(", and ");
+                    Diagnostic::coded(code, at, format!("no value of `{name}` can be built"))
+                        .with_label(chain)
+                }
+            },
             DiagnosticKind::NoMain => {
                 Diagnostic::coded(code, Span::new(0, 0), "no `main` function")
             }
@@ -1377,7 +1426,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 suggestion,
             } => similar(
                 Diagnostic::coded(code, at, format!("cannot find type `{name}`")).with_help(
-                    "the types are `i64`, `u8`, `f64`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
+                    "the types are `i64`, `u8`, `f64`, `bool`, `char`, `string`, classes, enums and arrays such as `[i64]`",
                 ),
                 at,
                 suggestion,
@@ -1526,7 +1575,8 @@ impl From<DiagnosticKind> for Diagnostic {
                         owner,
                     } if first != kind => {
                         let owner = owner.map_or_else(String::new, |c| format!(" of `{c}`"));
-                        (format!("`{name}` is already a {}{owner}", first.word()), Some(span))
+                        let (article, word) = (first.article(), first.word());
+                        (format!("`{name}` is already {article} {word}{owner}"), Some(span))
                     }
                     Earlier::At { span, .. } => {
                         (format!("{} `{name}` is defined twice", kind.word()), Some(span))
@@ -2199,6 +2249,33 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "variants come before methods")
                     .with_secondary(first_method, "the first method")
             }
+            DiagnosticKind::VariantCase { name, at } => {
+                let mut chars = name.chars();
+                let capitalized: String = chars
+                    .next()
+                    .map(char::to_uppercase)
+                    .into_iter()
+                    .flatten()
+                    .chain(chars)
+                    .collect();
+                Diagnostic::coded(
+                    code,
+                    at,
+                    format!("a variant name starts with an upper-case letter: `{capitalized}`"),
+                )
+                .with_fix(unsafe_fix("capitalize it", at, &capitalized))
+            }
+            DiagnosticKind::MixedLabels { variant, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("label every field of `{variant}` or none"),
+            ),
+            DiagnosticKind::EmptyEnum { name, at } => {
+                Diagnostic::coded(code, at, format!("`{name}` needs at least one variant"))
+            }
+            DiagnosticKind::EnumNamedLocal { name, at } => {
+                Diagnostic::coded(code, at, format!("`{name}` names an enum"))
+            }
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };
                 let d = Diagnostic::coded(
@@ -2290,7 +2367,11 @@ fn similar(d: Diagnostic, at: Span, suggestion: Option<Suggestion>) -> Diagnosti
         return d;
     };
     d.with_fix(unsafe_fix(
-        &format!("a {} with a similar name exists: `{name}`", kind.word()),
+        &format!(
+            "{} {} with a similar name exists: `{name}`",
+            kind.article(),
+            kind.word()
+        ),
         at,
         &name,
     ))

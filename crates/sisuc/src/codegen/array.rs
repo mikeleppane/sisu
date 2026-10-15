@@ -308,7 +308,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.element_tag,
             );
         });
-        if element.is_counted() {
+        if element.is_counted(&self.program.enums) {
             self.share_filler(filler, element, count);
         }
         array
@@ -599,7 +599,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         let (slot, ty) = self.element_slot(operands.slot, &operands.ty, &operands.indexes);
         let old = ty
-            .is_counted()
+            .is_counted(&self.program.enums)
             .then(|| self.load_tagged(value.get_type(), slot, "old", self.element_tag));
         self.store_tagged(slot, value, self.element_tag);
         self.discard(old, &ty);
@@ -631,7 +631,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .position_at_end(self.context.append_basic_block(function, "entry"));
         let array = param(function);
         let len = self.array_len(array);
-        if element.is_counted() {
+        if element.is_counted(&self.program.enums) {
             self.count_loop(len, |index| {
                 self.release(self.load_element(element, array, index), element);
             });
@@ -734,7 +734,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 bytes,
             )
             .expect("the block's alignment should be a power of two, as each ABI alignment is");
-        if element.is_counted() {
+        if element.is_counted(&self.program.enums) {
             self.count_loop(len, |index| {
                 self.retain(self.load_element(element, copy, index), element);
             });

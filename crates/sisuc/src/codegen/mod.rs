@@ -368,6 +368,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Type::String | Type::Class(_) | Type::Array(_) => {
                 Some(self.context.ptr_type(AddressSpace::default()).into())
             }
+            Type::Enum(_) => panic!("enum layout lands in Task 4"),
             Type::Optional(payload) => match self
                 .llvm_type(payload)
                 .expect("the checker should reject an optional of `unit` or `never`, so its payload has a value type")
@@ -583,7 +584,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .map(|local| {
                 let ty = self
                     .llvm_type(&local.ty)
-                    .filter(|_| local.mutable || local.ty.is_counted())?;
+                    .filter(|_| local.mutable || local.ty.is_counted(&self.program.enums))?;
                 let name = local.name.as_deref().unwrap_or("");
                 Some(Slot::Alloca(self.entry_alloca(ty, name), ty))
             })
@@ -731,7 +732,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                 };
                 // The value first, then the store, then the release of the old value.
                 let counted = &self.types[local.0];
-                let old = counted.is_counted().then(|| self.load(ty, ptr));
+                let old = counted
+                    .is_counted(&self.program.enums)
+                    .then(|| self.load(ty, ptr));
                 self.store(ptr, value);
                 self.discard(old, counted);
             }
@@ -750,7 +753,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                     return;
                 };
                 let field = self.field_ptr(&base.ty, object, *index);
-                let old = ty.is_counted().then(|| self.load(value.get_type(), field));
+                let old = ty
+                    .is_counted(&self.program.enums)
+                    .then(|| self.load(value.get_type(), field));
                 self.store(field, value);
                 self.discard(old, ty);
                 self.release(object.into(), &base.ty);
@@ -773,7 +778,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Some(Slot::Alloca(ptr, _)) => self.store(ptr, value),
             _ => self.locals[local.0] = Some(Slot::Value(value)),
         }
-        if self.types[local.0].is_counted() {
+        if self.types[local.0].is_counted(&self.program.enums) {
             self.live.push(local);
         }
     }
@@ -992,7 +997,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Wrap(operand) => {
                 let value = self.expr(operand)?;
                 // A class needs no wrapping: its pointer is never `null`.
-                if e.ty.is_counted() {
+                if e.ty.is_counted(&self.program.enums) {
                     return Some(value);
                 }
                 let some = self.context.bool_type().const_int(1, false);
@@ -1009,7 +1014,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let value = self
                     .expr(scrutinee)
                     .expect("the checker should reject an `if let` scrutinee that is not an optional, so it has a value");
-                let (some, bound) = if scrutinee.ty.is_counted() {
+                let (some, bound) = if scrutinee.ty.is_counted(&self.program.enums) {
                     let some = self
                         .builder
                         .build_is_not_null(value.into_pointer_value(), "some")
@@ -1224,7 +1229,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `a < b <= c` is `a < b && b <= c` with `b` computed once. The checker splits a chain of
     /// strings into pairs.
     fn compare(&mut self, operands: &[Expr], ops: &[CompareOp]) -> IntValue<'ctx> {
-        if operands[0].ty.is_counted() {
+        if operands[0].ty.is_counted(&self.program.enums) {
             let ([lhs, rhs], [op]) = (operands, ops) else {
                 unreachable!("the checker should split a comparison chain of strings into pairs")
             };

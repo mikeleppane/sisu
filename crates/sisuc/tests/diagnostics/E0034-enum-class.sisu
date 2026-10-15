@@ -1,0 +1,11 @@
+enum Shape {
+    Dot
+}
+
+class Shape {
+    n: i64
+}
+
+fn main() {
+    print(1)
+}

@@ -1,0 +1,4 @@
+fn main() {
+    let Err = 1
+    print(Err)
+}

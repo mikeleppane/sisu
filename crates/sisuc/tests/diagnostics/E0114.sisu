@@ -1,0 +1,7 @@
+enum Step {
+    Move(i64, to: i64)
+}
+
+fn main() {
+    print(1)
+}

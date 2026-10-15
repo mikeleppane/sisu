@@ -1,0 +1,11 @@
+error[E0034]: variant `Red` is defined twice
+ --> E0034-variant.sisu:4:5
+  |
+2 |     Red
+  |     --- first defined here
+3 |     Green
+4 |     Red
+  |     ^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0034

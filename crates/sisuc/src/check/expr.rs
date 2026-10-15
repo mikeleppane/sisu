@@ -102,12 +102,12 @@ impl Checker<'_> {
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
             ExprKind::Todo { keyword, args } => self.todo(e.span, *keyword, args),
             ExprKind::SelfValue => {
-                let Some(class) = self.self_class else {
+                let Some(ty) = self.self_type.clone() else {
                     self.diagnostics
                         .push(DiagnosticKind::SelfOutsideMethod { at: e.span }.into());
                     return Err(Poisoned::error());
                 };
-                node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
+                node(tir::ExprKind::Local(tir::LocalId(0)), ty)
             }
             ExprKind::Field { base, name, safe } => {
                 if !safe && let Some(checked) = self.type_path(e.span, base, name, None) {
@@ -643,7 +643,9 @@ impl Checker<'_> {
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
             // Once an operand is `Error`, the later one is not held to `is`.
             let Some(ty) = type_of(checked) else { break };
-            if matches!(payload(ty), Type::Array(_) | Type::String) || !ty.is_counted() {
+            if matches!(payload(ty), Type::Array(_) | Type::String)
+                || !ty.is_counted(&self.lowered_enums)
+            {
                 let kind = DiagnosticKind::IsNeedsObjects {
                     found: self.type_name(ty),
                     at: side.span,

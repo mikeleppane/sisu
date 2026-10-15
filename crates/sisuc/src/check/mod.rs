@@ -3,6 +3,7 @@
 
 mod array;
 mod constant;
+mod enums;
 mod expr;
 mod number;
 mod place;
@@ -15,11 +16,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::ast;
 use crate::diagnostic::{
     BuiltIn, Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, MismatchFix, Severity,
-    Span, suggestion,
+    Span, Unbuilt, suggestion,
 };
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 use constant::{ConstInfo, ConstantSite};
+use enums::EnumInfo;
 use prelude::PRELUDE;
 
 /// An expression whose rule failed; its diagnostic is recorded. `ty` is its type when
@@ -144,6 +146,13 @@ struct Checker<'src> {
     classes: Vec<ClassInfo>,
     /// The first class of each name, and every broken one.
     class_ids: FxHashMap<Symbol, Declared<tir::ClassId>>,
+    /// Indexed by `EnumId`, so a duplicate enum has variants of its own.
+    enums: Vec<EnumInfo>,
+    /// The first enum of each name, and every broken one.
+    enum_ids: FxHashMap<Symbol, Declared<tir::EnumId>>,
+    /// The enums as `tir` holds them, with their boxes and countedness; bodies are checked
+    /// after they are lowered.
+    lowered_enums: Vec<tir::Enum>,
     /// The first constant of each name, and every broken one.
     constants: FxHashMap<Symbol, Declared<ConstInfo>>,
     diagnostics: Vec<Diagnostic>,
@@ -152,8 +161,8 @@ struct Checker<'src> {
     locals: Vec<tir::Local>,
     /// `None` is `Error`.
     ret: Option<Type>,
-    /// The class of the method being checked, whose `self` is local 0.
-    self_class: Option<tir::ClassId>,
+    /// The type of the method being checked, a class or an enum, whose `self` is local 0.
+    self_type: Option<Type>,
     /// Loops open around the code being checked, innermost last: what a `break` would act on.
     loops: Vec<LoopContext>,
     /// Set by a `break` or `continue` outside a loop; `scoped_block` reads it per statement.
@@ -186,12 +195,15 @@ pub(crate) fn check(
         signatures: Vec::new(),
         classes: Vec::new(),
         class_ids: FxHashMap::default(),
+        enums: Vec::new(),
+        enum_ids: FxHashMap::default(),
+        lowered_enums: Vec::new(),
         constants: FxHashMap::default(),
         diagnostics: Vec::new(),
         scopes: Vec::new(),
         locals: Vec::new(),
         ret: None,
-        self_class: None,
+        self_type: None,
         loops: Vec::new(),
         invalid_jump: false,
         in_target: false,
@@ -204,28 +216,36 @@ pub(crate) fn check(
     checker.collect_names(program);
     let declared = checker.collect_signatures(program);
     checker.fold_constants(program);
-    checker.never_constructed();
+    let cyclic = checker.never_constructed();
+    checker.lowered_enums = checker.lower_enums(&cyclic);
     checker.check_main(&declared);
     // Every body is checked, so this collects into a `Vec` before it gives up on a `None`.
     let functions: Vec<_> = declared
         .into_iter()
         .enumerate()
-        .map(|(i, (f, class))| checker.function(f, tir::FuncId(i), class))
+        .map(|(i, (f, owner))| checker.function(f, tir::FuncId(i), owner))
         .collect();
     let classes = checker.classes.iter().map(lower_class).collect();
     let mut diagnostics = checker.diagnostics;
     diagnostics.sort_by_key(|d| d.span().start());
     let failed = diagnostics.iter().any(|d| d.severity() == Severity::Error);
     let broken = !program.broken.is_empty()
-        || program.items.iter().any(
-            |item| matches!(item, ast::Item::Class(class) if !class.broken_methods.is_empty()),
-        );
+        || program.items.iter().any(|item| match item {
+            ast::Item::Class(class) => !class.broken_methods.is_empty(),
+            ast::Item::Enum(e) => !e.broken_methods.is_empty(),
+            ast::Item::Function(_) | ast::Item::Const(_) => false,
+        });
+    let enums = checker.lowered_enums;
     let program = functions
         .into_iter()
         .collect::<Option<_>>()
         .zip(classes)
         .filter(|_| !failed)
-        .map(|(functions, classes)| tir::Program { classes, functions });
+        .map(|(functions, classes)| tir::Program {
+            classes,
+            enums,
+            functions,
+        });
     // A use of a broken item poisons without a diagnostic of its own.
     debug_assert!(
         program.is_some() || failed || broken,
@@ -275,9 +295,10 @@ impl Checker<'_> {
         self.diagnostics.push(kind.into());
     }
 
-    /// Pass 1: gives every class a `ClassId` and records the first function, class and constant
-    /// of each name, so that types, calls and uses can name any of them. They share a
-    /// namespace. `FuncId`s run in source order, a class's methods at its place.
+    /// Pass 1: gives every class a `ClassId` and every enum an `EnumId`, and records the first
+    /// function, class, enum and constant of each name, so that types, calls and uses can name
+    /// any of them. They share a namespace. `FuncId`s run in source order, a class's or an
+    /// enum's methods at its place.
     fn collect_names(&mut self, program: &ast::Program) {
         let mut first = FxHashMap::default();
         let mut next_function = 0;
@@ -313,8 +334,19 @@ impl Checker<'_> {
                     }
                     next_function += 1;
                 }
-                // Task 2 declares enums; until then an enum is skipped.
-                ast::Item::Enum(_) => {}
+                ast::Item::Enum(e) => {
+                    let id = tir::EnumId(self.enums.len());
+                    self.enums.push(EnumInfo {
+                        name: e.name.clone(),
+                        variants: Vec::new(),
+                    });
+                    if !self.built_in(&e.name)
+                        && self.first_callable(&mut first, Definition::Enum, &e.name)
+                    {
+                        self.enum_ids.insert(e.name.name, Declared::Known(id));
+                    }
+                    next_function += e.methods.len();
+                }
                 ast::Item::Const(c) => {
                     if !self.built_in(&c.name)
                         && self.first_callable(&mut first, Definition::Constant, &c.name)
@@ -337,16 +369,20 @@ impl Checker<'_> {
                 ast::BrokenKind::Class => {
                     self.class_ids.insert(*name, Declared::Broken);
                 }
-                // Task 2 declares enums; until then a broken enum is skipped.
-                ast::BrokenKind::Enum => {}
+                ast::BrokenKind::Enum => {
+                    self.enum_ids.insert(*name, Declared::Broken);
+                }
                 ast::BrokenKind::Constant => {
                     self.constants.insert(*name, Declared::Broken);
                 }
             }
-            // Functions, classes and constants share a namespace, so an intact item of another
-            // kind and this name is poisoned too.
+            // Functions, classes, enums and constants share a namespace, so an intact item of
+            // another kind and this name is poisoned too.
             if let Some(class) = self.class_ids.get_mut(name) {
                 *class = Declared::Broken;
+            }
+            if let Some(e) = self.enum_ids.get_mut(name) {
+                *e = Declared::Broken;
             }
             if let Some(function) = self.function_ids.get_mut(name) {
                 *function = Declared::Broken;
@@ -357,8 +393,9 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether `name` is a built-in type's, which no class, function or constant may take;
-    /// reports it when it is.
+    /// Whether `name` is a built-in type's, which no class, function, enum or constant may
+    /// take; reports it when it is. A name milestone 8's prelude takes is reported too, but the
+    /// item still takes it, so that its uses do not cascade.
     fn built_in(&mut self, name: &ast::Ident) -> bool {
         let found = built_in_type(name.name.as_str()).is_some();
         if found {
@@ -367,6 +404,8 @@ impl Checker<'_> {
                 at: name.span,
                 kind: BuiltIn::Type,
             });
+        } else {
+            self.reserved(name);
         }
         found
     }
@@ -407,14 +446,16 @@ impl Checker<'_> {
         true
     }
 
-    /// Pass 2: each class's fields and every signature, in `FuncId` order. Returns each
-    /// function with the class of a method. A class's fields and methods share a namespace.
+    /// Pass 2: each class's fields, each enum's variants and every signature, in `FuncId`
+    /// order. Returns each function with the type of a method's `self`. A class's fields and
+    /// methods share a namespace.
     fn collect_signatures<'a>(
         &mut self,
         program: &'a ast::Program,
-    ) -> Vec<(&'a ast::Function, Option<tir::ClassId>)> {
+    ) -> Vec<(&'a ast::Function, Option<Type>)> {
         let mut declared = Vec::new();
         let mut next_class = 0;
+        let mut next_enum = 0;
         for item in &program.items {
             let class = match item {
                 ast::Item::Function(f) => {
@@ -423,8 +464,12 @@ impl Checker<'_> {
                     continue;
                 }
                 ast::Item::Class(class) => class,
-                // Task 2 checks enums; until then an enum is skipped.
-                ast::Item::Enum(_) | ast::Item::Const(_) => continue,
+                ast::Item::Enum(e) => {
+                    self.enum_signatures(e, tir::EnumId(next_enum), &mut declared);
+                    next_enum += 1;
+                    continue;
+                }
+                ast::Item::Const(_) => continue,
             };
             let id = tir::ClassId(next_class);
             next_class += 1;
@@ -460,7 +505,7 @@ impl Checker<'_> {
                                 .insert(method.name.name, Declared::Known(func));
                         }
                         self.signature(method, format!("{}.{}", class.name.name, method.name.name));
-                        declared.push((method, Some(id)));
+                        declared.push((method, Some(Type::Class(id))));
                     }
                 }
             }
@@ -485,7 +530,8 @@ impl Checker<'_> {
     /// Reports each strongly connected component of non-optional class fields once
     /// (overlapping cycles share one error), on the component's first class in source order,
     /// at its first field into the component: no first object of such a class can exist.
-    fn never_constructed(&mut self) {
+    /// Returns, by `ClassId`, whether each class is on such a cycle.
+    fn never_constructed(&mut self) -> Vec<bool> {
         let reach: Vec<Vec<bool>> = (0..self.classes.len()).map(|c| self.reachable(c)).collect();
         let mut reports = Vec::new();
         for (c, class) in self.classes.iter().enumerate() {
@@ -504,16 +550,19 @@ impl Checker<'_> {
                     "a class on a reference cycle should have a field that leads into the cycle",
                 );
             reports.push(DiagnosticKind::NeverConstructed {
-                class: class.name.name.to_string(),
-                field: field.name.name.to_string(),
-                target: self.classes[target.0].name.name.to_string(),
+                name: class.name.name.to_string(),
                 at: field.name.span,
-                ty: field.ty_span,
+                cause: Unbuilt::Field {
+                    field: field.name.name.to_string(),
+                    target: self.classes[target.0].name.name.to_string(),
+                    ty: field.ty_span,
+                },
             });
         }
         for report in reports {
             self.report(report);
         }
+        (0..self.classes.len()).map(|c| reach[c][c]).collect()
     }
 
     /// The classes an object of class `from` holds through one field or more.
@@ -536,11 +585,11 @@ impl Checker<'_> {
     /// Reports a missing `main`, or one that takes anything but nothing or one `[string]`, or
     /// that returns a value. A `main` rejected as defined twice is not missing, and a type in
     /// its signature that did not resolve is not wrong: each error is reported already.
-    fn check_main(&mut self, declared: &[(&ast::Function, Option<tir::ClassId>)]) {
+    fn check_main(&mut self, declared: &[(&ast::Function, Option<Type>)]) {
         match self.function_ids.get(&Symbol::intern("main")) {
             None if declared
                 .iter()
-                .any(|(f, class)| class.is_none() && f.name.name.as_str() == "main") => {}
+                .any(|(f, owner)| owner.is_none() && f.name.name.as_str() == "main") => {}
             None => self.report(DiagnosticKind::NoMain),
             Some(Declared::Broken) => {}
             Some(Declared::Known(id)) => {
@@ -566,19 +615,25 @@ impl Checker<'_> {
                 // A broken name poisons every use, a built-in type's too.
                 if let Some(Declared::Broken) = self.class_ids.get(name) {
                     return None;
+                } else if let Some(Declared::Broken) = self.enum_ids.get(name) {
+                    return None;
                 } else if let Some(named) = built_in_type(name.as_str()) {
                     named
                 } else if let Some(&Declared::Known(id)) = self.class_ids.get(name) {
                     Type::Class(id)
+                } else if let Some(&Declared::Known(id)) = self.enum_ids.get(name) {
+                    Type::Enum(id)
                 } else {
                     let span = Span::new(ty.span.start(), ty.span.start() + name.as_str().len());
                     let types = ["i64", "u8", "f64", "bool", "char", "string"]
                         .map(|ty| (ty, Definition::Type));
                     let classes = self.class_names();
+                    let enums = self.enum_ids.keys().map(|e| (e.as_str(), Definition::Enum));
+                    let candidates = types.into_iter().chain(classes).chain(enums);
                     self.report(DiagnosticKind::UnknownType {
                         name: name.to_string(),
                         at: span,
-                        suggestion: suggestion(name.as_str(), types.into_iter().chain(classes)),
+                        suggestion: suggestion(name.as_str(), candidates),
                     });
                     return None;
                 }
@@ -593,23 +648,23 @@ impl Checker<'_> {
     /// Checks `f`'s body against its own signature, `id`. The function, unless its return type
     /// is `Error` or its body failed; an `Error` parameter still yields one, and `check` drops
     /// it for the error behind it.
-    /// A method, of `class`, gets `self` as its first local.
+    /// A method, of the class or enum `owner`, gets `self` as its first local.
     fn function(
         &mut self,
         f: &ast::Function,
         id: tir::FuncId,
-        class: Option<tir::ClassId>,
+        owner: Option<Type>,
     ) -> Option<tir::Function> {
         let sig = &self.signatures[id.0];
         let (name, param_types, ret) = (sig.name.clone(), sig.params.clone(), sig.ret.clone());
         self.ret.clone_from(&ret);
-        self.self_class = class;
+        self.self_type.clone_from(&owner);
         self.scopes.push(FxHashMap::default());
         // `self` is a keyword, so it needs no binding: `ExprKind::SelfValue` reads local 0.
-        let receiver = class.map(|class| {
+        let receiver = owner.map(|ty| {
             self.locals.push(tir::Local {
                 name: Some("self".into()),
-                ty: Type::Class(class),
+                ty,
                 mutable: false,
             });
             tir::LocalId(0)
@@ -701,6 +756,7 @@ impl Checker<'_> {
     fn type_name(&self, ty: &Type) -> String {
         match ty {
             Type::Class(id) => self.classes[id.0].name.name.to_string(),
+            Type::Enum(id) => self.enums[id.0].name.name.to_string(),
             Type::Array(element) => format!("[{}]", self.type_name(element)),
             Type::Optional(payload) => format!("{}?", self.type_name(payload)),
             ty => ty.to_string(),
