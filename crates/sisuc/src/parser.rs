@@ -843,7 +843,7 @@ impl<'a> Parser<'a> {
                             return Err(DiagnosticKind::MutSelf {
                                 keyword: self.peek().span,
                                 receiver: self.tokens[self.pos + 1].span,
-                                certain: matches!(after, TokenKind::Comma | TokenKind::RParen),
+                                safe: matches!(after, TokenKind::Comma | TokenKind::RParen),
                             }
                             .into());
                         }
@@ -1027,11 +1027,11 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace | TokenKind::If
         );
         // `lacks_else` means the statement ends with the `}` just before the `else` and any
-        // line breaks. The join deletes the gap, so a comment in it makes the join a guess.
+        // line breaks. The join deletes the gap, so a comment in it makes the join unsafe.
         let gap = self.last_code_end()..at.start();
         let join = (lacks_else && takes_block).then(|| Join {
             gap: Span::new(gap.start, gap.end),
-            certain: !self.comments.iter().any(|c| gap.contains(c)),
+            safe: !self.comments.iter().any(|c| gap.contains(c)),
         });
         DiagnosticKind::ElseOnNewLine { at, join }.into()
     }
@@ -1247,7 +1247,7 @@ impl<'a> Parser<'a> {
 
     /// The error for the `**` that is next, after `lhs`: the right side parses as `*`'s would,
     /// and a `=` straight after the `**` is part of the error, so `x **= 2` is reported once.
-    /// The fix is a guess, `lhs.pow(rhs)`: offered when both sides are plain operands, and not
+    /// The unsafe fix is `lhs.pow(rhs)`: offered when both sides are plain operands, and not
     /// for `**=` or a chain of `**`, which Python reads from the right.
     fn power_operator(&mut self, lhs: &Expr, base: usize) -> Diagnostic {
         let left_ok = power_operand(lhs, self.operand_tokens(lhs), false);
@@ -1805,11 +1805,11 @@ mod tests {
         (d.code(), line, col)
     }
 
-    /// `src` with the one fix of its parse error applied, which must be certain.
+    /// `src` with the one fix of its parse error applied, which must be safe.
     fn fixed(src: &str) -> String {
         let d = parse_diagnostic(src);
-        let (certain, _) = fix_edits(&d).expect("the error has a fix");
-        assert!(certain, "{src}");
+        let (safe, _) = fix_edits(&d).expect("the error has a fix");
+        assert!(safe, "{src}");
         apply_fix(src, &d)
     }
 
@@ -1882,7 +1882,7 @@ mod tests {
         }
     }
 
-    /// Each float error has one certain fix that leaves a program that parses; the lexer finds
+    /// Each float error has one safe fix that leaves a program that parses; the lexer finds
     /// `1.` and the parser `.5`.
     #[test]
     fn float_fixes() {
@@ -2137,7 +2137,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_else_fix_removes_the_error() {
+    fn safe_else_fix_removes_the_error() {
         let src = "fn main() {\n    if let n = x {\n        print(n)\n    }\n    else if b {\n        print(2)\n    }\n}\n";
         let result = fixed(src);
         assert_eq!(
@@ -2148,7 +2148,7 @@ mod tests {
     }
 
     #[test]
-    fn else_on_new_line_is_a_guess_over_a_comment() {
+    fn else_on_new_line_is_unsafe_over_a_comment() {
         // The join would delete the comment.
         let src = "fn main() {\n    if a {\n    } // done\n    else {\n    }\n}";
         let d = parse_diagnostic(src);
@@ -2156,7 +2156,7 @@ mod tests {
             (d.code(), line_col(src, d.span().start())),
             (Code::ElseOnNewLine, (4, 5))
         );
-        assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
+        assert!(fix_edits(&d).is_some_and(|(safe, _)| !safe));
     }
 
     #[test]
@@ -2838,7 +2838,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_semicolon_fix_removes_the_error() {
+    fn safe_semicolon_fix_removes_the_error() {
         let src = "fn main() {\n    let x = 1;\n    let y = x + 1; // two\n    print(y);\n}\n";
         // One `;` at a time: the parser reports one error per item, and these `;`s share `main`.
         let once = fixed(src);
@@ -3075,7 +3075,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_field_let_fix_removes_the_error() {
+    fn safe_field_let_fix_removes_the_error() {
         let src = "class P {\n    let mut hp: i64\n    name: [i64]\n}\n";
         let result = fixed(src);
         assert_eq!(result, "class P {\n    mut hp: i64\n    name: [i64]\n}\n");
@@ -3122,8 +3122,8 @@ mod tests {
 
     #[test]
     fn mut_self_fix() {
-        // Certain only when `self` ends the parameter: `mut self: i64` stays broken without `mut`.
-        for (src, edit, certain) in [
+        // Safe only when `self` ends the parameter: `mut self: i64` stays broken without `mut`.
+        for (src, edit, safe) in [
             ("class C {\n    fn f(mut self) {}\n}", (19, 23), true),
             (
                 "class C {\n    fn f(mut   self, n: i64) {}\n}",
@@ -3137,7 +3137,7 @@ mod tests {
             assert_eq!(line_col(src, d.span().start()), (2, 10), "{src}");
             assert_eq!(
                 fix_edits(&d),
-                Some((certain, vec![(edit.0, edit.1, String::new())])),
+                Some((safe, vec![(edit.0, edit.1, String::new())])),
                 "{src}"
             );
             assert!(d.help().is_some(), "{src}");
@@ -3145,7 +3145,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_mut_self_fix_removes_the_error() {
+    fn safe_mut_self_fix_removes_the_error() {
         let src = "class C {\n    mut n: i64\n    fn add(mut self, by: i64) { self.n += by }\n}\n";
         let result = fixed(src);
         assert_eq!(
@@ -3244,7 +3244,7 @@ mod tests {
         );
     }
 
-    /// `**` is Python's, and an error here, at the `**`. The guess is `l.pow(r)`, offered only
+    /// `**` is Python's, and an error here, at the `**`. The unsafe fix is `l.pow(r)`, offered only
     /// when both sides are plain operands, and never for an assignment or a second `**`.
     #[test]
     fn power_operator() {
@@ -3283,8 +3283,8 @@ mod tests {
             );
             match fixed {
                 Some(fixed) => {
-                    let (certain, _) = fix_edits(&d).expect("the error has a fix");
-                    assert!(!certain, "{src}");
+                    let (safe, _) = fix_edits(&d).expect("the error has a fix");
+                    assert!(!safe, "{src}");
                     assert_eq!(apply_fix(&src, &d), wrap(fixed));
                     parse_ok(&wrap(fixed));
                 }

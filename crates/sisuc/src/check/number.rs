@@ -180,7 +180,7 @@ impl Checker<'_> {
     }
 
     /// The fix of `written(args)`, the call of the method `name`, or `None` where it is no
-    /// certain rewrite. Checks each argument once.
+    /// safe rewrite. Checks each argument once.
     fn method_fix(
         &mut self,
         written: Span,

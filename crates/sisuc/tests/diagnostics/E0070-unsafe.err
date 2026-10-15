@@ -1,5 +1,5 @@
 error[E0070]: `contains` is a method, not a function
- --> E0070-uncertain.sisu:3:11
+ --> E0070-unsafe.sisu:3:11
   |
 3 |     print(contains(xs, true))
   |           ^^^^^^^^

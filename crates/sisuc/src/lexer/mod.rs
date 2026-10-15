@@ -706,8 +706,8 @@ fn check_line_start(
                         && header_awaits_brace(statement))
                     .then(|| Join {
                         gap: Span::new(code.span.end(), span.start()),
-                        // The join deletes the gap, so a comment in it makes the join a guess.
-                        certain: header_awaits_brace(line_of(source, tokens, code))
+                        // The join deletes the gap, so a comment in it makes the join unsafe.
+                        safe: header_awaits_brace(line_of(source, tokens, code))
                             && source[code.span.end()..span.start()].trim().is_empty(),
                     });
                     Some(DiagnosticKind::BraceOnNewLine { at: span, join }.into())
@@ -729,7 +729,7 @@ fn check_line_start(
                 .filter(|t| t.kind == TokenKind::RBrace)
                 .map(|brace| Join {
                     gap: Span::new(brace.span.end(), span.start()),
-                    certain: false,
+                    safe: false,
                 });
             Some(DiagnosticKind::ElseOnNewLine { at: span, join }.into())
         }
@@ -1373,12 +1373,12 @@ mod tests {
         }
     }
 
-    /// Only the dot's error is certain: it writes the `0` that is missing.
+    /// Only the dot's error is safe: it writes the `0` that is missing.
     #[test]
-    fn float_dot_fix_is_certain() {
+    fn float_dot_fix_is_safe() {
         for (src, fixed) in [("1.", "1.0"), ("1. + 2", "1.0 + 2"), ("12_3.", "12_3.0")] {
             let d = only(src);
-            assert!(fix_edits(&d).is_some_and(|(certain, _)| certain), "{src}");
+            assert!(fix_edits(&d).is_some_and(|(safe, _)| safe), "{src}");
             assert_eq!(apply_fix(src, &d), fixed);
         }
         for src in ["1e", "1e400"] {
@@ -1510,30 +1510,30 @@ mod tests {
     }
 
     #[test]
-    fn upper_case_prefix_fix_is_certain() {
+    fn upper_case_prefix_fix_is_safe() {
         for (src, fixed) in [("0X1F", "0x1F"), ("0B1", "0b1"), ("0O7", "0o7")] {
             let d = only(src);
-            assert!(fix_edits(&d).is_some_and(|(certain, _)| certain), "{src}");
+            assert!(fix_edits(&d).is_some_and(|(safe, _)| safe), "{src}");
             assert_eq!(apply_fix(src, &d), fixed);
         }
     }
 
-    /// A bare 2^63 does not parse, so lower-casing its prefix is a guess; after a `-` it is right.
+    /// A bare 2^63 does not parse, so lower-casing its prefix is unsafe; after a `-` it is right.
     #[test]
-    fn upper_case_prefix_fix_at_min_magnitude_is_a_guess() {
+    fn upper_case_prefix_fix_at_min_magnitude_is_unsafe() {
         use crate::front_end::front_end;
         let literal = "0X8000_0000_0000_0000";
         let d = only(literal);
-        assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
+        assert!(fix_edits(&d).is_some_and(|(safe, _)| !safe));
         for (sign, parses) in [("", false), ("-", true)] {
             let src = format!("fn main() {{ let _ = {sign}{literal} }}");
             let fixed = apply_fix(&src, &only(&src));
             let clean = front_end(&fixed).1.is_empty();
             assert_eq!(clean, parses, "{fixed}");
         }
-        // One below it is certain: the fixed literal parses anywhere.
+        // One below it is safe: the fixed literal parses anywhere.
         let d = only("0X7FFF_FFFF_FFFF_FFFF");
-        assert!(fix_edits(&d).is_some_and(|(certain, _)| certain));
+        assert!(fix_edits(&d).is_some_and(|(safe, _)| safe));
     }
 
     /// A prefix letter after the `0` with a gap is an identifier, not a base.
@@ -1621,7 +1621,8 @@ mod tests {
         }
     }
 
-    /// An unknown escape guesses that the `\` was meant as a backslash, and writes another one.
+    /// An unknown escape gets an unsafe fix that assumes the `\` was meant as a backslash, and
+    /// writes another one.
     #[test]
     fn unknown_escape_fix() {
         let d = only(r"'\q'");
@@ -1662,7 +1663,7 @@ mod tests {
         assert_eq!(lexed.tokens[1].kind, TokenKind::Newline);
     }
 
-    /// Without a quote, brace or comment in its text, the literal gets a guess fix that turns it
+    /// Without a quote, brace or comment in its text, the literal gets an unsafe fix that turns it
     /// into a string.
     #[test]
     fn not_one_code_point_fix() {
@@ -1673,11 +1674,7 @@ mod tests {
             (r"'a\tb'", r#""a\tb""#),
         ] {
             let d = only(src);
-            assert_eq!(
-                fix_edits(&d).map(|(certain, _)| certain),
-                Some(false),
-                "{src}"
-            );
+            assert_eq!(fix_edits(&d).map(|(safe, _)| safe), Some(false), "{src}");
             assert_eq!(apply_fix(src, &d), fixed);
         }
         for src in ["'a{'", "'a}'", r#"'a"'"#, r#"'a\"'"#] {
@@ -1716,7 +1713,7 @@ mod tests {
         ] {
             assert_eq!(err(src), expected, "{src}");
         }
-        // The backslash guess works in a string too.
+        // The backslash unsafe fix works in a string too.
         let src = r#"print("a\q")"#;
         assert_eq!(apply_fix(src, &only(src)), r#"print("a\\q")"#);
     }
@@ -1782,16 +1779,16 @@ mod tests {
         );
     }
 
-    /// A `}` gets a certain fix and an empty interpolation a guess; the others have none.
+    /// A `}` gets a safe fix and an empty interpolation an unsafe fix; the others have none.
     #[test]
     fn string_error_fixes() {
-        for (src, certain, fixed) in [
+        for (src, safe, fixed) in [
             (r#""a}b""#, true, r#""a\}b""#),
             (r#""{}""#, false, r#""\{\}""#),
             (r#""{ }""#, false, r#""\{ \}""#),
         ] {
             let d = only(src);
-            assert_eq!(fix_edits(&d).map(|(c, _)| c), Some(certain), "{src}");
+            assert_eq!(fix_edits(&d).map(|(c, _)| c), Some(safe), "{src}");
             assert_eq!(apply_fix(src, &d), fixed);
         }
         for src in ["\"ab\n", r#""{x // c}""#] {
@@ -2109,7 +2106,7 @@ mod tests {
 
     #[test]
     fn unexpected_character_fix() {
-        // A lone `&` or `|` is a guess at the doubled operator.
+        // A lone `&` or `|` gets an unsafe fix to the doubled operator.
         for (src, doubled) in [("a & b", "&&"), ("a | b", "||")] {
             let d = only(src);
             assert_eq!(d.code(), Code::UnexpectedCharacter, "{src}");
@@ -2120,7 +2117,7 @@ mod tests {
                 "{src}"
             );
         }
-        // Neither is guessed for any other character.
+        // No fix is offered for any other character.
         let d = only("a $ b");
         assert_eq!(d.code(), Code::UnexpectedCharacter);
         assert_eq!(fix_edits(&d), None);
@@ -2615,7 +2612,7 @@ mod tests {
 
     #[test]
     fn brace_on_new_line_fix() {
-        // Every header keyword makes the fix certain, and the gap before the `{` becomes a space.
+        // Every header keyword makes the fix safe, and the gap before the `{` becomes a space.
         for (src, gap, at) in [
             ("fn main()\n{\n}", (9, 10), (2, 1)),
             ("class A\n{\n}", (7, 8), (2, 1)),
@@ -2659,7 +2656,7 @@ mod tests {
     }
 
     #[test]
-    fn brace_on_new_line_is_a_guess_over_a_comment() {
+    fn brace_on_new_line_is_unsafe_over_a_comment() {
         // The join would delete the comment.
         let src = "fn main() {\n    if c // check it\n    {\n    }\n}";
         let d = only(src);
@@ -2667,11 +2664,11 @@ mod tests {
             (d.code(), line_col(src, d.span().start())),
             (Code::BraceOnNewLine, (3, 5))
         );
-        assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
+        assert!(fix_edits(&d).is_some_and(|(safe, _)| !safe));
     }
 
     #[test]
-    fn brace_on_new_line_is_a_guess_after_a_multi_line_header() {
+    fn brace_on_new_line_is_unsafe_after_a_multi_line_header() {
         // The header keyword is on an earlier line of the same statement.
         for (src, at) in [
             (
@@ -2693,7 +2690,7 @@ mod tests {
             assert_eq!(d.code(), Code::BraceOnNewLine, "{src}");
             assert_eq!(line_col(src, d.span().start()), at, "{src}");
             assert!(
-                fix_edits(&d).is_some_and(|(certain, _)| !certain),
+                fix_edits(&d).is_some_and(|(safe, _)| !safe),
                 "{src}: {:?}",
                 d.fixes()
             );
@@ -2749,7 +2746,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_brace_fix_removes_the_error() {
+    fn safe_brace_fix_removes_the_error() {
         let src = "fn main() {\n    for i in 0..3 // a loop\n    {\n        print(i)\n    }\n}\n";
         let d = only(src);
         let fixed = apply_fix(src, &d);
@@ -3005,7 +3002,7 @@ mod tests {
 
     #[test]
     fn each_brace_fix_holds_alone() {
-        // Each certain join, applied alone, leaves the other diagnostics where they were, and the
+        // Each safe join, applied alone, leaves the other diagnostics where they were, and the
         // result parses as lexed, with no other join applied.
         for (src, left) in [
             (
@@ -3018,12 +3015,12 @@ mod tests {
                 vec![(Code::UnexpectedCharacter, 2, 14)],
             ),
         ] {
-            let certain: Vec<_> = recovered(src)
+            let safe: Vec<_> = recovered(src)
                 .into_iter()
-                .filter(|d| fix_edits(d).is_some_and(|(certain, _)| certain))
+                .filter(|d| fix_edits(d).is_some_and(|(safe, _)| safe))
                 .collect();
-            assert_eq!(certain.len(), left.len(), "{src}: {certain:?}");
-            for (d, want) in certain.iter().zip(left) {
+            assert_eq!(safe.len(), left.len(), "{src}: {safe:?}");
+            for (d, want) in safe.iter().zip(left) {
                 let fixed = apply_fix(src, d);
                 assert_eq!(found(&fixed), [want], "{fixed}");
                 // The lexer's diagnostic stays the only one, and the tokens parse as lexed.

@@ -162,7 +162,7 @@ sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0052
 
 `sisuc --explain E0001` prints why the rule exists, with a broken and a fixed
 program. `sisuc --format json` writes the same diagnostics as JSON Lines for
-editors and agents, and marks each fix as certain or a guess.
+editors and agents, and marks each fix as safe or unsafe.
 [Diagnostic codes](docs/diagnostics/README.md) lists every code.
 
 ## Status

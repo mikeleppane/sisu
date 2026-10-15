@@ -87,7 +87,7 @@ pub(crate) struct Diagnostic {
 pub(crate) struct Fix {
     message: String,
     /// Applying the edits always removes the diagnostic, and the source still parses.
-    certain: bool,
+    safe: bool,
     /// They apply together, to the original source, and never overlap.
     edits: Vec<Edit>,
 }
@@ -179,7 +179,7 @@ impl Diagnostic {
         if !edits.is_empty() {
             d.fixes.push(Fix {
                 message: String::new(),
-                certain: false,
+                safe: false,
                 edits: edits
                     .iter()
                     .map(|&(span, replacement)| Edit {
@@ -209,8 +209,8 @@ impl Fix {
         &self.message
     }
 
-    pub(crate) fn certain(&self) -> bool {
-        self.certain
+    pub(crate) fn safe(&self) -> bool {
+        self.safe
     }
 
     pub(crate) fn edits(&self) -> &[Edit] {

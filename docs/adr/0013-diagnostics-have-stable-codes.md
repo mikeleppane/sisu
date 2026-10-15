@@ -23,9 +23,11 @@ something a person, a script and an agent can all rely on.
   need it are skipped. The first diagnostic is the one to fix.
 
 Programs read the same diagnostics as JSON, one object per line, with the
-code, severity, spans and fixes. A fix is marked `certain` only when applying
+code, severity, spans and fixes. A fix is safe when applying
 it always removes the diagnostic and leaves source that still lexes and
-parses. It may reveal diagnostics it was hiding.
+parses, and unsafe otherwise. A tool may apply a safe fix without asking, and
+an unsafe fix only when the user picks it. A fix may reveal diagnostics it was
+hiding.
 
 ## Considered options
 

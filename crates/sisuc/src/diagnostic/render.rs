@@ -262,7 +262,7 @@ error[E0011]: expected `=`, found end of line
     fn fix(edits: &[(Span, &str)]) -> Fix {
         Fix {
             message: "f".to_string(),
-            certain: true,
+            safe: true,
             edits: edits
                 .iter()
                 .map(|&(span, text)| Edit {

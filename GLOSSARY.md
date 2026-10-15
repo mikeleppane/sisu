@@ -236,8 +236,10 @@ do not nest".
 
 **Fix**:
 An edit to the source, with a message, that resolves a diagnostic. A fix is
-either certain or a guess.
-_Avoid_: suggestion, quick fix
+either safe or unsafe: a safe fix always removes the diagnostic and leaves
+source that lexes and parses, and a tool may apply it without asking. An
+unsafe fix is applied only when the user picks it.
+_Avoid_: suggestion, quick fix, guess, certain fix
 
 **Explanation**:
 The long-form page for one diagnostic code: the rule, why Sisu has it, and a

@@ -133,7 +133,7 @@ paragraph that states the rule, then `## Why`, `## Broken` and `## Fixed`,
 and an optional `## Related`. The Broken program reports exactly its code;
 the Fixed program reports nothing. E0099 is the one exception: its Fixed
 program keeps the `todo` its fix leaves, so it reports W0003. Tests compile
-both, and apply every certain fix to the Broken program.
+both, and apply every safe fix to the Broken program.
 
 ## Numbers
 
@@ -160,7 +160,7 @@ come in the order shown.
 A diagnostic about the source:
 
 ```json
-{"version":1,"kind":"diagnostic","code":"E0001","severity":"error","message":"cannot assign to `n`","primary":{"file":"a.sisu","start":36,"end":41,"line":4,"column":5,"label":"cannot assign twice"},"secondary":[{"file":"a.sisu","start":26,"end":27,"line":3,"column":9,"label":"declared with `let` here"}],"help":null,"fixes":[{"message":"declare it with `let mut`","certain":true,"edits":[{"start":26,"end":26,"line":3,"column":9,"replacement":"mut "}]}]}
+{"version":1,"kind":"diagnostic","code":"E0001","severity":"error","message":"cannot assign to `n`","primary":{"file":"a.sisu","start":36,"end":41,"line":4,"column":5,"label":"cannot assign twice"},"secondary":[{"file":"a.sisu","start":26,"end":27,"line":3,"column":9,"label":"declared with `let` here"}],"help":null,"fixes":[{"message":"declare it with `let mut`","safe":true,"edits":[{"start":26,"end":26,"line":3,"column":9,"replacement":"mut "}]}]}
 ```
 
 - `code`: the diagnostic's code, such as `E0001`.
@@ -177,9 +177,10 @@ A diagnostic about the source:
   fix, never here.
 - `fixes`: a list of edits that resolve the diagnostic, each with:
   - `message`: what the fix does;
-  - `certain`: `true` when applying the edits is always correct, `false` when
-    the fix is likely but not proven, such as a did-you-mean guess, or a line join
-    or idiom rewrite whose edits would delete a comment;
+  - `safe`: `true` for a safe fix, whose edits always remove the diagnostic
+    and leave source that lexes and parses; `false` for an unsafe fix, which is
+    likely but not proven, such as a did-you-mean suggestion, or a line join or
+    idiom rewrite whose edits would delete a comment;
   - `edits`: a list of `start`, `end`, `line` and `column` as in a span, and
     `replacement`, the text that replaces the range.
 

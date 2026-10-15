@@ -392,22 +392,22 @@ number in its series, `E` for errors and `W` for warnings.
 2. In `crates/sisuc/src/diagnostic/registry.rs`, add a row to the `codes!`
    table, which is where the number is chosen. Add a `DiagnosticKind` variant
    and its arms in `DiagnosticKind::code` and `From<DiagnosticKind> for
-   Diagnostic`, with the message, labels, help and fixes. A fix is `certain`
+   Diagnostic`, with the message, labels, help and fixes. A fix is safe
    only when applying it always removes the diagnostic and leaves source that
-   lexes and parses. An idiom fix is certain only if the edited source also
-   checks cleanly. When in doubt, it is a guess.
+   lexes and parses; every other fix is an unsafe fix. An idiom fix is safe
+   only if the edited source also checks cleanly. When in doubt, it is unsafe.
 3. Report the variant from the lexer, parser or checker.
 4. Add the fixture `crates/sisuc/tests/diagnostics/<CODE>.sisu`, and a
    `<CODE>-<case>.sisu` for each other shape. Create the `.err` and `.json`
    files empty, then fill them with `SISU_BLESS=1` as above and read them.
-5. Add unit tests that assert the code and its `(line, col)`. A certain fix
+5. Add unit tests that assert the code and its `(line, col)`. A safe fix
    also gets a test that applies it to an input other than the explanation's
    example and checks that the code is gone.
 
 The tests in `diagnostic/explanations.rs` fail when a code lacks its
 explanation, its README row or its fixture, or when a Broken program does not
 report exactly its code. They also run every Fixed program, and every Broken
-program with its certain fixes applied, through the checker, so the checker
+program with its safe fixes applied, through the checker, so the checker
 must accept any syntax those programs use.
 
 ## Repository layout

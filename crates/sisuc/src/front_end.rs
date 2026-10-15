@@ -419,7 +419,7 @@ fn main() {
             panic!("expected one diagnostic, got {ds:?}");
         };
         assert_eq!(d.code(), Code::ConstInFunction);
-        assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+        assert!(fix_edits(d).is_some_and(|(safe, _)| safe));
         let fixed = apply_fix(src, d);
         assert!(front_end(&fixed).1.is_empty(), "{fixed}");
     }
@@ -435,7 +435,7 @@ fn main() {
                 panic!("expected one diagnostic, got {ds:?}");
             };
             assert_eq!(d.code(), Code::BraceInString, "{src}");
-            assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+            assert!(fix_edits(d).is_some_and(|(safe, _)| safe));
             let fixed = apply_fix(&src, d);
             assert!(front_end(&fixed).1.is_empty(), "{fixed}");
         }
@@ -545,7 +545,7 @@ fn main() {
             [(Code::Semicolon, (3, 2)), (Code::Mismatch, (5, 19))]
         );
         let d = &front_end(src).1[0];
-        assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+        assert!(fix_edits(d).is_some_and(|(safe, _)| safe));
         let fixed = apply_fix(src, d);
         assert_eq!(codes(&fixed), [(Code::Mismatch, (5, 19))]);
         // Anywhere else, a `;` is not an item.

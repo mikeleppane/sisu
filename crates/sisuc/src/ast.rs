@@ -11,7 +11,7 @@ pub(crate) struct Program {
     pub(crate) items: Vec<Item>,
     /// The named items that hold a syntax error, which the checker treats as declared.
     pub(crate) broken: Vec<Broken>,
-    /// Where each comment starts, so that a fix does not delete one as if it were certain.
+    /// Where each comment starts, so that a fix does not delete one as if it were safe.
     pub(crate) comments: Vec<usize>,
     /// Where each string literal starts, at its opening quote, so that a fix can tell one from
     /// a literal in parentheses, whose span starts at the `(`.

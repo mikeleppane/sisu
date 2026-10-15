@@ -38,7 +38,7 @@ fn panic_in_parentheses() {
 }
 
 /// A message that is not a `string`: in each row, the body, the argument reported, and the
-/// body the certain fix makes, if there is one.
+/// body the safe fix makes, if there is one.
 #[test]
 fn panic_message_must_be_string() {
     for (statements, pos, fixed) in [
@@ -61,7 +61,7 @@ fn panic_message_must_be_string() {
         let d = diagnostic(&src, Code::Mismatch, pos, &[]);
         match fixed {
             Some(fixed) => {
-                assert!(fixes(&src, &d).iter().all(|(certain, _)| *certain), "{src}");
+                assert!(fixes(&src, &d).iter().all(|(safe, _)| *safe), "{src}");
                 assert_eq!(applied(&src, &d), body("", fixed));
                 fix_removes_its_code(&src, &d);
             }

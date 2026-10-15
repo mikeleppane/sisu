@@ -417,7 +417,7 @@ impl Checker<'_> {
     ///
     /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
     /// drives from either side: an operand of another type is reported against `string`, with
-    /// the guess to interpolate, the one before a `string` included, in place of what its own
+    /// the unsafe fix to interpolate, the one before a `string` included, in place of what its own
     /// type was found to lack. A join after an `Error` is `Error`. An expected `u8` or `f64` is
     /// `binary_operands`' to drop.
     fn integers(
@@ -1063,20 +1063,19 @@ impl Checker<'_> {
                 if let Some(ty) = ty {
                     let next = rest.first().map(|arg| arg.value.span);
                     // The rewrite deletes the text before the receiver and between it and
-                    // `next`, so a comment there makes it a guess.
+                    // `next`, so a comment there makes it unsafe.
                     let deleted = [
                         callee.span.start()..first.value.span.start(),
                         first.value.span.end()..next.map_or(first.value.span.end(), Span::start),
                     ];
-                    let certain =
-                        self.idiom_arguments(name, &ty, rest) && !self.comment_in(&deleted);
+                    let safe = self.idiom_arguments(name, &ty, rest) && !self.comment_in(&deleted);
                     self.report(DiagnosticKind::MethodAsFunction {
                         name: callee.name.to_string(),
                         at: callee.span,
                         receiver: first.value.span,
                         next,
                         wrap: !postfix(&first.value),
-                        certain,
+                        safe,
                     });
                     return Err(Poisoned::error());
                 }
@@ -1334,11 +1333,11 @@ impl Checker<'_> {
         target: bool,
     ) -> Option<(tir::ClassId, usize)> {
         let ty = base?;
-        let method = |owner, certain: bool| DiagnosticKind::MethodNotField {
+        let method = |owner, safe: bool| DiagnosticKind::MethodNotField {
             name: name.name.to_string(),
             owner,
             at: name.span,
-            call: (!target).then_some(certain),
+            call: (!target).then_some(safe),
         };
         let d = match ty {
             Type::Class(class) => {
