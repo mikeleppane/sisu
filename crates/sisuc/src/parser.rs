@@ -25,14 +25,16 @@ pub(crate) struct Parsed {
 /// Parses `lexed`, whose tokens end with `Eof` and whose brackets balance. An item with a
 /// syntax error, its own or the lexer's, is broken: it reports its earliest error, and the
 /// parser resumes after it.
-pub(crate) fn parse(lexed: Lexed) -> Parsed {
+pub(crate) fn parse(lexed: Lexed<'_>) -> Parsed {
     let Lexed {
+        source,
         tokens,
         diagnostics,
         comments,
         breaks,
     } = lexed;
     Parser {
+        source,
         tokens: &tokens,
         pos: 0,
         depth: 0,
@@ -113,6 +115,8 @@ fn compare_op(kind: &TokenKind) -> Option<CompareOp> {
 }
 
 struct Parser<'a> {
+    /// The text the token spans index.
+    source: &'a str,
     tokens: &'a [Token],
     pos: usize,
     /// While a node's children are parsed: the levels above them. When a parse function returns:
@@ -219,6 +223,11 @@ impl<'a> Parser<'a> {
             },
             TokenKind::Reserved(word) => DiagnosticKind::ReservedWord {
                 word,
+                at: found.span,
+            },
+            TokenKind::Int(_) => DiagnosticKind::Expected {
+                what: what.to_string(),
+                found: format!("`{}`", &self.source[found.span.range()]),
                 at: found.span,
             },
             _ => DiagnosticKind::Expected {
@@ -655,6 +664,7 @@ impl<'a> Parser<'a> {
     /// shown as `name: Type` or, when no field follows, that placeholder.
     fn field_after_let(&self) -> LetField {
         let mut rest = Parser {
+            source: self.source,
             tokens: self.tokens,
             pos: self.pos + 1,
             depth: self.depth,
@@ -1158,15 +1168,12 @@ impl<'a> Parser<'a> {
         let start = self.bump().span;
         if matches!(op, UnaryOp::Neg) && self.at_min_literal() {
             // `i64::MIN` has no positive twin, so `-9223372036854775808` is one literal.
-            let TokenKind::Int { text, .. } = self.peek().kind.clone() else {
-                unreachable!("`at_min_literal` saw an `Int`")
-            };
             let literal = self.bump().span;
             return Ok(Expr {
                 span: start.to(literal),
                 kind: ExprKind::Int {
                     value: i64::MIN,
-                    text: format!("-{text}"),
+                    literal,
                 },
             });
         }
@@ -1184,13 +1191,8 @@ impl<'a> Parser<'a> {
     /// `?.` or `[` would apply to the literal before the `-` does, so that literal is too large.
     fn at_min_literal(&self) -> bool {
         // `Int` is never `Eof`, so the token after it exists.
-        matches!(
-            self.peek().kind,
-            TokenKind::Int {
-                value: MIN_MAGNITUDE,
-                ..
-            }
-        ) && !starts_postfix(&self.tokens[self.pos + 1].kind)
+        matches!(self.peek().kind, TokenKind::Int(MIN_MAGNITUDE))
+            && !starts_postfix(&self.tokens[self.pos + 1].kind)
     }
 
     /// `primary` followed by any number of `.field`, `.method(args)`, `?.field`,
@@ -1288,11 +1290,14 @@ impl<'a> Parser<'a> {
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.peek().clone();
         let kind = match token.kind {
-            TokenKind::Int { value, text } => {
+            TokenKind::Int(value) => {
                 // `MIN_MAGNITUDE` fits only as the operand of a `-`, which `unary` takes first.
                 let value = i64::try_from(value).map_err(|_| literal_too_large(token.span))?;
                 self.bump();
-                ExprKind::Int { value, text }
+                ExprKind::Int {
+                    value,
+                    literal: token.span,
+                }
             }
             TokenKind::True | TokenKind::False => {
                 self.bump();

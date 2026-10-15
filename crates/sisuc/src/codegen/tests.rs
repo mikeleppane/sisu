@@ -11,7 +11,7 @@ fn compiled<'ctx>(context: &'ctx Context, src: &str) -> Module<'ctx> {
 /// `compiled`, with the RC checks if `rc_checks`.
 fn compiled_with<'ctx>(context: &'ctx Context, src: &str, rc_checks: bool) -> Module<'ctx> {
     let program = parse_ok(src);
-    let (program, diagnostics) = check(&program);
+    let (program, diagnostics) = check(&program, src);
     let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
     crate::last_use::mark(&mut program);
     let machine = target_machine(false).expect("the host is a target");

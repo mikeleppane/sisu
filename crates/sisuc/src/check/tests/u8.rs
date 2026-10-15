@@ -213,6 +213,11 @@ fn u8_cannot_be_negative() {
         "fn main() { let x: u8 = -9223372036854775808 }",
         &[(Code::NegatedU8, (1, 25))],
     );
+    // Parenthesized, it is reported at the whole expression, the `(`, not at the literal.
+    codes(
+        "fn main() { let x: u8 = (-9223372036854775808) }",
+        &[(Code::NegatedU8, (1, 25))],
+    );
     codes(
         "fn f(b: u8) { print(-b) }\nfn main() {}",
         &[(Code::NegatedU8, (1, 21))],

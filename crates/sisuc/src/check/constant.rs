@@ -149,7 +149,7 @@ impl ConstantSite {
     }
 }
 
-impl Checker {
+impl Checker<'_> {
     /// Folds every constant in source order.
     pub(super) fn fold_constants(&mut self, program: &ast::Program) {
         let constants = program.items.iter().filter_map(|item| match item {

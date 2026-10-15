@@ -132,7 +132,9 @@ enum LoopContext {
     Header(Span),
 }
 
-struct Checker {
+struct Checker<'src> {
+    /// The text the program's spans index.
+    source: &'src str,
     /// The first function of each name, and every broken one.
     function_ids: FxHashMap<Symbol, Declared<tir::FuncId>>,
     /// Indexed by `FuncId`, so a duplicate function has a signature of its own.
@@ -173,8 +175,12 @@ struct Checker {
 }
 
 /// Diagnostics sorted by span start (stable); the program only when none is an error.
-pub(crate) fn check(program: &ast::Program) -> (Option<tir::Program>, Vec<Diagnostic>) {
+pub(crate) fn check(
+    program: &ast::Program,
+    source: &str,
+) -> (Option<tir::Program>, Vec<Diagnostic>) {
     let mut checker = Checker {
+        source,
         function_ids: FxHashMap::default(),
         signatures: Vec::new(),
         classes: Vec::new(),
@@ -262,7 +268,7 @@ fn block_type(checked: &CheckedBlock) -> Option<&Type> {
     }
 }
 
-impl Checker {
+impl Checker<'_> {
     /// Records a coded diagnostic.
     fn report(&mut self, kind: DiagnosticKind) {
         self.diagnostics.push(kind.into());

@@ -15,7 +15,7 @@ use crate::diagnostic::{
 };
 use crate::tir::{self, Type};
 
-impl Checker {
+impl Checker<'_> {
     /// `l + r` over two `string`s, which `mismatched` says were reported against.
     pub(super) fn concat(
         &mut self,

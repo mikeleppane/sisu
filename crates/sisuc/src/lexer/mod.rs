@@ -16,11 +16,8 @@ pub(crate) enum TokenKind {
     /// A lone `_`, which only `let` and `for` accept (`_x` and `x_` are names).
     Underscore,
     /// An integer literal: its magnitude, at most `MIN_MAGNITUDE`, which only a unary `-`
-    /// accepts, and its `text` as written.
-    Int {
-        value: u64,
-        text: String,
-    },
+    /// accepts. Its text as written is `source[token.span.range()]`.
+    Int(u64),
     /// A `char` literal, decoded.
     Char(char),
     /// A string literal without interpolation, decoded.
@@ -110,7 +107,7 @@ impl TokenKind {
         match self {
             TokenKind::Ident(_) => "Ident",
             TokenKind::Underscore => "Underscore",
-            TokenKind::Int { .. } => "Int",
+            TokenKind::Int(_) => "Int",
             TokenKind::Char(_) => "Char",
             TokenKind::Str(_) => "Str",
             TokenKind::StrHead(_) => "StrHead",
@@ -184,7 +181,7 @@ impl TokenKind {
         let text = match self {
             TokenKind::Ident(name) => name.as_str(),
             TokenKind::Underscore => "_",
-            TokenKind::Int { text, .. } => return format!("`{text}`"),
+            TokenKind::Int(_) => return "an integer literal".to_string(),
             TokenKind::Char(c) => return format!("`{c:?}`"),
             TokenKind::Str(_) | TokenKind::StrHead(_) => return "a string literal".to_string(),
             TokenKind::Fn => "fn",
@@ -256,11 +253,12 @@ type Chars<'a> = Peekable<CharIndices<'a>>;
 /// An open bracket: its char (`(`, `[` or `{`) and where it stands.
 type Open = (char, Span);
 
-/// What the lexer makes of a source: its tokens, which always end with `Eof`, a diagnostic
-/// for each error it recovered from, where each `//` comment starts, and where each line
-/// break is.
+/// What the lexer makes of a source: the source, whose text the token spans index, its tokens,
+/// which always end with `Eof`, a diagnostic for each error it recovered from, where each `//`
+/// comment starts, and where each line break is.
 #[derive(Debug)]
-pub(crate) struct Lexed {
+pub(crate) struct Lexed<'src> {
+    pub(crate) source: &'src str,
     pub(crate) tokens: Vec<Token>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) comments: Vec<usize>,
@@ -279,9 +277,8 @@ pub(crate) fn lex_clean(source: &str) -> Result<Vec<Token>, Diagnostic> {
 
 /// Lexes `source`, reporting every error it can continue after. `Err` holds the one diagnostic a
 /// bracket error leaves: the first recoverable diagnostic, or the bracket error when there is none.
-pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
-    let mut tokens: Vec<Token> = Vec::new();
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+pub(crate) fn lex(source: &str) -> Result<Lexed<'_>, Diagnostic> {
+    let (mut tokens, mut diagnostics) = (Vec::new(), Vec::new());
     let (mut comments, mut breaks) = (Vec::new(), Vec::new());
     let mut brackets = Brackets::default();
     let mut chars = source.char_indices().peekable();
@@ -386,6 +383,7 @@ pub(crate) fn lex(source: &str) -> Result<Lexed, Diagnostic> {
     }
     tokens.push(eof(&tokens));
     Ok(Lexed {
+        source,
         tokens,
         diagnostics,
         comments,
@@ -623,7 +621,7 @@ fn can_end_statement(token: Option<&Token>) -> bool {
             t.kind,
             Ident(_)
                 | Underscore
-                | Int { .. }
+                | Int(_)
                 | Char(_)
                 | Str(_)
                 | StrTail(_)
@@ -965,16 +963,8 @@ mod tests {
         TokenKind::Ident(Symbol::intern(s))
     }
 
-    /// The token of a decimal literal written without separators.
     fn int(value: u64) -> TokenKind {
-        int_text(value, &value.to_string())
-    }
-
-    fn int_text(value: u64, text: &str) -> TokenKind {
-        TokenKind::Int {
-            value,
-            text: text.to_string(),
-        }
+        TokenKind::Int(value)
     }
 
     #[test]
@@ -1204,10 +1194,7 @@ mod tests {
 
     #[test]
     fn digit_separators() {
-        assert_eq!(
-            kinds("100_000"),
-            [int_text(100_000, "100_000"), TokenKind::Eof]
-        );
+        assert_eq!(kinds("100_000"), [int(100_000), TokenKind::Eof]);
     }
 
     #[test]
@@ -1243,11 +1230,11 @@ mod tests {
         assert_eq!(
             kinds(source),
             [
-                int_text(255, "0xFF"),
-                int_text(255, "0xff"),
-                int_text(165, "0b1010_0101"),
-                int_text(15, "0o17"),
-                int_text(i64::MAX.cast_unsigned(), "0x7FFF_FFFF_FFFF_FFFF"),
+                int(255),
+                int(255),
+                int(165),
+                int(15),
+                int(i64::MAX.cast_unsigned()),
                 int(0),
                 TokenKind::Eof
             ]
@@ -1259,18 +1246,30 @@ mod tests {
     fn min_magnitude_in_other_bases() {
         assert_eq!(
             kinds("0x8000_0000_0000_0000"),
-            [
-                int_text(MIN_MAGNITUDE, "0x8000_0000_0000_0000"),
-                TokenKind::Eof
-            ]
+            [int(MIN_MAGNITUDE), TokenKind::Eof]
         );
     }
 
-    /// A prefixed literal is one token that spans its prefix and its digits.
+    /// An integer literal is one token that spans exactly its text as written: its prefix, its
+    /// digits and its separators. The parser and checker quote `source[span]`.
     #[test]
     fn base_literal_span() {
-        let t = &tokens("0xFF")[0];
-        assert_eq!((t.span.start(), t.span.end()), (0, 4));
+        for (src, want) in [
+            ("0xFF", (0, 4)),
+            ("100_000", (0, 7)),
+            ("0b1010_0101", (0, 11)),
+            ("0x8000_0000_0000_0000", (0, 21)),
+            ("0xff", (0, 4)),
+            ("0o17", (0, 4)),
+            ("0x7FFF_FFFF_FFFF_FFFF", (0, 21)),
+            ("x 1_0", (2, 5)),
+        ] {
+            let t = tokens(src)
+                .into_iter()
+                .find(|t| matches!(t.kind, TokenKind::Int(_)))
+                .expect("the source has an integer literal");
+            assert_eq!((t.span.start(), t.span.end()), want, "{src}");
+        }
     }
 
     #[test]
@@ -1705,7 +1704,8 @@ mod tests {
             ("\"a{ \"b", ""),
             ("\"a{x}b{ \"c{y}d", ""),
         ] {
-            let lexed = lex(&format!("let s = {literal}\nlet t = 1")).expect("the lexer recovers");
+            let src = format!("let s = {literal}\nlet t = 1");
+            let lexed = lex(&src).expect("the lexer recovers");
             let kinds: Vec<_> = lexed.tokens.into_iter().map(|t| t.kind).collect();
             assert_eq!(
                 kinds,
@@ -1732,7 +1732,8 @@ mod tests {
     #[test]
     fn many_unclosed_strings_lex_in_linear_time() {
         const LINES: usize = 500_000;
-        let lexed = lex(&"\"x\n".repeat(LINES)).expect("the lexer recovers");
+        let src = "\"x\n".repeat(LINES);
+        let lexed = lex(&src).expect("the lexer recovers");
         assert_eq!(lexed.diagnostics.len(), LINES);
     }
 
@@ -2617,7 +2618,7 @@ mod tests {
             .tokens
             .into_iter()
             .map(|t| t.kind)
-            .filter(|k| matches!(k, TokenKind::Int { .. }))
+            .filter(|k| matches!(k, TokenKind::Int(_)))
             .collect();
         assert_eq!(ints, [int(0), int(2)]);
     }
@@ -2739,6 +2740,7 @@ mod tests {
                 let reported: Vec<_> = parsed.diagnostics.iter().map(|d| at(&fixed, d)).collect();
                 assert_eq!(reported, [want], "{fixed}");
                 let parsed = crate::parser::parse(Lexed {
+                    source: &fixed,
                     tokens,
                     diagnostics: Vec::new(),
                     comments: Vec::new(),

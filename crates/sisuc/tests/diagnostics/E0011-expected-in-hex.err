@@ -1,0 +1,8 @@
+error[E0011]: expected `in`, found `0x10`
+ --> E0011-expected-in-hex.sisu:2:11
+  |
+2 |     for i 0x10..3 {}
+  |           ^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011

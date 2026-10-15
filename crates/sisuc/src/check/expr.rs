@@ -12,7 +12,7 @@ use crate::diagnostic::{
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 
-impl Checker {
+impl Checker<'_> {
     /// `expected` is the type the context wants, `None` when it wants none. It only types a
     /// `None`, a `[]` and an integer literal, and flows into `if` and `if let` branches, a
     /// block's value, array elements, arithmetic and unary `-`; it never wraps.
@@ -29,8 +29,8 @@ impl Checker {
         checked
     }
 
-    /// The integer literal `value`, written as `text`, typed by `expected`.
-    fn integer(&mut self, at: Span, value: i64, text: &str, expected: Option<&Type>) -> Checked {
+    /// The integer literal `value` at `at`, whose token is `literal`, typed by `expected`.
+    fn integer(&mut self, at: Span, value: i64, literal: Span, expected: Option<&Type>) -> Checked {
         let ty = literal_type(expected);
         if ty == Type::U8 && !(0..=i64::from(u8::MAX)).contains(&value) {
             // Only `-9223372036854775808` parses to a negative literal.
@@ -38,7 +38,7 @@ impl Checker {
                 DiagnosticKind::NegatedU8 { at }.into()
             } else {
                 DiagnosticKind::IntegerDoesNotFit {
-                    text: text.to_string(),
+                    text: self.source[literal.range()].to_string(),
                     at,
                 }
                 .into()
@@ -62,7 +62,7 @@ impl Checker {
             })
         };
         match &e.kind {
-            ExprKind::Int { value, text } => self.integer(e.span, *value, text, expected),
+            ExprKind::Int { value, literal } => self.integer(e.span, *value, *literal, expected),
             ExprKind::Bool(b) => node(tir::ExprKind::Bool(*b), Type::Bool),
             ExprKind::Char(c) => node(tir::ExprKind::Char(*c), Type::Char),
             ExprKind::Str(s) => node(tir::ExprKind::Str(s.clone()), Type::String),

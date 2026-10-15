@@ -45,7 +45,7 @@ pub(crate) fn front_end(source: &str) -> (Option<tir::Program>, Vec<Diagnostic>)
     if !parsed.checkable {
         return (None, parsed.diagnostics);
     }
-    let (program, checked) = check::check(&parsed.program);
+    let (program, checked) = check::check(&parsed.program, source);
     let mut diagnostics = parsed.diagnostics;
     diagnostics.extend(checked);
     diagnostics.sort_by_key(|d| d.span().start());

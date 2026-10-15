@@ -299,7 +299,7 @@ mod tests {
             format!("{src}\nfn main() {{}}")
         };
         let ast = parse_ok(&src);
-        let (program, diagnostics) = check(&ast);
+        let (program, diagnostics) = check(&ast, &src);
         let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
         mark(&mut program);
         program.to_string()

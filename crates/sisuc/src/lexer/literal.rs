@@ -16,11 +16,7 @@ pub(super) fn token(
     let (literal, placeholder) = if source[start..].starts_with('\'') {
         (char_literal(source, start, chars), TokenKind::Char('\0'))
     } else {
-        let zero = TokenKind::Int {
-            value: 0,
-            text: "0".to_string(),
-        };
-        (number(source, start, chars), zero)
+        (number(source, start, chars), TokenKind::Int(0))
     };
     literal.unwrap_or_else(|d| {
         diagnostics.push(d);
@@ -96,10 +92,7 @@ fn number(source: &str, start: usize, chars: &mut Chars) -> Result<TokenKind, Di
         }
         .into());
     }
-    Ok(TokenKind::Int {
-        value,
-        text: source[start..end].to_string(),
-    })
+    Ok(TokenKind::Int(value))
 }
 
 /// The `char` literal that starts at the `'` at `source[start..]`, which `chars` has consumed.
