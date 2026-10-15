@@ -1028,10 +1028,14 @@ standard library. The milestones after 12 then follow from it.
     }
     ```
 
-  - A type declares its interfaces after its name, `record Point: Hash {`,
-    as milestone 10 writes them. Implementing an interface for a type
-    declared elsewhere, as Rust's `impl` blocks and Swift's extensions do,
-    waits. Adding it later breaks no program.
+  - A type declares its interfaces after its name: `class Tree: Display {`,
+    and `record Point: Hash {` as milestone 10 writes them.
+  - An `extend` block adds to a type declared elsewhere, as Swift's
+    extensions do (agreed 2026-10-15). `extend string { ... }` holds extra
+    methods. `extend string: Display { ... }` holds exactly `Display`'s
+    methods: one interface per block. For now only the prelude may extend
+    the built-in types; letting programs use `extend` later breaks no
+    program.
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
   `a.plus(b)` or `a.value + b.value`, the same boilerplate Rust newtypes
   carry. An opt-in such as Haskell's `deriving` would let a newtype keep its
