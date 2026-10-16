@@ -1,0 +1,10 @@
+plain: 20 20 true
+add zero left: 7 7 true
+add zero right: 7 7 true
+mul one left: 5 5 true
+mul one right: 5 5 true
+mul zero left: 0 0 true
+mul zero right: 0 0 true
+double: 6 6 true
+distinct: 3 3 true
+nested: 4 4 true
