@@ -703,6 +703,25 @@ fn wide_witness_builds_in_linear_time() {
     );
 }
 
+/// Each `Wide` column below the root has a bucket for `W` and a default that stands for `V`, so a
+/// default's head built anew at each of them costs `FIELDS` columns times `FIELDS` fields.
+///
+/// The keep-alive override for this test is in `.config/nextest.toml`: that quadratic build hangs
+/// instead of failing.
+#[test]
+fn default_witness_head_builds_in_linear_time() {
+    const FIELDS: usize = 100_000;
+    let bits = vec!["Bit"; FIELDS].join(", ");
+    let wides = vec!["Wide"; FIELDS].join(", ");
+    let ws = vec!["W"; FIELDS].join(", ");
+    codes(
+        &format!(
+            "enum Bit {{\n    X\n    Y\n}}\nenum Wide {{\n    V({bits})\n    W\n}}\nenum Row {{ P({wides}) }}\nfn t(r: Row) -> i64 {{\n    match r {{\n        P({ws}) => 1\n    }}\n}}\nfn main() {{}}"
+        ),
+        &[(Code::NonExhaustive, (11, 5))],
+    );
+}
+
 /// `enum Wide { V(Bit, ...) }` with `fields` fields, and a `match` on `w` whose `arms` start on
 /// line 8, then `_ => 0`.
 fn wide(fields: usize, arms: &[String]) -> String {

@@ -66,6 +66,7 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
         }],
         node_ids: FxHashMap::default(),
         memo: FxHashMap::default(),
+        defaults: FxHashMap::default(),
     };
     let col = column(ty);
     let pats: Vec<_> = rows
@@ -239,6 +240,9 @@ struct Solver<'a> {
     node_ids: FxHashMap<(PatId, Col, StackId), StackId>,
     /// Each matrix solved so far, by its rows.
     memo: FxHashMap<Box<[StackId]>, Rc<Solved>>,
+    /// The all-`_` pattern of each (enum, variant) a default has stood for, so a default head
+    /// costs its payload's width only once.
+    defaults: FxHashMap<(usize, usize), PatId>,
 }
 
 impl Solver<'_> {
@@ -473,12 +477,18 @@ impl Solver<'_> {
                 }
                 // The default stands for a variant when a row names another.
                 Some(enum_id) if frame.children.len() > 1 => {
-                    let count = self.enums[enum_id].variants[order].fields.len();
-                    self.pat(Pat::Variant {
-                        enum_id,
-                        variant: order,
-                        fields: vec![WILD; count].into(),
-                    })
+                    if let Some(&head) = self.defaults.get(&(enum_id, order)) {
+                        head
+                    } else {
+                        let count = self.enums[enum_id].variants[order].fields.len();
+                        let head = self.pat(Pat::Variant {
+                            enum_id,
+                            variant: order,
+                            fields: vec![WILD; count].into(),
+                        });
+                        self.defaults.insert((enum_id, order), head);
+                        head
+                    }
                 }
                 _ => WILD,
             };
