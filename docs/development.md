@@ -183,7 +183,7 @@ that no longer builds, fails the run, so the benchmarks cannot stop running
 unnoticed. Agents read results through the CodSpeed MCP tools and do not run
 CodSpeed locally. To compare a change before pushing, count the instructions
 of `target/release/sisuc --check target/codspeed/large/main.sisu` under
-callgrind, as `AGENTS.md` shows.
+callgrind, as `make callgrind` does.
 
 Set these once in the CodSpeed UI: "Informational Status Checks on Failure"
 on, PR comment mode "On Change", threshold 10%. Do not make the check

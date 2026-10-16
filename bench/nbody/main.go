@@ -5,7 +5,11 @@ import (
 	"math"
 )
 
-const solarMass = 4 * math.Pi * math.Pi
+// A variable, so that each product rounds as in the other languages: a
+// constant expression would be exact.
+var pi = math.Pi
+var solarMass = 4 * pi * pi
+
 const daysPerYear = 365.24
 
 type body struct {

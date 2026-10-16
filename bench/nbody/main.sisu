@@ -1,5 +1,5 @@
 // The n-body program of the Computer Language Benchmarks Game: the orbits of
-// the Jovian planets around the sun, 5 000 000 steps of 0.01 days.
+// the Jovian planets around the sun, 5 000 000 steps of 0.01 years.
 const SOLAR_MASS = 4.0 * f64.pi * f64.pi
 const DAYS_PER_YEAR = 365.24
 

@@ -27,11 +27,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# Informational: every step tolerates failure and each one runs only after its
-# predecessor succeeded, so a failure skips the rest (nothing is measured or
-# uploaded after a failed prep) and is named in the summary. On a pull request
-# every check stays green; on a push to main the summary step then fails the
-# job, so a benchmark that stops running shows on main. CodSpeed reads
+# Informational on pull requests: every step before the summary tolerates
+# failure and runs only after its predecessor succeeded, so a failure skips
+# the rest (nothing is measured or uploaded after a failed prep) and the
+# summary names it. On a pull request every check stays green; on a push to
+# main the summary step then fails the job, so a benchmark that stops running
+# shows on main. CodSpeed reads
 # codspeed.yml; the app comments on the PR on change.
 jobs:
   benchmarks:
