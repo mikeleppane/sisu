@@ -310,6 +310,29 @@ fn match_nests_to_the_limit() {
     }
 }
 
+/// An alternation is the parent of its alternatives, one level more than a pattern without one:
+/// `R.A(<inner> | _)` nests half as far as `R.A(<inner>)` (`match_patterns`). It stops at
+/// `--emit ast`, before the checker, which does not take alternatives yet.
+#[test]
+fn alternatives_nest_a_level_more() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let limit = 126;
+    for (n, code) in [(limit, Some(0)), (limit + 1, Some(1))] {
+        let arm = wrapped("    ", "A(", "_", " | _)", " => 1", n);
+        let first = "    let r = R.Z\n    let _ = match r {\n";
+        let Generated { source, .. } = in_main(&format!("{first}{arm}        _ => 2\n    }}\n"), 0);
+        fs::write(dir.join("nesting_alternatives.sisu"), source).expect("writes");
+        let out = sisuc(dir, &["--emit", "ast", "nesting_alternatives.sisu"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), code, "{n}: {stderr}");
+        assert_eq!(
+            stderr.contains("error[E0071]: nesting is too deep"),
+            n > limit,
+            "{n}: {stderr}"
+        );
+    }
+}
+
 /// The right side of a `**` is parsed as a `*`'s would be, one level in: the parser reports the
 /// `**` up to 253 parentheses deep, and the depth past that, which no other construct ends with.
 #[test]

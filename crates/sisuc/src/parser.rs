@@ -224,6 +224,7 @@ enum EnumMember {
 }
 
 /// A range operator as written.
+#[derive(Clone, Copy)]
 enum RangeOp {
     /// `..`.
     Exclusive,
@@ -336,7 +337,11 @@ impl<'a> Parser<'a> {
     /// "expected <what>, found <the next token>", pointing at the next token.
     /// A stray `var` or reserved word always gets its own diagnostic, wherever it appears.
     fn expected(&self, what: &str) -> Diagnostic {
-        let found = self.peek();
+        self.expected_at(self.peek(), what)
+    }
+
+    /// "expected <what>, found <found>", pointing at the token `found`, which need not be next.
+    fn expected_at(&self, found: &Token, what: &str) -> Diagnostic {
         match found.kind {
             TokenKind::Var => DiagnosticKind::Var {
                 at: found.span,
@@ -1171,19 +1176,16 @@ impl<'a> Parser<'a> {
                 let first = self.child(base, &mut reach, side)?;
                 let source = match self.range_op() {
                     None => ForSource::Array(first),
-                    Some(op) => {
-                        let end = self.child(base, &mut reach, side)?;
-                        match op {
-                            RangeOp::Foreign { at, lt } => {
-                                return Err(self.foreign_range(at, lt, first.span, end.span, true));
-                            }
-                            RangeOp::Exclusive | RangeOp::Inclusive => ForSource::Range {
-                                start: first,
-                                end,
-                                inclusive: matches!(op, RangeOp::Inclusive),
-                            },
-                        }
+                    Some(RangeOp::Foreign { at, lt }) => {
+                        // Reported even when the end does not parse.
+                        let end = self.child(base, &mut reach, side).ok().map(|e| e.span);
+                        return Err(self.foreign_range(at, lt, first.span, end, true));
                     }
+                    Some(op) => ForSource::Range {
+                        start: first,
+                        end: self.child(base, &mut reach, side)?,
+                        inclusive: matches!(op, RangeOp::Inclusive),
+                    },
                 };
                 StmtKind::For {
                     name,
@@ -1295,10 +1297,12 @@ impl<'a> Parser<'a> {
                 span = span.to(next.span);
                 alternatives.push(next);
             }
-            Pattern {
+            // The `Or` is the parent of its alternatives: one level more.
+            self.reach(reach + 1)?;
+            return Ok(Pattern {
                 kind: PatternKind::Or(alternatives),
                 span,
-            }
+            });
         } else {
             first
         };
@@ -1390,12 +1394,18 @@ impl<'a> Parser<'a> {
                         parens: None,
                     };
                     (kind, span)
+                } else if let Some(op) = self.range_op() {
+                    return self.range_end(Bound::Name(name), token.span, op);
                 } else {
                     (PatternKind::Name(name), token.span)
                 }
             }
             _ => return Err(self.expected("a pattern")),
         };
+        // A name or a literal can start a range; no other pattern is a bound.
+        if matches!(self.peek().kind, TokenKind::DotDot | TokenKind::DotDotEq) {
+            return Err(self.expected_at(token, "a literal"));
+        }
         self.depth = reach;
         Ok(Pattern { kind, span })
     }
@@ -1403,26 +1413,54 @@ impl<'a> Parser<'a> {
     /// A literal pattern, or a range that starts with one, at the next token.
     fn literal_pattern(&mut self) -> Result<Pattern, Diagnostic> {
         let (start, start_span) = self.literal()?;
-        let Some(op) = self.range_op() else {
-            return Ok(Pattern {
+        match self.range_op() {
+            Some(op) => self.range_end(Bound::Literal(start), start_span, op),
+            None => Ok(Pattern {
                 kind: PatternKind::Literal(start),
                 span: start_span,
-            });
-        };
-        // A bare name is a bound the checker reports; nothing else but a literal is one.
-        let (end, end_span) = if let TokenKind::Ident(name) = self.peek().kind {
-            let span = self.bump().span;
-            (Bound::Name(Ident { name, span }), span)
-        } else {
-            let (literal, span) = self.literal()?;
-            (Bound::Literal(literal), span)
-        };
-        if let RangeOp::Foreign { at, lt } = op {
-            return Err(self.foreign_range(at, lt, start_span, end_span, true));
+            }),
         }
+    }
+
+    /// The rest of a range pattern, after its `start` at `start_span` and its operator `op`: its
+    /// end. A bare name is a bound the checker reports, but not when it starts a path or a call;
+    /// nothing else but a literal is a bound. A range written another language's way is reported
+    /// even when its end does not parse.
+    fn range_end(
+        &mut self,
+        start: Bound,
+        start_span: Span,
+        op: RangeOp,
+    ) -> Result<Pattern, Diagnostic> {
+        let bound = |p: &mut Self| {
+            let token = p.peek();
+            match token.kind {
+                TokenKind::Ident(name)
+                    if !matches!(p.tokens[p.pos + 1].kind, TokenKind::LParen | TokenKind::Dot) =>
+                {
+                    p.bump();
+                    Ok((
+                        Bound::Name(Ident {
+                            name,
+                            span: token.span,
+                        }),
+                        token.span,
+                    ))
+                }
+                _ => p
+                    .literal()
+                    .map(|(literal, span)| (Bound::Literal(literal), span)),
+            }
+        };
+        let end = bound(self);
+        if let RangeOp::Foreign { at, lt } = op {
+            let end = end.ok().map(|(_, span)| span);
+            return Err(self.foreign_range(at, lt, start_span, end, true));
+        }
+        let (end, end_span) = end?;
         Ok(Pattern {
             kind: PatternKind::Range {
-                start: Bound::Literal(start),
+                start,
                 end,
                 inclusive: matches!(op, RangeOp::Inclusive),
             },
@@ -1492,27 +1530,29 @@ impl<'a> Parser<'a> {
     }
 
     /// The error for a range written another language's way: `at` is its operator, `lt` the
-    /// `<` of `..<`, and `start` and `end` its bounds. Removing the `<` is a safe fix only where
-    /// `fixable`: where the range is not allowed, it leaves an error.
+    /// `<` of `..<`, and `start` and `end` its bounds, `end` being `None` when it did not parse.
+    /// Removing the `<` is a safe fix only where `fixable` and the end parsed: where the range is
+    /// not allowed, or the end is broken, it leaves an error.
     fn foreign_range(
         &self,
         at: Span,
         lt: Option<Span>,
         start: Span,
-        end: Span,
+        end: Option<Span>,
         fixable: bool,
     ) -> Diagnostic {
-        let (start, end) = (
-            self.source[start.range()].to_string(),
-            self.source[end.range()].to_string(),
-        );
+        let start_text = self.source[start.range()].to_string();
+        let end_text = end.map(|end| self.source[end.range()].to_string());
         let form = match lt {
             Some(lt) => ForeignRange::Exclusive {
-                start,
-                end,
-                remove: fixable.then_some(lt),
+                start: start_text,
+                end: end_text,
+                remove: (fixable && end.is_some()).then_some(lt),
             },
-            None => ForeignRange::Ellipsis { start, end },
+            None => ForeignRange::Ellipsis {
+                start: start_text,
+                end: end_text,
+            },
         };
         DiagnosticKind::ForeignRange { form, at }.into()
     }
@@ -1882,8 +1922,8 @@ impl<'a> Parser<'a> {
             let at = self.peek().span;
             return Err(match self.range_op() {
                 Some(RangeOp::Foreign { at, lt }) => {
-                    let end = self.binary(1)?;
-                    self.foreign_range(at, lt, e.span, end.span, false)
+                    let end = self.binary(1).ok().map(|end| end.span);
+                    self.foreign_range(at, lt, e.span, end, false)
                 }
                 _ => DiagnosticKind::RangeOutsideFor { at }.into(),
             });
@@ -3835,6 +3875,10 @@ mod tests {
             ("'A'..='Z' => 1", "(arm (..= 'A' 'Z') 1)"),
             ("-9..=-1 => 1", "(arm (..= -9 -1) 1)"),
             ("0..n => 1", "(arm (.. 0 n) 1)"),
+            ("LIMIT..=10 => 1", "(arm (..= LIMIT 10) 1)"),
+            ("lo..10 => 1", "(arm (.. lo 10) 1)"),
+            ("LO..=HI => 1", "(arm (..= LO HI) 1)"),
+            ("lo..hi | 0 => 1", "(arm (| (.. lo hi) 0) 1)"),
             ("A | B => 1", "(arm (| A B) 1)"),
             ("0 | 1 | 2 => 1", "(arm (| 0 1 2) 1)"),
             (
@@ -3963,13 +4007,31 @@ mod tests {
             // A gap after `..` makes the `<` or `.` the end's own first token.
             (main("for i in 0.. <n {}"), Code::Expected, (2, 18), None),
             (main("for i in 0.. .n {}"), Code::Expected, (2, 18), None),
-            (arm("f(1)..2 => 1"), Code::Expected, (3, 13), None),
+            // A start that is no literal or bare name, and an end that starts a path or a call:
+            // at its first token.
+            (arm("f(1)..2 => 1"), Code::Expected, (3, 9), None),
+            (arm("_..2 => 1"), Code::Expected, (3, 9), None),
+            (arm("A.B..2 => 1"), Code::Expected, (3, 9), None),
+            (arm("0..f(1) => 1"), Code::Expected, (3, 12), None),
+            (arm("0..A.B => 1"), Code::Expected, (3, 12), None),
+            // A range of another language is reported whatever its end is.
+            (main("let r = 1...*"), Code::ForeignRange, (2, 14), None),
+            (main("for i in 0..<* {}"), Code::ForeignRange, (2, 15), None),
+            (arm("1...* => 1"), Code::ForeignRange, (3, 10), None),
+            (arm("1..<* => 1"), Code::ForeignRange, (3, 10), None),
+            // A later arm that starts with `- ` is E0002, as a line of an expression does.
+            (
+                main("match e {\n        0 => 1\n        - 1 => 2\n    }"),
+                Code::LeadingBinaryMinus,
+                (4, 9),
+                None,
+            ),
             (arm("0..* => 1"), Code::Expected, (3, 12), None),
             (arm("-x => 1"), Code::Expected, (3, 10), None),
             // The error of a bound, an alternative, a guard or an end that fails to parse.
             (arm("A | * => 1"), Code::Expected, (3, 13), None),
             (arm("A if * => 1"), Code::Expected, (3, 14), None),
-            (main("let r = 1..."), Code::Expected, (3, 1), None),
+            (main("let r = 1..."), Code::ForeignRange, (2, 14), None),
             (arm("1.5 => 1"), Code::Expected, (3, 9), None),
             (
                 arm("9223372036854775808 => 1"),

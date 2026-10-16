@@ -1009,16 +1009,17 @@ pub(crate) enum ForeignPattern {
     },
 }
 
-/// A range written another language's way. `start` and `end` are its bounds as written.
+/// A range written another language's way. `start` and `end` are its bounds as written; `end` is
+/// `None` when it did not parse, and the message then calls it `end`.
 pub(crate) enum ForeignRange {
     /// `start..<end`; `remove` is the `<`, unless removing it leaves a range the parser rejects.
     Exclusive {
         start: String,
-        end: String,
+        end: Option<String>,
         remove: Option<Span>,
     },
     /// `start...end`.
-    Ellipsis { start: String, end: String },
+    Ellipsis { start: String, end: Option<String> },
 }
 
 /// What owns a method.
@@ -2746,19 +2747,23 @@ impl From<DiagnosticKind> for Diagnostic {
             },
             DiagnosticKind::ForeignRange { form, at } => match form {
                 ForeignRange::Exclusive { start, end, remove } => {
+                    let end = end.as_deref().unwrap_or("end");
                     let d = Diagnostic::coded(code, at, format!("write `{start}..{end}`"));
                     match remove {
                         Some(lt) => d.with_fix(safe_fix("remove the `<`", lt, "")),
                         None => d,
                     }
                 }
-                ForeignRange::Ellipsis { start, end } => Diagnostic::coded(
+                ForeignRange::Ellipsis { start, end } => {
+                    let end = end.as_deref().unwrap_or("end");
+                    Diagnostic::coded(
                     code,
                     at,
                     format!(
                         "write `{start}..={end}` to include `{end}`, or `{start}..{end}` to leave it out"
                     ),
-                ),
+                    )
+                }
             },
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };
