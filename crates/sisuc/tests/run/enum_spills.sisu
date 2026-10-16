@@ -1,0 +1,36 @@
+// An enum with a string payload, evaluated before an operand that returns early, is released on
+// that exit: as a call's argument, an array literal's element and a variant's payload. Every
+// string is built at run time, so a leak shows under Valgrind.
+enum Msg {
+    Text(string)
+    Code(i64)
+    Pair(string, i64)
+}
+
+fn check(m: Msg, n: i64) -> bool {
+    m == Msg.Code(n)
+}
+
+fn send(c: bool) -> i64 {
+    let ok = check(Msg.Text("a" + "b"), if c { return 0 } else { 1 })
+    if ok { 1 } else { 2 }
+}
+
+fn list(c: bool) -> i64 {
+    let xs = [Msg.Text("c" + "d"), if c { return 0 } else { Msg.Code(1) }]
+    xs.len()
+}
+
+fn pair(c: bool) -> bool {
+    let p = Msg.Pair("e" + "f", if c { return false } else { 2 })
+    p == Msg.Pair("ef", 2)
+}
+
+fn main() {
+    print(send(false))                                       // 2
+    print(send(true))                                        // 0
+    print(list(false))                                       // 2
+    print(list(true))                                        // 0
+    print(pair(false))                                       // true
+    print(pair(true))                                        // false
+}

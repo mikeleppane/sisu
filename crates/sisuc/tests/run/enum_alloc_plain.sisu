@@ -1,0 +1,27 @@
+fn iterations() -> i64 { 1000 }
+
+// Building an enum whose payloads hold no string, object or array allocates nothing: the value,
+// a nested enum's included, is held inline.
+enum State {
+    Idle
+    Busy(i64)
+}
+
+enum Shape {
+    Dot
+    Rect(w: i64, h: i64)
+    Tagged(State, i64)
+}
+
+fn main() {
+    let mut built = 0
+    for i in 0..iterations() {
+        let a = State.Idle
+        let b = Shape.Rect(w: i, h: i)
+        let c = Shape.Tagged(State.Busy(i), i)
+        if a == State.Idle && b == Shape.Rect(w: i, h: i) && c != Shape.Dot {
+            built += 1
+        }
+    }
+    print(built) // 1000 (0 with no iterations)
+}

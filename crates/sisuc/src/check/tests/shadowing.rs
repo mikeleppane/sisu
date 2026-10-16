@@ -41,7 +41,7 @@ fn shadowed_mut_warns_unless_reassigned_first() {
     clean("fn main() {\n    let mut a = 0\n    a = 1\n    let a = 2\n    print(a)\n}");
 }
 
-/// The error's secondary span is the shadowing `let`'s name, and its certain fix makes that
+/// The error's secondary span is the shadowing `let`'s name, and its safe fix makes that
 /// `let` a `let mut`, which leaves only the shadowed binding's warning.
 #[test]
 fn redeclared_label_same_scope() {

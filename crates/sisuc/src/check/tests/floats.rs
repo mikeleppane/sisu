@@ -95,7 +95,7 @@ fn mixing() {
     for (expr, (col, found), fixed) in rows {
         let src = scalars(expr);
         let d = diagnostic(&src, Code::Mismatch, (2, col, found), &[]);
-        assert!(d.fixes().iter().all(|f| !f.certain()), "{src}");
+        assert!(d.fixes().iter().all(|f| !f.safe()), "{src}");
         let fixed = scalars(fixed);
         assert_eq!(applied(&src, &d), fixed);
         clean(&fixed);
@@ -212,7 +212,7 @@ fn mixing_under_an_integer_nested() {
         (2, 19, "x"),
         &[],
     );
-    // A `string` beside an `i64` is reported against `string`, with the guess to interpolate.
+    // A `string` beside an `i64` is reported against `string`, with the unsafe fix to interpolate.
     for (body, at, other) in [
         ("s + n + n", (2, 9, "n"), (2, 5)),
         ("n + s + n", (2, 5, "n"), (2, 9)),
@@ -306,7 +306,7 @@ fn float_constants() {
         let d = &diags(&src)[0];
         match fixed {
             Some(fixed) => {
-                assert!(d.fixes().iter().all(Fix::certain), "{src}");
+                assert!(d.fixes().iter().all(Fix::safe), "{src}");
                 let fixed = format!("{fixed}\nfn main() {{}}");
                 assert_eq!(applied(&src, d), fixed);
                 clean(&fixed);
@@ -428,7 +428,7 @@ fn method_errors() {
         let src = scalars(expr);
         codes(&src, &[(code, at)]);
     }
-    // The nearest method is the guess.
+    // The nearest method is the unsafe fix.
     let src = scalars("x.sqrtt()");
     let d = diagnostic(&src, Code::NoMember, (2, 15, "sqrtt"), &[]);
     assert_eq!(
@@ -480,7 +480,7 @@ fn f64_constant_errors() {
         fixes(src, &d),
         [(false, vec![(2, 17, "PI", "pi".to_owned())])]
     );
-    // An `i64` has no constants, so there is nothing to guess.
+    // An `i64` has no constants, so there is no unsafe fix to offer.
     let src = "fn main() {\n    let _ = i64.max\n}";
     let d = diagnostic(src, Code::NoMember, (2, 17, "max"), &[]);
     assert_eq!(fixes(src, &d), []);
@@ -533,7 +533,7 @@ fn nan_comparison() {
     for (expr, (col, found), fixed) in rows {
         let src = program(expr);
         let d = diagnostic(&src, Code::NanComparison, (2, col, found), &[]);
-        assert!(d.fixes().iter().all(Fix::certain), "{src}");
+        assert!(d.fixes().iter().all(Fix::safe), "{src}");
         let fixed = program(fixed);
         assert_eq!(applied(&src, &d), fixed);
         clean(&fixed);
@@ -589,7 +589,7 @@ fn f64_constant_in_const() {
 }
 
 /// Math the way other languages write it: a method of `f64` named as a function (E0070), or as a
-/// member of `math`, `Math` or `f64` (the new code). Each row's fix is applied, and a certain one
+/// member of `math`, `Math` or `f64` (the new code). Each row's fix is applied, and a safe one
 /// leaves a program that checks.
 #[test]
 fn math_idioms() {
@@ -647,7 +647,7 @@ fn math_idioms() {
         match fixed {
             Some(fixed) => {
                 if code == math {
-                    assert!(d.fixes().iter().all(Fix::certain), "{src}");
+                    assert!(d.fixes().iter().all(Fix::safe), "{src}");
                 }
                 let fixed = program(fixed);
                 assert_eq!(applied(&src, &d), fixed);

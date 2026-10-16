@@ -189,7 +189,9 @@ required.
 
 The fuzz target, `fuzz/fuzz_targets/front_end.rs`, feeds arbitrary bytes to
 `sisuc --check`. It renders the report as text and as JSON, and asserts that
-every span and every fix edit is well formed. A panic, a stack overflow, a
+every span and every fix edit is well formed. It also applies each safe fix
+alone and checks the result: the fix deletes no comment, removes its
+diagnostic, and keeps every diagnostic of another code. A panic, a stack overflow, a
 timeout or running out of memory is a failure. The target lives in `fuzz/`,
 its own Cargo workspace, and runs under cargo-fuzz without a sanitizer.
 Install cargo-fuzz once:
@@ -392,22 +394,24 @@ number in its series, `E` for errors and `W` for warnings.
 2. In `crates/sisuc/src/diagnostic/registry.rs`, add a row to the `codes!`
    table, which is where the number is chosen. Add a `DiagnosticKind` variant
    and its arms in `DiagnosticKind::code` and `From<DiagnosticKind> for
-   Diagnostic`, with the message, labels, help and fixes. A fix is `certain`
+   Diagnostic`, with the message, labels, help and fixes. A fix is safe
    only when applying it always removes the diagnostic and leaves source that
-   lexes and parses. An idiom fix is certain only if the edited source also
-   checks cleanly. When in doubt, it is a guess.
+   lexes and parses; every other fix is an unsafe fix. An idiom fix is safe
+   only if the edited source also checks cleanly. When in doubt, it is unsafe.
+   A rule need not look for comments or stray characters inside the text its
+   fix deletes: `front_end::sound_fixes` makes that fix unsafe for it.
 3. Report the variant from the lexer, parser or checker.
 4. Add the fixture `crates/sisuc/tests/diagnostics/<CODE>.sisu`, and a
    `<CODE>-<case>.sisu` for each other shape. Create the `.err` and `.json`
    files empty, then fill them with `SISU_BLESS=1` as above and read them.
-5. Add unit tests that assert the code and its `(line, col)`. A certain fix
+5. Add unit tests that assert the code and its `(line, col)`. A safe fix
    also gets a test that applies it to an input other than the explanation's
    example and checks that the code is gone.
 
 The tests in `diagnostic/explanations.rs` fail when a code lacks its
 explanation, its README row or its fixture, or when a Broken program does not
 report exactly its code. They also run every Fixed program, and every Broken
-program with its certain fixes applied, through the checker, so the checker
+program with its safe fixes applied, through the checker, so the checker
 must accept any syntax those programs use.
 
 ## Repository layout

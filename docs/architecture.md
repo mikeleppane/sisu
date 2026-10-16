@@ -23,7 +23,8 @@ runs it on a thread with a 64 MiB stack. It reads at most 1 GiB of source,
 so every span offset fits in a `u32`; a larger file is a tool error. The
 fuzzer calls the library too:
 `fuzz.rs` runs the `--check` path on raw bytes and asserts that every
-diagnostic span and fix edit is well formed. The `--emit` and `--check` flags stop
+diagnostic span and fix edit is well formed, and that every safe fix, applied
+alone, deletes no comment and removes its diagnostic and no other. The `--emit` and `--check` flags stop
 the pipeline early, as [Developing Sisu](development.md#look-inside-the-compiler)
 lists. `--format json` switches the diagnostics to JSON Lines, and
 `--explain <code>` prints the explanation of a code and runs no stage.
@@ -51,7 +52,8 @@ and checker do not run.
 It reports one error per broken item, then resumes at the next item. The
 intact items go on to the checker, and a broken item keeps its name, so a use
 of it is not reported as missing. It parses a format spec's text into its alignment, width and precision, and
-reports a malformed or unsupported one without breaking its item. It rejects an item that nests deeper than
+reports a malformed or unsupported one without breaking its item. An `enum` item parses into its variants, each with
+an optional payload of labeled or unlabeled fields, and its methods. It rejects an item that nests deeper than
 256 levels, because every later stage walks the tree recursively.
 
 **Front end** (`front_end.rs`). Runs the lexer, parser, checker and last-use
@@ -70,7 +72,12 @@ function such as `print` or `panic` has its own rule, and `panic(msg)` and
 `todo` become a `Panic` node of type `never`. A format spec on a part becomes a padding and a precision, and a precision on a
 value that is not an `f64` is an error. A method on a number, such as
 `x.sqrt()` or `n.max(m)`, becomes a `Math` node, and a constant such as
-`f64.pi` becomes a literal. It reports every error
+`f64.pi` becomes a literal. `check/enums.rs` declares each enum: it rejects an
+enum that no value can be built of, and finds the payload fields that close a
+cycle of enums, the ones that go behind a box, and the enums that hold a
+counted part. Building a variant, `Expr.Num(2)`, becomes a `Variant` node
+([ADR 0019](adr/0019-enums-are-values-named-through-their-enum.md)). It reports
+every error
 in one run: an expression that already failed gets the poison type, so one
 mistake produces one diagnostic. A program with no errors comes out as the
 typed tree, `tir`, which is all that codegen reads.
@@ -84,8 +91,9 @@ driver runs it after the checker finds no errors.
 
 **Codegen** (`codegen/`). Walks `tir` and builds an LLVM module through the
 [inkwell](https://github.com/TheDan64/inkwell) bindings. Each Sisu function
-becomes an LLVM function named `sisu.<name>`, and each method one named
-`sisu.<Class>.<method>`. Codegen also emits a `main` with the C signature,
+becomes an LLVM function named `sisu.<name>`, and each method of a class or an
+enum one named `sisu.<Type>.<method>`. Codegen also emits a `main` with the C
+signature,
 which the C startup code calls and which runs `sisu.main`, passing it `args`,
 a `[string]` built from `argc` and `argv`, when `sisu.main` takes that
 parameter. Integer overflow
@@ -102,6 +110,17 @@ less padding sits between them; `tir` and every diagnostic keep declared
 order. Codegen emits the helpers that
 manage them: `sisu_rc.retain`, and for each class `sisu_rc.release.<Class>`,
 `sisu_rc.drop.<Class>` and `sisu_rc.eq.<Class>`, which `==` calls.
+
+An enum value has no heap block of its own. It is a tag and its variant's
+payload, held inline in `%sisu.<Enum>`, with a struct `%sisu.<Enum>.<Variant>`
+per variant laid over the payload storage. A payload field that closes a cycle
+holds a box instead: a counted heap block, `%sisu.box.<Enum>`, that holds a
+value of the enum. Each enum gets `sisu_rc.eq.<Enum>`, and an enum with a
+counted part also gets `sisu_rc.retain.<Enum>` and `sisu_rc.release.<Enum>`,
+which switch on the tag. A box whose count reaches zero is not freed by
+recursion. It joins a pending list, linked through its dead count word, and
+`sisu_rc.drain.<Enum>` frees the boxes on the list one by one, so the stack
+stays the same size for a value of any depth.
 
 An array is one counted heap block too: a header of two `i64`s, the count and
 the length, then the elements. Each array type gets the same helpers, such as
@@ -172,7 +191,9 @@ diagnostic as one JSON line, and `diagnostic/suggest.rs` finds the closest
 name for a did-you-mean fix. `report.rs` writes diagnostics and tool errors
 as text or JSON, counts them and ends with the summary. Before it writes one,
 `front_end::sound_fixes` drops any fix whose result would lex or parse worse
-than the input, so no stage has to guard its own fixes. The explanations in
+than the input, and makes unsafe any safe fix whose edits cover a comment or
+another lexer error, text no rule sees, so no stage has to guard its own
+fixes. The explanations in
 [`docs/diagnostics`](diagnostics/README.md) are what `--explain` prints.
 
 ## Updating the diagram

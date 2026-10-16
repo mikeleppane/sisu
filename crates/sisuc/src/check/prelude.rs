@@ -57,7 +57,7 @@ impl Checker<'_> {
                 at: arg.value.span,
             }
             .into(),
-            Some(ty @ Type::Class(_)) => DiagnosticKind::PrintArgument {
+            Some(ty @ (Type::Class(_) | Type::Enum(_))) => DiagnosticKind::PrintArgument {
                 function,
                 at: arg.value.span,
                 class: Some(self.type_name(ty)),

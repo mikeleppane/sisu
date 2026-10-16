@@ -1,0 +1,9 @@
+enum Light {
+    Red
+    Green
+    Red
+}
+
+fn main() {
+    print(1)
+}

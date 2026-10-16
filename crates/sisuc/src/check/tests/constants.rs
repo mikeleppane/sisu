@@ -301,7 +301,7 @@ fn name_errors() {
         ),
         ("class A {}\nconst A = 1", &[(Code::DefinedTwice, (2, 7))]),
         ("const A = 1\nfn A() {}", &[(Code::DefinedTwice, (2, 4))]),
-        ("const i64 = 1", &[(Code::BuiltInTypeName, (1, 7))]),
+        ("const i64 = 1", &[(Code::BuiltInName, (1, 7))]),
     ]);
 }
 
@@ -367,9 +367,9 @@ fn const_diagnostics() {
     );
 }
 
-/// E0032's guess wraps the constant in the conversion, as it does a local.
+/// E0032's unsafe fix wraps the constant in the conversion, as it does a local.
 #[test]
-fn mismatch_guess_wraps_the_constant() {
+fn mismatch_unsafe_fix_wraps_the_constant() {
     for (src, wrapped) in [
         ("const A: u8 = 1\nfn main() { let b: i64 = A }", "i64(A)"),
         ("const A = 1\nfn main() { let b: u8? = A }", "u8(A)"),
@@ -380,12 +380,12 @@ fn mismatch_guess_wraps_the_constant() {
         };
         assert_eq!(d.code(), Code::Mismatch);
         assert!(applied(src, d).contains(wrapped), "{src}");
-        assert!(d.fixes().iter().all(|f| !f.certain()), "{src}");
+        assert!(d.fixes().iter().all(|f| !f.safe()), "{src}");
     }
 }
 
 /// A conversion that can fail is an error in a constant, at the call, and nothing else is: the
-/// call is typed as its payload. The certain fix writes the literal, when the call is the whole
+/// call is typed as its payload. The safe fix writes the literal, when the call is the whole
 /// value and the argument converts to a value the literal can show without an escape.
 #[test]
 fn conversion_in_constant() {
@@ -459,7 +459,7 @@ fn conversion_in_constant() {
         match fixed {
             Some(fixed) => {
                 let fixed = with_main(fixed);
-                assert!(ds[0].fixes().iter().all(Fix::certain), "{src}");
+                assert!(ds[0].fixes().iter().all(Fix::safe), "{src}");
                 assert_eq!(applied(&src, &ds[0]), fixed);
                 clean(&fixed);
             }

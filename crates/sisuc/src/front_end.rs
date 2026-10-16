@@ -57,18 +57,37 @@ pub(crate) fn front_end(source: &str) -> (Option<tir::Program>, Vec<Diagnostic>)
     (program, diagnostics)
 }
 
-/// `diagnostics` without each fix that leaves `source` lexing or parsing worse than it does:
-/// whatever the rule behind a fix, a fix that is shown never breaks the syntax.
+/// `diagnostics` without each fix that leaves `source` lexing or parsing worse than it does,
+/// and with each fix unsafe that edits over a comment or another lexer error: whatever the rule
+/// behind a fix, a fix that is shown never breaks the syntax, and a safe one never takes text it
+/// was not about.
 pub(crate) fn sound_fixes(source: &str, diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
     let mut sound = diagnostics.to_vec();
     // Judging a fix lexes and parses `source` again, so skip that when no diagnostic has one.
     if sound.iter().any(|d| !d.fixes().is_empty()) {
         let before = syntax_errors(source);
+        let marks = marks(source);
         for d in &mut sound {
             d.retain_fixes(|fix| syntax_errors(&fix.apply(source)) <= before);
+            let own = d.span().start();
+            d.demote_fixes(|fix| {
+                let taken = |at: usize| fix.edits().iter().any(|e| e.span().range().contains(&at));
+                marks.iter().any(|&at| at != own && taken(at))
+            });
         }
     }
     sound
+}
+
+/// Where each comment and each lexer error of `source` starts: text that the parser never sees,
+/// so that no rule behind a fix knows it is there.
+fn marks(source: &str) -> Vec<usize> {
+    match lexer::lex(source) {
+        Err(d) => vec![d.span().start()],
+        Ok(lexed) => (lexed.diagnostics.iter().map(|d| d.span().start()))
+            .chain(lexed.comments)
+            .collect(),
+    }
 }
 
 /// How badly `source` fails to lex or to parse: a lexer error, which stops the parser, is worse
@@ -134,6 +153,45 @@ mod tests {
         for d in &ds {
             assert_eq!(kept(src, d), [true]);
         }
+    }
+
+    /// A safe fix that deletes up to a token is unsafe when a comment or a stray character lies in
+    /// what it deletes: the rule behind it sees only tokens.
+    #[test]
+    fn a_fix_over_a_comment_or_a_lexer_error_is_unsafe() {
+        for (src, code, safe) in [
+            ("class C {\n    fn f(mut self) {}\n}\n", Code::MutSelf, true),
+            (
+                "class C {\n    fn f(mut // c\n        self) {}\n}\n",
+                Code::MutSelf,
+                false,
+            ),
+            (
+                "class C {\n    fn f(mut $ self) {}\n}\n",
+                Code::MutSelf,
+                false,
+            ),
+            (
+                "fn main() {\n    let mut // c\n        n = 0\n    print(n)\n}\n",
+                Code::NeverReassigned,
+                false,
+            ),
+            ("fn main() {\n    todo!$()\n}\n", Code::TodoForm, false),
+        ] {
+            let ds = sound_fixes(src, &front_end(src).1);
+            let d = ds
+                .iter()
+                .find(|d| d.code() == code)
+                .expect("the diagnostic should be reported");
+            assert_eq!(fix_edits(d).map(|(s, _)| s), Some(safe), "{src}");
+        }
+    }
+
+    /// A bracket error stops the lexer, which then reports only it.
+    #[test]
+    fn marks_a_bracket_error() {
+        let src = "fn main() {\n    )\n}\n";
+        assert_eq!(marks(src), [src.rfind(')').expect("src has a `)`")]);
     }
 
     /// The spec's `a.sisu`.
@@ -419,7 +477,7 @@ fn main() {
             panic!("expected one diagnostic, got {ds:?}");
         };
         assert_eq!(d.code(), Code::ConstInFunction);
-        assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+        assert!(fix_edits(d).is_some_and(|(safe, _)| safe));
         let fixed = apply_fix(src, d);
         assert!(front_end(&fixed).1.is_empty(), "{fixed}");
     }
@@ -435,7 +493,7 @@ fn main() {
                 panic!("expected one diagnostic, got {ds:?}");
             };
             assert_eq!(d.code(), Code::BraceInString, "{src}");
-            assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+            assert!(fix_edits(d).is_some_and(|(safe, _)| safe));
             let fixed = apply_fix(&src, d);
             assert!(front_end(&fixed).1.is_empty(), "{fixed}");
         }
@@ -545,7 +603,7 @@ fn main() {
             [(Code::Semicolon, (3, 2)), (Code::Mismatch, (5, 19))]
         );
         let d = &front_end(src).1[0];
-        assert!(fix_edits(d).is_some_and(|(certain, _)| certain));
+        assert!(fix_edits(d).is_some_and(|(safe, _)| safe));
         let fixed = apply_fix(src, d);
         assert_eq!(codes(&fixed), [(Code::Mismatch, (5, 19))]);
         // Anywhere else, a `;` is not an item.
@@ -661,6 +719,28 @@ fn main() {
                 (Code::UnexpectedCharacter, (4, 22)),
                 (Code::Mismatch, (8, 18))
             ]
+        );
+    }
+
+    #[test]
+    fn broken_enum_method_poisons_its_calls() {
+        // The call reports nothing: the method's own error is reported already.
+        // Read as a field, or named through the enum, it reports nothing either; the arguments
+        // are still checked.
+        let src = "enum E {\n    A\n    fn m(self) {\n        let = 1\n    }\n}\nfn main() {\n    E.A.m()\n    let _ = E.A.m\n    E.m(nope)\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (4, 13)), (Code::BindingNotFound, (10, 9))]
+        );
+    }
+
+    #[test]
+    fn broken_name_poisons_an_enum_path() {
+        // The broken function `E` poisons the enum `E`: its paths report only their arguments.
+        let src = "fn E() {\n    let = 1\n}\nenum E { A }\nfn main() {\n    let _ = E.A(nope)\n}\n";
+        assert_eq!(
+            codes(src),
+            [(Code::Expected, (2, 9)), (Code::BindingNotFound, (6, 17))]
         );
     }
 

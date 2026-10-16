@@ -1,0 +1,74 @@
+// An optional enum is a `{ flag, value }` pair, never a pointer: `??`, `?.`, `if let` and `==`
+// test the flag, and `==` compares two payloads only when both are present. `Lit(0)` has the
+// zero value's bits, which a `None` holds, so `==` that read a `None`'s payload would find them
+// equal. An optional of `Expr`, whose `Add` fields are boxes, follows the same rules.
+enum Num {
+    Lit(i64)
+    Text(string)
+
+    fn eval(self) -> i64 {
+        if self == Num.Text("one") {
+            1
+        } else {
+            2
+        }
+    }
+}
+
+enum Expr {
+    Lit(i64)
+    Add(Expr, Expr)
+
+    fn eval(self) -> i64 {
+        if self == Expr.Add(Expr.Lit(1), Expr.Lit(2)) {
+            3
+        } else {
+            0
+        }
+    }
+}
+
+fn main() {
+    let some: Num? = Num.Text("o" + "ne")
+    let none: Num? = None
+    let zero: Num? = Num.Lit(0)
+    print(some?.eval() ?? 0)                                 // 1
+    print(none?.eval() ?? 0)                                 // 0
+    print((none ?? Num.Lit(5)) == Num.Lit(5))                // true
+    print((some ?? Num.Lit(5)) == Num.Text("one"))           // true
+    if let x = some {
+        print(x == Num.Text("one"))                          // true
+    }
+    if let x = none {
+        print(x == Num.Lit(0))
+    } else {
+        print("none")                                        // none
+    }
+    let other: Num? = None
+    print(none == other)                                     // true: both `None`
+    print(zero == none)                                      // false: only one is present
+    print(none == zero)                                      // false
+    print(zero == Num.Lit(0))                                // true
+    print(some == Num.Text("one" + ""))                      // true
+    print(some == Num.Lit(1))                                // false: the tags differ
+    let xs: [Num?] = [None, Num.Text("t" + ""), zero]
+    print(xs == [None, Num.Text("t"), Num.Lit(0)])           // true
+    print(xs == [zero, Num.Text("t"), Num.Lit(0)])           // false: `None` is not `Lit(0)`
+    print(xs[0] == none)                                     // true
+    print((xs[1] ?? Num.Lit(9)) == Num.Text("t"))           // true
+    print(xs[0]?.eval() ?? 0)                                // 0
+    let sum: Expr? = Expr.Add(Expr.Lit(1), Expr.Lit(2 + 0))
+    let nothing: Expr? = None
+    print(sum?.eval() ?? -1)                                 // 3
+    print(nothing?.eval() ?? -1)                             // -1
+    print((nothing ?? Expr.Lit(7)) == Expr.Lit(7))           // true
+    if let e = sum {
+        print(e == Expr.Add(Expr.Lit(1), Expr.Lit(2)))       // true
+    }
+    print(sum == nothing)                                    // false: only one is present
+    print(nothing == sum)                                    // false
+    print(sum == Expr.Add(Expr.Lit(1), Expr.Lit(3)))         // false: unequal in a box
+    let es: [Expr?] = [sum, None]
+    print(es == [Expr.Add(Expr.Lit(1), Expr.Lit(2)), None])  // true
+    print(es == [None, sum])                                 // false
+}

@@ -38,7 +38,7 @@ struct Location<'a> {
 #[derive(Serialize)]
 struct FixObject<'a> {
     message: &'a str,
-    certain: bool,
+    safe: bool,
     edits: Vec<EditObject<'a>>,
 }
 
@@ -120,7 +120,7 @@ impl<'a> FixObject<'a> {
     fn new(fix: &'a Fix, source: &str, lines: &LineIndex) -> Self {
         FixObject {
             message: fix.message(),
-            certain: fix.certain(),
+            safe: fix.safe(),
             edits: fix
                 .edits()
                 .iter()
@@ -187,12 +187,12 @@ mod tests {
         };
         assert_eq!(
             diagnostic(d, "a.sisu", source, &LineIndex::new(source)),
-            r#"{"version":1,"kind":"diagnostic","code":"E0001","severity":"error","message":"cannot assign to `n`","primary":{"file":"a.sisu","start":36,"end":41,"line":4,"column":5,"label":"cannot assign twice"},"secondary":[{"file":"a.sisu","start":26,"end":27,"line":3,"column":9,"label":"declared with `let` here"}],"help":null,"fixes":[{"message":"declare it with `let mut`","certain":true,"edits":[{"start":26,"end":26,"line":3,"column":9,"replacement":"mut "}]}]}"#
+            r#"{"version":1,"kind":"diagnostic","code":"E0001","severity":"error","message":"cannot assign to `n`","primary":{"file":"a.sisu","start":36,"end":41,"line":4,"column":5,"label":"cannot assign twice"},"secondary":[{"file":"a.sisu","start":26,"end":27,"line":3,"column":9,"label":"declared with `let` here"}],"help":null,"fixes":[{"message":"declare it with `let mut`","safe":true,"edits":[{"start":26,"end":26,"line":3,"column":9,"replacement":"mut "}]}]}"#
         );
     }
 
     #[test]
-    fn help_and_uncertain_fix() {
+    fn help_and_unsafe_fix() {
         let source = "fn f(n: N?) {\n    n.v = 1\n}\n";
         let d: Diagnostic = DiagnosticKind::MayBeNone {
             value: Some("n".to_string()),
@@ -202,7 +202,7 @@ mod tests {
         .into();
         assert_eq!(
             diagnostic(&d, "a.sisu", source, &LineIndex::new(source)),
-            r#"{"version":1,"kind":"diagnostic","code":"E0062","severity":"error","message":"`n` may be `None`","primary":{"file":"a.sisu","start":18,"end":19,"line":2,"column":5,"label":null},"secondary":[],"help":"to use the value only when it is present, unwrap it with `if let`","fixes":[{"message":"if a `None` result is fine, use `?.`","certain":false,"edits":[{"start":19,"end":20,"line":2,"column":6,"replacement":"?."}]}]}"#
+            r#"{"version":1,"kind":"diagnostic","code":"E0062","severity":"error","message":"`n` may be `None`","primary":{"file":"a.sisu","start":18,"end":19,"line":2,"column":5,"label":null},"secondary":[],"help":"to use the value only when it is present, unwrap it with `if let`","fixes":[{"message":"if a `None` result is fine, use `?.`","safe":false,"edits":[{"start":19,"end":20,"line":2,"column":6,"replacement":"?."}]}]}"#
         );
     }
 

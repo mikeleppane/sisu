@@ -1,0 +1,12 @@
+enum Expr {
+    Num(i64)
+
+    fn eval(self) -> i64 {
+        0
+    }
+}
+
+fn main() {
+    let e = Expr.Num(1)
+    print(Expr.eval(e))
+}

@@ -1,0 +1,7 @@
+enum Bad {
+    Wrap(Bad)
+}
+
+fn main() {
+    print(1)
+}

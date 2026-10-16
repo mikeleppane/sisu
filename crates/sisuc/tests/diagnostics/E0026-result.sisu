@@ -1,0 +1,7 @@
+class Result {
+    ok: bool
+}
+
+fn main() {
+    print(1)
+}

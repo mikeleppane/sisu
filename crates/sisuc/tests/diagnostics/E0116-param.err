@@ -1,0 +1,8 @@
+error[E0116]: `Shape` names an enum
+ --> E0116-param.sisu:5:9
+  |
+5 | fn area(Shape: i64) -> i64 {
+  |         ^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0116

@@ -21,6 +21,9 @@ is easy to test. See the milestone 1 spec, "Statements end at newlines".
 - `-` is both unary and binary, so a line starting with `-` and a space is an
   error; otherwise `a` followed by a line `- b` would compile as two
   statements.
+- Class bodies, `enum` bodies and `match` arms are one-item-per-line
+  constructs: a field, a variant or an arm ends at its newline, and a comma
+  between two of them is an error.
 - Every later piece of syntax must be checked against the insertion rule.
   Already decided: from milestone 2, a line starting with `.` continues the
   previous one, so method chains can put each call on its own line (as in

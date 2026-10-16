@@ -246,9 +246,9 @@ fn already_converted_groups_what_is_not_one_term() {
 }
 
 /// The fix deletes what stands between the conversion and its operand, so a comment there makes
-/// it a guess: the person may want it kept.
+/// it unsafe: the person may want it kept.
 #[test]
-fn already_converted_with_a_comment_is_a_guess() {
+fn already_converted_with_a_comment_is_unsafe() {
     for (body, fixed) in [
         ("print(i64(\n        // c\n        n\n    ))", "print(n)"),
         ("print(i64(n // t\n    ))", "print(n)"),
@@ -388,7 +388,7 @@ fn char_copy_compound_assignment() {
 #[test]
 fn char_built_in_names() {
     for (src, col) in [("fn char() {}", 4), ("class char {}", 7)] {
-        codes(&with_main(src), &[(Code::BuiltInTypeName, (1, col))]);
+        codes(&with_main(src), &[(Code::BuiltInName, (1, col))]);
     }
 }
 

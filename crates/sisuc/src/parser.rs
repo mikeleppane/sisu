@@ -3,12 +3,13 @@
 use std::ops::Range;
 
 use crate::ast::{
-    Align, Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Expr, ExprKind,
-    FieldDecl, ForSource, FormatSpec, Function, Ident, Item, Member, Param, Part, Program, Stmt,
-    StmtKind, TypeExpr, TypeKind, UnaryOp,
+    Align, Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Enum, Expr, ExprKind,
+    FieldDecl, ForSource, FormatSpec, Function, Ident, Item, Member, Param, Part, PayloadField,
+    Program, Stmt, StmtKind, TypeExpr, TypeKind, UnaryOp, Variant,
 };
 use crate::diagnostic::{
-    Diagnostic, DiagnosticKind, Join, LetField, PowerFix, SemicolonPlace, Span,
+    self, BuiltIn, Diagnostic, DiagnosticKind, Join, LetField, Owner, PowerFix, SemicolonPlace,
+    Span,
 };
 use crate::lexer::{Lexed, MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
 use crate::symbol::Symbol;
@@ -213,6 +214,12 @@ fn compare_op(kind: &TokenKind) -> Option<CompareOp> {
         TokenKind::Ge => CompareOp::Ge,
         _ => return None,
     })
+}
+
+/// One line of an enum body.
+enum EnumMember {
+    Variant(Variant),
+    Method(Function),
 }
 
 struct Parser<'a> {
@@ -464,16 +471,19 @@ impl<'a> Parser<'a> {
             }
             covered.push(bytes);
             let parsed = match self.peek().kind {
-                TokenKind::Fn => self.checked(end, |p| {
-                    Ok((Item::Function(p.function(false)?), Vec::new()))
+                TokenKind::Fn => {
+                    self.checked(end, |p| Ok((Item::Function(p.function(None)?), Vec::new())))
+                }
+                TokenKind::Class => self.with_methods(end, |p, errors, methods| {
+                    p.class_body(errors, methods).map(Item::Class)
                 }),
-                TokenKind::Class => self
-                    .class(end)
-                    .map(|(class, errors)| (Item::Class(class), errors)),
+                TokenKind::Enum => self.with_methods(end, |p, errors, methods| {
+                    p.enum_body(errors, methods).map(Item::Enum)
+                }),
                 TokenKind::Const => {
                     self.checked(end, |p| Ok((Item::Const(p.constant(end)?), Vec::new())))
                 }
-                _ => self.checked(end, |p| Err(p.expected("`fn`, `class` or `const`"))),
+                _ => self.checked(end, |p| Err(p.expected("`fn`, `class`, `const` or `enum`"))),
             };
             match parsed {
                 Ok((item, errors)) => {
@@ -522,12 +532,13 @@ impl<'a> Parser<'a> {
     }
 
     /// The name and kind of the item that starts at `start`, when its header is intact: `fn`,
-    /// `class` or `const`, then a name, with no lexer diagnostic before the token after the name.
+    /// `class`, `enum` or `const`, then a name, with no lexer diagnostic before the token after the name.
     /// `fn to$tal` lexes as `fn to tal`, so its name is not `to`.
     fn header(&self, start: usize) -> Option<Broken> {
         let kind = match self.tokens[start].kind {
             TokenKind::Fn => BrokenKind::Function,
             TokenKind::Class => BrokenKind::Class,
+            TokenKind::Enum => BrokenKind::Enum,
             TokenKind::Const => BrokenKind::Constant,
             _ => return None,
         };
@@ -576,7 +587,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The end, exclusive, of the unnamed item that starts at `start`: the next line whose first
-    /// token is `fn`, `class` or `const` outside brackets, or `Eof`.
+    /// token is `fn`, `class`, `const` or `enum` outside brackets, or `Eof`.
     // shortcut: a line break after a token that cannot end a statement (`:`) leaves no `Newline`,
     // so a `fn` after one is not found; the item only runs longer, and the checker is off anyway.
     fn next_line_item(&self, start: usize) -> usize {
@@ -585,7 +596,7 @@ impl<'a> Parser<'a> {
             match token.kind {
                 TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
                 TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
-                TokenKind::Fn | TokenKind::Class | TokenKind::Const
+                TokenKind::Fn | TokenKind::Class | TokenKind::Const | TokenKind::Enum
                     if i > start && depth == 0 && self.tokens[i - 1].kind == TokenKind::Newline =>
                 {
                     return i;
@@ -646,15 +657,23 @@ impl<'a> Parser<'a> {
         Err(error)
     }
 
-    /// The class that starts here and runs to `end`, and the error of each broken method. A
-    /// method whose error follows its name is broken alone and leaves the class; any other error
-    /// breaks the whole class, whose one error is then the earliest in it.
-    fn class(&mut self, end: usize) -> Result<(Class, Vec<Diagnostic>), Diagnostic> {
+    /// The class or enum that `body` parses, from here to `end`, and the error of each broken
+    /// method. A method whose error follows its name is broken alone and leaves the item; any
+    /// other error breaks the whole item, whose one error is then the earliest in it.
+    fn with_methods(
+        &mut self,
+        end: usize,
+        body: impl FnOnce(
+            &mut Self,
+            &mut Vec<Diagnostic>,
+            &mut Vec<Range<usize>>,
+        ) -> Result<Item, Diagnostic>,
+    ) -> Result<(Item, Vec<Diagnostic>), Diagnostic> {
         let bytes = self.bytes(self.pos, end);
         let specs = self.specs.len();
         let mut errors = Vec::new();
         let mut methods = Vec::new();
-        let parsed = self.class_body(&mut errors, &mut methods);
+        let parsed = body(self, &mut errors, &mut methods);
         let outside = self
             .lexer_in(bytes)
             .find(|d| {
@@ -664,7 +683,7 @@ impl<'a> Parser<'a> {
             })
             .cloned();
         match (parsed, outside) {
-            (Ok(class), None) => Ok((class, errors)),
+            (Ok(item), None) => Ok((item, errors)),
             (parsed, outside) => {
                 self.pos = end;
                 let error = errors
@@ -673,7 +692,7 @@ impl<'a> Parser<'a> {
                     .chain(outside)
                     .chain(parsed.err())
                     .reduce(earlier)
-                    .expect("a broken class should hold an error");
+                    .expect("a broken item should hold an error");
                 Err(error)
             }
         }
@@ -724,15 +743,50 @@ impl<'a> Parser<'a> {
     fn member_line(&mut self) -> Result<Member, Diagnostic> {
         let member = self.member()?;
         if matches!(member, Member::Field(_)) && self.at(&TokenKind::Comma) {
-            return Err(DiagnosticKind::FieldComma {
-                at: self.peek().span,
-            }
-            .into());
+            return Err(self.member_comma(diagnostic::Member::Field));
         }
         if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
             return Err(self.end_of_line());
         }
         Ok(member)
+    }
+
+    /// The error for the comma at the next token, which ends a `member`. Its fix deletes a comma
+    /// that is the last on its line (or is followed by the `}`), and replaces any other, with the
+    /// spaces and tabs right after it, with a line break and the indentation of the line. The edit
+    /// never reaches past those, so text the lexer skipped after the comma stays.
+    fn member_comma(&self, member: diagnostic::Member) -> Diagnostic {
+        let comma = self.peek().span;
+        // A comma is not `Eof`, so the token after it exists.
+        let next = &self.tokens[self.pos + 1];
+        let ends_line = matches!(next.kind, TokenKind::RBrace | TokenKind::Eof)
+            || self.source[comma.end()..next.span.start()].contains('\n');
+        let (remove, replacement) = if ends_line {
+            (comma, String::new())
+        } else {
+            let line = self.source[..comma.start()]
+                .rfind('\n')
+                .map_or(0, |i| i + 1);
+            let indent = self.source[line..]
+                .chars()
+                .take_while(|c| matches!(c, ' ' | '\t'))
+                .collect::<String>();
+            let spaces = self.source[comma.end()..]
+                .chars()
+                .take_while(|c| matches!(c, ' ' | '\t'))
+                .count();
+            (
+                Span::new(comma.start(), comma.end() + spaces),
+                format!("\n{indent}"),
+            )
+        };
+        DiagnosticKind::FieldComma {
+            at: comma,
+            member,
+            remove,
+            replacement,
+        }
+        .into()
     }
 
     fn member(&mut self) -> Result<Member, Diagnostic> {
@@ -757,18 +811,146 @@ impl<'a> Parser<'a> {
                 field: true,
             }
             .into()),
-            TokenKind::Fn => {
-                let method = self.function(true)?;
-                if method.self_param.is_none() {
-                    return Err(DiagnosticKind::MethodNeedsSelf {
-                        at: method.name.span,
-                    }
-                    .into());
-                }
-                Ok(Member::Method(method))
-            }
+            TokenKind::Fn => Ok(Member::Method(self.method(&Owner::Class)?)),
             _ => Err(self.expected("a field or `fn`")),
         }
+    }
+
+    /// A method of `owner`, which must take `self`.
+    fn method(&mut self, owner: &Owner) -> Result<Function, Diagnostic> {
+        let method = self.function(Some(owner))?;
+        if method.self_param.is_none() {
+            return Err(DiagnosticKind::MethodNeedsSelf {
+                at: method.name.span,
+            }
+            .into());
+        }
+        Ok(method)
+    }
+
+    /// An enum: its variants, one to a line, then its methods; and the errors of the methods it
+    /// breaks, as `class_body` does. A variant after a method breaks the enum.
+    fn enum_body(
+        &mut self,
+        errors: &mut Vec<Diagnostic>,
+        methods: &mut Vec<Range<usize>>,
+    ) -> Result<Enum, Diagnostic> {
+        self.expect(&TokenKind::Enum)?;
+        let name = self.name("an enum name")?;
+        let owner = Owner::Enum(name.name.to_string());
+        self.expect(&TokenKind::LBrace)?;
+        let mut variants = Vec::new();
+        let mut fns = Vec::new();
+        let mut broken_methods = Vec::new();
+        // The `fn` of the first method, broken or not.
+        let mut first_method = None;
+        self.skip_newlines();
+        while !self.at(&TokenKind::RBrace) {
+            self.depth = 0;
+            let start = self.pos;
+            let end = self.item_end(start);
+            if first_method.is_none() && self.at(&TokenKind::Fn) {
+                first_method = Some(self.peek().span);
+            }
+            match self.checked(end, |p| p.enum_line(&owner, first_method)) {
+                Ok(EnumMember::Variant(variant)) => variants.push(variant),
+                Ok(EnumMember::Method(method)) => fns.push(method),
+                Err(error) => match self.header(start) {
+                    Some(Broken {
+                        name,
+                        kind: BrokenKind::Function,
+                    }) => {
+                        methods.push(self.bytes(start, end));
+                        broken_methods.push(name);
+                        errors.push(error);
+                    }
+                    _ => return Err(error),
+                },
+            }
+            self.skip_newlines();
+        }
+        self.bump();
+        Ok(Enum {
+            name,
+            variants,
+            methods: fns,
+            broken_methods,
+        })
+    }
+
+    /// A variant or a method of `owner`, and the end of its line. `first_method` is the `fn` of
+    /// the first method before this line.
+    fn enum_line(
+        &mut self,
+        owner: &Owner,
+        first_method: Option<Span>,
+    ) -> Result<EnumMember, Diagnostic> {
+        let member = if self.at(&TokenKind::Fn) {
+            EnumMember::Method(self.method(owner)?)
+        } else {
+            let start = self.peek().span;
+            let variant = self.variant()?;
+            if let Some(first_method) = first_method {
+                return Err(DiagnosticKind::VariantAfterMethod {
+                    at: start.to(self.last_span()),
+                    first_method,
+                }
+                .into());
+            }
+            if self.at(&TokenKind::Comma) {
+                return Err(self.member_comma(diagnostic::Member::Variant));
+            }
+            EnumMember::Variant(variant)
+        };
+        if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
+            return Err(self.end_of_line());
+        }
+        Ok(member)
+    }
+
+    /// `Name`, or `Name(payload)`.
+    fn variant(&mut self) -> Result<Variant, Diagnostic> {
+        if self.at(&TokenKind::NoneKw) {
+            return Err(DiagnosticKind::BuiltInName {
+                name: "None".to_string(),
+                at: self.peek().span,
+                kind: BuiltIn::Keyword,
+            }
+            .into());
+        }
+        let name = self.ident("a variant or `fn`")?;
+        let payload = match self.eat(&TokenKind::LParen) {
+            Some(_) => Some(self.payload()?),
+            None => None,
+        };
+        Ok(Variant { name, payload })
+    }
+
+    /// The fields of a payload and its `)`; a trailing comma is allowed.
+    fn payload(&mut self) -> Result<Vec<PayloadField>, Diagnostic> {
+        let mut fields = Vec::new();
+        loop {
+            self.depth = 0;
+            // An `Ident` is not `Eof`, so the token after it exists.
+            let labeled = matches!(self.peek().kind, TokenKind::Ident(_))
+                && self.tokens[self.pos + 1].kind == TokenKind::Colon;
+            let label = if labeled {
+                let label = self.ident("a label")?;
+                self.bump();
+                Some(label)
+            } else {
+                None
+            };
+            fields.push(PayloadField {
+                label,
+                ty: self.parse_type()?,
+            });
+            if self.eat(&TokenKind::Comma).is_none() || self.at(&TokenKind::RParen) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok(fields)
     }
 
     /// What follows the `let` at the next token: a field that ends the line, or anything else,
@@ -824,8 +1006,8 @@ impl<'a> Parser<'a> {
         Ok(Const { name, ty, value })
     }
 
-    /// `method` is true inside a class body, where `self` may be the first parameter.
-    fn function(&mut self, method: bool) -> Result<Function, Diagnostic> {
+    /// `owner` is the class or enum of a method, where `self` may be the first parameter.
+    fn function(&mut self, owner: Option<&Owner>) -> Result<Function, Diagnostic> {
         let fn_token = self.expect(&TokenKind::Fn)?;
         let name = self.name("a function name")?;
         self.expect(&TokenKind::LParen)?;
@@ -833,24 +1015,25 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         if !self.at(&TokenKind::RParen) {
             loop {
-                let receiver = method && self_param.is_none() && params.is_empty();
+                let receiver = owner.filter(|_| self_param.is_none() && params.is_empty());
                 if self.at(&TokenKind::Mut) {
                     // `mut` is never `Eof`, so the token after it exists.
-                    match &self.tokens[self.pos + 1].kind {
-                        TokenKind::SelfKw if receiver => {
+                    match (&self.tokens[self.pos + 1].kind, receiver) {
+                        (TokenKind::SelfKw, Some(owner)) => {
                             // `self` is not `Eof`, so the token after it exists.
                             let after = &self.tokens[self.pos + 2].kind;
                             return Err(DiagnosticKind::MutSelf {
                                 keyword: self.peek().span,
                                 receiver: self.tokens[self.pos + 1].span,
-                                certain: matches!(after, TokenKind::Comma | TokenKind::RParen),
+                                safe: matches!(after, TokenKind::Comma | TokenKind::RParen),
+                                owner: owner.clone(),
                             }
                             .into());
                         }
-                        TokenKind::SelfKw => {
+                        (TokenKind::SelfKw, None) => {
                             self.bump();
                         }
-                        TokenKind::Ident(name) => {
+                        (TokenKind::Ident(name), _) => {
                             return Err(DiagnosticKind::MutParameter {
                                 name: name.to_string(),
                                 at: self.peek().span,
@@ -861,7 +1044,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 if self.at(&TokenKind::SelfKw) {
-                    if !receiver {
+                    if receiver.is_none() {
                         return Err(DiagnosticKind::SelfNotFirst {
                             at: self.peek().span,
                         }
@@ -1027,11 +1210,11 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace | TokenKind::If
         );
         // `lacks_else` means the statement ends with the `}` just before the `else` and any
-        // line breaks. The join deletes the gap, so a comment in it makes the join a guess.
+        // line breaks. The join deletes the gap, so a comment in it makes the join unsafe.
         let gap = self.last_code_end()..at.start();
         let join = (lacks_else && takes_block).then(|| Join {
             gap: Span::new(gap.start, gap.end),
-            certain: !self.comments.iter().any(|c| gap.contains(c)),
+            safe: !self.comments.iter().any(|c| gap.contains(c)),
         });
         DiagnosticKind::ElseOnNewLine { at, join }.into()
     }
@@ -1247,7 +1430,7 @@ impl<'a> Parser<'a> {
 
     /// The error for the `**` that is next, after `lhs`: the right side parses as `*`'s would,
     /// and a `=` straight after the `**` is part of the error, so `x **= 2` is reported once.
-    /// The fix is a guess, `lhs.pow(rhs)`: offered when both sides are plain operands, and not
+    /// The unsafe fix is `lhs.pow(rhs)`: offered when both sides are plain operands, and not
     /// for `**=` or a chain of `**`, which Python reads from the right.
     fn power_operator(&mut self, lhs: &Expr, base: usize) -> Diagnostic {
         let left_ok = power_operand(lhs, self.operand_tokens(lhs), false);
@@ -1382,6 +1565,7 @@ impl<'a> Parser<'a> {
             let name = self.ident("a field or method name")?;
             expr = if self.at(&TokenKind::LParen) {
                 self.depth = base + 1;
+                let open = self.peek().span;
                 let (args, close) = self.args()?;
                 self.depth = self.depth.max(wrapped);
                 Expr {
@@ -1390,6 +1574,7 @@ impl<'a> Parser<'a> {
                         receiver: Box::new(expr),
                         method: name,
                         args,
+                        parens: open.to(close),
                         safe,
                     },
                 }
@@ -1595,7 +1780,10 @@ impl<'a> Parser<'a> {
                 });
             }
         };
-        Err(DiagnosticKind::TodoForm { at, delete }.into())
+        // A word right after the deleted text would join `todo`: `todo!x` is not `todo x`.
+        let rest = &self.source[delete.end()..];
+        let safe = !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        Err(DiagnosticKind::TodoForm { at, delete, safe }.into())
     }
 
     /// The rest of a string literal with interpolations, after its `StrHead` at `start` with the
@@ -1805,11 +1993,11 @@ mod tests {
         (d.code(), line, col)
     }
 
-    /// `src` with the one fix of its parse error applied, which must be certain.
+    /// `src` with the one fix of its parse error applied, which must be safe.
     fn fixed(src: &str) -> String {
         let d = parse_diagnostic(src);
-        let (certain, _) = fix_edits(&d).expect("the error has a fix");
-        assert!(certain, "{src}");
+        let (safe, _) = fix_edits(&d).expect("the error has a fix");
+        assert!(safe, "{src}");
         apply_fix(src, &d)
     }
 
@@ -1882,7 +2070,7 @@ mod tests {
         }
     }
 
-    /// Each float error has one certain fix that leaves a program that parses; the lexer finds
+    /// Each float error has one safe fix that leaves a program that parses; the lexer finds
     /// `1.` and the parser `.5`.
     #[test]
     fn float_fixes() {
@@ -2137,7 +2325,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_else_fix_removes_the_error() {
+    fn safe_else_fix_removes_the_error() {
         let src = "fn main() {\n    if let n = x {\n        print(n)\n    }\n    else if b {\n        print(2)\n    }\n}\n";
         let result = fixed(src);
         assert_eq!(
@@ -2148,7 +2336,7 @@ mod tests {
     }
 
     #[test]
-    fn else_on_new_line_is_a_guess_over_a_comment() {
+    fn else_on_new_line_is_unsafe_over_a_comment() {
         // The join would delete the comment.
         let src = "fn main() {\n    if a {\n    } // done\n    else {\n    }\n}";
         let d = parse_diagnostic(src);
@@ -2156,7 +2344,7 @@ mod tests {
             (d.code(), line_col(src, d.span().start())),
             (Code::ElseOnNewLine, (4, 5))
         );
-        assert!(fix_edits(&d).is_some_and(|(certain, _)| !certain));
+        assert!(fix_edits(&d).is_some_and(|(safe, _)| !safe));
     }
 
     #[test]
@@ -2583,6 +2771,101 @@ mod tests {
     }
 
     #[test]
+    fn enum_items() {
+        let variants = "    A\n    B(i64)\n    C(x: i64, y: [u8])\n";
+        for (src, expected) in [
+            (
+                format!("enum E {{\n{variants}}}"),
+                "(enum E A (B i64) (C (x i64) (y [u8])))",
+            ),
+            (
+                format!("enum E {{\n{variants}\n    fn f(self) -> i64 {{ 1 }}\n}}"),
+                "(enum E A (B i64) (C (x i64) (y [u8])) (fn f (self) i64 (block 1)))",
+            ),
+            ("enum E { A }".to_string(), "(enum E A)"),
+            ("enum E {}".to_string(), "(enum E)"),
+            // A trailing comma ends a payload, as it ends an argument list.
+            (
+                "enum E {\n    A(i64, E?,)\n}".to_string(),
+                "(enum E (A i64 E?))",
+            ),
+        ] {
+            assert_eq!(program(&src), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn enum_errors() {
+        for (src, code, line, col) in [
+            ("enum E {\n    A,\n    B\n}", Code::FieldComma, 2, 6),
+            (
+                "enum E {\n    fn f(self) {}\n    A\n}",
+                Code::VariantAfterMethod,
+                3,
+                5,
+            ),
+            ("enum E {\n    fn f(mut self) {}\n}", Code::MutSelf, 2, 10),
+            ("enum E {\n    None\n}", Code::BuiltInName, 2, 5),
+            // Each place a declaration can break.
+            ("enum {\n}", Code::Expected, 1, 6),
+            ("enum E\n", Code::Expected, 1, 7),
+            ("enum E { A B }", Code::Expected, 1, 12),
+            ("enum E { 1 }", Code::Expected, 1, 10),
+            ("enum E { enum }", Code::Expected, 1, 10),
+            ("enum E { A(i64 i64) }", Code::Expected, 1, 16),
+            ("enum E {\n    A()\n}", Code::Expected, 2, 7),
+            ("class C { enum }", Code::Expected, 1, 11),
+        ] {
+            assert_eq!(parse_err(src), (code, line, col), "{src}");
+        }
+    }
+
+    #[test]
+    fn enum_broken_method_recovers() {
+        let src = "enum E {\n    A\n    fn f(self) {\n        let = 1\n    }\n    fn g(self) -> i64 { 2 }\n}\nfn main() {}";
+        let parsed = parsed(src);
+        assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
+        assert_eq!(parsed.diagnostics[0].code(), Code::Expected);
+        assert_eq!(parsed.program.broken, []);
+        assert_eq!(
+            parsed.program.to_string(),
+            "(enum E A (fn g (self) i64 (block 2)))\n(fn main () unit (block))"
+        );
+        match parsed.program.items.as_slice() {
+            [Item::Enum(e), Item::Function(_)] => {
+                assert_eq!(e.broken_methods.len(), 1);
+                assert_eq!(e.broken_methods[0].name.as_str(), "f");
+            }
+            items => panic!("expected an enum and main, found {items:?}"),
+        }
+    }
+
+    #[test]
+    fn broken_enum_keeps_its_name() {
+        let parsed = parsed("enum E {\n    None\n}\nfn main() {}");
+        assert!(parsed.checkable);
+        let [broken] = parsed.program.broken.as_slice() else {
+            panic!(
+                "expected one broken item, found {:?}",
+                parsed.program.broken
+            );
+        };
+        assert_eq!(
+            (broken.name.name.as_str(), broken.kind),
+            ("E", BrokenKind::Enum)
+        );
+    }
+
+    #[test]
+    fn unnamed_item_ends_at_the_next_enum() {
+        // `next_line_item` stops at `enum`, so only the first item is lost.
+        let parsed = parsed("class {\n}\nenum E {\n    A\n}");
+        assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
+        assert!(!parsed.checkable);
+        assert_eq!(parsed.program.to_string(), "(enum E A)");
+    }
+
+    #[test]
     fn items_in_any_mix() {
         assert_eq!(
             program("fn f() {}\nclass E {}\nfn g() {}"),
@@ -2838,7 +3121,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_semicolon_fix_removes_the_error() {
+    fn safe_semicolon_fix_removes_the_error() {
         let src = "fn main() {\n    let x = 1;\n    let y = x + 1; // two\n    print(y);\n}\n";
         // One `;` at a time: the parser reports one error per item, and these `;`s share `main`.
         let once = fixed(src);
@@ -2931,7 +3214,7 @@ mod tests {
         // One row per place that wants a name or an expression.
         for (src, line, col) in [
             ("fn main() {\n    let match = 1\n}", 2, 9),
-            ("class C {\n    enum: i64\n}", 2, 5),
+            ("class C {\n    record: i64\n}", 2, 5),
             ("fn main() {\n    print(echo)\n}", 2, 11),
             ("fn main() {\n    print(p.type)\n}", 2, 13),
             ("import x", 1, 1),
@@ -2985,6 +3268,24 @@ mod tests {
             let src = format!("fn main() {{\n    {line}\n}}");
             assert_eq!(parse_err(&src), (Code::TodoForm, 2, col), "{src}");
             assert_eq!(fixed(&src), format!("fn main() {{\n    {after}\n}}"));
+        }
+    }
+
+    /// A removal that would join `todo` to the word after it, as `todo!x` to `todox`, is an
+    /// unsafe fix; a symbol after it keeps the fix safe.
+    #[test]
+    fn todo_fix_before_a_word_is_unsafe() {
+        for (line, safe) in [
+            ("todo!x", false),
+            ("todo!0e", false),
+            ("todo()_", false),
+            ("todo!()y", false),
+            ("todo!+1", true),
+        ] {
+            let src = format!("fn main() {{\n    {line}\n}}");
+            let d = parse_diagnostic(&src);
+            assert_eq!(d.code(), Code::TodoForm, "{src}");
+            assert_eq!(fix_edits(&d).map(|(s, _)| s), Some(safe), "{src}");
         }
     }
 
@@ -3075,7 +3376,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_field_let_fix_removes_the_error() {
+    fn safe_field_let_fix_removes_the_error() {
         let src = "class P {\n    let mut hp: i64\n    name: [i64]\n}\n";
         let result = fixed(src);
         assert_eq!(result, "class P {\n    mut hp: i64\n    name: [i64]\n}\n");
@@ -3103,13 +3404,66 @@ mod tests {
     }
 
     #[test]
-    fn comma_after_a_field() {
-        let src = "class P {\n    x: i64, y: i64\n}";
-        let d = parse_diagnostic(src);
-        assert_eq!(d.code(), Code::FieldComma);
-        assert_eq!(line_col(src, d.span().start()), (2, 11));
-        assert!(d.help().is_some());
-        assert_eq!(fix_edits(&d), None);
+    fn comma_between_members() {
+        // The fix is safe: it deletes a comma that ends its line, and replaces any other with a
+        // line break and the line's indentation.
+        for (src, at, expected) in [
+            (
+                "class P {\n    x: i64, y: i64\n}",
+                (2, 11),
+                "class P {\n    x: i64\n    y: i64\n}",
+            ),
+            (
+                "enum E {\n    A,\n    B\n}",
+                (2, 6),
+                "enum E {\n    A\n    B\n}",
+            ),
+            ("enum E { A, B }", (1, 11), "enum E { A\nB }"),
+            ("enum E { A,   B(i64) }", (1, 11), "enum E { A\nB(i64) }"),
+            ("enum E { A, }", (1, 11), "enum E { A }"),
+            (
+                "enum E {\n    A, // c\n    B\n}",
+                (2, 6),
+                "enum E {\n    A // c\n    B\n}",
+            ),
+            (
+                "enum E {\n    A,  \n    B\n}",
+                (2, 6),
+                "enum E {\n    A  \n    B\n}",
+            ),
+            (
+                "enum E {\n    A(i64),\n    B\n}",
+                (2, 11),
+                "enum E {\n    A(i64)\n    B\n}",
+            ),
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::FieldComma, "{src}");
+            assert_eq!(line_col(src, d.span().start()), at, "{src}");
+            assert!(d.help().is_some(), "{src}");
+            assert_eq!(fixed(src), expected, "{src}");
+            parse_ok(expected);
+        }
+    }
+
+    #[test]
+    fn comma_fix_keeps_the_text_the_lexer_skipped() {
+        // The `$` is a lexer error; the fix must not delete it.
+        let src = "enum E { A, $B }";
+        let parsed = parsed(src);
+        let comma = parsed
+            .diagnostics
+            .iter()
+            .find(|d| d.code() == Code::FieldComma)
+            .expect("a comma error");
+        assert_eq!(apply_fix(src, comma), "enum E { A\n$B }");
+        let lexed = lex(src).expect("source lexes");
+        assert!(
+            lexed
+                .diagnostics
+                .iter()
+                .any(|d| d.code() == Code::UnexpectedCharacter)
+        );
     }
 
     #[test]
@@ -3122,8 +3476,8 @@ mod tests {
 
     #[test]
     fn mut_self_fix() {
-        // Certain only when `self` ends the parameter: `mut self: i64` stays broken without `mut`.
-        for (src, edit, certain) in [
+        // Safe only when `self` ends the parameter: `mut self: i64` stays broken without `mut`.
+        for (src, edit, safe) in [
             ("class C {\n    fn f(mut self) {}\n}", (19, 23), true),
             (
                 "class C {\n    fn f(mut   self, n: i64) {}\n}",
@@ -3137,7 +3491,7 @@ mod tests {
             assert_eq!(line_col(src, d.span().start()), (2, 10), "{src}");
             assert_eq!(
                 fix_edits(&d),
-                Some((certain, vec![(edit.0, edit.1, String::new())])),
+                Some((safe, vec![(edit.0, edit.1, String::new())])),
                 "{src}"
             );
             assert!(d.help().is_some(), "{src}");
@@ -3145,7 +3499,7 @@ mod tests {
     }
 
     #[test]
-    fn certain_mut_self_fix_removes_the_error() {
+    fn safe_mut_self_fix_removes_the_error() {
         let src = "class C {\n    mut n: i64\n    fn add(mut self, by: i64) { self.n += by }\n}\n";
         let result = fixed(src);
         assert_eq!(
@@ -3153,6 +3507,22 @@ mod tests {
             "class C {\n    mut n: i64\n    fn add(self, by: i64) { self.n += by }\n}\n"
         );
         parse_ok(&result);
+    }
+
+    #[test]
+    fn mut_self_in_an_enum_is_an_unsafe_fix() {
+        // Whatever follows `self`, the body may still assign it, so the fix is never safe.
+        for src in [
+            "enum E {\n    fn f(mut self) {}\n}",
+            "enum E {\n    fn f(mut self, n: i64) {}\n}",
+        ] {
+            let d = parse_diagnostic(src);
+            assert_eq!(d.code(), Code::MutSelf, "{src}");
+            assert_eq!(line_col(src, d.span().start()), (2, 10), "{src}");
+            assert!(d.help().is_some(), "{src}");
+            assert_eq!(apply_fix(src, &d), src.replace("mut self", "self"), "{src}");
+            assert!(fix_edits(&d).is_some_and(|(safe, _)| !safe), "{src}");
+        }
     }
 
     #[test]
@@ -3244,7 +3614,7 @@ mod tests {
         );
     }
 
-    /// `**` is Python's, and an error here, at the `**`. The guess is `l.pow(r)`, offered only
+    /// `**` is Python's, and an error here, at the `**`. The unsafe fix is `l.pow(r)`, offered only
     /// when both sides are plain operands, and never for an assignment or a second `**`.
     #[test]
     fn power_operator() {
@@ -3283,8 +3653,8 @@ mod tests {
             );
             match fixed {
                 Some(fixed) => {
-                    let (certain, _) = fix_edits(&d).expect("the error has a fix");
-                    assert!(!certain, "{src}");
+                    let (safe, _) = fix_edits(&d).expect("the error has a fix");
+                    assert!(!safe, "{src}");
                     assert_eq!(apply_fix(&src, &d), wrap(fixed));
                     parse_ok(&wrap(fixed));
                 }

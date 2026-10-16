@@ -45,7 +45,7 @@ pub(crate) fn apply(source: &str, edits: &[&Edit]) -> String {
 /// The edits of a fix as `(start, end, replacement)`.
 pub(crate) type FixEdits = Vec<(usize, usize, String)>;
 
-/// Whether the one fix of `d` is certain, and its edits; `None` when `d` has no fix. A parser
+/// Whether the one fix of `d` is safe, and its edits; `None` when `d` has no fix. A parser
 /// or lexer diagnostic has at most one.
 pub(crate) fn fix_edits(d: &Diagnostic) -> Option<(bool, FixEdits)> {
     let [fix] = d.fixes() else {
@@ -63,7 +63,7 @@ pub(crate) fn fix_edits(d: &Diagnostic) -> Option<(bool, FixEdits)> {
             )
         })
         .collect();
-    Some((fix.certain(), edits))
+    Some((fix.safe(), edits))
 }
 
 /// `source` with the one fix of `d` applied.
@@ -72,20 +72,17 @@ pub(crate) fn apply_fix(source: &str, d: &Diagnostic) -> String {
     apply(source, &edits)
 }
 
-/// `source` with every certain fix of every diagnostic it reports applied, and how many fixes
+/// `source` with every safe fix of every diagnostic it reports applied, and how many fixes
 /// that was, or `None` when no diagnostic of `code` has one. The result must still lex and
 /// parse; the checker may still report errors it reveals.
 fn fixed(source: &str, code: Code) -> Option<(String, usize)> {
     let (_, diagnostics) = front_end(source);
-    let certain = |d: &&Diagnostic| d.fixes().iter().any(Fix::certain);
-    diagnostics
-        .iter()
-        .filter(|d| d.code() == code)
-        .find(certain)?;
+    let safe = |d: &&Diagnostic| d.fixes().iter().any(Fix::safe);
+    diagnostics.iter().filter(|d| d.code() == code).find(safe)?;
     let fixes: Vec<&Fix> = diagnostics
         .iter()
         .flat_map(Diagnostic::fixes)
-        .filter(|f| f.certain())
+        .filter(|f| f.safe())
         .collect();
     let edits: Vec<&Edit> = fixes.iter().flat_map(|f| f.edits()).collect();
     let result = apply(source, &edits);
@@ -233,9 +230,9 @@ fn fixed_examples_check_clean() {
     }
 }
 
-/// A code whose diagnostic has no certain fix has nothing to apply.
+/// A code whose diagnostic has no safe fix has nothing to apply.
 #[test]
-fn certain_fixes_make_broken_examples_clean() {
+fn safe_fixes_make_broken_examples_clean() {
     let mut applied = 0;
     for &code in Code::ALL {
         if let Some((result, count)) = fixed(&explanation(code).broken, code) {
@@ -297,11 +294,11 @@ fn minus(mut a: Vec<Code>, b: &[Code]) -> Vec<Code> {
     a
 }
 
-/// Applying one certain fix removes the diagnostics that carry it and no other, and adds no syntax
+/// Applying one safe fix removes the diagnostics that carry it and no other, and adds no syntax
 /// error: a diagnostic that disappears with it was a cascade of the same mistake (ADR 0013). The
 /// checker may still report errors the fix reveals.
 #[test]
-fn each_certain_fix_removes_exactly_its_diagnostic() {
+fn each_safe_fix_removes_exactly_its_diagnostic() {
     let mut applied = 0;
     for (path, _) in all_fixtures() {
         let Some(source) = fixture_text(&path) else {
@@ -310,7 +307,7 @@ fn each_certain_fix_removes_exactly_its_diagnostic() {
         let diagnostics = front_end(&source).1;
         let before: Vec<Code> = diagnostics.iter().map(Diagnostic::code).collect();
         for d in &diagnostics {
-            for fix in d.fixes().iter().filter(|f| f.certain()) {
+            for fix in d.fixes().iter().filter(|f| f.safe()) {
                 let edits: Vec<&Edit> = fix.edits().iter().collect();
                 let result = apply(&source, &edits);
                 let at = format!(
@@ -338,12 +335,12 @@ fn each_certain_fix_removes_exactly_its_diagnostic() {
             }
         }
     }
-    assert!(applied > 0, "no fixture has a certain fix");
+    assert!(applied > 0, "no fixture has a safe fix");
 }
 
-/// A fixture whose code's diagnostics have no certain fix has nothing to apply.
+/// A fixture whose code's diagnostics have no safe fix has nothing to apply.
 #[test]
-fn certain_fixes_remove_their_code_in_every_fixture() {
+fn safe_fixes_remove_their_code_in_every_fixture() {
     let mut applied = 0;
     for (path, code) in fixtures() {
         let Some(source) = fixture_text(&path) else {

@@ -1,0 +1,36 @@
+// An enum whose payload holds an `f64` is not `==` to itself when that is `nan`, so a class or an
+// array that holds one never takes the same-object shortcut; with `1.0` it does, and is equal.
+// The same holds through boxes: two sides that share every box compare the boxes' contents.
+// `nan` is made as `0.0 / 0.0`.
+enum S {
+    C(f64)
+}
+
+enum Tree {
+    Leaf(S)
+    Node(Tree, Tree)
+}
+
+class H {
+    s: S
+}
+
+fn main() {
+    let n = 0.0 / 0.0
+    print(S.C(n) == S.C(n))                                  // false
+    let h = H(s: S.C(n))
+    print(h == h)                                            // false: one object
+    let xs = [S.C(n)]
+    print(xs == xs)                                          // false: one block
+    print(S.C(1.0) == S.C(1.0))                              // true
+    let k = H(s: S.C(1.0))
+    print(k == k)                                            // true
+    let ys = [S.C(1.0)]
+    print(ys == ys)                                          // true
+    let a = Tree.Node(Tree.Leaf(S.C(n)), Tree.Leaf(S.C(1.0)))
+    print(a == a)                                            // false: the same boxes
+    let c = Tree.Node(Tree.Leaf(S.C(1.0)), Tree.Leaf(S.C(n)))
+    print(c == c)                                            // false: `nan` in the last box
+    let b = Tree.Node(Tree.Leaf(S.C(1.0)), Tree.Leaf(S.C(1.0)))
+    print(b == b)                                            // true
+}

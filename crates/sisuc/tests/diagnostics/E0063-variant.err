@@ -1,0 +1,14 @@
+error[E0063]: `Shape.Rect` has no field `x`
+ --> E0063-variant.sisu:6:30
+  |
+6 |     let _ = Shape.Rect(w: 2, x: 3)
+  |                              ^
+  |
+help: a field with a similar name exists: `h`
+  |
+6 -     let _ = Shape.Rect(w: 2, x: 3)
+6 +     let _ = Shape.Rect(w: 2, h: 3)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0063

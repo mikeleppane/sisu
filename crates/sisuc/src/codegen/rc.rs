@@ -1,11 +1,15 @@
 //! Reference counting: retaining, releasing and comparing counted values, and the helpers
 //! that do it. Each counted type gets one helper of each kind, declared on first use and
-//! defined by `define_helpers` in one worklist pass.
+//! defined by `define_helpers` in one worklist pass. A string, an object or an array is a
+//! pointer, which `@sisu_rc.retain` and its `release` helper take; an enum is a value, which its
+//! `retain`, `release` and `eq` helpers take by address. An enum whose component has boxes also
+//! has `walk`, `drain` and `eq_component` helpers (see `codegen/enums.rs`).
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::Linkage;
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use rustc_hash::FxHashSet;
 
 use super::{Codegen, POSITIONED};
 use crate::tir::{Program, Type};
@@ -13,15 +17,23 @@ use crate::tir::{Program, Type};
 /// A kind of helper that a counted type has.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Helper {
+    Retain,
     Release,
     Drop,
     Eq,
     Unique,
+    /// `@sisu_rc.walk.<F>(value, heads)`: releases a value's counted parts, listing its boxes.
+    Walk,
+    /// `@sisu_rc.drain.<F0>(heads)`: frees the boxes on a component's pending lists.
+    Drain,
+    /// `@sisu_rc.eq_component.<F0>(kind, a, b)`: `==` on values of a component's member `kind`.
+    EqComponent,
 }
 
-/// The type whose helpers a counted `ty` uses: a `string`, a class or an array, with any `?`
-/// removed.
-fn counted_core(ty: &Type) -> Option<&Type> {
+/// The type whose helpers a pointer-shaped `ty` uses: a `string`, a class or an array, with any
+/// `?` removed. `None` for every other type, an enum and its optional included: those are not
+/// pointers, and a `None` of theirs is not `null`.
+pub(super) fn counted_core(ty: &Type) -> Option<&Type> {
     match ty {
         Type::String | Type::Class(_) | Type::Array(_) => Some(ty),
         Type::Optional(payload) => counted_core(payload),
@@ -30,8 +42,9 @@ fn counted_core(ty: &Type) -> Option<&Type> {
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
-    /// Declares `sisu_rc.<release|drop|eq|unique>.<name>` on first use and queues its body; `name` is a
-    /// class's name, `string`, or `[<element name>]` for an array (`[Node?]`, `[[i64]]`).
+    /// Declares `sisu_rc.<retain|release|drop|eq|unique|walk|drain|eq_component>.<name>` on first
+    /// use and queues its body; `name` is a class's or an enum's name, `string`, or
+    /// `[<element name>]` for an array (`[Node?]`, `[[i64]]`).
     pub(super) fn helper(&self, kind: Helper, ty: &Type) -> FunctionValue<'ctx> {
         let key = (kind, ty.clone());
         if let Some(function) = self.helpers.borrow().get(&key) {
@@ -41,6 +54,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let takes_object = self.context.void_type().fn_type(&[ptr_type.into()], false);
         let (prefix, fn_type) = match kind {
+            Helper::Retain => ("retain", takes_object),
             Helper::Release => ("release", takes_object),
             Helper::Drop => ("drop", takes_object),
             Helper::Eq => (
@@ -50,6 +64,24 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .fn_type(&[ptr_type.into(), ptr_type.into()], false),
             ),
             Helper::Unique => ("unique", ptr_type.fn_type(&[ptr_type.into()], false)),
+            Helper::Walk => (
+                "walk",
+                self.context
+                    .void_type()
+                    .fn_type(&[ptr_type.into(), ptr_type.into()], false),
+            ),
+            Helper::Drain => ("drain", takes_object),
+            Helper::EqComponent => (
+                "eq_component",
+                self.context.bool_type().fn_type(
+                    &[
+                        self.context.i32_type().into(),
+                        ptr_type.into(),
+                        ptr_type.into(),
+                    ],
+                    false,
+                ),
+            ),
         };
         let function = self.module.add_function(
             &format!("sisu_rc.{prefix}.{name}"),
@@ -68,8 +100,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// frees the object, subtracts 1 from the next object's count and at 0 drops it in a loop.
     /// `@sisu_rc.eq.<C>` is `==` on two objects; see `define_eq`. An array's `drop`, `eq` and
     /// `unique` come from `define_array_helper`, a string's `drop` and `eq` from
-    /// `define_string_helper`. Defining a body can declare more helpers, so this
-    /// runs until none is left to define.
+    /// `define_string_helper`, an enum's `retain`, `release` and `eq` from `define_enum_helper`.
+    /// Defining a body can declare more helpers, so this runs until none is left to define.
     pub(super) fn define_helpers(&self) {
         let (object, done) = self.helper_entry(self.rc_retain);
         self.check_count(object, 0);
@@ -82,13 +114,20 @@ impl<'ctx> Codegen<'ctx, '_> {
             };
             let function = self.helpers.borrow()[&(kind, ty.clone())];
             match (kind, &ty) {
+                (_, Type::Enum(id)) => self.define_enum_helper(kind, *id, function),
                 (Helper::Release, _) => self.define_release(function, &ty),
+                (Helper::Retain, _) => {
+                    unreachable!("only an enum type should be queued for a `retain` helper")
+                }
                 (_, Type::Array(element)) => self.define_array_helper(kind, element, function),
                 (_, Type::String) => self.define_string_helper(kind, function),
                 (Helper::Drop, _) => self.define_drop(function, &ty),
                 (Helper::Eq, _) => self.define_eq(function, &ty),
                 (Helper::Unique, _) => {
                     unreachable!("only an array type should be queued for a `unique` helper")
+                }
+                (Helper::Walk | Helper::Drain | Helper::EqComponent, _) => {
+                    unreachable!("only an enum type should be queued for a component helper")
                 }
             }
         }
@@ -130,13 +169,17 @@ impl<'ctx> Codegen<'ctx, '_> {
             || param(drop),
             |(_, phi)| phi.as_basic_value().into_pointer_value(),
         );
-        let load_field = |index| {
+        let fields = &self.program.classes[id.0].fields;
+        let load_field = |index: usize| {
+            let llvm_ty = self.llvm_type(&fields[index].ty).expect(
+                "the checker should give every class field a value type, never `unit` or `never`",
+            );
             self.builder
-                .build_load(ptr_type, self.field_ptr(ty, object, index), "field")
+                .build_load(llvm_ty, self.field_ptr(ty, object, index), "field")
                 .expect(POSITIONED)
         };
-        for (index, field) in self.program.classes[id.0].fields.iter().enumerate() {
-            if field.ty.is_counted() && chain != Some(index) {
+        for (index, field) in fields.iter().enumerate() {
+            if field.ty.is_counted(&self.program.enums) && chain != Some(index) {
                 self.release(load_field(index), &field.ty);
             }
         }
@@ -232,20 +275,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_pointer_value()
         };
         let (next_a, next_b) = (load(a), load(b));
-        let (differ, step) = (block("differ"), block("step"));
-        branch(self.equal_at_once(reflexive, next_a, next_b), equal, differ);
-        self.builder.position_at_end(differ);
-        let null = |object| {
-            self.builder
-                .build_is_null(object, "null")
-                .expect(POSITIONED)
-        };
-        let either_null = self
-            .builder
-            .build_or(null(next_a), null(next_b), "either_null")
-            .expect(POSITIONED);
-        branch(either_null, unequal, step);
-        self.builder.position_at_end(step);
+        self.compare_at_once(reflexive, true, next_a, next_b, equal, unequal);
+        let step = self.current_block();
         pa.add_incoming(&[(&next_a, step)]);
         pb.add_incoming(&[(&next_b, step)]);
         self.branch_to(body);
@@ -265,16 +296,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         BasicBlock<'ctx>,
         BasicBlock<'ctx>,
     ) {
-        let block = |name| self.context.append_basic_block(function, name);
-        let (entry, differ, distinct) = (block("entry"), block("differ"), block("distinct"));
-        let (equal, unequal) = (block("equal"), block("unequal"));
-        let bool_type = self.context.bool_type();
-        for (at, value) in [(equal, 1), (unequal, 0)] {
-            self.builder.position_at_end(at);
-            self.builder
-                .build_return(Some(&bool_type.const_int(value, false)))
-                .expect(POSITIONED);
-        }
+        let entry = self.context.append_basic_block(function, "entry");
+        let (equal, unequal) = self.eq_returns(function);
         let nth = |n| {
             function
                 .get_nth_param(n)
@@ -282,26 +305,59 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_pointer_value()
         };
         let (a, b) = (nth(0), nth(1));
-        let branch = |cond, then, other| {
-            self.builder
-                .build_conditional_branch(cond, then, other)
-                .expect(POSITIONED);
-        };
         self.builder.position_at_end(entry);
-        branch(self.equal_at_once(reflexive, a, b), equal, differ);
-        self.builder.position_at_end(differ);
-        let null = |object| {
-            self.builder
-                .build_is_null(object, "null")
-                .expect(POSITIONED)
-        };
-        let either_null = self
-            .builder
-            .build_or(null(a), null(b), "either_null")
-            .expect(POSITIONED);
-        branch(either_null, unequal, distinct);
-        self.builder.position_at_end(distinct);
+        self.compare_at_once(reflexive, true, a, b, equal, unequal);
         (a, b, equal, unequal)
+    }
+
+    /// The blocks of `eq` helper `function` that return `true` and `false`.
+    pub(super) fn eq_returns(
+        &self,
+        function: FunctionValue<'ctx>,
+    ) -> (BasicBlock<'ctx>, BasicBlock<'ctx>) {
+        let bool_type = self.context.bool_type();
+        let [equal, unequal] = [(1, "equal"), (0, "unequal")].map(|(value, name)| {
+            let at = self.context.append_basic_block(function, name);
+            self.builder.position_at_end(at);
+            self.builder
+                .build_return(Some(&bool_type.const_int(value, false)))
+                .expect(POSITIONED);
+            at
+        });
+        (equal, unequal)
+    }
+
+    /// Compares the pointers `a` and `b` of a counted type that is `reflexive` or not, with no
+    /// look inside: branches to `equal` when `equal_at_once` finds them equal, and, when either
+    /// may be `null` (`nullable`), to `unequal` when only one is. Leaves the builder where they
+    /// are two pointers to compare by what they point at.
+    pub(super) fn compare_at_once(
+        &self,
+        reflexive: bool,
+        nullable: bool,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+        equal: BasicBlock<'ctx>,
+        unequal: BasicBlock<'ctx>,
+    ) {
+        let function = self.current_function();
+        let differ = self.context.append_basic_block(function, "differ");
+        self.branch_on(self.equal_at_once(reflexive, a, b), equal, differ);
+        self.builder.position_at_end(differ);
+        if nullable {
+            let distinct = self.context.append_basic_block(function, "distinct");
+            let null = |pointer| {
+                self.builder
+                    .build_is_null(pointer, "null")
+                    .expect(POSITIONED)
+            };
+            let either_null = self
+                .builder
+                .build_or(null(a), null(b), "either_null")
+                .expect(POSITIONED);
+            self.branch_on(either_null, unequal, distinct);
+            self.builder.position_at_end(distinct);
+        }
     }
 
     /// Whether two pointers of a counted type are equal with no look inside: the same pointer
@@ -327,29 +383,30 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// Whether every value of `ty` is `==` to itself: no `f64` is reachable from it, directly,
-    /// as an optional's payload, an array's element or a field of a class it reaches.
+    /// as an optional's payload, an array's element, or a field of a class or a payload field
+    /// of an enum it reaches, boxed or inline. Fields close cycles through classes and boxes,
+    /// so a class or enum met again counts as reflexive until a path from it finds an `f64`.
     pub(super) fn reflexive(&self, ty: &Type) -> bool {
-        fn reaches_no_f64(program: &Program, ty: &Type, seen: &mut [bool]) -> bool {
+        fn reaches_no_f64(program: &Program, ty: &Type, seen: &mut FxHashSet<Type>) -> bool {
             match ty {
                 Type::F64 => false,
                 Type::Optional(inner) | Type::Array(inner) => reaches_no_f64(program, inner, seen),
-                // A class already seen is being checked further up, or was found reflexive.
-                Type::Class(id) if seen[id.0] => true,
-                Type::Class(id) => {
-                    seen[id.0] = true;
-                    program.classes[id.0]
-                        .fields
-                        .iter()
-                        .all(|field| reaches_no_f64(program, &field.ty, seen))
-                }
+                // A class or enum already seen is being checked further up, or was found
+                // reflexive.
+                Type::Class(_) | Type::Enum(_) if !seen.insert(ty.clone()) => true,
+                Type::Class(id) => program.classes[id.0]
+                    .fields
+                    .iter()
+                    .all(|field| reaches_no_f64(program, &field.ty, seen)),
+                Type::Enum(id) => program.enums[id.0]
+                    .variants
+                    .iter()
+                    .flat_map(|variant| &variant.fields)
+                    .all(|field| reaches_no_f64(program, &field.ty, seen)),
                 _ => true,
             }
         }
-        reaches_no_f64(
-            self.program,
-            ty,
-            &mut vec![false; self.program.classes.len()],
-        )
+        reaches_no_f64(self.program, ty, &mut FxHashSet::default())
     }
 
     /// Whether `lhs` and `rhs`, of type `ty`, are equal: `==` without releasing them.
@@ -360,30 +417,48 @@ impl<'ctx> Codegen<'ctx, '_> {
         rhs: BasicValueEnum<'ctx>,
     ) -> IntValue<'ctx> {
         if let Some(core) = counted_core(ty) {
-            return self
-                .builder
-                .build_call(
-                    self.helper(Helper::Eq, core),
-                    &[lhs.into(), rhs.into()],
-                    "eq",
-                )
-                .expect(POSITIONED)
-                .try_as_basic_value()
-                .basic()
-                .expect("the generated `eq` helper should return a `bool`")
-                .into_int_value();
+            return self.call_eq(core, lhs, rhs);
         }
-        if !matches!(ty, Type::Optional(_)) {
-            return self.scalar_equal(lhs, rhs);
-        }
-        // `fa == fb && (!fa || va == vb)` on flags `f` and values `v`, with no branch.
+        let payload = match ty {
+            Type::Enum(_) => {
+                let (a, b) = (self.enum_slot(lhs), self.enum_slot(rhs));
+                return self.call_eq(ty, a.into(), b.into());
+            }
+            Type::Optional(payload) => payload,
+            _ => return self.scalar_equal(lhs, rhs),
+        };
         let part = |pair: BasicValueEnum<'ctx>, index| {
             self.builder
                 .build_extract_value(pair.into_struct_value(), index, "part")
-                .expect("a scalar optional should be lowered to a `{ flag, value }` pair")
+                .expect("a scalar or enum optional should be lowered to a `{ flag, value }` pair")
         };
         let (fa, fb) = (part(lhs, 0).into_int_value(), part(rhs, 0).into_int_value());
         let flags = self.int_compare(IntPredicate::EQ, fa, fb);
+        if let Type::Enum(_) = **payload {
+            // Equal flags decide, unless both are set: a `None`'s payload is never read.
+            let function = self.current_function();
+            let both = self.builder.build_and(fa, fb, "both").expect(POSITIONED);
+            let (decided, compare, done) = (
+                self.current_block(),
+                self.context.append_basic_block(function, "some.both"),
+                self.context.append_basic_block(function, "some.equal"),
+            );
+            self.builder
+                .build_conditional_branch(both, compare, done)
+                .expect(POSITIONED);
+            self.builder.position_at_end(compare);
+            let values = self.equal(payload, part(lhs, 1), part(rhs, 1));
+            let compared = self.current_block();
+            self.branch_to(done);
+            self.builder.position_at_end(done);
+            return self
+                .phi(
+                    self.context.bool_type(),
+                    &[(flags, decided), (values, compared)],
+                )
+                .into_int_value();
+        }
+        // `fa == fb && (!fa || va == vb)` on flags `f` and values `v`, with no branch.
         let values = self.scalar_equal(part(lhs, 1), part(rhs, 1));
         let none = self.builder.build_not(fa, "none").expect(POSITIONED);
         let values = self
@@ -393,6 +468,22 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_and(flags, values, "equal")
             .expect(POSITIONED)
+    }
+
+    /// A call of the `eq` helper of `ty` on `a` and `b`.
+    fn call_eq(
+        &self,
+        ty: &Type,
+        a: BasicValueEnum<'ctx>,
+        b: BasicValueEnum<'ctx>,
+    ) -> IntValue<'ctx> {
+        self.builder
+            .build_call(self.helper(Helper::Eq, ty), &[a.into(), b.into()], "eq")
+            .expect(POSITIONED)
+            .try_as_basic_value()
+            .basic()
+            .expect("the generated `eq` helper should return a `bool`")
+            .into_int_value()
     }
 
     /// Whether two scalars are equal: an `f64` to IEEE 754, so `nan` equals nothing and `-0.0`
@@ -408,7 +499,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Subtracts 1 from the count of `object`, then branches to `at_zero` if it is 0, else to
     /// `otherwise`.
-    fn decrement(
+    pub(super) fn decrement(
         &self,
         object: PointerValue<'ctx>,
         at_zero: BasicBlock<'ctx>,
@@ -510,17 +601,54 @@ impl<'ctx> Codegen<'ctx, '_> {
             .into_pointer_value()
     }
 
-    /// Adds 1 to the count of `value` when `ty` is counted.
+    /// Adds 1 to the count of each reference `value` holds when `ty` is counted.
     pub(super) fn retain(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
-        if ty.is_counted() {
-            self.call(self.rc_retain, &[value.into()]);
-        }
+        self.retain_or_release(Helper::Retain, value, ty);
     }
 
-    /// Releases the reference `value` holds when `ty` is counted.
+    /// Releases each reference `value` holds when `ty` is counted.
     pub(super) fn release(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
+        self.retain_or_release(Helper::Release, value, ty);
+    }
+
+    /// `retain` or `release`, as `kind` says. A string, object or array is the pointer itself,
+    /// `null` for `None`; an enum goes to its helper by address; an enum optional's payload is
+    /// counted only when its flag is set.
+    fn retain_or_release(&self, kind: Helper, value: BasicValueEnum<'ctx>, ty: &Type) {
         if let Some(core) = counted_core(ty) {
-            self.call(self.helper(Helper::Release, core), &[value.into()]);
+            let function = match kind {
+                Helper::Retain => self.rc_retain,
+                _ => self.helper(Helper::Release, core),
+            };
+            self.call(function, &[value.into()]);
+            return;
+        }
+        if !ty.is_counted(&self.program.enums) {
+            return;
+        }
+        match ty {
+            Type::Enum(_) => self.call(self.helper(kind, ty), &[self.enum_slot(value).into()]),
+            Type::Optional(payload) => {
+                let pair = value.into_struct_value();
+                let part = |index, name| {
+                    self.builder
+                        .build_extract_value(pair, index, name)
+                        .expect("an enum optional should be lowered to a `{ flag, value }` pair")
+                };
+                let function = self.current_function();
+                let some = self.context.append_basic_block(function, "some");
+                let done = self.context.append_basic_block(function, "some.done");
+                self.builder
+                    .build_conditional_branch(part(0, "flag").into_int_value(), some, done)
+                    .expect(POSITIONED);
+                self.builder.position_at_end(some);
+                self.retain_or_release(kind, part(1, "payload"), payload);
+                self.branch_to(done);
+                self.builder.position_at_end(done);
+            }
+            _ => unreachable!(
+                "a counted type that is not a pointer should be an enum or its optional"
+            ),
         }
     }
 }

@@ -8,9 +8,9 @@ mod render;
 mod suggest;
 
 pub(crate) use registry::{
-    Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable, InterpolateHelp, Join,
-    LetField, Literal, LiteralKind, MathFix, MismatchFix, NanFix, Operand, Panic, PowerFix,
-    SemicolonPlace, TypedLiteral, Unwrap,
+    BuiltIn, Code, Conversion, Definition, DiagnosticKind, Earlier, Immutable, InterpolateHelp,
+    Join, LetField, Literal, LiteralKind, MathFix, Member, MismatchFix, NanFix, Operand, Owner,
+    Panic, PowerFix, SemicolonPlace, TypedLiteral, Unbuilt, Unwrap, VariantLabels,
 };
 pub(crate) use suggest::{Suggestion, alias, suggestion};
 
@@ -87,7 +87,7 @@ pub(crate) struct Diagnostic {
 pub(crate) struct Fix {
     message: String,
     /// Applying the edits always removes the diagnostic, and the source still parses.
-    certain: bool,
+    safe: bool,
     /// They apply together, to the original source, and never overlap.
     edits: Vec<Edit>,
 }
@@ -170,6 +170,13 @@ impl Diagnostic {
         self.fixes.retain(keep);
     }
 
+    /// Marks unsafe each fix that `risky` accepts.
+    pub(crate) fn demote_fixes(&mut self, mut risky: impl FnMut(&Fix) -> bool) {
+        for fix in self.fixes.iter_mut().filter(|f| risky(f)) {
+            fix.safe = false;
+        }
+    }
+
     /// A diagnostic at `span`, with each of `secondary`, and one fix of `edits` unless there is
     /// none: spans that no rule makes, for the tests of the span checks.
     #[cfg(test)]
@@ -179,7 +186,7 @@ impl Diagnostic {
         if !edits.is_empty() {
             d.fixes.push(Fix {
                 message: String::new(),
-                certain: false,
+                safe: false,
                 edits: edits
                     .iter()
                     .map(|&(span, replacement)| Edit {
@@ -190,6 +197,24 @@ impl Diagnostic {
             });
         }
         d
+    }
+
+    /// `self` with only the safe fix `edits`: a fix that no rule makes, for the tests of the
+    /// safe-fix checks.
+    #[cfg(test)]
+    pub(crate) fn with_safe_fix_for_test(mut self, edits: &[(Span, &str)]) -> Diagnostic {
+        self.fixes = vec![Fix {
+            message: String::new(),
+            safe: true,
+            edits: edits
+                .iter()
+                .map(|&(span, replacement)| Edit {
+                    span,
+                    replacement: replacement.to_string(),
+                })
+                .collect(),
+        }];
+        self
     }
 }
 
@@ -209,8 +234,8 @@ impl Fix {
         &self.message
     }
 
-    pub(crate) fn certain(&self) -> bool {
-        self.certain
+    pub(crate) fn safe(&self) -> bool {
+        self.safe
     }
 
     pub(crate) fn edits(&self) -> &[Edit] {

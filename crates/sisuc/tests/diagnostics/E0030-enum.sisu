@@ -1,0 +1,9 @@
+enum Shape {
+    Dot
+}
+
+fn f(s: Shap) {}
+
+fn main() {
+    print(1)
+}

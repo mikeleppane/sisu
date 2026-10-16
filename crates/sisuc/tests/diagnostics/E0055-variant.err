@@ -1,0 +1,14 @@
+error[E0055]: `Expr.Num` takes no labels
+ --> E0055-variant.sisu:6:22
+  |
+6 |     let _ = Expr.Num(n: 2)
+  |                      ^
+  |
+help: remove the labels
+  |
+6 -     let _ = Expr.Num(n: 2)
+6 +     let _ = Expr.Num(2)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0055

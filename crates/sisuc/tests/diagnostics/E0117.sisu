@@ -1,0 +1,7 @@
+enum Expr {
+    Num(i64)
+}
+
+fn main() {
+    let _ = Num(2)
+}

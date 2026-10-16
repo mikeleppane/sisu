@@ -1,0 +1,11 @@
+enum D {
+    Q(K)
+}
+
+class K {
+    d: D
+}
+
+fn main() {
+    print(1)
+}

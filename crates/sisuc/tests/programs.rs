@@ -39,7 +39,16 @@ fn assert_panics(out: &Output, stdout: &str, stderr: &str) {
 
 /// The programs the small-stack tests run. They are not `tests/run` cases: a million objects
 /// under Valgrind is too slow, and `deepchain` overflows on purpose.
-const SMALL_STACK: [&str; 4] = ["longlist", "rightskew", "deepchain", "eqlist"];
+const SMALL_STACK: [&str; 8] = [
+    "longlist",
+    "rightskew",
+    "deepchain",
+    "eqlist",
+    "enumlist",
+    "enumfold",
+    "enummutual",
+    "enumeq",
+];
 
 /// `tests/programs` holds exactly the `SMALL_STACK` programs; every other program is a case in
 /// `tests/run` or `tests/run-fail`.
@@ -125,7 +134,7 @@ fn allocs_in_panics_without_the_summary_line() {
 }
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
-const ALLOCATIONS: [(&str, &str, &str, i64); 13] = [
+const ALLOCATIONS: [(&str, &str, &str, i64); 16] = [
     // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
@@ -149,6 +158,17 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 13] = [
     ("interp", "9\ne\n", "1\n-\n", 1000),
     // Formatting and padding write into that result too: no buffer of their own.
     ("interp_format", "    2.67| 日本  |7\n", "-\n", 1000),
+    // An enum is held inline: building one whose payloads hold no object allocates nothing.
+    ("enum_alloc_plain", "1000\n", "0\n", 0),
+    // Copying an enum retains its string payload or its boxes and never copies them.
+    (
+        "enum_alloc_copy",
+        "1000\ntrue\ntrue\n",
+        "0\ntrue\ntrue\n",
+        0,
+    ),
+    // `Add(Num(1), Num(2))` allocates one box for each of its two fields, and nothing else.
+    ("enum_alloc_boxes", "1000\n", "0\n", 2000),
 ];
 
 #[test]
@@ -210,6 +230,39 @@ fn equal_long_lists_compare_in_constant_stack() {
         assert_eq!(out.status.code(), Some(0), "-O2 {o2}: {:?}", out.status);
         assert_eq!(String::from_utf8_lossy(&out.stdout), "true\ntrue\n");
     }
+}
+
+/// `assert_small_stack_prints` at both levels: `-O2` must not need more stack either.
+fn assert_small_stack_prints_at_both(name: &str, expected: &str) {
+    for o2 in [false, true] {
+        let out = run_in_small_stack_at(name, o2);
+        assert_eq!(out.status.code(), Some(0), "-O2 {o2}: {:?}", out.status);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "-O2 {o2}");
+    }
+}
+
+/// A right-deep enum list of 1 000 000 cells frees its boxes from the pending list.
+#[test]
+fn enum_list_frees_in_constant_stack() {
+    assert_small_stack_prints_at_both("enumlist", "1000000\n");
+}
+
+/// A left-deep fold of 1 000 000 `Add`s frees its boxes from the pending list.
+#[test]
+fn enum_fold_frees_in_constant_stack() {
+    assert_small_stack_prints_at_both("enumfold", "1000000\n");
+}
+
+/// Two chains through two enums that hold each other compare with `==` and free in one frame.
+#[test]
+fn mutual_enums_compare_and_free_in_constant_stack() {
+    assert_small_stack_prints_at_both("enummutual", "1000000\ntrue\n");
+}
+
+/// `==` on two pairs of 1 000 000-cell enum lists loops on the tail.
+#[test]
+fn equal_enum_lists_compare_in_constant_stack() {
+    assert_small_stack_prints_at_both("enumeq", "true\nfalse\n");
 }
 
 /// The control for `longlist_frees_in_constant_stack`: a drop that recurses once per object

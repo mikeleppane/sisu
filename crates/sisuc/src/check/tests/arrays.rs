@@ -433,19 +433,19 @@ fn own_error_poisons() {
     }
 }
 
-/// The one diagnostic of `src`, the idiom at `pos`: whether its one fix is certain, and `src`
-/// with it applied. A certain fix leaves a program that checks clean.
+/// The one diagnostic of `src`, the idiom at `pos`: whether its one fix is safe, and `src`
+/// with it applied. A safe fix leaves a program that checks clean.
 fn idiom(src: &str, pos: (usize, usize, &str)) -> (bool, String) {
     let d = diagnostic(src, Code::MethodAsFunction, pos, &[]);
     let [fix] = d.fixes() else {
         panic!("one fix: {d:?}")
     };
-    let certain = fix.certain();
+    let safe = fix.safe();
     let result = applied(src, &d);
-    if certain {
+    if safe {
         clean(&result);
     }
-    (certain, result)
+    (safe, result)
 }
 
 #[test]
@@ -499,14 +499,14 @@ fn idiom_wraps_an_operator_receiver() {
 }
 
 /// A parenthesised receiver keeps its parentheses, so the wrap may leave redundant ones; the
-/// fix is still certain and the result checks clean.
+/// fix is still safe and the result checks clean.
 #[test]
 fn idiom_keeps_a_parenthesised_operator_receiver() {
-    let (certain, _) = idiom(
+    let (safe, _) = idiom(
         "fn f(m: [i64]?) -> i64 { len((m ?? [1])) }\nfn main() {}",
         (1, 26, "len"),
     );
-    assert!(certain);
+    assert!(safe);
 }
 
 /// The receivers that take `.len()` as written; a parenthesised one keeps its parentheses.
@@ -523,8 +523,8 @@ fn idiom_leaves_postfix_receivers_unwrapped() {
         ("(g[0])", "(g[0])"),
     ] {
         let src = format!("{pre}len({arg}))\n}}\nfn main() {{}}");
-        let (certain, result) = idiom(&src, (10, 11, "len"));
-        assert!(certain, "{arg}");
+        let (safe, result) = idiom(&src, (10, 11, "len"));
+        assert!(safe, "{arg}");
         assert_eq!(
             result,
             format!("{pre}{receiver}.len())\n}}\nfn main() {{}}"),
@@ -534,7 +534,7 @@ fn idiom_leaves_postfix_receivers_unwrapped() {
 }
 
 /// An array whose own check failed is not known to be one, so the call falls back to "cannot
-/// find function"; an argument whose check failed makes the fix a guess.
+/// find function"; an argument whose check failed makes the fix unsafe.
 #[test]
 fn poisoned_operands_and_the_idiom() {
     codes(
@@ -552,12 +552,12 @@ fn poisoned_operands_and_the_idiom() {
             (Code::BindingNotFound, (3, 28)),
         ],
     );
-    assert!(!diags(src)[0].fixes()[0].certain());
+    assert!(!diags(src)[0].fixes()[0].safe());
 }
 
 /// The rewrite would delete a comment between the name and the array, or after the array.
 #[test]
-fn idiom_over_a_comment_is_uncertain() {
+fn idiom_over_a_comment_is_unsafe() {
     for (src, pos) in [
         (
             "fn f(xs: [i64]) -> i64 {\n    len( // the list\n        xs)\n}\nfn main() {}",
@@ -570,13 +570,13 @@ fn idiom_over_a_comment_is_uncertain() {
     ] {
         assert!(!idiom(src, pos).0, "{src}");
     }
-    // Without the comment, the same multi-line call stays certain.
+    // Without the comment, the same multi-line call stays safe.
     let src = "fn f(xs: [i64]) -> i64 {\n    len(\n        xs)\n}\nfn main() {}";
     assert!(idiom(src, (2, 5, "len")).0);
 }
 
 #[test]
-fn wrong_arity_is_uncertain() {
+fn wrong_arity_is_unsafe() {
     assert_eq!(
         idiom(
             "fn f(xs: [i64]) -> i64 { len(xs, 1) }\nfn main() {}",
@@ -600,7 +600,7 @@ fn wrong_arity_is_uncertain() {
 }
 
 #[test]
-fn wrong_type_is_uncertain() {
+fn wrong_type_is_unsafe() {
     assert_eq!(
         idiom(
             "fn f(xs: [i64]) -> bool { contains(xs, true) }\nfn main() {}",
@@ -614,7 +614,7 @@ fn wrong_type_is_uncertain() {
 }
 
 #[test]
-fn literal_on_u8_array_is_certain() {
+fn literal_on_u8_array_is_safe() {
     assert_eq!(
         idiom(
             "fn f(bs: [u8]) -> bool { contains(bs, 1) }\nfn main() {}",
@@ -628,15 +628,15 @@ fn literal_on_u8_array_is_certain() {
 }
 
 #[test]
-fn u8_argument_is_certain_and_i64_is_not() {
-    for (param, col, certain) in [("n: i64", 34, false), ("n: u8", 33, true)] {
+fn u8_argument_is_safe_and_i64_is_not() {
+    for (param, col, safe) in [("n: i64", 34, false), ("n: u8", 33, true)] {
         let src = format!("fn f(bs: [u8], {param}) -> bool {{ contains(bs, n) }}\nfn main() {{}}");
-        assert_eq!(idiom(&src, (1, col, "contains")).0, certain, "{param}");
+        assert_eq!(idiom(&src, (1, col, "contains")).0, safe, "{param}");
     }
 }
 
 #[test]
-fn literal_out_of_u8_range_is_uncertain() {
+fn literal_out_of_u8_range_is_unsafe() {
     assert_eq!(
         idiom(
             "fn f(bs: [u8]) -> bool { contains(bs, 256) }\nfn main() {}",

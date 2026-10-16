@@ -6,7 +6,7 @@ use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
-use super::rc::{Helper, param};
+use super::rc::{Helper, counted_core, param};
 use super::{Codegen, POSITIONED, Slot};
 use crate::diagnostic::Span;
 use crate::tir::{Expr, ExprKind, Place, Type};
@@ -292,8 +292,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// `ArrayFill`: `value`, then `len`, then the block, with `value` in every slot. A
-    /// counted `value` gains `len - 1` references in one step, or loses its one when `len`
-    /// is 0.
+    /// counted pointer `value` gains `len - 1` references in one step, or loses its one when
+    /// `len` is 0. A counted enum `value` is retained once per slot, then released.
     pub(super) fn array_fill(&mut self, ty: &Type, value: &Expr, len: &Expr) -> PointerValue<'ctx> {
         let element = element_of(ty);
         let filler = self.expr(value).expect(
@@ -308,8 +308,11 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.element_tag,
             );
         });
-        if element.is_counted() {
+        if counted_core(element).is_some() {
             self.share_filler(filler, element, count);
+        } else if element.is_counted(&self.program.enums) {
+            self.count_loop(count, |_| self.retain(filler, element));
+            self.release(filler, element);
         }
         array
     }
@@ -599,7 +602,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         let (slot, ty) = self.element_slot(operands.slot, &operands.ty, &operands.indexes);
         let old = ty
-            .is_counted()
+            .is_counted(&self.program.enums)
             .then(|| self.load_tagged(value.get_type(), slot, "old", self.element_tag));
         self.store_tagged(slot, value, self.element_tag);
         self.discard(old, &ty);
@@ -618,8 +621,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             Helper::Drop => self.define_array_drop(element, function),
             Helper::Eq => self.define_array_eq(element, function),
             Helper::Unique => self.define_array_unique(element, function),
-            Helper::Release => {
-                unreachable!("`define_helpers` should define every `release` itself")
+            Helper::Retain
+            | Helper::Release
+            | Helper::Walk
+            | Helper::Drain
+            | Helper::EqComponent => {
+                unreachable!(
+                    "`define_helpers` should define every `release` itself, and queue `retain` and the component helpers only for an enum"
+                )
             }
         }
     }
@@ -631,7 +640,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .position_at_end(self.context.append_basic_block(function, "entry"));
         let array = param(function);
         let len = self.array_len(array);
-        if element.is_counted() {
+        if element.is_counted(&self.program.enums) {
             self.count_loop(len, |index| {
                 self.release(self.load_element(element, array, index), element);
             });
@@ -734,7 +743,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 bytes,
             )
             .expect("the block's alignment should be a power of two, as each ABI alignment is");
-        if element.is_counted() {
+        if element.is_counted(&self.program.enums) {
             self.count_loop(len, |index| {
                 self.retain(self.load_element(element, copy, index), element);
             });

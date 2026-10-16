@@ -1,0 +1,9 @@
+enum Light {
+    Red
+    fn next(self) -> Light { Light.Red }
+    Green
+}
+
+fn main() {
+    print(1)
+}

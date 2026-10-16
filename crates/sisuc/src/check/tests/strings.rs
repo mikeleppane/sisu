@@ -98,7 +98,7 @@ fn cannot_interpolate() {
 }
 
 /// A spec's alignment defaults by type: numbers right, the rest left. Precision needs an `f64`;
-/// on an `i64` the certain fix converts it.
+/// on an `i64` the safe fix converts it.
 #[test]
 fn format_spec_checks() {
     let params = "n: i64, b: u8, x: f64, s: string, c: char, t: bool";
@@ -162,7 +162,7 @@ fn with_items(src: &str) -> String {
 }
 
 /// A `string` joined to a `print`ed value that is not one: in each row, the statement on line 2,
-/// the operand reported, the other operand's secondary label, and the statement the guess makes
+/// the operand reported, the other operand's secondary label, and the statement the unsafe fix makes
 /// of line 2, if there is one.
 type ConcatRow<'a> = (
     &'a str,
@@ -180,7 +180,7 @@ fn concat_rows(rows: &[ConcatRow]) {
         match fixed {
             Some(fixed) => {
                 assert_eq!(found.len(), 1, "{src}");
-                assert!(!found[0].0, "{src}: the fix is a guess");
+                assert!(!found[0].0, "{src}: the fix is unsafe");
                 assert_eq!(applied(&src, &d), with_items(&body(params, fixed)));
             }
             None => assert_eq!(found, [], "{src}"),
@@ -265,7 +265,7 @@ fn concat_mismatch() {
     ]);
 }
 
-/// Literals, comments, line breaks and statements around the operands decide the guess.
+/// Literals, comments, line breaks and statements around the operands decide the unsafe fix.
 #[test]
 fn concat_mismatch_layout() {
     concat_rows(&[
@@ -289,14 +289,14 @@ fn concat_mismatch_layout() {
             &[(2, 15)],
             Some("print(\"{n}{(\"a\")}\")"),
         ),
-        // The guess would delete the comment between the operands.
+        // The unsafe fix would delete the comment between the operands.
         (
             "print(s + // why\n        n)",
             (3, 9, "n"),
             &[(2, 11)],
             None,
         ),
-        // A line break between the operands goes with the text the guess removes.
+        // A line break between the operands goes with the text the unsafe fix removes.
         (
             "print(s +\n        n)",
             (3, 9, "n"),
@@ -502,22 +502,22 @@ fn string_from_chars() {
 fn string_built_in_names() {
     codes(
         "fn string() {}\nfn main() {}",
-        &[(Code::BuiltInTypeName, (1, 4))],
+        &[(Code::BuiltInName, (1, 4))],
     );
     codes(
         "class string {}\nfn main() {}",
-        &[(Code::BuiltInTypeName, (1, 7))],
+        &[(Code::BuiltInName, (1, 7))],
     );
 }
 
-/// `string(x)` with a `string` is already one, and removing the call is certain. Any other type
+/// `string(x)` with a `string` is already one, and removing the call is safe. Any other type
 /// but `[char]` is a mismatch at the argument: a value that interpolation prints is offered
-/// interpolation, as a guess; any other has no fix.
+/// interpolation, as an unsafe fix; any other has no fix.
 #[test]
 fn string_call() {
     let params = "s: string, t: string, xs: [u8], n: i64, b: u8, c: char, ok: bool, p: P";
     let rows = [
-        // (statement, code, the argument, the statement the fix makes if there is one, certain)
+        // (statement, code, the argument, the statement the fix makes if there is one, safe)
         (
             "print(string(s))",
             Code::AlreadyConverted,
@@ -582,7 +582,7 @@ fn string_call() {
         // An array of anything but `char`, and a class, have no text to interpolate.
         ("print(string(xs))", Code::Mismatch, (2, 18, "xs"), None),
         ("print(string(p))", Code::Mismatch, (2, 18, "p"), None),
-        // The guess would delete the comment, or put a line break in a literal.
+        // The unsafe fix would delete the comment, or put a line break in a literal.
         (
             "print(string(\n        // why\n        n))",
             Code::Mismatch,
@@ -601,9 +601,9 @@ fn string_call() {
         let d = diagnostic(&src, code, pos, &[]);
         let found = fixes(&src, &d);
         match fixed {
-            Some((fixed, certain)) => {
+            Some((fixed, safe)) => {
                 assert_eq!(found.len(), 1, "{src}");
-                assert_eq!(found[0].0, certain, "{src}");
+                assert_eq!(found[0].0, safe, "{src}");
                 assert_eq!(applied(&src, &d), with_items(&body(params, fixed)));
                 // Either fix leaves a program that checks.
                 clean(&with_items(&body(params, fixed)));

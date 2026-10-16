@@ -1,0 +1,11 @@
+enum Shape {
+    Dot
+}
+
+fn area(Shape: i64) -> i64 {
+    Shape * 2
+}
+
+fn main() {
+    print(area(1))
+}

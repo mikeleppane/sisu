@@ -1,0 +1,79 @@
+// Each payload field that closes a cycle is a counted box. A copy shares its boxes, `==`
+// compares them by content, and each box is freed once, when its last holder goes, whichever
+// holder goes first. Strings are built at run time, so Valgrind and `--rc-checks` see each box
+// and string freed exactly once.
+enum Expr {
+    Num(i64)
+    Name(string)
+    Add(Expr, Expr)
+    Neg(Expr)
+}
+
+// The tail is an optional box: `None` is a null box pointer.
+enum L {
+    Cons(i64, L?)
+}
+
+// `A` and `B` hold each other, so both fields are boxes.
+enum A {
+    ToB(B)
+    Leaf(string)
+}
+
+enum B {
+    ToA(A)
+    End
+}
+
+fn main() {
+    let sum = Expr.Add(Expr.Num(1), Expr.Name("x" + "y"))
+    print(sum == Expr.Add(Expr.Num(1), Expr.Name("xy")))    // true
+    print(sum == Expr.Add(Expr.Num(1), Expr.Name("xz")))    // false: unequal in a box
+    print(Expr.Neg(sum) == Expr.Neg(Expr.Add(Expr.Num(1), Expr.Name("x")))) // false: at depth 2
+    print(sum == Expr.Neg(Expr.Num(1)))                     // false: the tags differ
+    let copy = sum
+    print(copy == sum)                                      // true: one set of boxes
+
+    // The original goes first, and the copy keeps the boxes.
+    let mut first = Expr.Neg(Expr.Name("a" + "b"))
+    let second = first
+    print(first == second)                                  // true: one set of boxes
+    first = Expr.Num(0)
+    print(first == second)                                  // false
+    print(second == Expr.Neg(Expr.Name("ab")))              // true
+    // The copy goes first.
+    let kept = Expr.Neg(Expr.Name("c" + "d"))
+    let mut gone = kept
+    print(gone == kept)                                     // true
+    gone = Expr.Num(0)
+    print(gone == kept)                                     // false
+    print(kept == Expr.Neg(Expr.Name("cd")))                // true
+
+    // Both children of `tree` hold the same subtree, whose boxes they share.
+    let x = Expr.Add(Expr.Num(3), Expr.Name("s" + "t"))
+    let tree = Expr.Add(x, x)
+    let other = tree
+    print(tree == Expr.Add(Expr.Add(Expr.Num(3), Expr.Name("st")), x)) // true
+    print(other == tree)                                    // true
+
+    let one = L.Cons(1, None)
+    let one_copy = one                                      // shares the `None` tail
+    print(one_copy == one)                                  // true
+    let two = L.Cons(1, L.Cons(2, None))
+    print(one == L.Cons(1, None))                           // true: both tails `None`
+    print(one == two)                                       // false: one tail `None`
+    print(two == one)                                       // false
+    print(two == L.Cons(1, L.Cons(2, None)))                // true
+    print(two == L.Cons(1, L.Cons(3, None)))                // false: unequal at depth 2
+    let tail = two
+    print(tail == two)                                      // true
+
+    let a = A.ToB(B.ToA(A.Leaf("q" + "r")))
+    print(a == A.ToB(B.ToA(A.Leaf("qr"))))                  // true
+    print(a == A.ToB(B.ToA(A.Leaf("qs"))))                  // false: unequal at depth 3
+    print(a == A.ToB(B.End))                                // false: the tags differ in a box
+    print(a == A.Leaf("qr"))                                // false: the tags differ
+    let b = B.ToA(a)
+    print(b == B.ToA(A.ToB(B.ToA(A.Leaf("qr")))))           // true
+    print(a == A.ToB(B.ToA(A.Leaf("qr"))))                  // true: `b` shares `a`'s boxes
+}

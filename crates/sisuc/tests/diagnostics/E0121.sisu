@@ -1,0 +1,9 @@
+enum Shape {
+    Rect(w: i64, h: i64)
+}
+
+fn width(s: Shape) -> i64 {
+    s.w
+}
+
+fn main() {}

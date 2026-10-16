@@ -1,0 +1,25 @@
+// Two pairs of right-deep lists of 1 000 000 cells, compared with `==` under a 256 KiB stack.
+// The generated `eq` loops on the last boxed field, the tail, in one frame; a recursive `eq`
+// needs a frame per cell and overflows that stack. The second pair differs only in the last
+// cell, so `==` walks the whole list to find it.
+enum List {
+    Nil
+    Cons(i64, List)
+}
+
+// `1, 2, ..., length - 1, last`.
+fn build(length: i64, last: i64) -> List {
+    let mut list = List.Cons(last, List.Nil)
+    let mut i = length - 1
+    while i > 0 {
+        list = List.Cons(i, list)
+        i -= 1
+    }
+    list
+}
+
+fn main() {
+    let a = build(1_000_000, 0)
+    print(a == build(1_000_000, 0))
+    print(a == build(1_000_000, 1))
+}

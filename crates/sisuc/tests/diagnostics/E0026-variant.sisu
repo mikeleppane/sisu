@@ -1,0 +1,8 @@
+enum Reply {
+    Ok(i64)
+    Fail
+}
+
+fn main() {
+    print(1)
+}

@@ -1,5 +1,6 @@
 //! Expressions, checked bottom-up and lowered to `tir`.
 
+use std::fmt;
 use std::ops::Range;
 
 use super::number;
@@ -102,12 +103,12 @@ impl Checker<'_> {
             ExprKind::Call { callee, args } => self.call(e.span, callee, args),
             ExprKind::Todo { keyword, args } => self.todo(e.span, *keyword, args),
             ExprKind::SelfValue => {
-                let Some(class) = self.self_class else {
+                let Some(ty) = self.self_type.clone() else {
                     self.diagnostics
                         .push(DiagnosticKind::SelfOutsideMethod { at: e.span }.into());
                     return Err(Poisoned::error());
                 };
-                node(tir::ExprKind::Local(tir::LocalId(0)), Type::Class(class))
+                node(tir::ExprKind::Local(tir::LocalId(0)), ty)
             }
             ExprKind::Field { base, name, safe } => {
                 if !safe && let Some(checked) = self.type_path(e.span, base, name, None) {
@@ -121,8 +122,9 @@ impl Checker<'_> {
                 receiver,
                 method,
                 args,
+                parens,
                 safe,
-            } => self.method_expr(e.span, *safe, receiver, method, args),
+            } => self.method_expr(e.span, *safe, receiver, method, args, *parens),
             ExprKind::Coalesce { lhs, rhs } => self.coalesce(e.span, lhs, rhs),
             ExprKind::Is { lhs, rhs } => self.is(e.span, lhs, rhs),
             ExprKind::Unary { op, operand } => {
@@ -195,7 +197,9 @@ impl Checker<'_> {
             // `Error`: its diagnostic was recorded where it was bound.
             Some(_) => Err(Poisoned::error()),
             None => self.constant_use(name, span).unwrap_or_else(|| {
-                let d = self.not_found(name, span);
+                let d = self
+                    .bare_variant(name, span)
+                    .unwrap_or_else(|| self.not_found(name, span));
                 self.diagnostics.push(d);
                 Err(Poisoned::error())
             }),
@@ -417,7 +421,7 @@ impl Checker<'_> {
     ///
     /// The type is `string` beside a `string`, in a comparison and in `+`. In `+` a `string`
     /// drives from either side: an operand of another type is reported against `string`, with
-    /// the guess to interpolate, the one before a `string` included, in place of what its own
+    /// the unsafe fix to interpolate, the one before a `string` included, in place of what its own
     /// type was found to lack. A join after an `Error` is `Error`. An expected `u8` or `f64` is
     /// `binary_operands`' to drop.
     fn integers(
@@ -625,7 +629,8 @@ impl Checker<'_> {
         })
     }
 
-    /// `lhs is rhs`: each a class or its optional, of one class.
+    /// `lhs is rhs`: each a class or its optional, of one class. An enum value has no identity
+    /// to test: two equal ones are the same value.
     fn is(&mut self, span: Span, lhs: &ast::Expr, rhs: &ast::Expr) -> Checked {
         if none_literal(lhs) || none_literal(rhs) {
             let other = if none_literal(lhs) { rhs } else { lhs };
@@ -643,7 +648,9 @@ impl Checker<'_> {
         for (side, checked) in [(lhs, &l), (rhs, &r)] {
             // Once an operand is `Error`, the later one is not held to `is`.
             let Some(ty) = type_of(checked) else { break };
-            if matches!(payload(ty), Type::Array(_) | Type::String) || !ty.is_counted() {
+            if matches!(payload(ty), Type::Array(_) | Type::String | Type::Enum(_))
+                || !ty.is_counted(&self.lowered_enums)
+            {
                 let kind = DiagnosticKind::IsNeedsObjects {
                     found: self.type_name(ty),
                     at: side.span,
@@ -1028,9 +1035,16 @@ impl Checker<'_> {
             return self.convert(span, to, args);
         }
         match declared {
-            (Some(Declared::Known(class)), _) => self.construct(span, class, args),
+            (Some(Declared::Known(class)), _) => self.construct_class(span, class, args),
             (_, Some(Declared::Known(func))) => self.invoke(span, func, None, args),
-            _ => self.unknown_call(callee, args),
+            _ => match self.bare_variant(callee.name, callee.span) {
+                Some(d) => {
+                    self.diagnostics.push(d);
+                    self.stray(args);
+                    Err(Poisoned::error())
+                }
+                None => self.unknown_call(callee, args),
+            },
         }
     }
 
@@ -1063,20 +1077,19 @@ impl Checker<'_> {
                 if let Some(ty) = ty {
                     let next = rest.first().map(|arg| arg.value.span);
                     // The rewrite deletes the text before the receiver and between it and
-                    // `next`, so a comment there makes it a guess.
+                    // `next`, so a comment there makes it unsafe.
                     let deleted = [
                         callee.span.start()..first.value.span.start(),
                         first.value.span.end()..next.map_or(first.value.span.end(), Span::start),
                     ];
-                    let certain =
-                        self.idiom_arguments(name, &ty, rest) && !self.comment_in(&deleted);
+                    let safe = self.idiom_arguments(name, &ty, rest) && !self.comment_in(&deleted);
                     self.report(DiagnosticKind::MethodAsFunction {
                         name: callee.name.to_string(),
                         at: callee.span,
                         receiver: first.value.span,
                         next,
                         wrap: !postfix(&first.value),
-                        certain,
+                        safe,
                     });
                     return Err(Poisoned::error());
                 }
@@ -1141,8 +1154,8 @@ impl Checker<'_> {
             })
     }
 
-    /// `receiver.method(args)` as written, which `safe` makes `receiver?.method(args)`. A type or
-    /// `math` before the `.` may make it an idiom.
+    /// `receiver.method(args)` as written, `(args)` at `parens`, which `safe` makes
+    /// `receiver?.method(args)`. A type or `math` before the `.` may make it an idiom.
     fn method_expr(
         &mut self,
         span: Span,
@@ -1150,8 +1163,10 @@ impl Checker<'_> {
         receiver: &ast::Expr,
         method: &ast::Ident,
         args: &[ast::Arg],
+        parens: Span,
     ) -> Checked {
-        if !safe && let Some(checked) = self.type_path(span, receiver, method, Some(args)) {
+        if !safe && let Some(checked) = self.type_path(span, receiver, method, Some((args, parens)))
+        {
             return checked;
         }
         self.member(span, safe, receiver, method, |c, checked| {
@@ -1249,15 +1264,17 @@ impl Checker<'_> {
     pub(super) fn labels(&mut self, args: &[ast::Arg]) -> bool {
         let mut labeled = false;
         for label in args.iter().filter_map(|a| a.label.as_ref()) {
-            self.report(DiagnosticKind::LabeledArgument { at: label.span });
+            self.report(DiagnosticKind::LabeledArgument {
+                at: label.span,
+                variant: None,
+            });
             labeled = true;
         }
         labeled
     }
 
-    /// `C(f: e, ...)` names every field of `C`, in declaration order. Only the first mistake
-    /// is reported; every argument is still checked for its own.
-    fn construct(&mut self, span: Span, class: tir::ClassId, args: &[ast::Arg]) -> Checked {
+    /// `C(f: e, ...)`, a construction of the class `class`.
+    fn construct_class(&mut self, span: Span, class: tir::ClassId, args: &[ast::Arg]) -> Checked {
         let info = &self.classes[class.0];
         let name = info.name.name.as_str();
         let fields: Vec<(Symbol, Option<Type>)> = info
@@ -1265,6 +1282,24 @@ impl Checker<'_> {
             .iter()
             .map(|f| (f.name.name, f.ty.clone()))
             .collect();
+        let ty = Type::Class(class);
+        match self.construct(span, &name, &fields, args) {
+            Ok(args) => Ok(self.spilled(span, ty, args, |args| tir::ExprKind::New { class, args })),
+            Err(failed) => Err(Poisoned::of((!failed).then_some(ty))),
+        }
+    }
+
+    /// The arguments of `name(f: e, ...)`, a class's constructor or a variant with labels,
+    /// which name every one of `fields` in declaration order. Only the first mistake is
+    /// reported; every argument is still checked for its own. `Err` holds whether a mistake was
+    /// reported here, rather than in an argument.
+    pub(super) fn construct(
+        &mut self,
+        span: Span,
+        name: &dyn fmt::Display,
+        fields: &[(Symbol, Option<Type>)],
+        args: &[ast::Arg],
+    ) -> Result<Vec<tir::Expr>, bool> {
         let names: Vec<_> = fields.iter().map(|(f, _)| *f).collect();
         let mut failed = false;
         let mut checked = Vec::with_capacity(args.len());
@@ -1289,12 +1324,9 @@ impl Checker<'_> {
             });
             failed = true;
         }
-        let ty = Type::Class(class);
         match checked.into_iter().collect() {
-            Ok(args) if !failed => {
-                Ok(self.spilled(span, ty, args, |args| tir::ExprKind::New { class, args }))
-            }
-            _ => Err(Poisoned::of((!failed).then_some(ty))),
+            Ok(args) if !failed => Ok(args),
+            _ => Err(failed),
         }
     }
 
@@ -1334,11 +1366,11 @@ impl Checker<'_> {
         target: bool,
     ) -> Option<(tir::ClassId, usize)> {
         let ty = base?;
-        let method = |owner, certain: bool| DiagnosticKind::MethodNotField {
+        let method = |owner, safe: bool| DiagnosticKind::MethodNotField {
             name: name.name.to_string(),
             owner,
             at: name.span,
-            call: (!target).then_some(certain),
+            call: (!target).then_some(safe),
         };
         let d = match ty {
             Type::Class(class) => {
@@ -1359,6 +1391,19 @@ impl Checker<'_> {
                     }
                 }
             }
+            Type::Enum(id) => match self.enums[id.0].methods.get(&name.name) {
+                Some(Declared::Known(func)) => {
+                    let no_arguments = self.signatures[func.0].params.is_empty();
+                    method(self.type_name(ty), no_arguments).into()
+                }
+                // Its own error is reported.
+                Some(Declared::Broken) => return None,
+                None => DiagnosticKind::EnumField {
+                    enum_name: self.type_name(ty),
+                    at: name.span,
+                }
+                .into(),
+            },
             Type::Array(_) if name.name.as_str() == "len" => {
                 method(self.type_name(ty), true).into()
             }
@@ -1393,6 +1438,27 @@ impl Checker<'_> {
                     DiagnosticKind::FieldNotMethod {
                         name: name.name.to_string(),
                         owner: self.type_name(ty),
+                        at: name.span,
+                    }
+                    .into()
+                } else {
+                    let methods = info.methods.keys().map(|method| method.as_str());
+                    no_member(Definition::Method, self.type_name(ty), name, methods)
+                }
+            }
+            Type::Enum(id) => {
+                let info = &self.enums[id.0];
+                match info.methods.get(&name.name) {
+                    Some(&Declared::Known(func)) => return Some(func),
+                    // Its own error is reported; the caller checks the arguments.
+                    Some(Declared::Broken) => return None,
+                    None => {}
+                }
+                if info.variants.iter().any(|v| v.name.name == name.name) {
+                    DiagnosticKind::MemberKind {
+                        name: name.name.to_string(),
+                        enum_name: self.type_name(ty),
+                        method: false,
                         at: name.span,
                     }
                     .into()
@@ -1599,8 +1665,14 @@ pub(super) fn no_member<'a>(
     .into()
 }
 
-/// The mistake in argument `i` of a constructor of `class`, whose fields are `fields`, if any.
-fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option<Diagnostic> {
+/// The mistake in argument `i` of `name(...)`, a class's constructor or a variant with labels,
+/// whose fields are `fields`, if any.
+fn misplaced(
+    name: &dyn fmt::Display,
+    fields: &[Symbol],
+    i: usize,
+    arg: &ast::Arg,
+) -> Option<Diagnostic> {
     let Some(field) = fields.get(i) else {
         let start = arg
             .label
@@ -1609,7 +1681,7 @@ fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option
             .start();
         return Some(
             DiagnosticKind::TooManyArguments {
-                class: class.to_string(),
+                class: name.to_string(),
                 fields: fields.len(),
                 at: Span::new(start, arg.value.span.end()),
             }
@@ -1640,7 +1712,7 @@ fn misplaced(class: &str, fields: &[Symbol], i: usize, arg: &ast::Arg) -> Option
     } else {
         Some(no_member(
             Definition::Field,
-            class.to_string(),
+            name.to_string(),
             label,
             fields.iter().map(|field| field.as_str()),
         ))

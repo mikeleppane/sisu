@@ -1,0 +1,81 @@
+// A `Move` leaves the zero value in a local's slot, which scope end releases. An enum's zero
+// value is its first variant with every field zero, so each release helper must release nothing
+// for a null string, a null object, a nested enum's zero value and a null box. `[e; 0]` releases
+// `e` once.
+class C {
+    n: i64
+}
+
+enum Inner {
+    Name(string)
+    Empty
+}
+
+enum Z {
+    Text(string, Inner, C)
+    Other
+}
+
+// `Link`'s `Chain` is a box, so the zero value's `Link` holds a null box.
+enum Chain {
+    Link(string, Chain)
+    End
+}
+
+// Each callee hands its value back through a recursion as deep as `main`'s argument count plus
+// one, which `-O2` cannot know, so the inliner cannot fold the call into `main`; each also
+// compares its value after the recursive call, so that the call is neither a tail call nor the
+// identity, whose call `-O2` drops (see `enum_alloc_copy.sisu`). The moved local therefore
+// crosses a real call before scope end releases the zero value it leaves behind.
+// o2-calls: main other 1
+// o2-calls: main present 1
+// o2-calls: main ends 1
+fn ends(c: Chain, depth: i64) -> Chain {
+    let mut d = c
+    if depth > 0 {
+        d = ends(d, depth - 1)
+    }
+    if d == Chain.End {
+        d = Chain.Link("", Chain.End)
+    }
+    d
+}
+
+fn other(z: Z, depth: i64) -> Z {
+    let mut y = z
+    if depth > 0 {
+        y = other(y, depth - 1)
+    }
+    if y == Z.Other {
+        y = Z.Text("", Inner.Empty, C(n: 0))
+    }
+    y
+}
+
+fn present(o: Z?, depth: i64) -> Z? {
+    let mut p = o
+    if depth > 0 {
+        p = present(p, depth - 1)
+    }
+    if p == None {
+        p = Z.Other
+    }
+    p
+}
+
+fn main(args: [string]) {
+    let depth = args.len() + 1
+    let z = Z.Text("a" + "b", Inner.Name("c" + "d"), C(n: 1))
+    print(other(z, depth) == Z.Other)                        // false: `z` moves into the call
+    let o: Z? = Z.Text("e" + "f", Inner.Name("g" + "h"), C(n: 2))
+    print(present(o, depth) != None)                         // true: `o` moves into the call
+    let fill = Z.Text("i" + "j", Inner.Name("k" + "l"), C(n: 3))
+    let none = [fill; 0]
+    print(none.len())                                        // 0
+    let mut w = Z.Text("m" + "", Inner.Empty, C(n: 4))
+    let kept = w
+    w = Z.Other
+    print(kept == w)                                         // false
+    let c = Chain.Link("n" + "o", Chain.Link("p" + "q", Chain.End))
+    print(ends(c, depth) == Chain.End)                       // false: `c` moves into the call
+}

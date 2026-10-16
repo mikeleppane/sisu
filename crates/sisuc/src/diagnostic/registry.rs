@@ -67,7 +67,7 @@ codes! {
     RangeOutsideFor = "E0023",
     EqualityChain = "E0024",
     ComparisonDirection = "E0025",
-    BuiltInTypeName = "E0026",
+    BuiltInName = "E0026",
     NeverConstructed = "E0027",
     NoMain = "E0028",
     MainSignature = "E0029",
@@ -153,6 +153,16 @@ codes! {
     UnsupportedFormatSpec = "E0109",
     FormatSpecLimit = "E0110",
     PrecisionNeedsF64 = "E0111",
+    VariantAfterMethod = "E0112",
+    VariantCase = "E0113",
+    MixedLabels = "E0114",
+    EmptyEnum = "E0115",
+    EnumNamedLocal = "E0116",
+    BareVariant = "E0117",
+    UnknownVariant = "E0118",
+    VariantForm = "E0119",
+    MemberKind = "E0120",
+    EnumField = "E0121",
     NanComparison = "W0005",
 }
 
@@ -219,13 +229,9 @@ pub(crate) enum DiagnosticKind {
     ExponentNeedsDigits { at: Span },
     /// A float literal at `at` that rounds to infinity in `f64`.
     FloatOutOfRange { at: Span },
-    /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`). `certain` is
+    /// The base prefix at `at` (`0` and `prefix`, an upper case `X`, `B` or `O`). `safe` is
     /// false when the lower case literal may still be rejected, as a bare 2^63 is.
-    BasePrefixUpperCase {
-        prefix: char,
-        certain: bool,
-        at: Span,
-    },
+    BasePrefixUpperCase { prefix: char, safe: bool, at: Span },
     /// The base prefix at `at` (`0` and `prefix`) with no digits after it.
     BasePrefixWithoutDigits { prefix: char, at: Span },
     /// The `digit`, at `at`, in a literal of base `radix` (2, 8 or 16), which is not a digit there.
@@ -244,18 +250,26 @@ pub(crate) enum DiagnosticKind {
     Var { at: Span, field: bool },
     /// The type `ty`, then `?` again, from `at`.
     OptionalNests { ty: String, at: Span },
-    /// A `,` at `at` after a field.
-    FieldComma { at: Span },
+    /// A `,` at `at` after a `member`. `remove` is the comma, and the spaces after it unless the
+    /// comma ends its line; `replacement` is what takes it: nothing, or a line break and the
+    /// indentation of the line.
+    FieldComma {
+        at: Span,
+        member: Member,
+        remove: Span,
+        replacement: String,
+    },
     /// A `let` at `at` in front of a field.
     FieldLet { at: Span, rest: LetField },
     /// A method named at `at` with no `self`.
     MethodNeedsSelf { at: Span },
-    /// A `mut` at `keyword` in front of the `self` at `receiver`; removing it is `certain` when
-    /// `self` is the whole parameter.
+    /// A `mut` at `keyword` in front of the `self` at `receiver`, in a method of `owner`. In a
+    /// class, removing it is `safe` when `self` is the whole parameter; in an enum it never is.
     MutSelf {
         keyword: Span,
         receiver: Span,
-        certain: bool,
+        safe: bool,
+        owner: Owner,
     },
     /// A `mut` at `at` in front of the parameter `name`.
     MutParameter { name: String, at: Span },
@@ -271,16 +285,18 @@ pub(crate) enum DiagnosticKind {
     EqualityChain { at: Span },
     /// A comparison at `at` that turns a chain around.
     ComparisonDirection { at: Span },
-    /// The built-in type name `name`, at `at`, taken by a class or function.
-    BuiltInTypeName { name: String, at: Span },
-    /// The class `class`, which no object can have: its field `field`, at `at`, needs a `target`.
-    /// `ty` is the field's type, where a `?` would break the cycle.
-    NeverConstructed {
-        class: String,
-        field: String,
-        target: String,
+    /// The built-in `name`, at `at`, taken by a class, function, constant, enum, variant or
+    /// binding.
+    BuiltInName {
+        name: String,
         at: Span,
-        ty: Span,
+        kind: BuiltIn,
+    },
+    /// The class or enum `name`, which no value can have, reported at `at` for `cause`.
+    NeverConstructed {
+        name: String,
+        at: Span,
+        cause: Unbuilt,
     },
     /// A program with no `main`.
     NoMain,
@@ -400,7 +416,7 @@ pub(crate) enum DiagnosticKind {
     /// when the value is more than one term, so removing the conversion keeps its parentheses.
     /// `labeled` is set when the argument has a label, which the removal would delete along with
     /// its own error, so there is no fix. `commented` is set when the removal would delete a
-    /// comment, which makes it a guess.
+    /// comment, which makes it unsafe.
     AlreadyConverted {
         value: Option<String>,
         ty: String,
@@ -410,8 +426,12 @@ pub(crate) enum DiagnosticKind {
         labeled: bool,
         commented: bool,
     },
-    /// A label at `at` on an argument of a call that is not a constructor.
-    LabeledArgument { at: Span },
+    /// A label at `at` on an argument of a call that is not a constructor. A call of a variant
+    /// that declares no labels is reported once, at its first label: `variant` holds them all.
+    LabeledArgument {
+        at: Span,
+        variant: Option<VariantLabels>,
+    },
     /// A constructor at `at` without the field `field`; `fields` are its class's, in order.
     MissingField {
         field: String,
@@ -419,7 +439,7 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// The method `name` of `owner`, at `at`, read as a field. `call` is whether adding `()`
-    /// is certain to fix it, when it can be added.
+    /// is safe to fix it, when it can be added.
     MethodNotField {
         name: String,
         owner: String,
@@ -433,7 +453,8 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A call of `function` (`print` or `eprint`) at `at` with no argument, several, or one it
-    /// cannot print. `class` is the class of an object argument, and `at` is then that argument.
+    /// cannot print. `class` is the class or enum of an object or enum argument, and `at` is
+    /// then that argument.
     PrintArgument {
         function: &'static str,
         at: Span,
@@ -488,7 +509,7 @@ pub(crate) enum DiagnosticKind {
     SumNeedsNumbers { ty: String, at: Span },
     /// A call at `at` of the method `name` of an array or a number as a function, with the
     /// receiver as its first argument. `next` is the next argument, if any. `wrap` is whether
-    /// `receiver` needs parentheses to take a `.name(...)`, and `certain` whether the method call
+    /// `receiver` needs parentheses to take a `.name(...)`, and `safe` whether the method call
     /// checks.
     MethodAsFunction {
         name: String,
@@ -496,7 +517,7 @@ pub(crate) enum DiagnosticKind {
         receiver: Span,
         next: Option<Span>,
         wrap: bool,
-        certain: bool,
+        safe: bool,
     },
     /// The token at `at`, where the tree passes `limit` levels.
     NestingTooDeep { at: Span, limit: usize },
@@ -571,8 +592,9 @@ pub(crate) enum DiagnosticKind {
     /// The `todo` at `at`, which panics when it runs.
     TodoLeft { at: Span },
     /// A `todo` written as Rust's `todo!` or as `todo()`: `at` is the first extra token, and
-    /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`.
-    TodoForm { at: Span, delete: Span },
+    /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`; unless `safe`, the
+    /// removal joins `todo` to the word after it.
+    TodoForm { at: Span, delete: Span, safe: bool },
     /// The conversion to `to` at `at`, in a constant's value, which can fail; `fix` is the
     /// literal that replaces it, when the value is known and a literal shows it plainly.
     ConversionInConstant {
@@ -606,6 +628,51 @@ pub(crate) enum DiagnosticKind {
         at: Span,
         fix: Option<Span>,
     },
+    /// The variant at `at`, which follows the method whose `fn` is at `first_method`.
+    VariantAfterMethod { at: Span, first_method: Span },
+    /// The variant `name`, at `at`, which starts with no upper-case letter.
+    VariantCase { name: String, at: Span },
+    /// A payload of the variant `variant` that labels some fields and not others; `at` is the
+    /// first field labeled differently from the first.
+    MixedLabels { variant: String, at: Span },
+    /// The enum `name`, at `at`, which declares no variant.
+    EmptyEnum { name: String, at: Span },
+    /// A local, parameter or binding at `at` named `name`, which names an enum.
+    EnumNamedLocal { name: String, at: Span },
+    /// The variant `name`, at `at`, written without its enum where no item or binding takes the
+    /// name; `enums` are the enums that have such a variant, in declaration order.
+    BareVariant {
+        name: String,
+        enums: Vec<String>,
+        at: Span,
+    },
+    /// The variant `name`, at `at`, which the enum `enum_name` does not have; `suggestion` is its
+    /// closest variant.
+    UnknownVariant {
+        enum_name: String,
+        name: String,
+        at: Span,
+        suggestion: Option<Suggestion>,
+    },
+    /// The variant `path` (`State.Idle`) built the wrong way. With `payload` it has one and is not
+    /// called, and `at` is the variant's name. Without, it holds nothing and is called, and `at`
+    /// is the parentheses with what they hold; `held` says whether they hold anything.
+    VariantForm {
+        path: String,
+        payload: bool,
+        held: bool,
+        at: Span,
+    },
+    /// The member `name`, at `at`, of the enum `enum_name`, used as the other kind of member: a
+    /// `method` named through the enum, or else a variant called on a value.
+    MemberKind {
+        name: String,
+        enum_name: String,
+        method: bool,
+        at: Span,
+    },
+    /// The field at `at`, read or assigned on a value of the enum `enum_name`.
+    EnumField { enum_name: String, at: Span },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -652,6 +719,13 @@ pub(crate) struct TypedLiteral {
     pub(crate) call: Span,
     pub(crate) literal: String,
     pub(crate) annotate: Option<(usize, String)>,
+}
+
+/// The variant `path` (`Expr.Num`) whose payload declares no labels, and each `label: ` of a call
+/// of it, which its fix deletes.
+pub(crate) struct VariantLabels {
+    pub(crate) path: String,
+    pub(crate) labels: Vec<Span>,
 }
 
 /// What a literal that is not closed is the literal of.
@@ -720,9 +794,19 @@ pub(crate) enum Definition {
     Binding,
     Type,
     Constant,
+    Enum,
+    Variant,
 }
 
 impl Definition {
+    /// The indefinite article before `word`.
+    fn article(self) -> &'static str {
+        match self {
+            Definition::Enum => "an",
+            _ => "a",
+        }
+    }
+
     fn word(self) -> &'static str {
         match self {
             Definition::Function => "function",
@@ -732,6 +816,8 @@ impl Definition {
             Definition::Binding => "binding",
             Definition::Type => "type",
             Definition::Constant => "constant",
+            Definition::Enum => "enum",
+            Definition::Variant => "variant",
         }
     }
 }
@@ -790,7 +876,7 @@ pub(crate) struct Operand {
 pub(crate) struct Join {
     pub(crate) gap: Span,
     /// Whether the move is always right, not only likely.
-    pub(crate) certain: bool,
+    pub(crate) safe: bool,
 }
 
 /// What a `;` follows, and so what can be done about it.
@@ -802,6 +888,54 @@ pub(crate) enum SemicolonPlace {
     MidLine,
     /// It ends a complete statement or member, and another `;` follows.
     Repeated,
+}
+
+/// What a comma follows, in a list that puts each on its own line.
+#[derive(Clone, Copy)]
+pub(crate) enum Member {
+    Field,
+    Variant,
+}
+
+impl std::fmt::Display for Member {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Member::Field => "field",
+            Member::Variant => "variant",
+        })
+    }
+}
+
+/// What owns a method.
+#[derive(Clone)]
+pub(crate) enum Owner {
+    Class,
+    Enum(String),
+}
+
+/// What a built-in name is, and so why a program cannot take it.
+#[derive(Clone, Copy)]
+pub(crate) enum BuiltIn {
+    /// The name of a built-in type.
+    Type,
+    /// A keyword.
+    Keyword,
+    /// A constructor milestone 8's prelude takes: `Some`, `Ok` or `Err`.
+    Constructor,
+}
+
+/// Why no value of a class or enum can be built.
+pub(crate) enum Unbuilt {
+    /// A class whose field `field`, at the diagnostic's span, needs a `target`; `ty` is the
+    /// field's type, where a `?` would break the cycle.
+    Field {
+        field: String,
+        target: String,
+        ty: Span,
+    },
+    /// An enum, and the links that lead from it back to it: each holder (`D.Q` or `K.d`) and
+    /// the type it holds.
+    Chain(Vec<(String, String)>),
 }
 
 /// What follows the `let` in front of a field.
@@ -878,7 +1012,7 @@ impl DiagnosticKind {
             DiagnosticKind::RangeOutsideFor { .. } => Code::RangeOutsideFor,
             DiagnosticKind::EqualityChain { .. } => Code::EqualityChain,
             DiagnosticKind::ComparisonDirection { .. } => Code::ComparisonDirection,
-            DiagnosticKind::BuiltInTypeName { .. } => Code::BuiltInTypeName,
+            DiagnosticKind::BuiltInName { .. } => Code::BuiltInName,
             DiagnosticKind::NeverConstructed { .. } => Code::NeverConstructed,
             DiagnosticKind::NoMain => Code::NoMain,
             DiagnosticKind::MainSignature { .. } => Code::MainSignature,
@@ -960,6 +1094,16 @@ impl DiagnosticKind {
             DiagnosticKind::UnsupportedFormatSpec { .. } => Code::UnsupportedFormatSpec,
             DiagnosticKind::FormatSpecLimit { .. } => Code::FormatSpecLimit,
             DiagnosticKind::PrecisionNeedsF64 { .. } => Code::PrecisionNeedsF64,
+            DiagnosticKind::VariantAfterMethod { .. } => Code::VariantAfterMethod,
+            DiagnosticKind::VariantCase { .. } => Code::VariantCase,
+            DiagnosticKind::MixedLabels { .. } => Code::MixedLabels,
+            DiagnosticKind::EmptyEnum { .. } => Code::EmptyEnum,
+            DiagnosticKind::EnumNamedLocal { .. } => Code::EnumNamedLocal,
+            DiagnosticKind::BareVariant { .. } => Code::BareVariant,
+            DiagnosticKind::UnknownVariant { .. } => Code::UnknownVariant,
+            DiagnosticKind::VariantForm { .. } => Code::VariantForm,
+            DiagnosticKind::MemberKind { .. } => Code::MemberKind,
+            DiagnosticKind::EnumField { .. } => Code::EnumField,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
@@ -1024,7 +1168,7 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::NeverReassigned { name, at, keyword } => {
                 Diagnostic::coded(code, at, format!("`{name}` is never reassigned")).with_fix(Fix {
                     message: "declare it with `let`".to_string(),
-                    certain: true,
+                    safe: true,
                     edits: vec![Edit {
                         span: Span::new(keyword.start(), at.start()),
                         replacement: String::new(),
@@ -1043,7 +1187,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 let d = Diagnostic::coded(
                     code,
                     at,
-                    "`{` must be on the same line as `fn`, `class`, `if`, `else`, `while` or `for`",
+                    "`{` must be on the same line as `fn`, `class`, `enum`, `if`, `else`, `while` or `for`",
                 );
                 match join {
                     Some(join) => d.with_fix(join_fix(
@@ -1095,7 +1239,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "a float needs digits on both sides of `.`").with_fix(
                     Fix {
                         message: format!("write a `0` {side} the `.`"),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: fix,
                             replacement: "0".to_string(),
@@ -1111,12 +1255,12 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::BasePrefixUpperCase {
                 prefix,
-                certain,
+                safe,
                 at,
             } => {
                 Diagnostic::coded(code, at, "base prefixes are lower case").with_fix(Fix {
                     message: "write the prefix in lower case".to_string(),
-                    certain,
+                    safe,
                     edits: vec![Edit {
                         span: Span::new(at.end() - 1, at.end()),
                         replacement: prefix.to_ascii_lowercase().to_string(),
@@ -1137,11 +1281,11 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::UnexpectedCharacter { c, at } => {
                 let d = Diagnostic::coded(code, at, format!("unexpected character {}", shown(c)));
                 match c {
-                    '&' => d.with_fix(guess("if you meant logical and, use `&&`", at, "&&")),
-                    '|' => d.with_fix(guess("if you meant logical or, use `||`", at, "||")),
+                    '&' => d.with_fix(unsafe_fix("if you meant logical and, use `&&`", at, "&&")),
+                    '|' => d.with_fix(unsafe_fix("if you meant logical or, use `||`", at, "||")),
                     '\u{FEFF}' if at.start() == 0 => d.with_fix(Fix {
                         message: "remove the byte order mark at the start of the file".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: at,
                             replacement: String::new(),
@@ -1162,7 +1306,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 match place {
                     SemicolonPlace::EndsLine => d.with_fix(Fix {
                         message: "remove the `;`".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: at,
                             replacement: String::new(),
@@ -1186,16 +1330,27 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("`{ty}??` is not a type"))
                     .with_help("optionals do not nest")
             }
-            DiagnosticKind::FieldComma { at } => {
-                Diagnostic::coded(code, at, "a field ends at the end of the line")
-                    .with_help("put each field on its own line")
-            }
+            DiagnosticKind::FieldComma {
+                at,
+                member,
+                remove,
+                replacement,
+            } => Diagnostic::coded(code, at, format!("a {member} ends at the end of the line"))
+                .with_help(format!("put each {member} on its own line"))
+                .with_fix(Fix {
+                    message: "remove the comma and break the line".to_string(),
+                    safe: true,
+                    edits: vec![Edit {
+                        span: remove,
+                        replacement,
+                    }],
+                }),
             DiagnosticKind::FieldLet { at, rest } => {
                 let d = Diagnostic::coded(code, at, "a field takes no `let`");
                 match rest {
                     LetField::Whole { remove } => d.with_fix(Fix {
                         message: "remove the `let`".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: remove,
                             replacement: String::new(),
@@ -1218,22 +1373,40 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::MutSelf {
                 keyword,
                 receiver,
-                certain,
-            } => Diagnostic::coded(code, keyword, "a class method takes `self`, not `mut self`")
-                .with_help("an object is shared: `self` can already write every `mut` field")
-                .with_fix(Fix {
-                    message: if certain {
-                        "remove the `mut`"
-                    } else {
-                        "try removing the `mut`; the receiver may need another change"
-                    }
-                    .to_string(),
-                    certain,
-                    edits: vec![Edit {
-                        span: Span::new(keyword.start(), receiver.start()),
-                        replacement: String::new(),
-                    }],
-                }),
+                safe,
+                owner,
+            } => {
+                let remove = Span::new(keyword.start(), receiver.start());
+                match owner {
+                    Owner::Class => Diagnostic::coded(
+                        code,
+                        keyword,
+                        "a class method takes `self`, not `mut self`",
+                    )
+                    .with_help("an object is shared: `self` can already write every `mut` field")
+                    .with_fix(Fix {
+                        message: if safe {
+                            "remove the `mut`"
+                        } else {
+                            "try removing the `mut`; the receiver may need another change"
+                        }
+                        .to_string(),
+                        safe,
+                        edits: vec![Edit {
+                            span: remove,
+                            replacement: String::new(),
+                        }],
+                    }),
+                    // The body may still assign `self`, so the fix is never safe.
+                    Owner::Enum(name) => Diagnostic::coded(
+                        code,
+                        keyword,
+                        format!("`{name}` is an enum, and enum values never change"),
+                    )
+                    .with_help(format!("return a new `{name}`"))
+                    .with_fix(unsafe_fix("remove the `mut`", remove, "")),
+                }
+            }
             DiagnosticKind::MutParameter { name, at } => {
                 Diagnostic::coded(code, at, "a parameter cannot be `mut`").with_help(format!(
                     "copy it into a variable: `let mut {name} = {name}`"
@@ -1259,28 +1432,41 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::ComparisonDirection { at } => {
                 Diagnostic::coded(code, at, "a comparison chain must go in one direction")
             }
-            DiagnosticKind::BuiltInTypeName { name, at } => {
-                Diagnostic::coded(code, at, format!("`{name}` is a built-in type"))
-            }
-            DiagnosticKind::NeverConstructed {
-                class,
-                field,
-                target,
-                at,
-                ty,
-            } => Diagnostic::coded(
+            DiagnosticKind::BuiltInName { name, at, kind } => Diagnostic::coded(
                 code,
                 at,
-                format!("`{class}` can never be constructed: field `{field}` needs a value of type `{target}`"),
-            )
-            .with_fix(Fix {
-                message: format!("if the field can be absent, make it optional: `{target}?`"),
-                certain: false,
-                edits: vec![Edit {
-                    span: Span::new(ty.end(), ty.end()),
-                    replacement: "?".to_string(),
-                }],
-            }),
+                match kind {
+                    BuiltIn::Type => format!("`{name}` is a built-in type"),
+                    BuiltIn::Constructor => format!("`{name}` is a built-in name"),
+                    BuiltIn::Keyword => {
+                        format!("`{name}` is a keyword; a variant cannot take its name")
+                    }
+                },
+            ),
+            DiagnosticKind::NeverConstructed { name, at, cause } => match cause {
+                Unbuilt::Field { field, target, ty } => Diagnostic::coded(
+                    code,
+                    at,
+                    format!("`{name}` can never be constructed: field `{field}` needs a value of type `{target}`"),
+                )
+                .with_fix(Fix {
+                    message: format!("if the field can be absent, make it optional: `{target}?`"),
+                    safe: false,
+                    edits: vec![Edit {
+                        span: Span::new(ty.end(), ty.end()),
+                        replacement: "?".to_string(),
+                    }],
+                }),
+                Unbuilt::Chain(links) => {
+                    let chain = links
+                        .iter()
+                        .map(|(holder, held)| format!("`{holder}` holds a `{held}`"))
+                        .collect::<Vec<_>>()
+                        .join(", and ");
+                    Diagnostic::coded(code, at, format!("no value of `{name}` can be built"))
+                        .with_label(chain)
+                }
+            },
             DiagnosticKind::NoMain => {
                 Diagnostic::coded(code, Span::new(0, 0), "no `main` function")
             }
@@ -1297,7 +1483,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 suggestion,
             } => similar(
                 Diagnostic::coded(code, at, format!("cannot find type `{name}`")).with_help(
-                    "the types are `i64`, `u8`, `f64`, `bool`, `char`, `string`, classes and arrays such as `[i64]`",
+                    "the types are `i64`, `u8`, `f64`, `bool`, `char`, `string`, classes, enums and arrays such as `[i64]`",
                 ),
                 at,
                 suggestion,
@@ -1340,7 +1526,7 @@ impl From<DiagnosticKind> for Diagnostic {
                         operand,
                     })) => d.with_fix(Fix {
                         message: format!("if the types are right, convert it with `{to}(...)`"),
-                        certain: false,
+                        safe: false,
                         edits: vec![
                             Edit {
                                 span: Span::new(operand.start(), operand.start()),
@@ -1388,14 +1574,14 @@ impl From<DiagnosticKind> for Diagnostic {
                         }
                         d.with_fix(Fix {
                             message: "use interpolation".to_string(),
-                            certain: false,
+                            safe: false,
                             edits,
                         })
                     }
                     // The call's name and parentheses become the literal's quote and brace.
                     Some(MismatchFix::InterpolateCall { call, arg }) => d.with_fix(Fix {
                         message: "use interpolation".to_string(),
-                        certain: false,
+                        safe: false,
                         edits: vec![
                             Edit {
                                 span: Span::new(call.start(), arg.start()),
@@ -1409,7 +1595,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     }),
                     Some(MismatchFix::WrapInString(value)) => d.with_fix(Fix {
                         message: "use interpolation".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![
                             Edit {
                                 span: Span::new(value.start(), value.start()),
@@ -1446,7 +1632,8 @@ impl From<DiagnosticKind> for Diagnostic {
                         owner,
                     } if first != kind => {
                         let owner = owner.map_or_else(String::new, |c| format!(" of `{c}`"));
-                        (format!("`{name}` is already a {}{owner}", first.word()), Some(span))
+                        let (article, word) = (first.article(), first.word());
+                        (format!("`{name}` is already {article} {word}{owner}"), Some(span))
                     }
                     Earlier::At { span, .. } => {
                         (format!("{} `{name}` is defined twice", kind.word()), Some(span))
@@ -1486,7 +1673,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("`{text}` is not exactly an `f64`")).with_fix(
                     Fix {
                         message: format!("write `{nearest}`"),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: at,
                             replacement: nearest,
@@ -1534,7 +1721,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("{} is not optional", named(value))).with_fix(
                     Fix {
                         message: "replace `?.` with `.`".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: access,
                             replacement: ".".to_string(),
@@ -1607,13 +1794,27 @@ impl From<DiagnosticKind> for Diagnostic {
                     } else {
                         "remove the conversion".to_string()
                     },
-                    certain: !commented,
+                    safe: !commented,
                     edits,
                 })
             }
-            DiagnosticKind::LabeledArgument { at } => {
+            DiagnosticKind::LabeledArgument { at, variant: None } => {
                 Diagnostic::coded(code, at, "labels on arguments come in milestone 10")
             }
+            DiagnosticKind::LabeledArgument {
+                at,
+                variant: Some(VariantLabels { path, labels }),
+            } => Diagnostic::coded(code, at, format!("`{path}` takes no labels")).with_fix(Fix {
+                message: "remove the labels".to_string(),
+                safe: false,
+                edits: labels
+                    .into_iter()
+                    .map(|span| Edit {
+                        span,
+                        replacement: String::new(),
+                    })
+                    .collect(),
+            }),
             DiagnosticKind::MissingField { field, fields, at } => {
                 Diagnostic::coded(code, at, format!("missing field `{field}`"))
                     .with_help(field_order(&fields))
@@ -1630,13 +1831,13 @@ impl From<DiagnosticKind> for Diagnostic {
                     format!("`{name}` is a method of `{owner}`, not a field"),
                 );
                 match call {
-                    Some(certain) => d.with_fix(Fix {
-                        message: if certain {
+                    Some(safe) => d.with_fix(Fix {
+                        message: if safe {
                             format!("call it: `{name}()`")
                         } else {
                             format!("if you meant to call `{name}`, add `()`; it also needs its arguments")
                         },
-                        certain,
+                        safe,
                         edits: vec![Edit {
                             span: Span::new(at.end(), at.end()),
                             replacement: "()".to_string(),
@@ -1687,7 +1888,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 match access {
                     Some(access) => d
                         .with_help("to use the value only when it is present, unwrap it with `if let`")
-                        .with_fix(guess("if a `None` result is fine, use `?.`", access, "?.")),
+                        .with_fix(unsafe_fix("if a `None` result is fine, use `?.`", access, "?.")),
                     None => d.with_help("unwrap it with `if let`"),
                 }
             }
@@ -1717,7 +1918,7 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::ArgumentNeedsLabel { field, at } => {
                 Diagnostic::coded(code, at, "this argument needs a label").with_fix(Fix {
                     message: "label it with its field".to_string(),
-                    certain: true,
+                    safe: true,
                     edits: vec![Edit {
                         span: Span::new(at.start(), at.start()),
                         replacement: format!("{field}: "),
@@ -1756,7 +1957,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 receiver,
                 next,
                 wrap,
-                certain,
+                safe,
             } => {
                 let (open, close) = if wrap { ("(", ")") } else { ("", "") };
                 Diagnostic::coded(
@@ -1765,12 +1966,12 @@ impl From<DiagnosticKind> for Diagnostic {
                     format!("`{name}` is a method, not a function"),
                 )
                 .with_fix(Fix {
-                    message: if certain {
+                    message: if safe {
                         format!("call `{name}` as a method")
                     } else {
                         format!("try calling `{name}` as a method, then fix its arguments")
                     },
-                    certain,
+                    safe,
                     edits: vec![
                         Edit {
                             span: Span::new(at.start(), receiver.start()),
@@ -1802,7 +2003,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "`_` binds nothing, so it cannot be `mut`").with_fix(
                     Fix {
                         message: "use `let _`".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: Span::new(keyword.start(), at.start()),
                             replacement: String::new(),
@@ -1815,7 +2016,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 if bind {
                     d.with_fix(Fix {
                         message: "bind it with `let _`".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![Edit {
                             span: Span::new(at.start(), at.start()),
                             replacement: "let ".to_string(),
@@ -1844,7 +2045,7 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::ConstInFunction { at } => {
                 Diagnostic::coded(code, at, "`const` is declared at the top level").with_fix(Fix {
                     message: "use `let`".to_string(),
-                    certain: true,
+                    safe: true,
                     edits: vec![Edit {
                         span: at,
                         replacement: "let".to_string(),
@@ -1884,7 +2085,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     .with_help(
                         r#"the escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\{`, `\}` and `\u{...}`"#,
                     )
-                    .with_fix(guess(
+                    .with_fix(unsafe_fix(
                         r"if you meant a backslash, write `\\`",
                         Span::new(at.start(), at.start()),
                         "\\",
@@ -1907,7 +2108,7 @@ impl From<DiagnosticKind> for Diagnostic {
                     };
                     d.with_fix(Fix {
                         message: "if you meant a string, write it in double quotes".to_string(),
-                        certain: false,
+                        safe: false,
                         edits: vec![quote(at.start()), quote(at.end() - 1)],
                     })
                 } else {
@@ -1927,14 +2128,14 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::BraceInString { at } => {
                 Diagnostic::coded(code, at, "a `}` in a string must be escaped").with_fix(Fix {
                     message: r"write `\}`".to_string(),
-                    certain: true,
+                    safe: true,
                     edits: vec![backslash(at.start())],
                 })
             }
             DiagnosticKind::EmptyInterpolation { at } => {
                 Diagnostic::coded(code, at, "empty interpolation").with_fix(Fix {
                     message: r"write `\{\}` for literal braces".to_string(),
-                    certain: false,
+                    safe: false,
                     edits: vec![backslash(at.start()), backslash(at.end() - 1)],
                 })
             }
@@ -1954,14 +2155,14 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::TodoLeft { at } => {
                 Diagnostic::coded(code, at, "`todo` panics when it runs")
             }
-            DiagnosticKind::TodoForm { at, delete } => Diagnostic::coded(
+            DiagnosticKind::TodoForm { at, delete, safe } => Diagnostic::coded(
                 code,
                 at,
                 "`todo` takes one message in parentheses, or none",
             )
             .with_fix(Fix {
                 message: "remove it".to_string(),
-                certain: true,
+                safe,
                 edits: vec![Edit {
                     span: delete,
                     replacement: String::new(),
@@ -1993,7 +2194,7 @@ impl From<DiagnosticKind> for Diagnostic {
                         });
                         d.with_fix(Fix {
                             message: "write the literal with its type".to_string(),
-                            certain: true,
+                            safe: true,
                             edits,
                         })
                     }
@@ -2003,7 +2204,7 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::UnusedValue { ty, at } => {
                 Diagnostic::coded(code, at, format!("unused value of type `{ty}`"))
                     .with_help("use it, or write `let _ =` to drop it on purpose")
-                    .with_fix(guess(
+                    .with_fix(unsafe_fix(
                         "drop it on purpose",
                         Span::new(at.start(), at.start()),
                         "let _ = ",
@@ -2053,7 +2254,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 };
                 d.with_fix(Fix {
                     message: format!("write `{form}`"),
-                    certain: true,
+                    safe: true,
                     edits,
                 })
             }
@@ -2062,7 +2263,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 match fix {
                     Some(PowerFix { left, right }) => d.with_fix(Fix {
                         message: "try a `pow` call, which needs an `f64` on the left".to_string(),
-                        certain: false,
+                        safe: false,
                         edits: vec![
                             Edit {
                                 span: Span::new(left.end(), right.start()),
@@ -2100,7 +2301,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 match fix {
                     Some(operand) => d.with_fix(Fix {
                         message: "convert it with `f64(...)`".to_string(),
-                        certain: true,
+                        safe: true,
                         edits: vec![
                             Edit {
                                 span: Span::new(operand.start(), operand.start()),
@@ -2115,6 +2316,120 @@ impl From<DiagnosticKind> for Diagnostic {
                     None => d,
                 }
             }
+            DiagnosticKind::VariantAfterMethod { at, first_method } => {
+                Diagnostic::coded(code, at, "variants come before methods")
+                    .with_secondary(first_method, "the first method")
+            }
+            DiagnosticKind::VariantCase { name, at } => {
+                let message = "a variant name starts with an upper-case letter";
+                // Only a lower-case first letter gets a fix; `_Foo` would still break the rule.
+                let mut chars = name.chars();
+                let capitalized = chars
+                    .next()
+                    .filter(|c| c.is_lowercase())
+                    .map(|c| format!("{}{}", c.to_uppercase(), chars.as_str()));
+                match capitalized {
+                    Some(capitalized) => {
+                        Diagnostic::coded(code, at, format!("{message}: `{capitalized}`"))
+                            .with_fix(unsafe_fix("capitalize it", at, &capitalized))
+                    }
+                    None => Diagnostic::coded(code, at, message),
+                }
+            }
+            DiagnosticKind::MixedLabels { variant, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("label every field of `{variant}` or none"),
+            ),
+            DiagnosticKind::EmptyEnum { name, at } => {
+                Diagnostic::coded(code, at, format!("`{name}` needs at least one variant"))
+            }
+            DiagnosticKind::EnumNamedLocal { name, at } => {
+                Diagnostic::coded(code, at, format!("`{name}` names an enum"))
+            }
+            DiagnosticKind::BareVariant { name, enums, at } => {
+                // Inserting the enum's name is certain only when one enum has the variant.
+                let safe = enums.len() == 1;
+                let qualify = |e: &String| Fix {
+                    message: format!("write `{e}.{name}`"),
+                    safe,
+                    edits: vec![Edit {
+                        span: Span::new(at.start(), at.start()),
+                        replacement: format!("{e}."),
+                    }],
+                };
+                let d = match enums.as_slice() {
+                    [e] => Diagnostic::coded(
+                        code,
+                        at,
+                        format!("`{name}` is a variant of `{e}`; write `{e}.{name}`"),
+                    ),
+                    several => {
+                        let paths: Vec<_> =
+                            several.iter().map(|e| format!("`{e}.{name}`")).collect();
+                        Diagnostic::coded(
+                            code,
+                            at,
+                            format!("`{name}` is a variant of several enums"),
+                        )
+                        .with_help(format!("write one of {}", paths.join(", ")))
+                    }
+                };
+                enums.iter().fold(d, |d, e| d.with_fix(qualify(e)))
+            }
+            DiagnosticKind::UnknownVariant {
+                enum_name,
+                name,
+                at,
+                suggestion,
+            } => similar(
+                Diagnostic::coded(code, at, format!("`{enum_name}` has no variant `{name}`")),
+                at,
+                suggestion,
+            ),
+            DiagnosticKind::VariantForm {
+                path,
+                payload,
+                held,
+                at,
+            } => {
+                if payload {
+                    Diagnostic::coded(
+                        code,
+                        at,
+                        format!("`{path}` needs its payload: `{path}(...)`"),
+                    )
+                } else {
+                    Diagnostic::coded(code, at, format!("`{path}` holds nothing; write `{path}`"))
+                        .with_fix(Fix {
+                            message: "remove the parentheses".to_string(),
+                            // Arguments or a comment would be deleted with the parentheses.
+                            safe: !held,
+                            edits: vec![Edit {
+                                span: at,
+                                replacement: String::new(),
+                            }],
+                        })
+                }
+            }
+            DiagnosticKind::MemberKind {
+                name,
+                enum_name,
+                method,
+                at,
+            } => {
+                let message = if method {
+                    format!("`{name}` is a method; call it on a value: `e.{name}()`")
+                } else {
+                    format!("`{name}` is a variant; build it with `{enum_name}.{name}`")
+                };
+                Diagnostic::coded(code, at, message)
+            }
+            DiagnosticKind::EnumField { enum_name, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{enum_name}` has no fields; take it apart with `match`"),
+            ),
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };
                 let d = Diagnostic::coded(
@@ -2157,7 +2472,7 @@ impl From<DiagnosticKind> for Diagnostic {
                         edits.retain(|e| e.span.start() != e.span.end() || !e.replacement.is_empty());
                         d.with_fix(Fix {
                             message: "test it with `is_nan()`".to_string(),
-                            certain: true,
+                            safe: true,
                             edits,
                         })
                     }
@@ -2187,12 +2502,12 @@ fn named(path: Option<String>) -> String {
     path.map_or_else(|| "this value".to_string(), |path| format!("`{path}`"))
 }
 
-/// The fix that replaces the gap of `join` with a space: `message`, or `guess` when `join` is
-/// not certain.
-fn join_fix(message: &str, guess: &str, join: Join) -> Fix {
+/// The fix that replaces the gap of `join` with a space: `message`, or `unsafe_message` when `join`
+/// is not safe.
+fn join_fix(message: &str, unsafe_message: &str, join: Join) -> Fix {
     Fix {
-        message: if join.certain { message } else { guess }.to_string(),
-        certain: join.certain,
+        message: if join.safe { message } else { unsafe_message }.to_string(),
+        safe: join.safe,
         edits: vec![Edit {
             span: join.gap,
             replacement: " ".to_string(),
@@ -2200,13 +2515,17 @@ fn join_fix(message: &str, guess: &str, join: Join) -> Fix {
     }
 }
 
-/// `d`, with the guess that the name at `at` meant `suggestion`, if there is one.
+/// `d`, with the unsafe fix that replaces the name at `at` with `suggestion`, if there is one.
 fn similar(d: Diagnostic, at: Span, suggestion: Option<Suggestion>) -> Diagnostic {
     let Some(Suggestion { kind, name }) = suggestion else {
         return d;
     };
-    d.with_fix(guess(
-        &format!("a {} with a similar name exists: `{name}`", kind.word()),
+    d.with_fix(unsafe_fix(
+        &format!(
+            "{} {} with a similar name exists: `{name}`",
+            kind.article(),
+            kind.word()
+        ),
         at,
         &name,
     ))
@@ -2241,11 +2560,11 @@ fn is_format(c: char) -> bool {
         | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
 }
 
-/// The uncertain fix `message` that replaces `span` with `replacement`.
-fn guess(message: &str, span: Span, replacement: &str) -> Fix {
+/// The unsafe fix `message` that replaces `span` with `replacement`.
+fn unsafe_fix(message: &str, span: Span, replacement: &str) -> Fix {
     Fix {
         message: message.to_string(),
-        certain: false,
+        safe: false,
         edits: vec![Edit {
             span,
             replacement: replacement.to_string(),
@@ -2253,11 +2572,11 @@ fn guess(message: &str, span: Span, replacement: &str) -> Fix {
     }
 }
 
-/// The certain fix `message` that writes `mut ` before the name at `declared`.
+/// The safe fix `message` that writes `mut ` before the name at `declared`.
 fn insert_mut(message: &str, declared: Span) -> Fix {
     Fix {
         message: message.to_string(),
-        certain: true,
+        safe: true,
         edits: vec![Edit {
             span: Span::new(declared.start(), declared.start()),
             replacement: "mut ".to_string(),

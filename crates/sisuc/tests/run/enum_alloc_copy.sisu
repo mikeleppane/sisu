@@ -1,0 +1,44 @@
+fn iterations() -> i64 { 1000 }
+
+enum Msg {
+    Text(string)
+    Code(i64)
+}
+
+// `Add`'s two fields are boxes: copying an `Expr` retains them and allocates nothing.
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+}
+
+// Copying an enum retains its string and never copies it. `pass` recurses, and its depth is 1
+// or 2, so that the inliner cannot fold the call into `main` at `-O2`. It also compares its
+// string with `""`, so that it is not just the identity, whose call `-O2` drops.
+// o2-calls: main pass 1
+fn pass(m: Msg, depth: i64) -> Msg {
+    let mut n = m
+    if depth > 0 {
+        n = pass(n, depth - 1)
+    }
+    if n == Msg.Text("") {
+        n = Msg.Code(0)
+    }
+    n
+}
+
+fn main() {
+    let a = Msg.Text("n{iterations()}")
+    let mut b = a
+    let e = Expr.Add(Expr.Num(1), Expr.Num(2))
+    let mut f = e
+    let mut count = 0
+    for i in 0..iterations() {
+        let copy = a
+        b = pass(copy, i % 2 + 1)
+        f = e
+        count += 1
+    }
+    print(count)  // 1000 (0 with no iterations)
+    print(a == b) // true: `a` stays live through every copy
+    print(f == e) // true: `e` stays live through every copy too
+}

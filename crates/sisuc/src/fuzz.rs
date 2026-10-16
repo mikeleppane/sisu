@@ -1,12 +1,13 @@
 //! The entry point of the front-end fuzz target: `sisuc --check` on one input, with checks that
-//! every span it reports is well formed. The bug signal is a panic.
+//! every span it reports is well formed and every safe fix it shows keeps its promise. The bug
+//! signal is a panic.
 
-use crate::diagnostic::{Diagnostic, Edit, Fix, Span};
+use crate::diagnostic::{Code, Diagnostic, Edit, Fix, Span};
 use crate::report::{Format, Reporter};
 
 /// Runs `sisuc --check` on `data` as the file `input.sisu`, reports it as colored text and then
-/// as JSON, and asserts that every span of every diagnostic is well formed. Returns the text
-/// report followed by the JSON report.
+/// as JSON, and asserts that every span of every diagnostic is well formed and that every safe
+/// fix shown is safe. Returns the text report followed by the JSON report.
 ///
 /// The caller runs it on a thread with a stack of `STACK_SIZE`, as `main` runs `cli`: the
 /// deepest program the parser accepts overflows a smaller stack.
@@ -19,6 +20,8 @@ pub fn front_end(data: &[u8]) -> String {
     json.diagnostics("input.sisu", &checked.source, &checked.diagnostics);
     json.finish();
     assert_spans(&checked.source, &checked.diagnostics);
+    let shown = crate::front_end::sound_fixes(&checked.source, &checked.diagnostics);
+    assert_safe_fixes(&checked.source, &shown);
     String::from_utf8(out).expect("the reports should be UTF-8, as the source they quote is")
 }
 
@@ -60,6 +63,99 @@ fn assert_spans(source: &str, diagnostics: &[Diagnostic]) {
     }
 }
 
+/// Asserts that each safe fix of `diagnostics`, which the front end reports for `source`, keeps
+/// ADR 0013's promise when applied alone: it deletes no comment, removes its diagnostic (none of
+/// its code spans what it did), and keeps every diagnostic of another code, among those the
+/// front end reports before the first lexer error, which stops the parser, and those the lexer
+/// reports.
+/// It may also remove other reports of its own code, as one `mut` resolves each assignment it
+/// allowed, and it may reveal diagnostics it was hiding. Another diagnostic is kept when any
+/// diagnostic lies within what it spanned, since the fixed source may let the front end name the
+/// same problem more exactly, or reveal an error inside it that the checker stops at; otherwise
+/// it is matched by code, since a fix may move or rename what one quotes.
+fn assert_safe_fixes(source: &str, diagnostics: &[Diagnostic]) {
+    let codes = |ds: &[Diagnostic]| ds.iter().map(Diagnostic::code).collect::<Vec<_>>();
+    // Where the first lexer error starts: past it, what the parser reports depends on where it
+    // stopped, which a fix may change, so only the lexer's own reports are compared there.
+    let first = |ds: &[Diagnostic]| ds.iter().map(|e| e.span().start()).min();
+    let (lexer_diagnostics, comments) = lexed(source);
+    let stop = first(&lexer_diagnostics).unwrap_or(usize::MAX);
+    for d in diagnostics {
+        let code = d.code();
+        for fix in d.fixes().iter().filter(|f| f.safe()) {
+            for edit in fix.edits() {
+                let span = edit.span();
+                assert!(
+                    !comments.iter().any(|c| span.range().contains(c)),
+                    "{code:?}: a safe fix deletes a comment in {span:?}"
+                );
+            }
+            let fixed = fix.apply(source);
+            let after = crate::front_end::front_end(&fixed).1;
+            // Where a span of `source` would be in `fixed`: the edits before its ends move it.
+            let moved = |at: usize| {
+                let before = fix.edits().iter().filter(|e| e.span().end() <= at);
+                let (added, removed) = before.fold((0, 0), |(added, removed), e| {
+                    (
+                        added + e.replacement().len(),
+                        removed + e.span().range().len(),
+                    )
+                });
+                at + added - removed
+            };
+            let moved_span = |s: Span| (moved(s.start()), moved(s.end()));
+            // A diagnostic within `e`'s span reports the same problem, or one that stops the
+            // checker before it reaches `e`'s.
+            let spans_it = |e: &Diagnostic| {
+                let (start, end) = moved_span(e.span());
+                after
+                    .iter()
+                    .any(|a| start <= a.span().start() && a.span().end() <= end)
+            };
+            let (fixed_lexer_diagnostics, _) = lexed(&fixed);
+            let fixed_stop = first(&fixed_lexer_diagnostics).unwrap_or(usize::MAX);
+            let before_stops =
+                |e: &Diagnostic| e.span().start() < stop && moved(e.span().start()) < fixed_stop;
+            let unplaced: Vec<Code> = diagnostics
+                .iter()
+                .filter(|e| before_stops(e) && !spans_it(e))
+                .map(Diagnostic::code)
+                .collect();
+            keeps_others(code, &unplaced, &mut codes(&after), &fixed);
+            keeps_others(
+                code,
+                &codes(&lexer_diagnostics),
+                &mut codes(&fixed_lexer_diagnostics),
+                &fixed,
+            );
+            assert!(
+                !after.iter().any(|e| e.code() == code
+                    && (e.span().start(), e.span().end()) == moved_span(d.span())),
+                "{code:?}: a safe fix leaves its diagnostic:\n{fixed}"
+            );
+        }
+    }
+}
+
+/// The diagnostics the lexer reports for `source`, and where each comment starts.
+fn lexed(source: &str) -> (Vec<Diagnostic>, Vec<usize>) {
+    match crate::lexer::lex(source) {
+        Ok(lexed) => (lexed.diagnostics, lexed.comments),
+        Err(d) => (vec![d], Vec::new()),
+    }
+}
+
+/// Takes from `after` one report of each code in `before` other than `code`, the code of the
+/// safe fix that turned the source into `fixed`; panics when one is missing.
+fn keeps_others(code: Code, before: &[Code], after: &mut Vec<Code>, fixed: &str) {
+    for &other in before.iter().filter(|&&c| c != code) {
+        let Some(at) = after.iter().position(|&c| c == other) else {
+            panic!("{code:?}: a safe fix removes {other:?} too:\n{fixed}");
+        };
+        after.swap_remove(at);
+    }
+}
+
 /// Edit `a`, listed before edit `b` in one fix, conflicts with it: they overlap, or `b` inserts at
 /// the start of a non-empty `a`, where `Fix::apply` would let `a` replace the insertion.
 fn conflict(a: Span, b: Span) -> bool {
@@ -73,7 +169,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::thread;
 
-    use super::{assert_spans, front_end};
+    use super::{assert_safe_fixes, assert_spans, front_end};
     use crate::diagnostic::{Code, Diagnostic, Span};
 
     /// `front_end` on a thread with a `STACK_SIZE` stack, as its contract asks.
@@ -271,5 +367,114 @@ mod tests {
     #[should_panic(expected = "edits conflict")]
     fn rejects_an_insertion_after_a_replacement_at_its_start() {
         assert_spans(SOURCE, &[fixed(&[(span(0, 1), "x"), (span(0, 0), "y")])]);
+    }
+
+    /// Two lexer errors: a `$`, and a `_` that ends a number.
+    const STRAY: &str = "fn main() {\n    $ // c\n}\nfn f() {\n    let x = 1_\n}\n";
+
+    /// The diagnostics of `STRAY`, the one of the `$` given only the safe fix `edits`.
+    fn stray_with_fix(edits: &[(Span, &str)]) -> Vec<Diagnostic> {
+        let mut ds = crate::front_end::front_end(STRAY).1;
+        let at = STRAY.find('$').expect("STRAY has a `$`");
+        let d = ds
+            .iter_mut()
+            .find(|d| d.span().start() == at)
+            .expect("the `$` should be reported");
+        *d = d.clone().with_safe_fix_for_test(edits);
+        ds
+    }
+
+    #[test]
+    fn accepts_a_safe_fix_that_removes_only_its_diagnostic() {
+        let at = STRAY.find('$').expect("STRAY has a `$`");
+        assert_safe_fixes(STRAY, &stray_with_fix(&[(span(at, at + 1), "")]));
+    }
+
+    #[test]
+    #[should_panic(expected = "a safe fix leaves its diagnostic")]
+    fn rejects_a_safe_fix_that_leaves_its_diagnostic() {
+        assert_safe_fixes(STRAY, &stray_with_fix(&[(span(0, 0), " ")]));
+    }
+
+    #[test]
+    #[should_panic(expected = "a safe fix removes")]
+    fn rejects_a_safe_fix_that_removes_another_diagnostic() {
+        let at = STRAY.find('$').expect("STRAY has a `$`");
+        let underscore = STRAY.find('_').expect("STRAY has a `_`");
+        let edits = [
+            (span(at, at + 1), ""),
+            (span(underscore, underscore + 1), ""),
+        ];
+        assert_safe_fixes(STRAY, &stray_with_fix(&edits));
+    }
+
+    /// No lexer error, so the checker runs: W0002 on `x`, E0052 on `Q`, W0003 on `todo`.
+    const CHECKED: &str = "enum E {\n    P(i64)\n}\nfn main() {\n    let mut x = 1\n    print(x)\n    let _ = Q(1)\n    todo\n}\n";
+
+    /// The diagnostics of `CHECKED`, the W0002 given only the safe fix that drops `mut ` and
+    /// writes `call` in place of `Q`.
+    fn checked_with_fix(call: &str) -> Vec<Diagnostic> {
+        let mut ds = crate::front_end::front_end(CHECKED).1;
+        let codes: Vec<Code> = ds.iter().map(Diagnostic::code).collect();
+        assert_eq!(
+            codes,
+            [
+                Code::NeverReassigned,
+                Code::FunctionNotFound,
+                Code::TodoLeft
+            ]
+        );
+        let mutable = CHECKED.find("mut ").expect("CHECKED has a `mut`");
+        let q = CHECKED.find('Q').expect("CHECKED calls `Q`");
+        ds[0] = ds[0]
+            .clone()
+            .with_safe_fix_for_test(&[(span(mutable, mutable + 4), ""), (span(q, q + 1), call)]);
+        ds
+    }
+
+    /// Calling `P` in place of `Q` turns the E0052 into an E0117 at the same place: the same
+    /// problem, named more exactly.
+    #[test]
+    fn accepts_a_safe_fix_that_renames_another_diagnostic() {
+        assert_safe_fixes(CHECKED, &checked_with_fix("P"));
+    }
+
+    /// Calling `print` in place of `Q` drops the E0052, while the W0003, outside it, stays.
+    #[test]
+    #[should_panic(expected = "a safe fix removes FunctionNotFound too")]
+    fn rejects_a_safe_fix_that_removes_another_diagnostic_of_the_checker() {
+        assert_safe_fixes(CHECKED, &checked_with_fix("print"));
+    }
+
+    /// An edit before the `$` that adds a byte moves where its report must not be.
+    #[test]
+    #[should_panic(expected = "a safe fix leaves its diagnostic")]
+    fn rejects_a_safe_fix_that_leaves_its_diagnostic_moved() {
+        let at = STRAY.find('$').expect("STRAY has a `$`");
+        assert_safe_fixes(STRAY, &stray_with_fix(&[(span(at - 1, at), "  ")]));
+    }
+
+    /// Past the `$`, the first lexer error, the parser's E0011 is not compared: a fix may remove
+    /// it, as this one does by also completing the `let`.
+    #[test]
+    fn accepts_a_safe_fix_that_removes_a_diagnostic_past_a_lexer_error() {
+        let src = "fn main() {\n    $\n}\nfn f() {\n    let x =\n}\n";
+        let mut ds = crate::front_end::front_end(src).1;
+        let codes: Vec<Code> = ds.iter().map(Diagnostic::code).collect();
+        assert_eq!(codes, [Code::UnexpectedCharacter, Code::Expected]);
+        let at = src.find('$').expect("src has a `$`");
+        let end = src.find('=').expect("src has a `=`") + 1;
+        ds[0] = ds[0]
+            .clone()
+            .with_safe_fix_for_test(&[(span(at, at + 1), ""), (span(end, end), " 1")]);
+        assert_safe_fixes(src, &ds);
+    }
+
+    #[test]
+    #[should_panic(expected = "a safe fix deletes a comment")]
+    fn rejects_a_safe_fix_that_deletes_a_comment() {
+        let at = STRAY.find('$').expect("STRAY has a `$`");
+        let end = STRAY.find("c\n").expect("STRAY has a comment") + 1;
+        assert_safe_fixes(STRAY, &stray_with_fix(&[(span(at, end), "")]));
     }
 }

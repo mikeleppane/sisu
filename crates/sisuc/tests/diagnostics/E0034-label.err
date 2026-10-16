@@ -1,0 +1,10 @@
+error[E0034]: field `w` is defined twice
+ --> E0034-label.sisu:2:18
+  |
+2 |     Rect(w: i64, w: i64)
+  |          -       ^
+  |          |
+  |          first defined here
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0034

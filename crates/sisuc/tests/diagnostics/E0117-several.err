@@ -1,0 +1,18 @@
+error[E0117]: `Idle` is a variant of several enums
+  --> E0117-several.sisu:12:13
+   |
+12 |     let _ = Idle
+   |             ^^^^
+   |
+   = help: write one of `State.Idle`, `Light.Idle`
+help: write `State.Idle`
+   |
+12 |     let _ = State.Idle
+   |             ++++++
+help: write `Light.Idle`
+   |
+12 |     let _ = Light.Idle
+   |             ++++++
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0117

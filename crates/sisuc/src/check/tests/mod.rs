@@ -7,6 +7,7 @@ use crate::parser::parse_ok;
 mod arrays;
 mod chars;
 mod constants;
+mod enums;
 mod floats;
 mod for_loops;
 mod patterns;
@@ -80,7 +81,7 @@ fn diagnostic(
     d
 }
 
-/// A fix as (certain, [(line, col, replaced text, replacement)]).
+/// A fix as (safe, [(line, col, replaced text, replacement)]).
 type FixAt<'a> = (bool, Vec<(usize, usize, &'a str, String)>);
 
 /// `d`'s fixes, located in `src`.
@@ -97,20 +98,20 @@ fn fixes<'a>(src: &'a str, d: &Diagnostic) -> Vec<FixAt<'a>> {
                     (line, col, &src[s.range()], e.replacement().to_string())
                 })
                 .collect();
-            (f.certain(), edits)
+            (f.safe(), edits)
         })
         .collect()
 }
 
-/// Asserts that applying `d`'s certain fixes to `src` leaves no diagnostic of `d`'s code.
+/// Asserts that applying `d`'s safe fixes to `src` leaves no diagnostic of `d`'s code.
 fn fix_removes_its_code(src: &str, d: &Diagnostic) {
     let edits: Vec<_> = d
         .fixes()
         .iter()
-        .filter(|f| f.certain())
+        .filter(|f| f.safe())
         .flat_map(Fix::edits)
         .collect();
-    assert!(!edits.is_empty(), "{d:?} has no certain fix");
+    assert!(!edits.is_empty(), "{d:?} has no safe fix");
     let result = apply(src, &edits);
     let left: Vec<_> = diags(&result).iter().map(Diagnostic::code).collect();
     assert!(!left.contains(&d.code()), "{result}: {left:?}");
@@ -1228,10 +1229,7 @@ fn duplicate_field() {
 
 #[test]
 fn builtin_type_as_class() {
-    codes(
-        "class i64 {}\nfn main() {}",
-        &[(Code::BuiltInTypeName, (1, 7))],
-    );
+    codes("class i64 {}\nfn main() {}", &[(Code::BuiltInName, (1, 7))]);
 }
 
 #[test]
@@ -1239,7 +1237,7 @@ fn never_constructed_self() {
     let src = "class Node {\n    next: Node\n}\nfn main() {}";
     let d = diagnostic(src, Code::NeverConstructed, (2, 5, "next"), &[]);
     assert_eq!(fixes(src, &d), [(false, vec![(2, 15, "", "?".to_owned())])]);
-    // The guess breaks the cycle, and the source still parses.
+    // The unsafe fix breaks the cycle, and the source still parses.
     clean(&applied(src, &d));
 }
 
@@ -1631,7 +1629,7 @@ fn method_read_as_field() {
     fix_removes_its_code(src, &d);
 }
 
-/// A method that takes arguments needs more than `()`, so the fix is a guess.
+/// A method that takes arguments needs more than `()`, so the fix is unsafe.
 #[test]
 fn method_with_arguments_read_as_field() {
     let src = "class P {\n    fn m(self, a: i64) -> i64 { a }\n}\nfn main() {\n    let p = P()\n    print(p.m)\n}";
@@ -2051,7 +2049,7 @@ fn may_be_none_in_an_assignment_target_has_no_fix() {
 }
 
 /// Inside an assignment target, an argument or an index is an ordinary read, so its own
-/// `n.next` keeps the `?.` guess. Each row is a statement where `n` is an `N`; the last is an
+/// `n.next` keeps the `?.` unsafe fix. Each row is a statement where `n` is an `N`; the last is an
 /// argument inside an index.
 #[test]
 fn may_be_none_in_an_operand_of_an_assignment_target_keeps_its_fix() {
@@ -2132,7 +2130,7 @@ fn may_be_none_in_a_target_chain_and_in_its_argument() {
 }
 
 /// The target's chain, where `n.next` gets no fix, ends with its statement: a read after it
-/// keeps the guess.
+/// keeps the unsafe fix.
 #[test]
 fn may_be_none_after_an_assignment_target_keeps_its_fix() {
     let src = "class N {\n    mut v: i64\n    next: N?\n}\nfn f(n: N, k: N) {\n    n.next.next.v = 1\n    print(k.next.v)\n}\nfn main() {}";
@@ -2521,7 +2519,7 @@ fn safe_call_fix_replaces_the_gap_for_each_receiver() {
         let [fix] = d.fixes() else {
             panic!("{src}: one fix")
         };
-        assert!(fix.certain(), "{src}");
+        assert!(fix.safe(), "{src}");
         let [edit] = fix.edits() else {
             panic!("{src}: {:?}", fix.edits())
         };
@@ -2928,7 +2926,7 @@ fn local_shadowing_a_function_is_assignable() {
     clean("fn one() {}\nfn main() {\n    let mut one = 1\n    one = 2\n    one += 1\n}");
 }
 
-/// The one diagnostic of `src` is `code` at `pos`, with one guess that replaces its text with
+/// The one diagnostic of `src` is `code` at `pos`, with one unsafe fix that replaces its text with
 /// `candidate`; applying it parses and leaves no diagnostic of `code`.
 fn suggests(src: &str, code: Code, pos: (usize, usize, &str), candidate: &str) {
     let d = diagnostic(src, code, pos, &[]);

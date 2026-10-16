@@ -1,0 +1,7 @@
+enum Shape {
+    Rect(w: i64, w: i64)
+}
+
+fn main() {
+    print(1)
+}

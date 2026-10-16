@@ -162,20 +162,20 @@ sisuc: for more on a code, run `sisuc --explain <code>`: E0001, E0052
 
 `sisuc --explain E0001` prints why the rule exists, with a broken and a fixed
 program. `sisuc --format json` writes the same diagnostics as JSON Lines for
-editors and agents, and marks each fix as certain or a guess.
+editors and agents, and marks each fix as safe or unsafe.
 [Diagnostic codes](docs/diagnostics/README.md) lists every code.
 
 ## Status
 
 Sisu has no releases and runs on x86-64 Linux only. Today it compiles
 functions, `i64`, `f64`, `u8`, `bool` and `char`, classes with methods,
-optionals, arrays, and strings with `+`, `+=`, interpolation (with width and
-precision specs) and `chars()`. Programs read standard input with
-`read_line()`, write standard error with `eprint`, take `main(args)` and stop
-with `panic`. Conversions that can fail return an optional. An expression
+optionals, enums with payloads and methods, arrays, and strings with `+`,
+`+=`, interpolation (with width and precision specs) and `chars()`. Programs
+read standard input with `read_line()`, write standard error with `eprint`,
+take `main(args)` and stop with `panic`. Conversions that can fail return an optional. An expression
 statement whose value nothing uses warns (`W0004`); `let _ = e` drops a value
 on purpose. The
-[roadmap](docs/roadmap.md) proposes enums with `match`, generics, closures,
+[roadmap](docs/roadmap.md) proposes `match` on enums, generics, closures,
 records, modules with a standard library, and `Result` with `?`.
 
 The compiler, `sisuc`, is written in Rust and uses LLVM for code generation.

@@ -21,6 +21,17 @@ same reason.
 - **A local, a parameter, a method or a field may take a prelude name.** A
   method is always called on a receiver, and a local is never called as a
   function, so neither hides the prelude name.
+- **Six names are reserved before milestone 8 adds them: `Option`, `Result`,
+  `Some`, `None`, `Ok` and `Err`.** No top-level item, variant, local,
+  parameter or binding may take one; a method or a field may, except
+  `None`, which is already a keyword and so names no method or field. This is
+  stricter than the previous bullet for locals, parameters and bindings,
+  because milestone 8 makes `Some(x)`, `None`, `Ok(x)` and `Err(e)` bare
+  names in expressions and in patterns. A local named `Ok` would then turn
+  `Ok(1)` from a constructor into a call or a pattern binding, so no
+  program written now may hold a name that milestone 8 takes. A top-level
+  item gets the existing "built-in" error; `Some`, `Ok` and `Err` get it with
+  the message "is a built-in name".
 
 ## Considered options
 

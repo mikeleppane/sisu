@@ -1,5 +1,5 @@
 //! `string`: interpolation, `+` that joins two, a chain of comparisons over them, `len()`,
-//! `chars()`, `bytes()` and `words()`, and the guess to interpolate a value that `+` or
+//! `chars()`, `bytes()` and `words()`, and the unsafe fix to interpolate a value that `+` or
 //! `string(x)` meets.
 //! Conversions: `i64(x)`, `u8(x)`, `char(x)` and `f64(x)` between the scalar types, and
 //! `string(cs)` from a `[char]`.
@@ -64,7 +64,7 @@ impl Checker<'_> {
                     Some(InterpolateHelp::ForLoop)
                 }
                 Some(Type::Optional(_)) => Some(InterpolateHelp::Unwrap),
-                Some(Type::Unit | Type::Class(_) | Type::Array(_)) => None,
+                Some(Type::Unit | Type::Class(_) | Type::Enum(_) | Type::Array(_)) => None,
             };
             let found = type_of(&value).expect("a part reported here should have a type");
             self.report(DiagnosticKind::CannotInterpolate {
@@ -121,9 +121,9 @@ impl Checker<'_> {
     }
 
     /// The operand `e` of the `+` over `operands`, of type `got`, which is not the `string` the
-    /// other operand makes it; that operand gets a secondary label. A value that interpolation prints gets the guess to interpolate
-    /// it, unless the `+` is a `compound` assignment's or a constant's, a comment between the
-    /// operands would go with the text the guess removes, or an operand spans a line break,
+    /// other operand makes it; that operand gets a secondary label. A value that interpolation prints gets the unsafe fix to
+    /// interpolate it, unless the `+` is a `compound` assignment's or a constant's, a comment between the
+    /// operands would go with the text the unsafe fix removes, or an operand spans a line break,
     /// which a string literal cannot hold.
     pub(super) fn concat_mismatch(
         &self,
@@ -148,7 +148,8 @@ impl Checker<'_> {
             literal: matches!(e.kind, ExprKind::Str(_) | ExprKind::Interpolate(_))
                 && self.quotes.binary_search(&e.span.start()).is_ok(),
         };
-        let guess = !(compound || self.in_constant.is_some() || !printed || commented || lines);
+        let unsafe_fix =
+            !(compound || self.in_constant.is_some() || !printed || commented || lines);
         let other = if e.span == lhs.span {
             rhs.span
         } else {
@@ -159,7 +160,7 @@ impl Checker<'_> {
             got: self.type_name(got),
             at: e.span,
             other: Some(other),
-            fix: guess.then(|| MismatchFix::Interpolate {
+            fix: unsafe_fix.then(|| MismatchFix::Interpolate {
                 lhs: operand(lhs),
                 rhs: operand(rhs),
             }),

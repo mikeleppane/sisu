@@ -4,7 +4,7 @@
 use std::f64::consts;
 
 use super::expr::{no_member, postfix, typed};
-use super::{Checked, Checker, Poisoned, UNKNOWN, built_in_type};
+use super::{Checked, Checker, Declared, Poisoned, UNKNOWN, built_in_type};
 use crate::ast;
 use crate::diagnostic::{Definition, DiagnosticKind, MathFix, NanFix, Span};
 use crate::tir::{self, MathOp, Type};
@@ -95,7 +95,9 @@ fn constant_named(name: &str) -> Option<&'static str> {
 }
 
 impl Checker<'_> {
-    /// `base.member`, or `base.member(args)` when `call` is given, where `base` names no local:
+    /// `base.member`, or `base.member(args)` when `call` gives the arguments and the span of their
+    /// parentheses, where `base` names an enum, whatever local tried to take its name: the enum's
+    /// variant `member`, or an error. Otherwise, where `base` names no local:
     /// - a built-in type: the `f64` constant `member`, or, for any other member, an error whose
     ///   candidates are that type's constants (only `f64` has any);
     /// - `math` or `Math`, or `f64` in a call: the math idiom of another language, reported.
@@ -106,11 +108,20 @@ impl Checker<'_> {
         span: Span,
         base: &ast::Expr,
         member: &ast::Ident,
-        call: Option<&[ast::Arg]>,
+        call: Option<(&[ast::Arg], Span)>,
     ) -> Option<Checked> {
         let ast::ExprKind::Name(name) = base.kind else {
             return None;
         };
+        // A local cannot take an enum's name, so the enum wins over one that tried.
+        match self.enum_ids.get(&name) {
+            Some(&Declared::Known(id)) => return Some(self.enum_path(span, id, member, call)),
+            Some(Declared::Broken) => {
+                self.stray(call.map_or(&[], |(args, _)| args));
+                return Some(Err(Poisoned::error()));
+            }
+            None => {}
+        }
         if self.lookup(name).is_some() {
             return None;
         }
@@ -119,7 +130,7 @@ impl Checker<'_> {
             || self.function_ids.contains_key(&name)
             || self.class_ids.contains_key(&name);
         if matches!(name.as_str(), "math" | "Math") && !declared {
-            if let Some(args) = call {
+            if let Some((args, _)) = call {
                 return self.math_call(written, member, args);
             }
             // A bare method has no value to write; a constant's name maps to `f64`'s.
@@ -133,7 +144,7 @@ impl Checker<'_> {
             return Some(Err(Poisoned::error()));
         }
         let ty = built_in_type(name.as_str())?;
-        if let Some(args) = call {
+        if let Some((args, _)) = call {
             return if ty == Type::F64 {
                 self.math_call(written, member, args)
             } else {
@@ -180,7 +191,7 @@ impl Checker<'_> {
     }
 
     /// The fix of `written(args)`, the call of the method `name`, or `None` where it is no
-    /// certain rewrite. Checks each argument once.
+    /// safe rewrite. Checks each argument once.
     fn method_fix(
         &mut self,
         written: Span,

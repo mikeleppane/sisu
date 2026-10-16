@@ -1,0 +1,12 @@
+enum Light {
+    None
+}
+
+fn show(l: Light) {
+    let Light = 1
+    print(Light)
+}
+
+fn main() {
+    print(1)
+}

@@ -103,10 +103,10 @@ fn number(
     // parse; only a `-` before it makes it valid, which the lexer cannot see.
     if let Some((_, p)) = prefix.filter(|(_, p)| p.is_ascii_uppercase()) {
         let at = Span::new(start, start + 2);
-        let certain = value != MIN_MAGNITUDE;
+        let safe = value != MIN_MAGNITUDE;
         return Err(DiagnosticKind::BasePrefixUpperCase {
             prefix: p,
-            certain,
+            safe,
             at,
         }
         .into());

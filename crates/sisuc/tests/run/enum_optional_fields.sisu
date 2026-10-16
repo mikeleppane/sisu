@@ -1,0 +1,43 @@
+// Optional payload fields: an `i64?` and a `string?` are `{ flag, value }` pairs, an `Inner?`
+// is a pair holding an enum. A copy retains only what is present, `==` compares a payload only
+// when both flags are set, and release skips a `None` string and an absent `Inner`.
+enum Inner {
+    Name(string)
+    Num(i64)
+}
+
+enum Rec {
+    Row(i64?, string?, Inner?)
+    Empty
+}
+
+fn row(n: i64?, s: string?, i: Inner?) -> Rec {
+    Rec.Row(n, s, i)
+}
+
+fn main() {
+    let none = row(None, None, None)
+    let full = row(7, "s" + "", Inner.Name("i" + ""))
+    let same = row(7, "s" + "", Inner.Name("i" + ""))
+    let num = row(8, "s" + "", Inner.Name("i" + ""))
+    let text = row(7, "t" + "", Inner.Name("i" + ""))
+    let inner = row(7, "s" + "", Inner.Name("j" + ""))
+    let tag = row(7, "s" + "", Inner.Num(0))
+    let zero = row(0, "", Inner.Num(0))
+    let none_copy = none
+    let full_copy = full
+    print(none == none_copy)   // true: both fields absent
+    print(none == full)        // false: `None` against `Some`
+    print(full == none)        // false
+    print(full == full_copy)   // true: the copy shares the string and the inner
+    print(full == same)        // true: two equal `Some`
+    print(full != same)        // false
+    print(full == num)         // false: the `i64?` differs
+    print(full == text)        // false: the `string?` differs
+    print(full == inner)       // false: the `Inner?` differs inside
+    print(full == tag)         // false: the inner tags differ
+    print(none == zero)        // false: `None` is not the zero value's `Some`
+    print(none != zero)        // true
+    print(zero == Rec.Empty)   // false
+    print(full == full)        // true: `full` is still live after the copy
+}

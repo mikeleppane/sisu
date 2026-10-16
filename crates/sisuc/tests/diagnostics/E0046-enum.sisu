@@ -1,0 +1,10 @@
+enum State {
+    Idle
+    Running(i64)
+}
+
+fn same(a: State, b: State) -> bool {
+    a is b
+}
+
+fn main() {}

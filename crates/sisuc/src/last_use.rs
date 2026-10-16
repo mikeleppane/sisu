@@ -25,7 +25,11 @@ use crate::tir::{BinaryOp, Block, Expr, ExprKind, LocalId, Place, Program, Stmt}
 pub(crate) fn mark(program: &mut Program) {
     for function in &mut program.functions {
         let mut walk = Walk {
-            counted: function.locals.iter().map(|l| l.ty.is_counted()).collect(),
+            counted: function
+                .locals
+                .iter()
+                .map(|l| l.ty.is_counted(&program.enums))
+                .collect(),
             live: vec![false; function.locals.len()],
             rewrite: true,
             loops: Vec::new(),
@@ -119,6 +123,7 @@ impl Walk {
             | ExprKind::Move(_) => {}
             ExprKind::Call { args, .. }
             | ExprKind::New { args, .. }
+            | ExprKind::Variant { args, .. }
             | ExprKind::ArrayLit(args)
             | ExprKind::Interpolate { parts: args, .. }
             | ExprKind::Math { operands: args, .. } => {
@@ -352,6 +357,16 @@ mod tests {
             "fn f(xs: [[i64]]) -> bool { xs.contains(xs[0]) }",
             "f",
             &["(contains xs#0 (index (move xs#0) 0))"],
+        );
+    }
+
+    /// A variant's arguments are evaluated left to right: only the last one's read may move.
+    #[test]
+    fn variant_args_left_to_right() {
+        has(
+            "enum E { V(string, string) }\nfn f(s: string) -> E { E.V(s, s) }",
+            "f",
+            &["(variant E.V s#0 (move s#0))"],
         );
     }
 

@@ -1,0 +1,9 @@
+enum Light {
+    Red
+
+    fn Red(self) -> i64 { 1 }
+}
+
+fn main() {
+    print(1)
+}

@@ -161,7 +161,7 @@ fn conversion_fix_needs_optional() {
         let d = diagnostic(&src, Code::Mismatch, (4, col, &declared[col - 5..]), &[]);
         match fixed {
             Some(fixed) => {
-                assert!(d.fixes().iter().all(|f| !f.certain()), "{src}");
+                assert!(d.fixes().iter().all(|f| !f.safe()), "{src}");
                 let fixed = program(fixed);
                 assert_eq!(applied(&src, &d), fixed);
                 clean(&fixed);
@@ -315,7 +315,7 @@ fn mismatch_fix_converts_the_expression_found() {
         let [fix] = d.fixes() else {
             panic!("{src}: one fix")
         };
-        assert!(!fix.certain(), "{src}");
+        assert!(!fix.safe(), "{src}");
         let [open, close] = fix.edits() else {
             panic!("{src}: {:?}", fix.edits())
         };
@@ -380,12 +380,12 @@ fn already_that_type() {
             (Code::AlreadyConverted, (4, 15)),
         ],
     );
-    // Each gains the certain fix that removes the conversion.
+    // Each gains the safe fix that removes the conversion.
     for (conversion, fixed) in [("i64(x)", "x"), ("u8(b)", "b"), ("i64(5)", "5")] {
         let src = format!("fn f(x: i64, b: u8) {{\n    print({conversion})\n}}\nfn main() {{}}");
         let d = &diags(&src)[0];
         let edits: Vec<_> = d.fixes().iter().flat_map(Fix::edits).collect();
-        assert!(d.fixes().iter().all(Fix::certain));
+        assert!(d.fixes().iter().all(Fix::safe));
         assert!(apply(&src, &edits).contains(&format!("print({fixed})")));
         fix_removes_its_code(&src, d);
     }
@@ -417,7 +417,7 @@ fn built_in_names() {
     ] {
         codes(
             &format!("{src}\nfn main() {{}}"),
-            &[(Code::BuiltInTypeName, (1, col))],
+            &[(Code::BuiltInName, (1, col))],
         );
     }
 }

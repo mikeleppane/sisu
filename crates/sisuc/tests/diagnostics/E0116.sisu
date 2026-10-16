@@ -1,0 +1,8 @@
+enum Shape {
+    Dot
+}
+
+fn main() {
+    let Shape = 1
+    print(Shape)
+}
