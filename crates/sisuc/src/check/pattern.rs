@@ -1,6 +1,7 @@
 //! Patterns, `match`, and the patterns of `if let` and `while let`.
 
 use std::collections::hash_map::Entry;
+use std::iter;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -13,9 +14,11 @@ use crate::diagnostic::{BadRange, Definition, DiagnosticKind, Span, Unwrap, sugg
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 
-/// The names one pattern binds, at `top`, as its check goes.
-struct Bound {
+/// The names one pattern binds, at `top`, as its check goes; `arm` is the `match` arm it
+/// starts, if any.
+struct Bound<'a> {
     top: Span,
+    arm: Option<&'a ast::Arm>,
     /// Each name bound so far on the way through the pattern, where, and its local; an `|`
     /// counts as its first alternative once it is checked.
     names: FxHashMap<Symbol, (Span, tir::LocalId)>,
@@ -117,7 +120,7 @@ impl Checker<'_> {
         let (blocks, ty) = self.join(&sources, expected, |c, i, expected| {
             let arm = &arms[i];
             c.scopes.push(FxHashMap::default());
-            patterns[i] = c.pattern_in_scope(&arm.pattern, position.as_ref(), "match");
+            patterns[i] = c.pattern_in_scope(&arm.pattern, position.as_ref(), "match", Some(arm));
             guards[i] = arm
                 .guard
                 .as_ref()
@@ -331,7 +334,7 @@ impl Checker<'_> {
             }
             LetValue::Match { ty } => {
                 self.scopes.push(FxHashMap::default());
-                let pattern = self.pattern_in_scope(pattern, ty.as_ref(), keyword.word());
+                let pattern = self.pattern_in_scope(pattern, ty.as_ref(), keyword.word(), None);
                 // An optional takes only a name or `_`, which unwraps it: only an enum gets here.
                 if let (Some(ty @ Type::Enum(_)), Some((pattern, _))) = (&ty, &pattern) {
                     let rows = [Row {
@@ -357,15 +360,18 @@ impl Checker<'_> {
     }
 
     /// `pattern` at a position of type `ty` (`None` is `Error`), its names declared in the
-    /// innermost scope as `keyword` binds them. `None` when it failed.
+    /// innermost scope as `keyword` binds them; `arm` is the `match` arm it starts, if any.
+    /// `None` when it failed.
     fn pattern_in_scope(
         &mut self,
         pattern: &ast::Pattern,
         ty: Option<&Type>,
         keyword: &'static str,
+        arm: Option<&ast::Arm>,
     ) -> Option<(tir::Pattern, Vec<tir::LocalId>)> {
         let mut bound = Bound {
             top: pattern.span,
+            arm,
             names: FxHashMap::default(),
             order: Vec::new(),
             locals: Vec::new(),
@@ -382,7 +388,7 @@ impl Checker<'_> {
         p: &ast::Pattern,
         ty: Option<&Type>,
         keyword: &'static str,
-        bound: &mut Bound,
+        bound: &mut Bound<'_>,
     ) -> Option<tir::Pattern> {
         let pattern = |kind| tir::Pattern { kind, span: p.span };
         // An `Error` position matches anything; its own error is reported.
@@ -472,7 +478,7 @@ impl Checker<'_> {
         name: &ast::Ident,
         ty: &Type,
         keyword: &'static str,
-        bound: &mut Bound,
+        bound: &mut Bound<'_>,
     ) -> Option<tir::PatternKind> {
         let text = name.name.as_str();
         let enum_id = match ty {
@@ -499,10 +505,15 @@ impl Checker<'_> {
         // A name the prelude takes is a binding, which `declare` reports.
         if reserved_name(text).is_none() {
             if self.constants.contains_key(&name.name) {
+                let candidates =
+                    iter::once("n".to_string()).chain((2..).map(|n: u32| format!("n{n}")));
+                let guard = self.guard_help(bound, name.span, candidates, |fresh| {
+                    format!("{fresh} == {text}")
+                });
                 self.report(DiagnosticKind::ConstantInPattern {
                     name: text.to_string(),
                     at: name.span,
-                    guard: keyword == "match",
+                    guard,
                 });
                 return None;
             }
@@ -624,7 +635,7 @@ impl Checker<'_> {
                     DiagnosticKind::ConstantInPattern {
                         name: name.name.to_string(),
                         at: name.span,
-                        guard: false,
+                        guard: None,
                     }
                 } else {
                     DiagnosticKind::Expected {
@@ -700,13 +711,14 @@ impl Checker<'_> {
 
     /// The alternatives of an `|` at a position of type `ty`, which takes more than names. Each
     /// binds the names of the first, with the same types, so each name is one local, which
-    /// every alternative binds; a name one of them lacks is reported, once per alternative.
+    /// every alternative binds. A name of the first that an alternative lacks is reported there;
+    /// a name only later alternatives bind is reported once, at the first.
     fn alternatives(
         &mut self,
         alternatives: &[ast::Pattern],
         ty: &Type,
         keyword: &'static str,
-        bound: &mut Bound,
+        bound: &mut Bound<'_>,
     ) -> Option<tir::PatternKind> {
         let mark = bound.order.len();
         let first = self.pattern(&alternatives[0], Some(ty), keyword, bound);
@@ -727,6 +739,8 @@ impl Checker<'_> {
         });
         let mut checked = vec![first];
         let mut agree = true;
+        // The names only a later alternative binds, each reported once, at the first.
+        let mut later_only = FxHashSet::default();
         for alternative in &alternatives[1..] {
             checked.push(self.pattern(alternative, Some(ty), keyword, bound));
             let here: FxHashSet<_> = bound.order.drain(mark..).collect();
@@ -740,7 +754,12 @@ impl Checker<'_> {
             let missing = named.iter().find(|(name, _)| !here.contains(name));
             let lacking = match (missing, extra) {
                 (Some(&(name, _)), _) => Some((name, alternative.span)),
-                (None, Some(name)) => Some((name, alternatives[0].span)),
+                (None, Some(name)) => {
+                    agree = false;
+                    later_only
+                        .insert(name)
+                        .then_some((name, alternatives[0].span))
+                }
                 (None, None) => None,
             };
             if let Some((name, at)) = lacking {
@@ -764,35 +783,53 @@ impl Checker<'_> {
         Some(tir::PatternKind::Or(checked?))
     }
 
-    /// The help's guard for `name`, bound twice in the pattern `bound` checks: the pattern with
-    /// this binding renamed to a name it does not use, and the guard that compares the two, as
-    /// in `Add(x, y) if x == y`.
-    #[expect(
-        clippy::maybe_infinite_iter,
-        reason = "the pattern's text holds finitely many names, so a numbered one is free"
-    )]
-    fn twice_guard(&self, name: &ast::Ident, bound: &Bound) -> String {
-        let text = &self.source[bound.top.range()];
-        let used = |candidate: &str| {
-            text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                .any(|word| word == candidate)
-        };
-        let written = name.name.as_str();
-        let next = match written.as_bytes() {
-            &[c @ b'a'..=b'y'] => Some(char::from(c + 1).to_string()),
-            _ => None,
-        };
-        let fresh = next
-            .into_iter()
-            .chain((2..).map(|n: u32| format!("{written}{n}")))
-            .find(|candidate| !used(candidate))
+    /// The guard a help suggests for what the pattern `bound` checks cannot test: the pattern
+    /// with the name at `at` renamed to the first of `candidates` that the arm does not read,
+    /// then `test` of that name, then the arm's own guard, as in `Add(x, y) if x == y`. `None`
+    /// outside a `match` arm.
+    fn guard_help(
+        &self,
+        bound: &Bound<'_>,
+        at: Span,
+        mut candidates: impl Iterator<Item = String>,
+        test: impl FnOnce(&str) -> String,
+    ) -> Option<String> {
+        let arm = bound.arm?;
+        let source = self.source;
+        let read = iter::once(arm.pattern.span)
+            .chain(arm.guard.iter().map(|guard| guard.span))
+            .chain([arm.body.span]);
+        let words: FxHashSet<_> = read
+            .flat_map(|span| {
+                source[span.range()].split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            })
+            .collect();
+        let fresh = candidates
+            .find(|candidate| !words.contains(candidate.as_str()))
             .expect("some numbered name should be free");
-        let at = name.span.start() - bound.top.start();
-        format!(
-            "{}{fresh}{} if {written} == {fresh}",
-            &text[..at],
-            &text[at + written.len()..]
-        )
+        let pattern = &source[bound.top.range()];
+        let (start, end) = (at.start() - bound.top.start(), at.end() - bound.top.start());
+        let own = match &arm.guard {
+            None => String::new(),
+            // `&&` binds tighter than `||`, which the guard's own text would then lose.
+            Some(
+                guard @ ast::Expr {
+                    kind:
+                        ast::ExprKind::Binary {
+                            op: ast::BinaryOp::Or,
+                            ..
+                        },
+                    ..
+                },
+            ) => format!(" && ({})", &source[guard.span.range()]),
+            Some(guard) => format!(" && {}", &source[guard.span.range()]),
+        };
+        Some(format!(
+            "{}{fresh}{} if {}{own}",
+            &pattern[..start],
+            &pattern[end..],
+            test(&fresh)
+        ))
     }
 
     /// The variant that `qualifier.name(fields)` (`parens` is `None` without parentheses)
@@ -886,10 +923,20 @@ impl Checker<'_> {
         name: &ast::Ident,
         ty: Option<Type>,
         keyword: &'static str,
-        bound: &mut Bound,
+        bound: &mut Bound<'_>,
     ) -> Option<tir::LocalId> {
         if let Some(&(first, _)) = bound.names.get(&name.name) {
-            let guard = (keyword == "match").then(|| self.twice_guard(name, bound));
+            let written = name.name.as_str();
+            let next = match written.as_bytes() {
+                &[c @ b'a'..=b'y'] => Some(char::from(c + 1).to_string()),
+                _ => None,
+            };
+            let candidates = next
+                .into_iter()
+                .chain((2..).map(|n: u32| format!("{written}{n}")));
+            let guard = self.guard_help(bound, name.span, candidates, |fresh| {
+                format!("{written} == {fresh}")
+            });
             self.report(DiagnosticKind::BoundTwice {
                 name: name.name.to_string(),
                 at: name.span,
@@ -936,7 +983,7 @@ impl Checker<'_> {
 
     /// Declares the names in `p`, a pattern that failed, as `Error`, so that uses of them
     /// report nothing more. An upper-case name is taken for a variant and binds nothing.
-    fn poison(&mut self, p: &ast::Pattern, keyword: &'static str, bound: &mut Bound) {
+    fn poison(&mut self, p: &ast::Pattern, keyword: &'static str, bound: &mut Bound<'_>) {
         match &p.kind {
             ast::PatternKind::Name(name)
                 if !name.name.as_str().starts_with(char::is_uppercase)

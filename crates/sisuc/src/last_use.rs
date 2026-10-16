@@ -25,7 +25,7 @@
 
 use std::mem;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::tir::{
     Arm, BinaryOp, Block, Expr, ExprKind, LocalId, Pattern, PatternKind, Place, Program, Stmt,
@@ -321,7 +321,7 @@ impl Walk {
         let mut changed: FxHashMap<usize, (usize, usize, bool)> = FxHashMap::default();
         // The locals some later arm leaves live at its test where the set after the `match`
         // has them dead, or that an arm wrote: the sparse part of the failure edge's set.
-        let mut later = Vec::new();
+        let mut later = FxHashSet::default();
         let count = arms.len();
         for (i, arm) in arms.iter_mut().enumerate().rev() {
             self.block(&mut arm.body);
@@ -331,8 +331,8 @@ impl Walk {
             if let Some(guard) = &mut arm.guard {
                 let done = count - 1 - i;
                 // Whether a local this arm wrote, `after` after the `match`, is live at the next
-                // arm's test: some later arm left it live, or left it alone. A guarded arm is
-                // never last, since a guard covers nothing, so a later arm exists.
+                // arm's test: some later arm left it live, or left it alone. A guarded last arm is
+                // unreachable, so its failure edge, the set after the `match`, is never taken.
                 let failing = |local, after| match changed.get(&local) {
                     Some(&(_, wrote, live)) => live || (after && wrote < done),
                     None => after,
@@ -351,7 +351,7 @@ impl Walk {
                     *last = i;
                     *count += 1;
                     if now && !*live {
-                        later.push(local);
+                        later.insert(local);
                     }
                     *live |= now;
                 }
@@ -377,13 +377,15 @@ impl Walk {
     /// the body or to the next arm's test, so it is walked from both sets joined: the body's,
     /// which the trail from `mark` holds, and the next test's, which is `later` and each
     /// local of the trail that `failing` says, given whether it was live after the `match`.
-    /// When it `retries`, for a later alternative, its entry set joins its exit set too.
+    /// Of `later`, only the locals the guard reads or writes are joined, so a guard costs its
+    /// own size, not the later arms' locals; the others pass through it unread. When it
+    /// `retries`, for a later alternative, its entry set joins its exit set too.
     fn guard(
         &mut self,
         guard: &mut Expr,
         retries: bool,
         mark: usize,
-        later: &[usize],
+        later: &FxHashSet<usize>,
         failing: impl Fn(usize, bool) -> bool,
     ) {
         // The oldest entry of a local holds its value after the `match`.
@@ -396,14 +398,27 @@ impl Walk {
                 self.set(local, true);
             }
         }
-        for &local in later {
-            if !self.live[local] {
+        // A walk without rewriting changes every local whose liveness inside the guard can
+        // differ: one read where it is dead, or written where it is live.
+        let start = self.trail.len();
+        let rewrite = mem::replace(&mut self.rewrite, false);
+        self.expr(guard);
+        self.rewrite = rewrite;
+        let mut touched = Vec::new();
+        for (local, was) in self.trail.drain(start..).rev() {
+            self.live[local] = was;
+            touched.push(local);
+        }
+        for local in touched {
+            if later.contains(&local) && !self.live[local] {
                 self.set(local, true);
             }
         }
         // shortcut: a guard that compares, or holds `&&`, `||` or an `if`, copies the dense
         // live set as any such expression does (`.scratch/diagnostics-scale/issues/02`), so
-        // many such guards among many locals are quadratic; fix it with that ticket.
+        // many such guards among many locals are quadratic; fix it with that ticket. Each guard
+        // is walked once more without rewriting, twice with an `|`, so guards nested in guards
+        // cost that factor per level; share the walks if a real program nests them deeply.
         if !retries {
             self.expr(guard);
             return;
@@ -889,6 +904,29 @@ mod tests {
             "enum E {{\n{variants}}}\nfn f(e: E, keep: bool) -> string {{\n    match e {{\n{arms}        _ => \"\"\n    }}\n}}"
         ));
         // Each arm's `s` is read once, in its body, so every read is its last use.
+        assert_eq!(printed.matches("(block (move s#").count(), VARIANTS);
+    }
+
+    /// As above, with each guard reading its own outer local, so the failure edge of each guard
+    /// holds every later guard's local. The keep-alive override is in `.config/nextest.toml`.
+    #[test]
+    fn many_guards_of_distinct_locals_mark_last_uses_in_linear_time() {
+        const VARIANTS: usize = 48_000;
+        let variants = (0..VARIANTS)
+            .map(|i| format!("    V{i}(string)\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let locals = (0..VARIANTS)
+            .map(|i| format!("    let g{i} = c\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let arms = (0..VARIANTS)
+            .map(|i| format!("        V{i}(s) if g{i} => s\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let printed = marked(&format!(
+            "enum E {{\n{variants}}}\nfn f(e: E, c: bool) -> string {{\n{locals}    match e {{\n{arms}        _ => \"\"\n    }}\n}}"
+        ));
         assert_eq!(printed.matches("(block (move s#").count(), VARIANTS);
     }
 

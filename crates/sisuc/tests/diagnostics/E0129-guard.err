@@ -1,0 +1,12 @@
+error[E0129]: `x` is bound twice in this pattern
+  --> E0129-guard.sisu:10:16
+   |
+10 |         Add(x, x) if y || false => print(1)
+   |             -  ^
+   |             |
+   |             first bound here
+   |
+   = help: use a guard: `Add(x, x2) if x == x2 && (y || false)`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0129

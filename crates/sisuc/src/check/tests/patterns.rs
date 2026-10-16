@@ -721,10 +721,11 @@ fn many_arms_check_in_linear_time() {
     clean(&format!(
         "fn f(n: i64) -> i64 {{\n    match n {{\n{arms}        _ => 0\n    }}\n}}\nfn main() {{}}"
     ));
+    // Every field an `|`, so no row is all wildcards and the cut cannot skip a column.
     let fields = vec!["bool"; FIELDS].join(", ");
-    let rest = vec!["_"; FIELDS - 1].join(", ");
+    let pattern = vec!["true | false"; FIELDS].join(", ");
     clean(&format!(
-        "enum F {{ V({fields}) }}\nfn f(x: F) -> i64 {{\n    match x {{\n        V(true | false, {rest}) => 1\n    }}\n}}\nfn main() {{}}"
+        "enum F {{ V({fields}) }}\nfn f(x: F) -> i64 {{\n    match x {{\n        V({pattern}) => 1\n    }}\n}}\nfn main() {{}}"
     ));
 }
 
@@ -1036,6 +1037,11 @@ fn alternatives_bind() {
         (12, 9, "Add(_, _)"),
         &[],
     );
+    // Once, though two later alternatives bind it.
+    codes(
+        &in_t("e {\n        Num(_) | Add(x, _) | Add(_, x) => x"),
+        &[(Code::AlternativeBindings, (12, 9))],
+    );
     codes(
         &in_t("p {\n        Pair(x, _) | Pair(_, x) => 0"),
         &[(Code::Mismatch, (12, 30))],
@@ -1169,6 +1175,23 @@ fn reachability() {
     assert_eq!(
         found(&src),
         [(Code::UnreachableArm, (line + 2, 11), vec![(line + 1, 9)])]
+    );
+    // Two alternatives of one arm take a later row's values in different leaves, a level below
+    // the `|`: that arm covers it, as a whole arm or as an alternative.
+    let (src, line) = typed(vw, "E", &["V(true) | V(false) => 0", "W => 1", "V(_) => 2"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 3, 9), vec![(line + 1, 9)])]
+    );
+    let (src, line) = typed(vw, "E", &["V(true) | _ => 0", "V(_) => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 9), vec![(line + 1, 9)])]
+    );
+    let (src, line) = typed(vw, "E", &["V(true) | V(false) => 0", "W | V(_) => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 13), vec![(line + 1, 9)])]
     );
     // Two rows of one arm take the `_`'s values: one arm covers it.
     let ab = "enum AB {\n    A\n    B\n}\n";

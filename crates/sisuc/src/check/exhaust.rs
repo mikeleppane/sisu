@@ -114,7 +114,7 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
     // Each unreached alternative, with its index in `unreachable`, its row, and the choice of
     // alternative at each `|` on the way to it.
     let mut alternatives = Vec::new();
-    for (k, (row, &reach)) in rows.iter().zip(&result.reach).enumerate() {
+    for (k, (row, reach)) in rows.iter().zip(&result.reach).enumerate() {
         let covered_by = match reach {
             Reach::Reached => {
                 let mut found = Vec::new();
@@ -129,8 +129,8 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
                 }
                 continue;
             }
-            Reach::Taken(by) => Some(rows[by].pattern.span),
-            Reach::Several => None,
+            &Reach::Taken(by) => Some(rows[by].pattern.span),
+            Reach::Several(_) => None,
         };
         unreachable.push(Unreachable {
             at: row.pattern.span,
@@ -141,8 +141,9 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
     // An alternative is covered by the earlier arm that takes all its values, which the matrix
     // of the earlier rows and the row as that alternative alone says.
     // shortcut: each unreached alternative solves the matrix of the rows above it again, so many
-    // of them below many arms cost alternatives × arms; record the arm that takes each
-    // alternative during the main solve if a real program hits it.
+    // of them below many arms cost alternatives × arms; the main solve's takers are rows of
+    // matrices that other paths share, so they do not name an alternative's arm. Fix it with
+    // `.scratch/diagnostics-scale/issues/03-unreachable-queries-quadratic.md`.
     for (index, k, path) in alternatives {
         let pat = solver.intern(rows[k].pattern, col, &path);
         let mut query = stacks[..k].to_vec();
@@ -278,24 +279,65 @@ struct Node {
     wild: bool,
 }
 
-/// Where one row of a matrix stands, from the leaves below it.
-#[derive(Clone, Copy)]
+/// Where one row of a matrix stands, from the leaves below it. The rows that took its values
+/// are kept, not just counted: two of them can be alternatives of one row of the matrix above.
+#[derive(Clone)]
 enum Reach {
     /// A leaf reached it.
     Reached,
     /// No leaf reached it, and this row, an earlier one, took every leaf's values.
     Taken(usize),
-    /// No leaf reached it, and more than one row took the leaves' values.
-    Several,
+    /// No leaf reached it, and these rows, more than one, in order, took the leaves' values.
+    Several(Rc<[usize]>),
 }
 
 impl Reach {
-    /// What `self` and `other`, from two sets of leaves, say together.
-    fn merge(self, other: Reach) -> Reach {
-        match (self, other) {
-            (Reach::Reached, _) | (_, Reach::Reached) => Reach::Reached,
-            (Reach::Taken(a), Reach::Taken(b)) if a == b => Reach::Taken(a),
-            _ => Reach::Several,
+    /// The rows that took the values; none when a leaf reached the row.
+    fn takers(&self) -> &[usize] {
+        match self {
+            Reach::Reached => &[],
+            Reach::Taken(by) => std::slice::from_ref(by),
+            Reach::Several(by) => by,
+        }
+    }
+}
+
+/// What the leaves under one row say so far: whether one reached it, and else the rows that
+/// took its values, repeats and all, so adding a leaf's costs its own takers only.
+#[derive(Default)]
+struct Takers {
+    reached: bool,
+    rows: Vec<usize>,
+}
+
+impl Takers {
+    /// Adds what `found` says, its takers renamed by `rename`.
+    fn add(&mut self, found: &Reach, rename: impl Fn(usize) -> usize) {
+        if self.reached {
+            return;
+        }
+        if let Reach::Reached = found {
+            self.reached = true;
+            self.rows = Vec::new();
+        } else {
+            self.rows
+                .extend(found.takers().iter().map(|&row| rename(row)));
+        }
+    }
+
+    /// What every leaf added says, once at least one was.
+    fn reach(mut self) -> Reach {
+        if self.reached {
+            return Reach::Reached;
+        }
+        self.rows
+            .first()
+            .expect("a row should land in a child matrix");
+        self.rows.sort_unstable();
+        self.rows.dedup();
+        match self.rows[..] {
+            [by] => Reach::Taken(by),
+            _ => Reach::Several(self.rows.into()),
         }
     }
 }
@@ -349,7 +391,7 @@ struct Frame {
     children: Vec<Child>,
     next: usize,
     /// What the solved children say of each expanded row.
-    reach: Vec<Option<Reach>>,
+    reach: Vec<Takers>,
     /// The witness first in constructor order so far: its child's order, the child, the
     /// child's witness, and its `guarded`.
     best: Option<(usize, usize, StackId, bool)>,
@@ -363,13 +405,9 @@ impl Frame {
         let child = &self.children[self.next];
         // A row another takes is named by its matrix row, so two alternatives of one row that
         // take a row's values are one row.
-        for (&e, &found) in child.members.iter().zip(&solved.reach) {
-            let found = match found {
-                Reach::Taken(by) => Reach::Taken(self.expanded[child.members[by]].origin),
-                found => found,
-            };
-            let seen = &mut self.reach[e];
-            *seen = Some(seen.map_or(found, |seen| seen.merge(found)));
+        for (&e, found) in child.members.iter().zip(&solved.reach) {
+            let expanded = &self.expanded;
+            self.reach[e].add(found, |by| expanded[child.members[by]].origin);
         }
         if let Some(witness) = solved.witness {
             if self.best.is_none_or(|(order, ..)| child.order < order) {
@@ -754,7 +792,7 @@ impl Solver<'_> {
             });
         }
         Frame {
-            reach: vec![None; expanded.len()],
+            reach: expanded.iter().map(|_| Takers::default()).collect(),
             rows,
             expanded,
             col,
@@ -892,20 +930,16 @@ impl Solver<'_> {
             }
             None => (None, frame.best.is_some_and(|(.., guarded)| guarded)),
         };
-        let mut reach: Vec<Option<Reach>> = vec![None; frame.rows.len()];
+        let mut reach: Vec<Takers> = frame.rows.iter().map(|_| Takers::default()).collect();
         for (row, found) in frame.expanded.iter().zip(frame.reach) {
-            let found = found.expect("every row should land in a child matrix");
-            if let (Reach::Reached, Some(alternative)) = (found, row.alternative) {
+            let found = found.reach();
+            if let (Reach::Reached, Some(alternative)) = (&found, row.alternative) {
                 self.reached.insert(alternative);
             }
-            let seen = &mut reach[row.origin];
-            *seen = Some(seen.map_or(found, |seen| seen.merge(found)));
+            reach[row.origin].add(&found, |by| by);
         }
         let solved = Rc::new(Solved {
-            reach: reach
-                .into_iter()
-                .map(|reach| reach.expect("every row should have expanded rows"))
-                .collect(),
+            reach: reach.into_iter().map(Takers::reach).collect(),
             witness,
             guarded,
             gap,

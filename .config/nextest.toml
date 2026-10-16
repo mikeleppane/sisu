@@ -20,7 +20,7 @@ filter = 'test(many_panic_sites_compile_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
 # Each render once cost the whole file, so many diagnostics in a large file were quadratic and
-# this test hangs instead of failing.
+# is quadratic in the arms, so these tests hang instead of failing.
 [[profile.default.overrides]]
 filter = 'test(rendering_many_diagnostics_in_a_large_file_is_linear)'
 slow-timeout = { period = "10s", terminate-after = 3 }
@@ -74,7 +74,7 @@ filter = 'test(one_named_field_per_arm_checks_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
 # Without memoization, both branches of each field meet the same matrix, 2^39 visits in all, so
-# this test hangs instead of failing.
+# is quadratic in the arms, so these tests hang instead of failing.
 [[profile.default.overrides]]
 filter = 'test(repeated_matrices_check_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
@@ -91,10 +91,10 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(forty_alternatives)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
-# A set live on each guard's failure edge, copied densely per arm, is quadratic in the arms, so
-# this test hangs instead of failing.
+# A set live on each guard's failure edge, copied densely per arm or replayed whole per guard,
+# is quadratic in the arms, so these tests hang instead of failing.
 [[profile.default.overrides]]
-filter = 'test(many_guarded_arms_mark_last_uses_in_linear_time)'
+filter = 'test(many_guarded_arms_mark_last_uses_in_linear_time) | test(many_guards_of_distinct_locals_mark_last_uses_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
 # A harness that writes all of standard input before it reads the output would fill both pipes
@@ -110,7 +110,7 @@ filter = 'binary(programs) & test(words_is_linear)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
 # Without a size check, sisuc reads the whole 1 GiB file and reports each of its NUL bytes, so
-# this test hangs instead of failing.
+# is quadratic in the arms, so these tests hang instead of failing.
 [[profile.default.overrides]]
 filter = 'test(oversized_input_is_a_tool_error)'
 slow-timeout = { period = "10s", terminate-after = 3 }

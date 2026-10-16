@@ -700,10 +700,15 @@ pub(crate) enum DiagnosticKind {
     CannotMatch { ty: String, at: Span },
     /// The upper-case name `name`, at `at`, in a pattern where no enum is expected.
     NotVariantHere { name: String, at: Span },
-    /// The constant `name`, at `at`, written as a pattern. `guard` is whether a guard can stand
-    /// for it, which the help then shows: in a `match` arm, and not as a range bound, where
-    /// `n == LIMIT` would change what the range means.
-    ConstantInPattern { name: String, at: Span, guard: bool },
+    /// The constant `name`, at `at`, written as a pattern. `guard` is the arm's pattern with `at`
+    /// renamed and the guard that compares the name with the constant, which the help shows: in
+    /// a `match` arm, and not for a range bound, where `n == LIMIT` would change what the range
+    /// means.
+    ConstantInPattern {
+        name: String,
+        at: Span,
+        guard: Option<String>,
+    },
     /// The pattern at `at`, neither a name nor `_`, at a position of type `ty`, which takes only
     /// those.
     OnlyNamePosition { ty: String, at: Span },
@@ -2721,10 +2726,9 @@ impl From<DiagnosticKind> for Diagnostic {
                     at,
                     format!("`{name}` is a constant; a pattern cannot compare with it"),
                 );
-                if guard {
-                    d.with_help(format!("use a guard: `n if n == {name}`"))
-                } else {
-                    d
+                match guard {
+                    Some(guard) => d.with_help(format!("use a guard: `{guard}`")),
+                    None => d,
                 }
             }
             DiagnosticKind::OnlyNamePosition { ty, at } => Diagnostic::coded(
