@@ -29,6 +29,16 @@ enum List {
     Cons(i64, List)
 }
 
+enum Op {
+    Plus(i64)
+    Minus
+}
+
+// `Op` closes no cycle, so `Pair` holds it inline, not in a box.
+enum Instr {
+    Pair(Op, i64)
+}
+
 // `t` binds the boxed `L?` tail: present, then `None` at the end of the list.
 fn total(l: L) -> i64 {
     match l {
@@ -49,6 +59,14 @@ fn shape(e: Expr) -> i64 {
     match e {
         Add(Mul(Num(a), _), b) => a * 100 + eval(b)
         _ => -1
+    }
+}
+
+// The nested patterns test `Op` in place inside `Pair`'s payload.
+fn apply(i: Instr) -> i64 {
+    match i {
+        Pair(Plus(k), n) => n + k
+        Pair(Minus, n) => -n
     }
 }
 
@@ -109,6 +127,8 @@ fn main() {
     print(shape(e))                                            // 204
     print(shape(Expr.Add(Expr.Num(2), Expr.Num(4))))           // -1
     print(shape(Expr.Add(Expr.Mul(Expr.Add(e, e), e), e)))     // -1
+    print(apply(Instr.Pair(Op.Plus(2), 40)))                   // 42
+    print(apply(Instr.Pair(Op.Minus, 40)))                     // -40
     print(first(Expr.Num(7)))                                  // 7
     print(first(e))                                            // -1
     let c = Counter(count: 1)
@@ -132,6 +152,8 @@ fn main() {
     print(match 41 { _ => 0 })                                 // 0
     print(match head(list) == 1 { b => !b })                   // false
     print(match true { _ => 1 })                               // 1
+    let byte: u8 = 254
+    print(match byte { b => b + 1 })                           // 255
     print(match 'x' { c => c })                                // x
     print(match 'x' { _ => 'y' })                              // y
     print(match "st" + "ring" { s => s + "!" })                // string!

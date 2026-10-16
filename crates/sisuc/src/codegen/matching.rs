@@ -132,8 +132,8 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Tests `pattern` against the value of type `ty` at `at`: branches to `fail` when it does
     /// not match, and leaves the builder where it does, with each binding's slot set. Returns
-    /// the block that a test after this one branches to when it fails, its retry target, which
-    /// is `fail`.
+    /// the block that a test after this one branches to when it fails, its retry target: `fail`
+    /// for `_` and a name, and the retry target of its last sub-test for a variant.
     fn test(
         &mut self,
         pattern: &Pattern,
@@ -142,7 +142,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         fail: BasicBlock<'ctx>,
     ) -> BasicBlock<'ctx> {
         match &pattern.kind {
-            PatternKind::Wild => {}
+            PatternKind::Wild => fail,
             PatternKind::Bind(local) => {
                 let llvm_ty = self
                     .llvm_type(ty)
@@ -152,6 +152,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .build_load(llvm_ty, self.address(at), "value")
                     .expect(POSITIONED);
                 self.set_binding(*local, value);
+                fail
             }
             PatternKind::Variant { variant, fields } => {
                 let Type::Enum(id) = *ty else {
@@ -185,9 +186,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                         }
                     }
                 }
+                retry
             }
         }
-        fail
     }
 
     /// The commit of an arm whose pattern matched: each counted binding adds 1, then `temp`,

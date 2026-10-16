@@ -255,6 +255,10 @@ impl<'ctx> Codegen<'ctx, '_> {
         if !payload.boxed {
             return self.field_slot(value_addr, id, variant, field);
         }
+        assert!(
+            !matches!(payload.ty, Type::Optional(_)),
+            "a boxed `F?` field should have no place: the checker allows only a name or `_` there"
+        );
         let boxed = self.load_box(value_addr, id, variant, field);
         self.box_value(boxed_enum(&payload.ty), boxed)
     }

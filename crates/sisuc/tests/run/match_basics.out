@@ -4,6 +4,8 @@
 204
 -1
 -1
+42
+-40
 7
 -1
 idle
@@ -22,6 +24,7 @@ done: ab
 0
 false
 1
+255
 x
 y
 string!
