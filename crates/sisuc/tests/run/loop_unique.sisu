@@ -160,7 +160,8 @@ fn strings() {
     print("{b[0]} {b[1]}")            // a! b!
 }
 
-// After a hoisted loop, `d` shares `b`: the write outside any loop, and the next loop, copy it.
+// After a hoisted loop, `d` shares `b`: the write outside any loop copies `b`, so the next loop
+// checks its count once and writes in place.
 fn after_loop() {
     let a = [1, 2, 3]
     let mut b = a

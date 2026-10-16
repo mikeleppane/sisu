@@ -572,8 +572,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// against its length, make the array unique if the level is at or past `unique_from`, and
     /// take the element's address as the next slot. Checking first means a level whose index
     /// is out of bounds copies nothing; an outer level may already have copied. In a hoisted
-    /// write, the levels before `unique_from` were made unique by the enclosing loop, so a
-    /// level whose index is out of bounds may also follow that copy. A read passes
+    /// write, the root level was made unique by the enclosing loop, so a level whose index is
+    /// out of bounds may also follow that copy. A read passes
     /// `indexes.len()`, so it makes no level unique, even of a shared array.
     fn walk(
         &self,
@@ -731,7 +731,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         // count was above 1. Releasing it before the copy exists, not after, leaves the copy's
         // count and length as the last stores, so that LLVM can forward them past an inlined
         // `unique` instead of loading them again. With the TBAA tags, that drops the second
-        // count and bounds checks of a swap; see `partition_makes_its_array_unique_once`.
+        // count and bounds checks of a swap; see `a_barred_partition_makes_its_array_unique_once`.
         self.add_to_count(array, i64_type.const_int((-1_i64).cast_unsigned(), false));
         // The length fit once, so the new block needs no size check.
         let copy = self.alloc_array(element, len, None);

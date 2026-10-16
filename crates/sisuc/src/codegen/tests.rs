@@ -1424,10 +1424,11 @@ fn integer_min_max_clamp_are_selects() {
 }
 
 /// A swap in a loop, as quicksort's partition does it, makes its array unique once: `-O2` keeps
-/// one copy path and at most the bounds checks of `a[j]` and `a[i]`, but drops those of the
-/// writes. It needs both the TBAA tags, so that an element store keeps the count and length,
-/// and `unique` releasing the old block before it allocates the copy; with either alone `-O2`
-/// keeps two copy paths and three bounds checks. One copy path, not none: `unique` is inlined.
+/// one copy path, the hoisted `unique` before the loop, inlined, and at most the bounds checks
+/// of `a[j]` and `a[i]`, but drops those of the writes. It needs the TBAA tags, so that an
+/// element store keeps the length; without them `-O2` keeps three bounds checks. The loop has
+/// no copy path, so the order in which `unique` releases and allocates is guarded by
+/// `a_barred_partition_makes_its_array_unique_once` instead.
 #[test]
 fn partition_makes_its_array_unique_once() {
     let context = Context::create();

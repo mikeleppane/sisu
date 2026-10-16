@@ -36,11 +36,14 @@ pub(super) fn unique_roots(body: &Block) -> Vec<LocalId> {
 /// The locals a loop body writes, and those it bars, as `unique_roots` defines them.
 #[derive(Default)]
 struct Walk {
+    /// The locals whose elements the body writes.
     written: FxHashSet<LocalId>,
+    /// The locals that the body could share, replace or bind.
     barred: FxHashSet<LocalId>,
 }
 
 impl Walk {
+    /// Walks `block`'s statements through its first of type `never`, then its value if none was.
     fn block(&mut self, block: &Block) {
         for stmt in &block.stmts {
             self.stmt(stmt);
@@ -54,6 +57,7 @@ impl Walk {
         }
     }
 
+    /// Walks `stmt`: a `Let` bars the local it binds.
     fn stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { local, init } => {
@@ -87,6 +91,7 @@ impl Walk {
         }
     }
 
+    /// Walks `e`: a read of a local bars it, unless codegen borrows it there.
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::Int(_)
@@ -175,6 +180,7 @@ impl Walk {
         }
     }
 
+    /// Walks both branches of an `If` or an `IfSome`.
     fn branches(&mut self, then_block: &Block, else_block: Option<&Block>) {
         self.block(then_block);
         if let Some(block) = else_block {
