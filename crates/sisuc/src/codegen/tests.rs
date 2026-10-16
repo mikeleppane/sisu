@@ -1448,3 +1448,61 @@ fn partition_makes_its_array_unique_once() {
     let bounds = partition.matches("call void @sisu_panic_bounds(").count();
     assert!(bounds <= 2, "{bounds} bounds checks in\n{partition}");
 }
+
+/// `partition_makes_its_array_unique_once` with a `return a` in the loop, which bars the hoist:
+/// the writes in the loop call `unique` again, so the copy path that the TBAA tags and
+/// `unique`'s early release fold away is still there to guard. Same assertions.
+#[test]
+fn a_barred_partition_makes_its_array_unique_once() {
+    let context = Context::create();
+    let module = compiled(
+        &context,
+        "fn partition(xs: [i64], pivot: i64, stop: i64) -> [i64] {\n    let mut a = xs\n    let mut i = 0\n    for j in 0..a.len() {\n        if j == stop {\n            return a\n        }\n        if a[j] < pivot {\n            let t = a[i]\n            a[i] = a[j]\n            a[j] = t\n            i += 1\n        }\n    }\n    a\n}\n\nfn main() {\n    print(partition([3, 1, 2], 2, 5).sum())\n}",
+    );
+    keep_functions(&module, "partition");
+    let machine = target_machine(true).expect("the host is a target");
+    optimize(&module, &machine, true).expect("the module should optimize");
+    let ir = module.print_to_string().to_string();
+    let partition = function_body(&ir, "@sisu.partition(");
+    assert_eq!(
+        partition.matches("call ptr @sisu_alloc(").count(),
+        1,
+        "{partition}"
+    );
+    let bounds = partition.matches("call void @sisu_panic_bounds(").count();
+    assert!(bounds <= 2, "{bounds} bounds checks in\n{partition}");
+}
+
+/// A loop makes the arrays it writes unique before it starts. `f`'s raw IR, split at each
+/// `loop.body` label: the count of `unique` calls before the first loop body, then in each
+/// piece from a loop body on. Code after a loop lands in that loop's piece (`loop.end` follows
+/// `loop.body`), so no `f` writes after its last loop.
+#[test]
+fn a_loop_makes_its_written_arrays_unique_before_it_starts() {
+    use super::hoist::tests::{APPEND, BOTH_WRITE, GRID, OUTER_BARRED_INNER_HOISTS, PARTITION};
+    let cases: [(&str, &str, &[usize]); 5] = [
+        ("partition", PARTITION, &[1, 0]),
+        ("grid", GRID, &[1, 1]),
+        ("nested_both_write", BOTH_WRITE, &[1, 0, 0]),
+        ("outer_barred", OUTER_BARRED_INNER_HOISTS, &[0, 1, 0]),
+        ("append", APPEND, &[1, 0]),
+    ];
+    let mut wrong = Vec::new();
+    for (name, src, counts) in cases {
+        let context = Context::create();
+        let module = compiled(&context, &format!("{src}\nfn main() {{}}"));
+        let ir = module.print_to_string().to_string();
+        let f = function_body(&ir, "@sisu.f(");
+        let mut pieces = vec![0];
+        for line in f.lines() {
+            if line.starts_with("loop.body") {
+                pieces.push(0);
+            }
+            *pieces.last_mut().unwrap() += line.matches("call ptr @\"sisu_rc.unique.").count();
+        }
+        if pieces != counts {
+            wrong.push(format!("{name}: {pieces:?}, expected {counts:?}\n{f}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

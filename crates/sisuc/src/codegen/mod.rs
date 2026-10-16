@@ -3,6 +3,7 @@
 mod arith;
 mod array;
 mod enums;
+mod hoist;
 mod io;
 mod math;
 mod rc;
@@ -140,6 +141,7 @@ pub(crate) fn compile<'ctx>(
         types: Vec::new(),
         live: Vec::new(),
         loops: Vec::new(),
+        unique_locals: Vec::new(),
     };
     codegen.lay_out_types();
     // Every class gets its helpers, used or not, as in milestone 2.
@@ -345,6 +347,9 @@ struct Codegen<'ctx, 'src> {
     /// The counted locals in scope, newest last: each holds a reference to release.
     live: Vec<LocalId>,
     loops: Vec<LoopFrame<'ctx>>,
+    /// The current function's locals, indexed by `LocalId`: whether an enclosing loop made the
+    /// local unique before it started, so that its root-level writes skip `unique`.
+    unique_locals: Vec<bool>,
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
@@ -611,6 +616,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             })
             .collect();
         self.types = f.locals.iter().map(|local| local.ty.clone()).collect();
+        self.unique_locals = vec![false; f.locals.len()];
         // The parameters own their arguments: they are the bottom of the live-locals stack.
         self.live = Vec::new();
         for (p, v) in f.params.iter().zip(function.get_param_iter()) {
@@ -1117,7 +1123,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// `loop`: the body block runs until a `Break` branches to the end block, where codegen
-    /// continues; a body that falls through branches back to its start.
+    /// continues; a body that falls through branches back to its start. First, the arrays that
+    /// `hoist::unique_roots` finds are made unique, unless an enclosing loop did so: the body's
+    /// writes to them then skip `unique` at the root, until the loop ends.
     fn loop_expr(&mut self, body: &Block) {
         let function = self.current_function();
         let frame = LoopFrame {
@@ -1126,11 +1134,22 @@ impl<'ctx> Codegen<'ctx, '_> {
             depth: self.live.len(),
         };
         let (start, end) = (frame.body, frame.end);
+        let hoisted: Vec<_> = hoist::unique_roots(body)
+            .into_iter()
+            .filter(|local| !self.unique_locals[local.0])
+            .collect();
+        for &local in &hoisted {
+            self.unique(self.variable_slot(local), &self.types[local.0]);
+            self.unique_locals[local.0] = true;
+        }
         self.branch_to(start);
         self.builder.position_at_end(start);
         self.loops.push(frame);
         let value = self.block(body, None);
         self.loops.pop();
+        for local in hoisted {
+            self.unique_locals[local.0] = false;
+        }
         if !self.terminated() {
             self.discard(value, &body.ty);
             self.branch_to(start);

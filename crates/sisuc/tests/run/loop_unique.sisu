@@ -1,0 +1,192 @@
+// A loop makes the arrays it writes unique before it starts (ADR 0021). Each row keeps the other
+// holder of the array live past the loop and prints it, so a hoist that skipped a needed copy
+// changes the output.
+class K {
+    mut xs: [i64]
+}
+
+// `b` shares `a` when the loop starts, so the hoist copies it.
+fn shared_before() {
+    let a = [1, 2, 3]
+    let mut b = a
+    for j in 0..3 {
+        b[j] = b[j] * 10
+    }
+    print("{a[0]} {a[1]} {a[2]}")     // 1 2 3
+    print("{b[0]} {b[1]} {b[2]}")     // 10 20 30
+}
+
+// Loops that never write a shared `b`: the hoist copies it anyway, which changes no value and
+// leaks nothing.
+fn never_writes() {
+    let a = [1, 2, 3]
+    let mut b = a
+    for j in 0..0 {
+        b[j] = 1
+    }
+    let d = b
+    for j in 0..3 {
+        if j > 5 {
+            b[j] = 1
+        }
+    }
+    print("{a[0]} {a[1]} {a[2]}")     // 1 2 3
+    print("{d[0]} {d[1]} {d[2]}")     // 1 2 3
+    print("{b[0]} {b[1]} {b[2]}")     // 1 2 3
+}
+
+// The write after `return` is dead, and `b` moves into `c`: the loop must not touch `b`'s slot.
+fn dead_write(a: [i64]) -> i64 {
+    let mut b = a
+    let c = b
+    while true {
+        return c.len()
+        b[0] = 1
+    }
+    return 0
+}
+
+// The loop stores `a` in `keep.xs`, then writes `a`: `keep.xs` keeps the values it had.
+fn escape() {
+    let keep = K(xs: [0])
+    let mut a = [1, 2, 3]
+    for j in 0..3 {
+        keep.xs = a
+        a[j] = j * 10
+    }
+    print("{keep.xs[0]} {keep.xs[1]} {keep.xs[2]}") // 0 10 3
+    print("{a[0]} {a[1]} {a[2]}")     // 0 10 20
+}
+
+// The loop binds a copy of `a`, then writes `a`: the copy keeps the values it had.
+fn let_copy() {
+    let mut a = [1, 2, 3]
+    let mut total = 0
+    for j in 0..3 {
+        let b = a
+        a[j] = 0
+        total += b.sum()
+    }
+    print(total)                      // 14: 6, then 5, then 3
+}
+
+// The loop replaces `a` with `c`, then writes `a`: `c` keeps its values.
+fn reassign() {
+    let c = [1, 2, 3]
+    let mut a = [0]
+    for j in 0..2 {
+        a = c
+        a[0] = 9
+    }
+    print(c[0])                       // 1
+    print(a[0])                       // 9
+}
+
+// The index of a read writes the array it reads: the read sees the array as it was.
+fn index_hazard() {
+    let mut a = [3, 0]
+    let mut s = 0
+    for j in 0..2 {
+        s += a[if j == 0 {
+            a[0] = 10
+            0
+        } else { 1 }]
+    }
+    print(s)                          // 3: 3, then 0
+    print(a[0])                       // 10
+}
+
+// Only a grid's root is hoisted: a row shared with `row` is still copied at the write. Then an
+// outer loop that shares `a` with `keep` each round, around an inner loop that writes `a`.
+fn nested() {
+    let mut g = [[1, 2], [3, 4]]
+    let row = g[0]
+    for j in 0..2 {
+        g[0][j] = 0
+    }
+    print("{row[0]} {row[1]}")        // 1 2
+    print("{g[0][0]} {g[0][1]}")      // 0 0
+    let mut a = [1, 2, 3]
+    let mut keep = [0]
+    for i in 0..2 {
+        keep = a
+        for j in 0..3 {
+            a[j] += 1
+        }
+    }
+    print("{keep[0]} {keep[1]} {keep[2]}") // 2 3 4
+    print("{a[0]} {a[1]} {a[2]}")     // 3 4 5
+}
+
+// `break`, `continue` and `return` leave a hoisted loop over a shared array; no exit path reads
+// `b`. Then a `while` loop writes `b`.
+fn g(xs: [i64], stop: i64) -> i64 {
+    let mut b = xs
+    for j in 0..6 {
+        if j == stop {
+            break
+        }
+        if j % 2 == 1 {
+            continue
+        }
+        if j == 4 {
+            return j
+        }
+        b[j] = 0
+    }
+    let mut i = 0
+    while i < 3 {
+        b[i] += i + 1
+        i += 1
+    }
+    b[0] + b[1] + b[2]
+}
+
+fn exits() {
+    let xs = [5, 6, 7]
+    print(g(xs, 3))                   // 12: `break` at 3 leaves [0, 6, 0], then [1, 8, 3]
+    print(g(xs, 10))                  // 4: `return j` at 4
+    print("{xs[0]} {xs[1]} {xs[2]}")  // 5 6 7
+}
+
+// A shared `[string]`: the appends copy it, and the other holder keeps its strings.
+fn strings() {
+    let a = ["a", "b"]
+    let mut b = a
+    for i in 0..2 {
+        b[i] += "!"
+    }
+    print("{a[0]} {a[1]}")            // a b
+    print("{b[0]} {b[1]}")            // a! b!
+}
+
+// After a hoisted loop, `d` shares `b`: the write outside any loop, and the next loop, copy it.
+fn after_loop() {
+    let a = [1, 2, 3]
+    let mut b = a
+    for j in 0..3 {
+        b[j] = b[j] + 10
+    }
+    let d = b
+    b[0] = 9
+    for j in 0..2 {
+        b[1] = 8
+    }
+    print("{a[0]} {a[1]} {a[2]}")     // 1 2 3
+    print("{d[0]} {d[1]} {d[2]}")     // 11 12 13
+    print("{b[0]} {b[1]} {b[2]}")     // 9 8 13
+}
+
+fn main() {
+    shared_before()
+    never_writes()
+    print(dead_write([1, 2, 3]))      // 3
+    escape()
+    let_copy()
+    reassign()
+    index_hazard()
+    nested()
+    exits()
+    strings()
+    after_loop()
+}
