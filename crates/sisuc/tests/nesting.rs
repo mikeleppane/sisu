@@ -30,6 +30,11 @@ fn some(x: i64) -> i64? {
     x
 }
 
+enum R {
+    A(R)
+    Z
+}
+
 ";
 
 /// A generated program and the byte offset of the token where the depth runs out.
@@ -155,6 +160,26 @@ fn array_type(n: usize) -> Generated {
     in_main(&wrapped("let a: ", "[", "i64", "]", " = []", n), 11 + n)
 }
 
+/// `match` nested `n` times in its arm's body, then `1`; fails at the last `match`'s scrutinee.
+fn match_body(n: usize) -> Generated {
+    let first = "    let y = 1\n";
+    let line = wrapped("let _ = ", "match y { _ => ", "1", " }", "", n);
+    in_main(
+        &format!("{first}{line}"),
+        first.len() + 12 + 15 * (n - 1) + 6,
+    )
+}
+
+/// A pattern `n` variants deep; fails at its `_`.
+fn match_pattern(n: usize) -> Generated {
+    let first = "    let r = R.Z\n    let _ = match r {\n";
+    let arm = wrapped("    ", "A(", "_", ")", " => 1", n);
+    in_main(
+        &format!("{first}{arm}        _ => 2\n    }}\n"),
+        first.len() + 8 + 2 * n,
+    )
+}
+
 /// Where the byte `offset` of `source` is, as 1-based `(line, column)`.
 fn line_col(source: &str, offset: usize) -> (usize, usize) {
     let before = &source[..offset];
@@ -255,24 +280,18 @@ construct!(else_if_chain, else_if, 252);
 construct!(whiles, nested_while, 253);
 construct!(fors, nested_for, 253);
 construct!(array_types, array_type, 254);
+construct!(match_bodies, match_body, 254);
+construct!(match_patterns, match_pattern, 253);
 
-/// `match` nests through its patterns and its arm bodies. An assignment body sits in a block of
-/// its own, one level more, so `x = match …` nests half as far as `match … => match …`. These stop
-/// at `--emit ast`, before the checker.
+/// An assignment arm body sits in a block of its own, one level more, so `x = match …` nests half
+/// as far as `match … => match …` (`match_bodies`). Its arms have no value, so the program stops at
+/// `--emit ast`, before the checker.
 #[test]
 fn match_nests_to_the_limit() {
     type Program = fn(usize) -> String;
-    let cases: [(&str, usize, Program); 3] = [
-        ("body", 254, |n| {
-            "match y { _ => ".repeat(n) + "1" + &" }".repeat(n)
-        }),
-        ("assignment", 127, |n| {
-            "x = ".to_string() + &"match y { _ => x = ".repeat(n) + "1" + &" }".repeat(n)
-        }),
-        ("pattern", 253, |n| {
-            format!("match y {{ {}_{} => 1 }}", "A(".repeat(n), ")".repeat(n))
-        }),
-    ];
+    let cases: [(&str, usize, Program); 1] = [("assignment", 127, |n| {
+        "x = ".to_string() + &"match y { _ => x = ".repeat(n) + "1" + &" }".repeat(n)
+    })];
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     for (name, limit, program) in cases {
         for (n, code) in [(limit, Some(0)), (limit + 1, Some(1))] {

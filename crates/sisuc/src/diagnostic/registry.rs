@@ -616,7 +616,8 @@ pub(crate) enum DiagnosticKind {
         fix: Option<TypedLiteral>,
     },
     /// The expression statement, or branch or body tail, at `at`, whose value of type `ty` nothing uses.
-    UnusedValue { ty: String, at: Span },
+    /// `arm` when it is a `match` arm's whole body, which takes no statement outside a block.
+    UnusedValue { ty: String, at: Span, arm: bool },
     /// The built-in type or class `name`, at `at`, read as a value.
     TypeAsValue { name: String, at: Span },
     /// The member of `math`, `Math` or `f64`, written at `written`, which is not how Sisu writes
@@ -2331,14 +2332,29 @@ impl From<DiagnosticKind> for Diagnostic {
                     None => d,
                 }
             }
-            DiagnosticKind::UnusedValue { ty, at } => {
-                Diagnostic::coded(code, at, format!("unused value of type `{ty}`"))
-                    .with_help("use it, or write `let _ =` to drop it on purpose")
-                    .with_fix(unsafe_fix(
-                        "drop it on purpose",
-                        Span::new(at.start(), at.start()),
-                        "let _ = ",
-                    ))
+            DiagnosticKind::UnusedValue { ty, at, arm } => {
+                let d = Diagnostic::coded(code, at, format!("unused value of type `{ty}`"));
+                let start = Span::new(at.start(), at.start());
+                if arm {
+                    d.with_help("use it, or write `{ let _ = ... }` to drop it on purpose")
+                        .with_fix(Fix {
+                            message: "drop it on purpose".to_string(),
+                            safe: false,
+                            edits: vec![
+                                Edit {
+                                    span: start,
+                                    replacement: "{ let _ = ".to_string(),
+                                },
+                                Edit {
+                                    span: Span::new(at.end(), at.end()),
+                                    replacement: " }".to_string(),
+                                },
+                            ],
+                        })
+                } else {
+                    d.with_help("use it, or write `let _ =` to drop it on purpose")
+                        .with_fix(unsafe_fix("drop it on purpose", start, "let _ = "))
+                }
             }
             DiagnosticKind::TypeAsValue { name, at } => {
                 Diagnostic::coded(code, at, format!("`{name}` is a type, not a value"))
@@ -2581,7 +2597,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 }),
                 MatchIdiomForm::Default => Diagnostic::coded(code, at, "write `_ =>`")
                     .with_fix(safe_fix("write `_ =>`", at, "_ =>")),
-                MatchIdiomForm::Else => Diagnostic::coded(code, at, "write `_ =>`")
+                MatchIdiomForm::Else => Diagnostic::coded(code, at, "write `_`")
                     .with_fix(safe_fix("write `_`", at, "_")),
                 MatchIdiomForm::Arrow => Diagnostic::coded(code, at, "an arm uses `=>`")
                     .with_fix(safe_fix("write `=>`", at, "=>")),

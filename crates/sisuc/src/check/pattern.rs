@@ -501,28 +501,29 @@ impl Checker<'_> {
             self.report(kind);
             return None;
         };
-        let types = info.variants[variant].fields.clone();
+        // Counted, not cloned: a wide variant's malformed patterns must not each copy its fields.
+        let count = info.variants[variant].fields.len();
         let kind = match parens {
-            None if !types.is_empty() => DiagnosticKind::VariantForm {
+            None if count != 0 => DiagnosticKind::VariantForm {
                 path,
                 payload: true,
                 held: false,
                 at: name.span,
             },
             // The fix deletes the parentheses, so what they hold (even a comment) makes it unsafe.
-            Some(parens) if types.is_empty() => DiagnosticKind::VariantForm {
+            Some(parens) if count == 0 => DiagnosticKind::VariantForm {
                 path,
                 payload: false,
                 held: !fields.is_empty() || self.comment_in(&[parens.range()]),
                 at: parens,
             },
-            _ if fields.len() != types.len() => DiagnosticKind::SubpatternCount {
+            _ if fields.len() != count => DiagnosticKind::SubpatternCount {
                 variant: name.name.to_string(),
-                fields: types.len(),
+                fields: count,
                 found: fields.len(),
                 at: span,
             },
-            _ => return Some((variant, types)),
+            _ => return Some((variant, info.variants[variant].fields.clone())),
         };
         self.report(kind);
         None

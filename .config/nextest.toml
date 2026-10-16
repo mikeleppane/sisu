@@ -55,6 +55,18 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(many_arms_check_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Each arm once copied and joined the set of every local in the function, so last use was
+# quadratic in the arms and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_arms_mark_last_uses_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# A variant pattern once copied its variant's field types before checking its form, so short
+# malformed patterns of a wide variant were quadratic and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(malformed_patterns_of_a_wide_variant_check_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # Without the all-wildcard row cut, coverage meets 2^40 distinct matrices, so this test hangs
 # instead of failing.
 [[profile.default.overrides]]

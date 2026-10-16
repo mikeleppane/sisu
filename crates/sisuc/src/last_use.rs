@@ -22,7 +22,9 @@
 
 use std::mem;
 
-use crate::tir::{BinaryOp, Block, Expr, ExprKind, LocalId, Place, Program, Stmt};
+use rustc_hash::FxHashMap;
+
+use crate::tir::{Arm, BinaryOp, Block, Expr, ExprKind, LocalId, Place, Program, Stmt};
 
 /// Rewrites each read of a counted local that is its last use into `ExprKind::Move`.
 pub(crate) fn mark(program: &mut Program) {
@@ -36,6 +38,8 @@ pub(crate) fn mark(program: &mut Program) {
             live: vec![false; function.locals.len()],
             rewrite: true,
             loops: Vec::new(),
+            trail: Vec::new(),
+            undoing: 0,
         };
         walk.block(&mut function.body);
     }
@@ -51,6 +55,12 @@ struct Walk {
     rewrite: bool,
     /// The enclosing loops, innermost last: the set live after each, and at its head.
     loops: Vec<(Vec<bool>, Vec<bool>)>,
+    /// Inside a `match`'s arms: each change to `live`, as the local and the value it had, so
+    /// that an arm is undone in the locals it changed rather than in every local.
+    trail: Vec<(usize, bool)>,
+    /// How many `match`es' arms enclose the walk; outside them nothing is undone, so the trail
+    /// records nothing.
+    undoing: usize,
 }
 
 impl Walk {
@@ -66,7 +76,7 @@ impl Walk {
     fn stmt(&mut self, stmt: &mut Stmt) {
         match stmt {
             Stmt::Let { local, init } => {
-                self.live[local.0] = false;
+                self.set(local.0, false);
                 self.expr(init);
             }
             // Loading the old value to release it is not a read.
@@ -74,13 +84,13 @@ impl Walk {
                 place: Place::Local(local),
                 value,
             } => {
-                self.live[local.0] = false;
+                self.set(local.0, false);
                 self.expr(value);
             }
             Stmt::Assign { place, value } | Stmt::Append { place, value } => {
                 // An element write loads its root local's slot after the value, and keeps it.
                 if let Some(root) = root_local(place) {
-                    self.live[root.0] = true;
+                    self.set(root.0, true);
                 }
                 self.expr(value);
                 self.place(place);
@@ -111,7 +121,7 @@ impl Walk {
             if self.rewrite && self.counted[local.0] && !self.live[local.0] {
                 e.kind = ExprKind::Move(local);
             }
-            self.live[local.0] = true;
+            self.set(local.0, true);
             return;
         }
         match &mut e.kind {
@@ -195,19 +205,7 @@ impl Walk {
             ExprKind::Match {
                 scrutinee, arms, ..
             } => {
-                let after = self.live.clone();
-                // The set live at the next arm's test; no test follows the last arm's.
-                let mut next = vec![false; after.len()];
-                for arm in arms.iter_mut().rev() {
-                    self.live.clone_from(&after);
-                    self.block(&mut arm.body);
-                    self.join(&next);
-                    for bind in &arm.bindings {
-                        self.live[bind.0] = false;
-                    }
-                    next.clone_from(&self.live);
-                }
-                self.live = next;
+                self.arms(arms);
                 self.expr(scrutinee);
             }
             ExprKind::Loop(body) => self.looped(body),
@@ -215,24 +213,26 @@ impl Walk {
                 let (exit, _) = self
                     .loops
                     .last()
-                    .expect("the checker should reject `break` outside a loop");
-                self.live.clone_from(exit);
+                    .expect("the checker should reject `break` outside a loop")
+                    .clone();
+                self.assign(&exit);
             }
             ExprKind::Continue => {
                 let (_, head) = self
                     .loops
                     .last()
-                    .expect("the checker should reject `continue` outside a loop");
-                self.live.clone_from(head);
+                    .expect("the checker should reject `continue` outside a loop")
+                    .clone();
+                self.assign(&head);
             }
             ExprKind::Return(value) => {
-                self.live.fill(false);
+                self.clear();
                 if let Some(value) = value {
                     self.expr(value);
                 }
             }
             ExprKind::Panic(message) => {
-                self.live.fill(false);
+                self.clear();
                 self.expr(message);
             }
             ExprKind::Block(block) => self.block(block),
@@ -264,9 +264,10 @@ impl Walk {
         let after = self.live.clone();
         self.block(then_block);
         if let Some(bind) = bind {
-            self.live[bind.0] = false;
+            self.set(bind.0, false);
         }
-        let then_live = mem::replace(&mut self.live, after);
+        let then_live = self.live.clone();
+        self.assign(&after);
         if let Some(else_block) = else_block {
             self.block(else_block);
         }
@@ -290,16 +291,74 @@ impl Walk {
     /// Walks `body` with the given exit and head sets; the body falls through to its head.
     /// Leaves the set live at the head.
     fn pass(&mut self, body: &mut Block, exit: Vec<bool>, head: Vec<bool>) -> Vec<bool> {
-        self.live.clone_from(&head);
+        self.assign(&head);
         self.loops.push((exit, head));
         self.block(body);
         self.loops.pop();
         self.live.clone()
     }
 
+    /// A `match`'s arms, from the set live after them. Each body is walked from that set, and
+    /// the set live at the tests is their union, the bindings killed. Each arm is undone through
+    /// the trail, so an arm costs the locals it changes, not every local of the function.
+    fn arms(&mut self, arms: &mut [Arm]) {
+        let mark = self.trail.len();
+        self.undoing += 1;
+        // Each local an arm changed: the last arm that did, how many did, and whether one left
+        // it live.
+        let mut changed: FxHashMap<usize, (usize, usize, bool)> = FxHashMap::default();
+        for (i, arm) in arms.iter_mut().enumerate() {
+            self.block(&mut arm.body);
+            // Newest first, so the first entry of a local finds the arm's final value in `live`.
+            for (local, was) in self.trail.drain(mark..).rev() {
+                let now = mem::replace(&mut self.live[local], was);
+                let (last, count, live) = changed.entry(local).or_insert((usize::MAX, 0, false));
+                if *last != i {
+                    *last = i;
+                    *count += 1;
+                    *live |= now;
+                }
+            }
+        }
+        self.undoing -= 1;
+        for (local, (_, count, live)) in changed {
+            // An arm that left the local alone kept the value it has after the `match`.
+            let kept = count < arms.len() && self.live[local];
+            self.set(local, live || kept);
+        }
+        for arm in arms {
+            for bind in &arm.bindings {
+                self.set(bind.0, false);
+            }
+        }
+    }
+
+    /// Sets whether `local` is live, recording the change while an arm may be undone.
+    fn set(&mut self, local: usize, live: bool) {
+        let was = mem::replace(&mut self.live[local], live);
+        if was != live && self.undoing > 0 {
+            self.trail.push((local, was));
+        }
+    }
+
+    /// Makes `other` the live set.
+    fn assign(&mut self, other: &[bool]) {
+        for (local, &live) in other.iter().enumerate() {
+            self.set(local, live);
+        }
+    }
+
     fn join(&mut self, other: &[bool]) {
-        for (live, other) in self.live.iter_mut().zip(other) {
-            *live |= *other;
+        for (local, &live) in other.iter().enumerate() {
+            if live {
+                self.set(local, true);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        for local in 0..self.live.len() {
+            self.set(local, false);
         }
     }
 }

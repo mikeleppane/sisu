@@ -101,6 +101,11 @@ impl Checker<'_> {
     /// `unit` or `never`. An `if`, an `if let`, a `match` or a block is not itself the value: the
     /// tail of each branch or arm is.
     pub(super) fn discard(&mut self, source: &ast::Expr, checked: &tir::Expr) {
+        self.discarded(source, checked, false);
+    }
+
+    /// `discard`, where `arm` is whether `source` is a `match` arm's whole body.
+    fn discarded(&mut self, source: &ast::Expr, checked: &tir::Expr, arm: bool) {
         // An optional join wraps a whole branch value, an inner `if` too.
         let checked = match &checked.kind {
             ExprKind::Wrap(inner) => inner,
@@ -156,7 +161,7 @@ impl Checker<'_> {
                     } else {
                         let value = arm.body.value.as_ref();
                         let value = value.expect("an expression arm should keep its value");
-                        self.discard(&source.body, value);
+                        self.discarded(&source.body, value, true);
                     }
                 }
             }
@@ -178,6 +183,7 @@ impl Checker<'_> {
                     self.report(DiagnosticKind::UnusedValue {
                         ty,
                         at: source.span,
+                        arm,
                     });
                 }
             }

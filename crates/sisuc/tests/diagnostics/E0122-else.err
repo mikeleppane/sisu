@@ -1,4 +1,4 @@
-error[E0122]: write `_ =>`
+error[E0122]: write `_`
  --> E0122-else.sisu:9:9
   |
 9 |         else => 0

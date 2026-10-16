@@ -398,6 +398,18 @@ fn last_use_through_match() {
     for part in ["(match s#0 ", "(arm Idle (block (move s#0)))"] {
         assert!(printed.contains(part), "{part} in {printed}");
     }
+    // A local every arm assigns is dead at the test, so the read before the `match` moves it; one
+    // arm that leaves it alone keeps it live there.
+    for (idle, moved) in [("xs = [2]", true), ("{}", false)] {
+        let src = format!(
+            "{DECLS}\nfn t(s: State) -> i64 {{\n    let mut xs = [0]\n    print(xs.len())\n    match s {{\n        Running(_) => xs = [1]\n        Idle => {idle}\n    }}\n    xs.len()\n}}"
+        );
+        let (program, ds) = crate::front_end::front_end(&src);
+        assert!(ds.is_empty(), "{ds:?}");
+        let printed = program.expect("the source should check clean").to_string();
+        let part = "(print (len (move xs#1)))";
+        assert_eq!(printed.contains(part), moved, "{idle}: {printed}");
+    }
     // An arm's bindings are dead before its test, so the loop moves `l` into the `match` and
     // `t` into `l`.
     let src = "enum L {\n    Cons(i64, L)\n    Nil\n}\nfn main() {}\nfn t(l0: L) {\n    let mut l = l0\n    while let Cons(h, t) = l {\n        print(h)\n        l = t\n    }\n}";
@@ -677,6 +689,50 @@ fn many_arms_check_in_linear_time() {
     clean(&format!(
         "enum E {{\n{variants}}}\nfn f(e: E) -> i64 {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
     ));
+}
+
+/// The keep-alive override for this test is in `.config/nextest.toml`: an arm whose last-use walk
+/// copies or joins the set of every local in the function makes the walk quadratic in the arms,
+/// since each arm adds a local, and this test hangs instead of failing.
+#[test]
+fn many_arms_mark_last_uses_in_linear_time() {
+    const VARIANTS: usize = 200_000;
+    let variants = (0..VARIANTS)
+        .map(|i| format!("    V{i}(string)\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let arms = (0..VARIANTS)
+        .map(|i| format!("        V{i}(s) => s\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let src = format!(
+        "enum E {{\n{variants}}}\nfn f(e: E) -> string {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
+    );
+    let (program, ds) = crate::front_end::front_end(&src);
+    assert!(ds.is_empty(), "{ds:?}");
+    let printed = program.expect("the source should check clean").to_string();
+    // Each arm's `s` is read once, so every read is its last use.
+    assert_eq!(printed.matches("(block (move s#").count(), VARIANTS);
+}
+
+/// The keep-alive override for this test is in `.config/nextest.toml`: a variant pattern that
+/// copies its variant's field types before it checks its form costs the variant's width, so short
+/// malformed patterns of a wide variant are quadratic and this test hangs instead of failing.
+#[test]
+fn malformed_patterns_of_a_wide_variant_check_in_linear_time() {
+    const FIELDS: usize = 100_000;
+    let fields = vec!["i64"; FIELDS].join(", ");
+    let arms = "        E.V => 0\n".repeat(FIELDS);
+    let src = format!(
+        "enum E {{ V({fields}) }}\nfn f(e: E) -> i64 {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
+    );
+    let ds = diags(&src);
+    assert_eq!(ds.len(), FIELDS);
+    assert!(
+        ds.iter().all(|d| d.code() == Code::VariantForm),
+        "{:?}",
+        ds[0]
+    );
 }
 
 /// A payload of 32,768 fields gives a matrix 32,768 columns deep, which the solver must not meet
