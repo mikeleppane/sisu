@@ -505,7 +505,7 @@ mod tests {
         BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_eprint_bool,
         sisu_eprint_f64, sisu_eprint_int, sisu_flush_stdout, sisu_free, sisu_panic_bounds,
         sisu_print_bool, sisu_print_f64, sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
-        sisu_realloc,
+        sisu_realloc, with_stdout,
     };
     use crate::text::{sisu_eprint_char, sisu_eprint_str};
     use std::os::fd::AsRawFd;
@@ -659,6 +659,31 @@ mod tests {
             .expect("spawn child test");
         assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
         assert_eq!(out.stderr, "-42\n-0.5\ntrue\nä\na\0b\n\n".as_bytes());
+    }
+
+    /// `sisu_print_str` and `sisu_eprint_str` read exactly `len` bytes, a zero byte included,
+    /// for a nonempty and an empty string. The test runs in process, so Miri checks the reads
+    /// that the child tests above make out of its reach.
+    #[expect(unsafe_code, reason = "the test calls unsafe extern functions")]
+    #[test]
+    fn str_output_reads_len_bytes() {
+        let text = b"a\0b";
+        // SAFETY: each slice's pointer is non-null and readable for its length.
+        unsafe {
+            crate::text::sisu_print_str(text.as_ptr(), text.len());
+            crate::text::sisu_print_str([].as_ptr(), 0);
+            sisu_eprint_str(text.as_ptr(), text.len());
+            sisu_eprint_str([].as_ptr(), 0);
+        }
+        // A terminal gets each line at once; otherwise both lines wait in the buffer.
+        with_stdout(|out| {
+            let line_buffered = out.sink.as_ref().is_some_and(|sink| sink.line_buffered);
+            assert!(
+                line_buffered || out.buffer.ends_with(b"a\0b\n\n"),
+                "{:?}",
+                out.buffer
+            );
+        });
     }
 
     #[test]
