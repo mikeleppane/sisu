@@ -1,0 +1,14 @@
+error[E0130]: `match` does not cover `_`
+ --> E0130-string.sisu:2:5
+  |
+2 |     match s {
+  |     ^^^^^
+  |
+  = help: add `_ =>`
+help: add a `_ =>` arm
+  |
+5 +         _ => todo
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0130

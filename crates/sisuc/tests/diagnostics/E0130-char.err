@@ -1,0 +1,14 @@
+error[E0130]: `match` does not cover `'\u{E000}'..='\u{10FFFF}'`
+ --> E0130-char.sisu:2:5
+  |
+2 |     match c {
+  |     ^^^^^
+  |
+  = help: add `_ =>`
+help: add a `_ =>` arm
+  |
+4 +         _ => todo
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0130

@@ -1,0 +1,17 @@
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+fn stop(l: Light) -> bool {
+    match l {
+        Red
+        | Amber => true
+        Green => false
+    }
+}
+
+fn main() {
+    print(stop(Light.Amber))
+}

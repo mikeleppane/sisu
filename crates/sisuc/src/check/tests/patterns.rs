@@ -275,6 +275,8 @@ fn pattern_errors() {
         ("e", "Num(x, y) => 1", Code::SubpatternCount, 9),
         // A failed pattern binds each name once, so `x` is not bound twice.
         ("e", "Mul(x, x) => 1", Code::UnknownVariant, 9),
+        // An `|` in a failed pattern binds its names too.
+        ("e", "Mul(Num(x) | Add(x, _)) => x", Code::UnknownVariant, 9),
         // A body fails on its own, after a pattern that checks.
         ("e", "Num(m) => nope", Code::BindingNotFound, 19),
         // The fields after a failed one are checked too, so their names are bound.
@@ -693,10 +695,14 @@ fn unreachable_arms() {
 /// The keep-alive override for this test is in `.config/nextest.toml`: specializing a column
 /// once per constructor over every row, or checking each arm against the arms before it, is
 /// quadratic and hangs instead of failing. At 50,000 variants a quadratic bucketing still ends
-/// inside the override's 30 seconds, so the test takes 200,000.
+/// inside the override's 30 seconds, so the test takes 200,000. A column of 50,000 literals is
+/// quadratic when its split rescans the column per interval, and a `V(true | false, ...)` of
+/// 20,000 fields when specializing copies or rehashes the rest of a row.
 #[test]
 fn many_arms_check_in_linear_time() {
     const VARIANTS: usize = 200_000;
+    const LITERALS: usize = 50_000;
+    const FIELDS: usize = 20_000;
     let variants = (0..VARIANTS)
         .map(|i| format!("    V{i}\n"))
         .collect::<Vec<_>>()
@@ -707,6 +713,18 @@ fn many_arms_check_in_linear_time() {
         .concat();
     clean(&format!(
         "enum E {{\n{variants}}}\nfn f(e: E) -> i64 {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
+    ));
+    let arms = (0..LITERALS)
+        .map(|i| format!("        {i} => {i}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    clean(&format!(
+        "fn f(n: i64) -> i64 {{\n    match n {{\n{arms}        _ => 0\n    }}\n}}\nfn main() {{}}"
+    ));
+    let fields = vec!["bool"; FIELDS].join(", ");
+    let rest = vec!["_"; FIELDS - 1].join(", ");
+    clean(&format!(
+        "enum F {{ V({fields}) }}\nfn f(x: F) -> i64 {{\n    match x {{\n        V(true | false, {rest}) => 1\n    }}\n}}\nfn main() {{}}"
     ));
 }
 
@@ -888,4 +906,384 @@ fn broken_pattern_skips_coverage() {
         ),
         &[(Code::UnknownType, (12, 10))],
     );
+}
+
+/// `decls` (whole lines), `const LIMIT = 9`, then a function of a `ty` parameter `v` and an `i64`
+/// parameter `hi` whose `match` on `v` has each of `arms` on its own line; and the line of the
+/// `match` keyword, which is at column 5. The first arm is on the line after it, at column 9.
+fn typed(decls: &str, ty: &str, arms: &[&str]) -> (String, usize) {
+    let arms = arms
+        .iter()
+        .map(|arm| format!("        {arm}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let src = format!(
+        "{decls}const LIMIT = 9\nfn t(v: {ty}, hi: i64) -> i64 {{\n    match v {{\n{arms}    }}\n}}\nfn main() {{}}"
+    );
+    (src, decls.lines().count() + 3)
+}
+
+#[test]
+fn literal_patterns() {
+    // Each row: the type, the arm before `_ => 0`, and the code it reports with its column.
+    let rows = [
+        ("u8", "0 => 1", None),
+        ("u8", "255 => 1", None),
+        ("u8", "256 => 1", Some((Code::IntegerDoesNotFit, 9))),
+        ("u8", "-0 => 1", Some((Code::NegatedU8, 9))),
+        ("u8", "-1 => 1", Some((Code::NegatedU8, 9))),
+        ("i64", "-9223372036854775808 => 1", None),
+        ("i64", "9223372036854775807 => 1", None),
+        ("i64", "'a' => 1", Some((Code::Mismatch, 9))),
+        ("bool", "1 => 1", Some((Code::Mismatch, 9))),
+        ("char", "'a' => 1", None),
+        ("string", "\"a\" => 1", None),
+        ("bool", "true => 1", None),
+        ("string", "'a' => 1", Some((Code::Mismatch, 9))),
+    ];
+    for (ty, arm, code) in rows {
+        let (src, line) = typed("", ty, &[arm, "_ => 0"]);
+        let expected: Vec<_> = code
+            .into_iter()
+            .map(|(code, col)| (code, (line + 1, col)))
+            .collect();
+        codes(&src, &expected);
+    }
+    // A literal at a position that takes only names is reported as such, whatever its type.
+    codes(
+        &format!("{DECLS}\nfn f(s: State) {{\n    if let Running(0) = s {{}}\n}}"),
+        &[(Code::OnlyNamePosition, (14, 20))],
+    );
+    // Each literal is the range of one value; a `char` is its code point.
+    let (src, _) = typed("", "char", &["'a' => 1", "_ => 0"]);
+    contains(&src, &["(arm 'a' (block 1))"]);
+    let (src, _) = typed("", "u8", &["7 => 1", "_ => 0"]);
+    contains(&src, &["(arm 7 (block 1))"]);
+    let (src, _) = typed("", "bool", &["true => 1", "_ => 0"]);
+    contains(&src, &["(arm true (block 1))"]);
+    let (src, _) = typed("", "string", &["\"a\" => 1", "_ => 0"]);
+    contains(&src, &["(arm \"a\" (block 1))"]);
+}
+
+#[test]
+fn range_patterns() {
+    // Each row: the type, the arm before `_ => 0`, and the code it reports with its column.
+    let rows = [
+        ("u8", "200..=255 => 1", None),
+        ("u8", "200..256 => 1", Some((Code::IntegerDoesNotFit, 14))),
+        ("string", "\"a\"..\"b\" => 1", Some((Code::BadRange, 9))),
+        ("i64", "5..=4 => 1", Some((Code::BadRange, 9))),
+        ("i64", "5..5 => 1", Some((Code::BadRange, 9))),
+        ("i64", "5..=5 => 1", None),
+        ("i64", "0..=\"a\" => 1", Some((Code::BadRange, 9))),
+        ("i64", "-9..=-1 => 1", None),
+        ("u8", "-1..=3 => 1", Some((Code::NegatedU8, 9))),
+        ("char", "'\\u{D7FF}'..='\\u{E000}' => 1", None),
+        ("i64", "0..=LIMIT => 1", Some((Code::ConstantInPattern, 13))),
+        ("i64", "0..hi => 1", Some((Code::Expected, 12))),
+        ("i64", "'a'..='z' => 1", Some((Code::Mismatch, 9))),
+        ("bool", "0..=1 => 1", Some((Code::BadRange, 9))),
+    ];
+    for (ty, arm, code) in rows {
+        let (src, line) = typed("", ty, &[arm, "_ => 0"]);
+        let expected: Vec<_> = code
+            .into_iter()
+            .map(|(code, col)| (code, (line + 1, col)))
+            .collect();
+        codes(&src, &expected);
+    }
+    let (src, line) = typed("", "i64", &["0..hi => 1", "_ => 0"]);
+    diagnostic(&src, Code::Expected, (line + 1, 12, "hi"), &[]);
+    // A constant as a bound gets no guard help: `n == LIMIT` would mean another range.
+    let (src, _) = typed("", "i64", &["0..=LIMIT => 1", "_ => 0"]);
+    assert_eq!(diags(&src)[0].help(), None);
+    // `a..b` leaves out `b`.
+    let (src, _) = typed("", "i64", &["0..10 => 1", "-5..=-1 => 2", "_ => 0"]);
+    contains(&src, &["(arm 0..=9 (block 1)) (arm -5..=-1 (block 2))"]);
+}
+
+/// The enums of the alternative tests: lines 1 to 9.
+const ALTS: &str = "enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+}
+enum P {
+    Pair(i64, string)
+    Two(i64, i64)
+}
+fn main() {}";
+
+#[test]
+fn alternatives_bind() {
+    let in_t = |arm: &str| {
+        format!(
+            "{ALTS}\nfn t(e: Expr, p: P) -> i64 {{\n    let _ = match {arm}\n        _ => 0\n    }}\n    0\n}}"
+        )
+    };
+    clean(&in_t("e {\n        Add(Num(0), x) | Add(x, Num(0)) => 0"));
+    // `x` is missing from the second alternative, and `y` from the first: one error, at the
+    // alternative that lacks a name of the first.
+    codes(
+        &in_t("e {\n        Add(x, _) | Add(_, y) => 0"),
+        &[(Code::AlternativeBindings, (12, 21))],
+    );
+    let src = in_t("e {\n        Add(x, _) | Add(_, y) => 0");
+    diagnostic(&src, Code::AlternativeBindings, (12, 21, "Add(_, y)"), &[]);
+    // A name only a later alternative binds is reported at the first, which lacks it.
+    diagnostic(
+        &in_t("e {\n        Add(_, _) | Add(_, y) => 0"),
+        Code::AlternativeBindings,
+        (12, 9, "Add(_, _)"),
+        &[],
+    );
+    codes(
+        &in_t("p {\n        Pair(x, _) | Pair(_, x) => 0"),
+        &[(Code::Mismatch, (12, 30))],
+    );
+    // A name bound twice within one alternative is still reported.
+    codes(
+        &in_t("p {\n        Two(x, _) | Two(x, x) => 0"),
+        &[(Code::BoundTwice, (12, 28))],
+    );
+    // Each name is one local, which every alternative binds.
+    contains(
+        &in_t("p {\n        Two(x, 0) | Two(0, x) => x"),
+        &["(arm (| (Two x#2 0) (Two 0 x#2)) (block x#2))"],
+    );
+    // Nested alternatives bind the same names as the arm's.
+    clean(&in_t(
+        "e {\n        Add(Num(x) | Add(Num(x), _), _) | Add(_, Num(x)) => x",
+    ));
+    // An alternative at a position that takes only names is reported as such.
+    codes(
+        &format!("{DECLS}\nfn f(s: State) {{\n    if let Running(a | b) = s {{}}\n}}"),
+        &[(Code::OnlyNamePosition, (14, 20))],
+    );
+}
+
+#[test]
+fn guards() {
+    contains(
+        &match_on("e", &["Num(n) if n > 0 => n", "_ => 0"]),
+        &["(arm (Num n#4) (if (> n#4 0)) (block n#4))"],
+    );
+    codes(
+        &match_on("e", &["Num(n) if n => n", "_ => 0"]),
+        &[(Code::Mismatch, (13, 19))],
+    );
+    // A guard sees the arm's bindings, and its own errors fail the `match`.
+    codes(
+        &match_on("e", &["Num(n) if nope => n", "_ => 0"]),
+        &[(Code::BindingNotFound, (13, 19))],
+    );
+}
+
+/// A `coverage_finite` row: the type, the arms, and the code each reports, by arm.
+type CoverageRow<'a> = (&'a str, &'a [&'a str], &'a [(Code, Option<usize>)]);
+
+#[test]
+fn coverage_finite() {
+    let full_char = "'\\u{0}'..='\\u{D7FF}' | '\\u{E000}'..='\\u{10FFFF}' => 1";
+    // Each row: the type, the arms, and the code each reports, at its arm (`Some(k)`, the
+    // k-th arm) or at the `match` keyword (`None`).
+    let rows: [CoverageRow<'_>; 10] = [
+        ("u8", &["0..=127 => 1", "128..=255 => 2"], &[]),
+        (
+            "u8",
+            &["0..=127 => 1", "128..=255 => 2", "_ => 3"],
+            &[(Code::UnreachableArm, Some(2))],
+        ),
+        ("u8", &["0..=127 | 128..=255 => 1"], &[]),
+        (
+            "u8",
+            &["0..=127 | 128..=255 => 1", "_ => 3"],
+            &[(Code::UnreachableArm, Some(1))],
+        ),
+        ("u8", &["0..=9 => 1"], &[(Code::NonExhaustive, None)]),
+        (
+            "i64",
+            &[
+                "-9223372036854775808..=-1 => 1",
+                "0 => 2",
+                "1..=9223372036854775807 => 3",
+            ],
+            &[],
+        ),
+        ("char", &[full_char], &[]),
+        (
+            "char",
+            &["'\\u{0}'..='\\u{D7FF}' => 1"],
+            &[(Code::NonExhaustive, None)],
+        ),
+        ("bool", &["true => 1"], &[(Code::NonExhaustive, None)]),
+        ("string", &["\"a\" => 1"], &[(Code::NonExhaustive, None)]),
+    ];
+    for (ty, arms, expected) in rows {
+        let (src, line) = typed("", ty, arms);
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|&(code, arm)| match arm {
+                Some(k) => (code, (line + 1 + k, 9)),
+                None => (code, (line, 5)),
+            })
+            .collect();
+        codes(&src, &expected);
+    }
+}
+
+#[test]
+fn reachability() {
+    // After `1..=3` and `4..=6`: `5` is the second arm's, `2..=5` is no one arm's, and `0..=5`
+    // reaches `0`.
+    let rows = [
+        ("5 => 3", vec![(Code::UnreachableArm, (6, 9), vec![(5, 9)])]),
+        ("2..=5 => 3", vec![(Code::UnreachableArm, (6, 9), vec![])]),
+        ("0..=5 => 3", vec![]),
+    ];
+    for (arm, expected) in rows {
+        let (src, _) = typed("", "i64", &["1..=3 => 1", "4..=6 => 2", arm, "_ => 0"]);
+        assert_eq!(found(&src), expected, "{src}");
+    }
+    let pair = "enum P { Pair(i64, i64) }\n";
+    let (src, _) = typed(
+        pair,
+        "P",
+        &["Pair(a, _) | Pair(_, a) if a > 0 => a", "_ => 0"],
+    );
+    clean(&src);
+    let expr = "enum Expr {\n    Num(i64)\n    Add(Expr, Expr)\n}\n";
+    // An alternative covered by an earlier one of its own arm names no covering arm.
+    let (src, line) = typed(expr, "Expr", &["Num(1) | Num(1) => 0", "_ => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 1, 18), vec![])]
+    );
+    let (src, line) = typed(expr, "Expr", &["Add(Num(0) | Num(0), x) => 0", "_ => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 1, 22), vec![])]
+    );
+    // The nested `true` is the first arm's; `false` and `W` are reached.
+    let vw = "enum E {\n    V(bool)\n    W\n}\n";
+    let (src, line) = typed(vw, "E", &["V(true) => 0", "V(true | false) | W => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 11), vec![(line + 1, 9)])]
+    );
+    // Two rows of one arm take the `_`'s values: one arm covers it.
+    let ab = "enum AB {\n    A\n    B\n}\n";
+    let (src, line) = typed(ab, "AB", &["A | B => 0", "_ => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 9), vec![(line + 1, 9)])]
+    );
+    let vbb = "enum P { V(bool, bool) }\n";
+    let (src, line) = typed(vbb, "P", &["V(true | false, true | false) => 0", "_ => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 9), vec![(line + 1, 9)])]
+    );
+    // Each arm's own alternatives are marked, though the second arm's bucket repeats the first's.
+    let q = "enum XY {\n    X\n    Y\n}\nenum Q { Q(XY, bool) }\n";
+    let (src, _) = typed(
+        q,
+        "Q",
+        &["Q(X, true | false) => 0", "Q(Y, true | false) => 1"],
+    );
+    clean(&src);
+    // An alternative covered by an earlier arm names it; the fix removes it with its `|`.
+    let (src, line) = typed(ab, "AB", &["A => 0", "A | B => 1"]);
+    let d = diagnostic(
+        &src,
+        Code::UnreachableArm,
+        (line + 2, 9, "A"),
+        &[(line + 1, 9)],
+    );
+    assert_eq!(
+        fixes(&src, &d),
+        [(false, vec![(line + 2, 9, "A | ", String::new())])]
+    );
+    clean(&applied(&src, &d));
+    let (src, line) = typed(ab, "AB", &["B => 0", "A | B => 1"]);
+    let d = diagnostic(
+        &src,
+        Code::UnreachableArm,
+        (line + 2, 13, "B"),
+        &[(line + 1, 9)],
+    );
+    assert_eq!(
+        fixes(&src, &d),
+        [(false, vec![(line + 2, 10, " | B", String::new())])]
+    );
+    clean(&applied(&src, &d));
+}
+
+#[test]
+fn guards_cover_nothing() {
+    let rows: [&[&str]; 3] = [
+        &["Num(n) if n > 0 => n", "Add(_, _) => 1", "Mul(_, _) => 2"],
+        &["Num(0) => 0", "Add(_, _) => 1", "Mul(_, _) => 2"],
+        &[
+            "Num(n) if n > 0 => n",
+            "Num(0) => 0",
+            "Add(_, _) => 1",
+            "Mul(_, _) => 2",
+        ],
+    ];
+    for arms in rows {
+        codes(&match_on("e", arms), &[(Code::NonExhaustive, (12, 5))]);
+    }
+    let ab = "enum AB {\n    A\n    B\n}\nenum P { P(AB, i64) }\n";
+    let (src, line) = typed(ab, "P", &["P(B, _) => 2", "P(A, x) if x > 0 => 1"]);
+    // The first arm with `P` at the top covers only part of it; `P(A, _)` is missing, and a
+    // guarded arm may not match it (`check::exhaust::tests::witnesses`).
+    diagnostic(
+        &src,
+        Code::NonExhaustive,
+        (line, 5, "match"),
+        &[(line + 1, 9)],
+    );
+}
+
+/// The help that names `_ =>` comes with a gap in an integer, `char` or `string` type, not with
+/// a missing variant or `bool`.
+#[test]
+fn gap_help() {
+    let rows: [(&str, &[&str], bool); 4] = [
+        ("u8", &["0..=9 => 1"], true),
+        ("string", &["\"a\" => 1"], true),
+        ("bool", &["true => 1"], false),
+        ("i64", &["n if n > 0 => 1"], false),
+    ];
+    for (ty, arms, help) in rows {
+        let (src, line) = typed("", ty, arms);
+        let d = diagnostic(&src, Code::NonExhaustive, (line, 5, "match"), &[]);
+        assert_eq!(d.help().is_some(), help, "{src}");
+    }
+}
+
+/// The guard helps of a constant in a pattern and of a name bound twice.
+#[test]
+fn guard_helps() {
+    let src = arm_on_15("n", "LIMIT => 1").replace("enum Expr", "const LIMIT = 9\nenum Expr");
+    let d = &diags(&src)[0];
+    assert_eq!(d.code(), Code::ConstantInPattern);
+    assert!(d.help().is_some());
+    let d = &diags(&arm_on_15("e", "Add(x, x) => 1"))[0];
+    assert!(d.help().is_some());
+    // Outside a `match` there is no arm to take a guard.
+    let d = &diags(&in_fn("    if let Add(x, x) = e {}"))[0];
+    assert_eq!(d.code(), Code::BoundTwice);
+    assert_eq!(d.help(), None);
+}
+
+/// The keep-alive override for this test is in `.config/nextest.toml`: expanding alternatives
+/// eagerly, or without memoization, meets 2^40 rows.
+#[test]
+fn forty_alternatives() {
+    let fields = vec!["bool"; 40].join(", ");
+    let pattern = vec!["true | false"; 40].join(", ");
+    clean(&format!(
+        "enum F {{ V({fields}) }}\nfn f(x: F) -> i64 {{\n    match x {{\n        V({pattern}) => 1\n    }}\n}}\nfn main() {{}}"
+    ));
 }

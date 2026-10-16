@@ -50,6 +50,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let function = self.current_function();
         let mut ends = Vec::new();
         for arm in arms {
+            assert!(arm.guard.is_none(), "guards in codegen land in Task 12");
             self.live.truncate(outer);
             if counted {
                 self.live.push(temp);
@@ -178,7 +179,11 @@ impl<'ctx> Codegen<'ctx, '_> {
                             let value = self.payload_value(self.address(at), id, *variant, field);
                             self.set_binding(*local, value);
                         }
-                        PatternKind::Variant { .. } => {
+                        PatternKind::Variant { .. }
+                        | PatternKind::Bool(_)
+                        | PatternKind::Range { .. }
+                        | PatternKind::Str(_)
+                        | PatternKind::Or(_) => {
                             let place = self.payload_place(self.address(at), id, *variant, field);
                             let slot = self.entry_alloca(place.get_type().into(), "place");
                             self.store(slot, place.into());
@@ -188,6 +193,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 }
                 retry
             }
+            PatternKind::Bool(_) | PatternKind::Range { .. } | PatternKind::Str(_) => {
+                panic!("literal and range patterns in codegen land in Task 12")
+            }
+            PatternKind::Or(_) => panic!("alternatives in codegen land in Task 12"),
         }
     }
 

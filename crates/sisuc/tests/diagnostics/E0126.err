@@ -3,6 +3,8 @@ error[E0126]: `LIMIT` is a constant; a pattern cannot compare with it
   |
 6 |         LIMIT => print(1)
   |         ^^^^^
+  |
+  = help: use a guard: `n if n == LIMIT`
 
 sisuc: 1 error
 sisuc: for more on a code, run `sisuc --explain <code>`: E0126

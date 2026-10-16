@@ -186,6 +186,9 @@ impl Walk {
                 self.expr(scrutinee);
                 for arm in arms {
                     self.barred.extend(arm.bindings.iter().copied());
+                    if let Some(guard) = &arm.guard {
+                        self.expr(guard);
+                    }
                     self.block(&arm.body);
                 }
             }
@@ -410,6 +413,12 @@ pub(super) mod tests {
             "match_arms",
             "enum H {\n    Arr([i64])\n    Empty\n}\nfn f(xs: [i64], h: H) -> [i64] {\n    let mut a = xs\n    for j in 0..3 {\n        match h {\n            Arr(b) => a[j] = b[0]\n            Empty => a[j] = 0\n        }\n    }\n    for j in 0..3 {\n        match H.Arr(a) {\n            Arr(b) => print(b[0])\n            Empty => {}\n        }\n        a[j] = 0\n    }\n    for j in 0..3 {\n        match h {\n            Arr(_) => print(a.sum())\n            Empty => {}\n        }\n        a[j] = 0\n    }\n    a\n}",
             &[&["a"], &[], &[]],
+        ),
+        // A guard reads `a` and bars it.
+        (
+            "match_guards",
+            "enum H {\n    Arr([i64])\n    Empty\n}\nfn f(xs: [i64], h: H) -> [i64] {\n    let mut a = xs\n    for j in 0..3 {\n        match h {\n            Arr(_) if a.sum() > 0 => {}\n            _ => {}\n        }\n        a[j] = 0\n    }\n    a\n}",
+            &[&[]],
         ),
         // Not in the plan: a value use of `a` inside each kind of expression that no row above
         // reaches bars `a`, in each loop.

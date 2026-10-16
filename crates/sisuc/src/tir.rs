@@ -418,11 +418,13 @@ pub(crate) enum ExprKind {
     Block(Block),
 }
 
-/// One arm of a `Match`. `bindings` holds each local its pattern binds, once.
+/// One arm of a `Match`. `bindings` holds each local its pattern binds, once, which every
+/// alternative of an `Or` binds alike. `guard`, a `bool`, runs after the pattern matched.
 #[derive(Debug)]
 pub(crate) struct Arm {
     pub(crate) pattern: Pattern,
     pub(crate) bindings: Vec<LocalId>,
+    pub(crate) guard: Option<Expr>,
     pub(crate) body: Block,
 }
 
@@ -443,6 +445,15 @@ pub(crate) enum PatternKind {
         variant: usize,
         fields: Vec<Pattern>,
     },
+    /// The `bool` literal.
+    Bool(bool),
+    /// An `i64`, `u8` or `char` from `lo` through `hi`, a `char` as its code point; a literal
+    /// is the range of one value.
+    Range { lo: i64, hi: i64 },
+    /// The `string` literal.
+    Str(String),
+    /// Any of the alternatives, tried in order; none of them is an `Or`.
+    Or(Vec<Pattern>),
 }
 
 impl Type {
@@ -539,7 +550,12 @@ impl Expr {
             }
             ExprKind::Match {
                 scrutinee, arms, ..
-            } => scrutinee.exits() || arms.iter().any(|arm| arm.body.exits()),
+            } => {
+                scrutinee.exits()
+                    || arms
+                        .iter()
+                        .any(|arm| arm.guard.as_ref().is_some_and(Expr::exits) || arm.body.exits())
+            }
             ExprKind::Loop(block) | ExprKind::Block(block) => block.exits(),
         }
     }
@@ -755,6 +771,10 @@ impl Printer<'_> {
                 for arm in arms {
                     f.write_str(" (arm ")?;
                     self.pattern(f, &arm.pattern, &scrutinee.ty)?;
+                    if let Some(guard) = &arm.guard {
+                        f.write_str(" ")?;
+                        self.unary(f, "if", guard)?;
+                    }
                     f.write_str(" ")?;
                     self.block(f, &arm.body)?;
                     f.write_str(")")?;
@@ -774,8 +794,8 @@ impl Printer<'_> {
         }
     }
 
-    /// `_`, a local, a payload-free variant's name, or `(Name field ...)`, at a position of
-    /// type `ty`.
+    /// `_`, a local, a payload-free variant's name, `(Name field ...)`, a literal, `lo..=hi`, or
+    /// `(| alternative ...)`, at a position of type `ty`.
     fn pattern(&self, f: &mut fmt::Formatter<'_>, pattern: &Pattern, ty: &Type) -> fmt::Result {
         match &pattern.kind {
             PatternKind::Wild => f.write_str("_"),
@@ -794,6 +814,31 @@ impl Printer<'_> {
                 for (field, payload) in fields.iter().zip(&variant.fields) {
                     f.write_str(" ")?;
                     self.pattern(f, field, &payload.ty)?;
+                }
+                f.write_str(")")
+            }
+            PatternKind::Bool(value) => write!(f, "{value}"),
+            PatternKind::Range { lo, hi } => {
+                let value = |f: &mut fmt::Formatter<'_>, v: i64| match ty {
+                    Type::Char => {
+                        let c = u32::try_from(v).ok().and_then(char::from_u32);
+                        write!(f, "{:?}", c.unwrap_or(char::REPLACEMENT_CHARACTER))
+                    }
+                    _ => write!(f, "{v}"),
+                };
+                value(f, *lo)?;
+                if lo != hi {
+                    f.write_str("..=")?;
+                    value(f, *hi)?;
+                }
+                Ok(())
+            }
+            PatternKind::Str(text) => write!(f, "{text:?}"),
+            PatternKind::Or(alternatives) => {
+                f.write_str("(|")?;
+                for alternative in alternatives {
+                    f.write_str(" ")?;
+                    self.pattern(f, alternative, ty)?;
                 }
                 f.write_str(")")
             }
@@ -1175,6 +1220,7 @@ mod tests {
         let arm = |kind, bindings, value| Arm {
             pattern: pattern(kind),
             bindings,
+            guard: None,
             body: Block {
                 stmts: vec![],
                 value: Some(Box::new(value)),

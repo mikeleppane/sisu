@@ -1,0 +1,10 @@
+fn greet(s: string) -> i64 {
+    match s {
+        "hello" => 1
+        "bye" => 2
+    }
+}
+
+fn main() {
+    print(greet("hello"))
+}

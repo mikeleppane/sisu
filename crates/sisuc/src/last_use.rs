@@ -10,7 +10,10 @@
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - `Match` evaluates its scrutinee, then tests the arms' patterns in order and runs the body
 //!   of the first that matches, its bindings defined. So the set live at an arm's test is
-//!   what its body reads joined with what the next arm's test reads, its bindings killed.
+//!   what its body reads joined with what the next arm's test reads, its bindings killed. A
+//!   guard runs after its arm's test, and goes on to the body or to the next arm's test; with
+//!   an `|` in the pattern it can run again, for a later alternative, so it is a loop body.
+//!   A guard never moves its arm's bindings, which the body or the next alternative still holds.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
 //! - Assigning an element evaluates a field root's base, then the indexes from the root
@@ -24,7 +27,9 @@ use std::mem;
 
 use rustc_hash::FxHashMap;
 
-use crate::tir::{Arm, BinaryOp, Block, Expr, ExprKind, LocalId, Place, Program, Stmt};
+use crate::tir::{
+    Arm, BinaryOp, Block, Expr, ExprKind, LocalId, Pattern, PatternKind, Place, Program, Stmt,
+};
 
 /// Rewrites each read of a counted local that is its last use into `ExprKind::Move`.
 pub(crate) fn mark(program: &mut Program) {
@@ -36,6 +41,7 @@ pub(crate) fn mark(program: &mut Program) {
                 .map(|l| l.ty.is_counted(&program.enums))
                 .collect(),
             live: vec![false; function.locals.len()],
+            pinned: vec![false; function.locals.len()],
             rewrite: true,
             loops: Vec::new(),
             trail: Vec::new(),
@@ -51,6 +57,9 @@ struct Walk {
     counted: Vec<bool>,
     /// Indexed by `LocalId`: whether the local is read later on some path.
     live: Vec<bool>,
+    /// Indexed by `LocalId`: whether the local is a binding of the arm whose guard is being
+    /// walked, which no read moves.
+    pinned: Vec<bool>,
     /// Whether the walk rewrites last reads; a loop's first pass only computes its head set.
     rewrite: bool,
     /// The enclosing loops, innermost last: the set live after each, and at its head.
@@ -118,7 +127,8 @@ impl Walk {
     )]
     fn expr(&mut self, e: &mut Expr) {
         if let ExprKind::Local(local) | ExprKind::Move(local) = e.kind {
-            if self.rewrite && self.counted[local.0] && !self.live[local.0] {
+            if self.rewrite && self.counted[local.0] && !self.live[local.0] && !self.pinned[local.0]
+            {
                 e.kind = ExprKind::Move(local);
             }
             self.set(local.0, true);
@@ -300,24 +310,54 @@ impl Walk {
 
     /// A `match`'s arms, from the set live after them. Each body is walked from that set, and
     /// the set live at the tests is their union, the bindings killed. Each arm is undone through
-    /// the trail, so an arm costs the locals it changes, not every local of the function.
+    /// the trail, so an arm costs the locals it changes, not every local of the function. The
+    /// arms go last to first, so a guard's failure edge, the next arm's test, holds the union
+    /// of the later arms: the set after the `match`, changed only where `changed` says.
     fn arms(&mut self, arms: &mut [Arm]) {
         let mark = self.trail.len();
         let outer = mem::replace(&mut self.undoing, true);
         // Each local an arm wrote: the last arm that did, how many did, and whether one left it
-        // live.
+        // live, its bindings left out.
         let mut changed: FxHashMap<usize, (usize, usize, bool)> = FxHashMap::default();
-        for (i, arm) in arms.iter_mut().enumerate() {
+        // The locals some later arm leaves live at its test where the set after the `match`
+        // has them dead, or that an arm wrote: the sparse part of the failure edge's set.
+        let mut later = Vec::new();
+        let count = arms.len();
+        for (i, arm) in arms.iter_mut().enumerate().rev() {
             self.block(&mut arm.body);
+            for bind in &arm.bindings {
+                self.pinned[bind.0] = true;
+            }
+            if let Some(guard) = &mut arm.guard {
+                let done = count - 1 - i;
+                // Whether a local this arm wrote, `after` after the `match`, is live at the next
+                // arm's test: some later arm left it live, or left it alone. A guarded arm is
+                // never last, since a guard covers nothing, so a later arm exists.
+                let failing = |local, after| match changed.get(&local) {
+                    Some(&(_, wrote, live)) => live || (after && wrote < done),
+                    None => after,
+                };
+                let retries = has_or(&arm.pattern);
+                self.guard(guard, retries, mark, &later, failing);
+            }
             // Newest first, so the first entry of a local finds the arm's final value in `live`.
             for (local, was) in self.trail.drain(mark..).rev() {
                 let now = mem::replace(&mut self.live[local], was);
+                if self.pinned[local] {
+                    continue;
+                }
                 let (last, count, live) = changed.entry(local).or_insert((usize::MAX, 0, false));
                 if *last != i {
                     *last = i;
                     *count += 1;
+                    if now && !*live {
+                        later.push(local);
+                    }
                     *live |= now;
                 }
+            }
+            for bind in &arm.bindings {
+                self.pinned[bind.0] = false;
             }
         }
         self.undoing = outer;
@@ -331,6 +371,67 @@ impl Walk {
                 self.set(bind.0, false);
             }
         }
+    }
+
+    /// A guard, after its arm's body is walked from the set after the `match`. It runs on to
+    /// the body or to the next arm's test, so it is walked from both sets joined: the body's,
+    /// which the trail from `mark` holds, and the next test's, which is `later` and each
+    /// local of the trail that `failing` says, given whether it was live after the `match`.
+    /// When it `retries`, for a later alternative, its entry set joins its exit set too.
+    fn guard(
+        &mut self,
+        guard: &mut Expr,
+        retries: bool,
+        mark: usize,
+        later: &[usize],
+        failing: impl Fn(usize, bool) -> bool,
+    ) {
+        // The oldest entry of a local holds its value after the `match`.
+        let mut after = FxHashMap::default();
+        for &(local, was) in &self.trail[mark..] {
+            after.entry(local).or_insert(was);
+        }
+        for (local, was) in after {
+            if !self.live[local] && failing(local, was) {
+                self.set(local, true);
+            }
+        }
+        for &local in later {
+            if !self.live[local] {
+                self.set(local, true);
+            }
+        }
+        // shortcut: a guard that compares, or holds `&&`, `||` or an `if`, copies the dense
+        // live set as any such expression does (`.scratch/diagnostics-scale/issues/02`), so
+        // many such guards among many locals are quadratic; fix it with that ticket.
+        if !retries {
+            self.expr(guard);
+            return;
+        }
+        // As a loop body: one walk without rewriting finds the entry set, the fixed point,
+        // since liveness is gen/kill; the rewriting walk starts from it joined with the exit
+        // set. No frame goes on `loops`, so a `break` in the guard leaves the source loop.
+        let start = self.trail.len();
+        let rewrite = mem::replace(&mut self.rewrite, false);
+        self.expr(guard);
+        self.rewrite = rewrite;
+        if !rewrite {
+            return;
+        }
+        let entry: Vec<_> = self.trail[start..]
+            .iter()
+            .map(|&(local, _)| local)
+            .filter(|&local| self.live[local])
+            .collect();
+        for (local, was) in self.trail.drain(start..).rev() {
+            self.live[local] = was;
+        }
+        for local in entry {
+            if !self.live[local] {
+                self.set(local, true);
+            }
+        }
+        self.expr(guard);
     }
 
     /// Sets whether `local` is live, recording the write while an arm may be undone.
@@ -376,6 +477,15 @@ impl Walk {
                 self.set(local, false);
             }
         }
+    }
+}
+
+/// Whether `pattern` holds an `|`, so its arm's guard can run once per alternative.
+fn has_or(pattern: &Pattern) -> bool {
+    match &pattern.kind {
+        PatternKind::Or(_) => true,
+        PatternKind::Variant { fields, .. } => fields.iter().any(has_or),
+        _ => false,
     }
 }
 
@@ -651,6 +761,135 @@ mod tests {
             "f",
             &["(len (move xs#0))"],
         );
+    }
+
+    /// A guard's reads: a binding the guard reads is pinned, a guard that can run once per
+    /// alternative is a loop body, and its `break` or `continue` targets the source loop.
+    #[test]
+    fn guard_reads() {
+        // `s` is the arm's binding: the guard's `return s` retains it.
+        has(
+            "enum N {\n    Name(string)\n    Other\n}\nfn f(n: N) -> string {\n    match n {\n        Name(s) if (if s == \"\" { return s } else { true }) => s\n        _ => \"x\"\n    }\n}",
+            "f",
+            &["(block (return s#1))"],
+        );
+        // An outer `t`, read only in a guard: it can run again with an `Or`, so it never moves;
+        // without one, it moves when no later arm reads it.
+        let decls =
+            "enum E {\n    V(i64)\n    W(i64)\n    Z\n}\nfn keep(t: string) -> bool { true }\n";
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) | W(_) if keep(t) => 1\n        _ => 0\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))"],
+        );
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) if keep(t) => 1\n        _ => 0\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep (move t#1)))"],
+        );
+        // A later arm that reads `t` keeps it live on the guard's failure edge.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) if keep(t) => 1\n        _ => if keep(t) {{ 2 }} else {{ 0 }}\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))", "(call keep (move t#1))"],
+        );
+        // The first arm writes `u`, but the guard's failure edge reaches the last arm, which
+        // leaves `u` alone for the read after the `match`; the second arm also writes it.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        W(_) => {{\n            u = \"z\"\n            2\n        }}\n        _ => 0\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep u#2))"],
+        );
+        // When every later arm writes `u`, the guard's read is its last.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        _ => {{\n            u = \"z\"\n            0\n        }}\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep (move u#2)))"],
+        );
+        // An `|` inside a variant runs the guard again too.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(1 | 2) if keep(t) => 1\n        _ => 0\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))"],
+        );
+        // A `return` leaves nothing live, even in a guard that runs again.
+        has(
+            &format!(
+                "{decls}fn f(e: E, c: bool, t: string) -> string {{\n    match e {{\n        V(_) | W(_) if (if c {{ return t }} else {{ true }}) => \"a\"\n        _ => \"b\"\n    }}\n}}"
+            ),
+            "f",
+            &["(return (move t#2))"],
+        );
+        // The guard's body reads `t` as well, so `t` is live at the guard already.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) if keep(t) => if keep(t) {{ 1 }} else {{ 2 }}\n        _ => if keep(t) {{ 3 }} else {{ 0 }}\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))"],
+        );
+        // Only the guarded arm writes `u`, so the failure edge, through arms that leave `u`
+        // alone, keeps it live for the read after the `match`.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        _ => 0\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep u#2))"],
+        );
+        // Every arm after the guarded one writes `u`, so an arm before it changes nothing.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        Z => 2\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        _ => {{\n            u = \"z\"\n            0\n        }}\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep (move u#2)))"],
+        );
+        // `break` and `continue` in a guard reach the `while`, whose exit and head read `t`;
+        // every other path from the first `print(t)` returns, so only the guard's jump keeps
+        // `t` live there.
+        for jump in ["break", "continue"] {
+            has(
+                &format!(
+                    "enum AB {{\n    A\n    B\n    C\n}}\nfn f(e: AB, c: bool, t: string) {{\n    while c {{\n        print(t)\n        let _ = match e {{\n            A | B if (if c {{ {jump} }} else {{ true }}) => 0\n            _ => 1\n        }}\n        return\n    }}\n    print(t)\n}}"
+                ),
+                "f",
+                &["(loop (block (if c#1 (block (print t#2)"],
+            );
+        }
+    }
+
+    /// The keep-alive override for this test is in `.config/nextest.toml`: a set live on each
+    /// guard's failure edge copied densely per arm is quadratic in the arms, and this test hangs
+    /// instead of failing.
+    #[test]
+    fn many_guarded_arms_mark_last_uses_in_linear_time() {
+        const VARIANTS: usize = 32_000;
+        let variants = (0..VARIANTS)
+            .map(|i| format!("    V{i}(string)\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let arms = (0..VARIANTS)
+            .map(|i| format!("        V{i}(s) if keep => s\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let printed = marked(&format!(
+            "enum E {{\n{variants}}}\nfn f(e: E, keep: bool) -> string {{\n    match e {{\n{arms}        _ => \"\"\n    }}\n}}"
+        ));
+        // Each arm's `s` is read once, in its body, so every read is its last use.
+        assert_eq!(printed.matches("(block (move s#").count(), VARIANTS);
     }
 
     #[test]

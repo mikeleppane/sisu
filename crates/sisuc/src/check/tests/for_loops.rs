@@ -163,3 +163,15 @@ fn for_underscore_still_checks_the_source() {
         &[],
     );
 }
+
+/// `for x in a..=b` steps with a flag, so `b` may be `i64::MAX`: the counter moves on only when
+/// it has not reached `b`.
+#[test]
+fn for_inclusive_lowers() {
+    contains(
+        "fn f(s: i64, e: i64) { for i in s..=e { print(i) } }\nfn main() {}",
+        &[
+            "(block (let mut #2 s#0) (let #3 e#1) (let mut #4 (<= #2 #3)) (loop (block (if #4 (block (let i#5 #2) (= #4 (!= #2 #3)) (if #4 (block (= #2 (+ #2 1)))) (block (print i#5))) (block (break))))))",
+        ],
+    );
+}

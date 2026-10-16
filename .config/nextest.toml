@@ -85,6 +85,18 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(/^check::tests::patterns::(wide_witness|default_witness_head)_builds_in_linear_time$/)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Alternatives once expanded eagerly, or without memoization, meet 2^40 rows, so this test hangs
+# instead of failing.
+[[profile.default.overrides]]
+filter = 'test(forty_alternatives)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# A set live on each guard's failure edge, copied densely per arm, is quadratic in the arms, so
+# this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_guarded_arms_mark_last_uses_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # A harness that writes all of standard input before it reads the output would fill both pipes
 # and hang on these tests instead of failing them.
 [[profile.default.overrides]]

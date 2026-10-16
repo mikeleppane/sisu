@@ -1,0 +1,13 @@
+error[E0133]: an arm continues on the line above
+ --> E0133-arrow.sisu:9:13
+  |
+9 |             => true
+  |             ^^
+  |
+help: join it to the line above
+  |
+8 |         Red => true
+  |            +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0133

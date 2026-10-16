@@ -1,0 +1,11 @@
+fn sign(n: i64) -> i64 {
+    match n {
+        m
+            if m > 0 => 1
+        _ => 0
+    }
+}
+
+fn main() {
+    print(sign(3))
+}

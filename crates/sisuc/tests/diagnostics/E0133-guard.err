@@ -1,0 +1,13 @@
+error[E0133]: an arm continues on the line above
+ --> E0133-guard.sisu:4:13
+  |
+4 |             if m > 0 => 1
+  |             ^^
+  |
+help: join it to the line above
+  |
+3 |         m if m > 0 => 1
+  |          +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0133

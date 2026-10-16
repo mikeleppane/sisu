@@ -1,21 +1,38 @@
 //! Patterns, `match`, and the patterns of `if let` and `while let`.
 
-use rustc_hash::FxHashMap;
+use std::collections::hash_map::Entry;
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::enums::reserved_name;
 use super::exhaust::{self, Report, Row};
 use super::expr::Branch;
 use super::{Checked, CheckedBlock, Checker, Poisoned, type_of};
 use crate::ast;
-use crate::diagnostic::{Definition, DiagnosticKind, Span, Unwrap, suggestion};
+use crate::diagnostic::{BadRange, Definition, DiagnosticKind, Span, Unwrap, suggestion};
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 
-/// The names one pattern binds: where each was first bound, and their locals in order.
-#[derive(Default)]
+/// The names one pattern binds, at `top`, as its check goes.
 struct Bound {
-    names: FxHashMap<Symbol, Span>,
+    top: Span,
+    /// Each name bound so far on the way through the pattern, where, and its local; an `|`
+    /// counts as its first alternative once it is checked.
+    names: FxHashMap<Symbol, (Span, tir::LocalId)>,
+    /// The names of `names` in the order they were bound.
+    order: Vec<Symbol>,
+    /// The pattern's locals in order, each once.
     locals: Vec<tir::LocalId>,
+    /// For each `|` whose later alternatives are being checked, innermost last: the locals of
+    /// its first alternative, which the later ones bind again.
+    alternatives: Vec<Alternatives>,
+}
+
+/// The names the first alternative of an `|` binds, and the first name a later alternative
+/// binds that it does not.
+struct Alternatives {
+    first: FxHashMap<Symbol, tir::LocalId>,
+    extra: Option<Symbol>,
 }
 
 /// What `if let` or `while let` does with its value, as `let_value` decides.
@@ -77,10 +94,6 @@ impl Checker<'_> {
         arms: &[ast::Arm],
         expected: Option<&Type>,
     ) -> Checked {
-        assert!(
-            arms.iter().all(|arm| arm.guard.is_none()),
-            "guards land in Task 11"
-        );
         let checked = self.value(scrutinee, None);
         let mut position = type_of(&checked).cloned();
         let cannot = position.take_if(|ty| !matchable(ty));
@@ -100,10 +113,15 @@ impl Checker<'_> {
             })
             .collect();
         let mut patterns: Vec<_> = arms.iter().map(|_| None).collect();
+        let mut guards: Vec<_> = arms.iter().map(|_| None).collect();
         let (blocks, ty) = self.join(&sources, expected, |c, i, expected| {
             let arm = &arms[i];
             c.scopes.push(FxHashMap::default());
             patterns[i] = c.pattern_in_scope(&arm.pattern, position.as_ref(), "match");
+            guards[i] = arm
+                .guard
+                .as_ref()
+                .map(|guard| c.expect(guard, Some(&Type::Bool)));
             if let ast::ExprKind::Block(block) = &arm.body.kind {
                 return c.scoped_block(block, expected);
             }
@@ -127,7 +145,13 @@ impl Checker<'_> {
         if let Some(ty) = &position {
             let rows: Option<Vec<_>> = patterns
                 .iter()
-                .map(|p| p.as_ref().map(|(pattern, _)| Row { pattern }))
+                .zip(arms)
+                .map(|(p, arm)| {
+                    p.as_ref().map(|(pattern, _)| Row {
+                        pattern,
+                        guarded: arm.guard.is_some(),
+                    })
+                })
                 .collect();
             if let Some(rows) = rows {
                 let report = exhaust::check(&self.lowered_enums, ty, &rows);
@@ -136,12 +160,18 @@ impl Checker<'_> {
         }
         let arms: Option<Vec<_>> = patterns
             .into_iter()
+            .zip(guards)
             .zip(blocks)
-            .map(|(pattern, body)| {
+            .map(|((pattern, guard), body)| {
                 let (pattern, bindings) = pattern?;
+                let guard = match guard {
+                    Some(guard) => Some(guard.ok()?),
+                    None => None,
+                };
                 Some(tir::Arm {
                     pattern,
                     bindings,
+                    guard,
                     body: body.ok()?,
                 })
             })
@@ -165,27 +195,39 @@ impl Checker<'_> {
     fn report_coverage(&mut self, keyword: Span, close: Span, arms: &[ast::Arm], report: Report) {
         let source = self.source;
         let line_start = |at: usize| source[..at].rfind('\n').map_or(0, |n| n + 1);
-        let mut unreachable = report.unreachable.into_iter().peekable();
-        for arm in arms {
-            let Some(found) = unreachable.next_if(|u| u.at == arm.pattern.span) else {
-                continue;
+        // Each entry is an arm's pattern or an alternative in it, in arm order.
+        let mut rest = arms.iter();
+        let mut arm = rest.next();
+        for found in report.unreachable {
+            let within = |arm: &ast::Arm| {
+                let pattern = arm.pattern.span;
+                pattern.start() <= found.at.start() && found.at.end() <= pattern.end()
             };
-            // The first arm is always reached, and arms are separated by line breaks, so this
-            // arm starts its line. The fix takes the whole line, a comment after the body too,
-            // unless the `match`'s `}` ends it: then from the line break before the arm through
-            // the body, so the `}` stays.
-            let end = arm.body.span.end();
-            let line_end = source[end..].find('\n').map_or(source.len(), |n| end + n);
-            let remove = if close.start() < line_end {
-                Span::new(line_start(found.at.start()) - 1, end)
-            } else {
-                Span::new(
-                    line_start(found.at.start()),
-                    (line_end + 1).min(source.len()),
-                )
+            while arm.is_some_and(|arm| !within(arm)) {
+                arm = rest.next();
+            }
+            let Some(arm) = arm else {
+                break;
             };
+            let remove = found.alternative.unwrap_or_else(|| {
+                // The first arm is always reached, and arms are separated by line breaks, so
+                // this arm starts its line. The fix takes the whole line, a comment after the
+                // body too, unless the `match`'s `}` ends it: then from the line break before
+                // the arm through the body, so the `}` stays.
+                let end = arm.body.span.end();
+                let line_end = source[end..].find('\n').map_or(source.len(), |n| end + n);
+                if close.start() < line_end {
+                    Span::new(line_start(found.at.start()) - 1, end)
+                } else {
+                    Span::new(
+                        line_start(found.at.start()),
+                        (line_end + 1).min(source.len()),
+                    )
+                }
+            });
             self.report(DiagnosticKind::UnreachableArm {
                 at: found.at,
+                alternative: found.alternative.is_some(),
                 covered_by: found.covered_by,
                 remove,
             });
@@ -213,6 +255,8 @@ impl Checker<'_> {
         self.report(DiagnosticKind::NonExhaustive {
             missing: missing.pattern,
             partly: missing.partly,
+            guarded: missing.guarded,
+            gap: missing.gap,
             at: keyword,
             insert,
             indent,
@@ -290,7 +334,10 @@ impl Checker<'_> {
                 let pattern = self.pattern_in_scope(pattern, ty.as_ref(), keyword.word());
                 // An optional takes only a name or `_`, which unwraps it: only an enum gets here.
                 if let (Some(ty @ Type::Enum(_)), Some((pattern, _))) = (&ty, &pattern) {
-                    let rows = [Row { pattern }];
+                    let rows = [Row {
+                        pattern,
+                        guarded: false,
+                    }];
                     if exhaust::check(&self.lowered_enums, ty, &rows)
                         .missing
                         .is_none()
@@ -317,7 +364,13 @@ impl Checker<'_> {
         ty: Option<&Type>,
         keyword: &'static str,
     ) -> Option<(tir::Pattern, Vec<tir::LocalId>)> {
-        let mut bound = Bound::default();
+        let mut bound = Bound {
+            top: pattern.span,
+            names: FxHashMap::default(),
+            order: Vec::new(),
+            locals: Vec::new(),
+            alternatives: Vec::new(),
+        };
         let pattern = self.pattern(pattern, ty, keyword, &mut bound)?;
         Some((pattern, bound.locals))
     }
@@ -339,16 +392,37 @@ impl Checker<'_> {
         };
         let names_only = !matchable(ty);
         match &p.kind {
-            ast::PatternKind::Literal(_) => panic!("literal patterns land in Task 11"),
-            ast::PatternKind::Range { .. } => panic!("range patterns land in Task 11"),
-            ast::PatternKind::Or(_) => panic!("alternatives land in Task 11"),
+            ast::PatternKind::None
+            | ast::PatternKind::Literal(_)
+            | ast::PatternKind::Range { .. }
+                if names_only =>
+            {
+                self.only_names(ty, p.span);
+                None
+            }
+            ast::PatternKind::Literal(literal) => {
+                self.literal_pattern(literal, p.span, ty).map(pattern)
+            }
+            ast::PatternKind::Range {
+                start,
+                end,
+                inclusive,
+            } => self
+                .range_pattern(p.span, start, end, *inclusive, ty)
+                .map(pattern),
+            ast::PatternKind::Or(alternatives) if names_only => {
+                self.only_names(ty, p.span);
+                for alternative in alternatives {
+                    self.poison(alternative, keyword, bound);
+                }
+                None
+            }
+            ast::PatternKind::Or(alternatives) => self
+                .alternatives(alternatives, ty, keyword, bound)
+                .map(pattern),
             ast::PatternKind::Wild => Some(pattern(tir::PatternKind::Wild)),
             ast::PatternKind::Name(name) => {
                 self.name_pattern(name, ty, keyword, bound).map(pattern)
-            }
-            ast::PatternKind::None if names_only => {
-                self.only_names(ty, p.span);
-                None
             }
             ast::PatternKind::None => {
                 let want = self.type_name(ty);
@@ -428,6 +502,7 @@ impl Checker<'_> {
                 self.report(DiagnosticKind::ConstantInPattern {
                     name: text.to_string(),
                     at: name.span,
+                    guard: keyword == "match",
                 });
                 return None;
             }
@@ -447,9 +522,12 @@ impl Checker<'_> {
                 } else {
                     // Read as the binding the fix makes it, so the body does not cascade. The
                     // name is not checked as a binding's: this error is the one it gets.
-                    if bound.names.insert(name.name, name.span).is_none() {
+                    if let Entry::Vacant(entry) = bound.names.entry(name.name) {
                         let kind = super::BindingKind::Unwrapped(keyword);
-                        bound.locals.push(self.insert_local(name, None, kind, None));
+                        let local = self.insert_local(name, None, kind, None);
+                        entry.insert((name.span, local));
+                        bound.order.push(name.name);
+                        bound.locals.push(local);
                     }
                     DiagnosticKind::NotVariantHere {
                         name: text.to_string(),
@@ -462,6 +540,259 @@ impl Checker<'_> {
         }
         self.bind(name, Some(ty.clone()), keyword, bound)
             .map(tir::PatternKind::Bind)
+    }
+
+    /// The literal `literal`, at `at`, at a position of type `ty`, which takes more than names:
+    /// an integer at `i64` or `u8`, else a literal of the position's own type.
+    fn literal_pattern(
+        &mut self,
+        literal: &ast::Literal,
+        at: Span,
+        ty: &Type,
+    ) -> Option<tir::PatternKind> {
+        match (literal, ty) {
+            (
+                &ast::Literal::Int {
+                    value,
+                    text,
+                    negative,
+                },
+                Type::I64 | Type::U8,
+            ) => {
+                let value = self.int_value(value, text, negative, ty)?;
+                Some(tir::PatternKind::Range {
+                    lo: value,
+                    hi: value,
+                })
+            }
+            (&ast::Literal::Char(c), Type::Char) => {
+                let value = i64::from(u32::from(c));
+                Some(tir::PatternKind::Range {
+                    lo: value,
+                    hi: value,
+                })
+            }
+            (&ast::Literal::Bool(value), Type::Bool) => Some(tir::PatternKind::Bool(value)),
+            (ast::Literal::Str(text), Type::String) => Some(tir::PatternKind::Str(text.clone())),
+            _ => {
+                self.pattern_mismatch(ty, at);
+                None
+            }
+        }
+    }
+
+    /// The integer `value`, its digits at `text` after the `-` at `negative`, at a position of
+    /// type `ty`, `i64` or `u8`; `None` when `u8` cannot hold it, which is reported.
+    fn int_value(
+        &mut self,
+        value: i64,
+        text: Span,
+        negative: Option<Span>,
+        ty: &Type,
+    ) -> Option<i64> {
+        if *ty == Type::U8 {
+            if let Some(minus) = negative {
+                self.report(DiagnosticKind::NegatedU8 { at: minus.to(text) });
+                return None;
+            }
+            if value > i64::from(u8::MAX) {
+                self.report(DiagnosticKind::IntegerDoesNotFit {
+                    text: self.source[text.range()].to_string(),
+                    at: text,
+                });
+                return None;
+            }
+        }
+        Some(value)
+    }
+
+    /// The range `start..end`, or `start..=end` when `inclusive`, at `at`, at a position of
+    /// type `ty`, which takes more than names: two literals of `ty`, which is `i64`, `u8` or
+    /// `char`, with at least one value between them. It becomes the inclusive range.
+    fn range_pattern(
+        &mut self,
+        at: Span,
+        start: &ast::Bound,
+        end: &ast::Bound,
+        inclusive: bool,
+        ty: &Type,
+    ) -> Option<tir::PatternKind> {
+        for bound in [start, end] {
+            if let ast::Bound::Name(name) = bound {
+                // `n == LIMIT` would test one value, not the range, so the help would mislead.
+                let kind = if self.constants.contains_key(&name.name) {
+                    DiagnosticKind::ConstantInPattern {
+                        name: name.name.to_string(),
+                        at: name.span,
+                        guard: false,
+                    }
+                } else {
+                    DiagnosticKind::Expected {
+                        what: "a literal".to_string(),
+                        found: format!("`{}`", name.name),
+                        at: name.span,
+                    }
+                };
+                self.report(kind);
+            }
+        }
+        let (ast::Bound::Literal(lo), ast::Bound::Literal(hi)) = (start, end) else {
+            return None;
+        };
+        let text = |literal: &ast::Literal| {
+            matches!(literal, ast::Literal::Str(_) | ast::Literal::Bool(_))
+        };
+        if !matches!(ty, Type::I64 | Type::U8 | Type::Char) || text(lo) || text(hi) {
+            self.report(DiagnosticKind::BadRange {
+                form: BadRange::Type,
+                at,
+            });
+            return None;
+        }
+        let (lo, hi) = match (lo, hi, ty) {
+            (
+                &ast::Literal::Int {
+                    value: lo,
+                    text: lo_text,
+                    negative: lo_negative,
+                },
+                &ast::Literal::Int {
+                    value: hi,
+                    text: hi_text,
+                    negative: hi_negative,
+                },
+                Type::I64 | Type::U8,
+            ) => {
+                // Both bounds are checked, so each one that `u8` cannot hold is reported.
+                let lo = self.int_value(lo, lo_text, lo_negative, ty);
+                let hi = self.int_value(hi, hi_text, hi_negative, ty);
+                (lo?, hi?)
+            }
+            (&ast::Literal::Char(lo), &ast::Literal::Char(hi), Type::Char) => {
+                (i64::from(u32::from(lo)), i64::from(u32::from(hi)))
+            }
+            _ => {
+                self.pattern_mismatch(ty, at);
+                return None;
+            }
+        };
+        if lo > hi || (lo == hi && !inclusive) {
+            self.report(DiagnosticKind::BadRange {
+                form: BadRange::Empty,
+                at,
+            });
+            return None;
+        }
+        // Not empty, so `hi - 1` cannot overflow.
+        let hi = if inclusive { hi } else { hi - 1 };
+        Some(tir::PatternKind::Range { lo, hi })
+    }
+
+    /// "expected a pattern for `ty`", for the pattern at `at` as written.
+    fn pattern_mismatch(&mut self, ty: &Type, at: Span) {
+        let want = self.type_name(ty);
+        self.report(DiagnosticKind::PatternMismatch {
+            want,
+            found: self.source[at.range()].to_string(),
+            at,
+        });
+    }
+
+    /// The alternatives of an `|` at a position of type `ty`, which takes more than names. Each
+    /// binds the names of the first, with the same types, so each name is one local, which
+    /// every alternative binds; a name one of them lacks is reported, once per alternative.
+    fn alternatives(
+        &mut self,
+        alternatives: &[ast::Pattern],
+        ty: &Type,
+        keyword: &'static str,
+        bound: &mut Bound,
+    ) -> Option<tir::PatternKind> {
+        let mark = bound.order.len();
+        let first = self.pattern(&alternatives[0], Some(ty), keyword, bound);
+        let named: Vec<_> = bound
+            .order
+            .drain(mark..)
+            .map(|name| {
+                let entry = bound.names.remove(&name);
+                (name, entry.expect("a name in `order` should be in `names`"))
+            })
+            .collect();
+        bound.alternatives.push(Alternatives {
+            first: named
+                .iter()
+                .map(|&(name, (_, local))| (name, local))
+                .collect(),
+            extra: None,
+        });
+        let mut checked = vec![first];
+        let mut agree = true;
+        for alternative in &alternatives[1..] {
+            checked.push(self.pattern(alternative, Some(ty), keyword, bound));
+            let here: FxHashSet<_> = bound.order.drain(mark..).collect();
+            for name in &here {
+                bound.names.remove(name);
+            }
+            let extra = bound
+                .alternatives
+                .last_mut()
+                .and_then(|alternatives| alternatives.extra.take());
+            let missing = named.iter().find(|(name, _)| !here.contains(name));
+            let lacking = match (missing, extra) {
+                (Some(&(name, _)), _) => Some((name, alternative.span)),
+                (None, Some(name)) => Some((name, alternatives[0].span)),
+                (None, None) => None,
+            };
+            if let Some((name, at)) = lacking {
+                agree = false;
+                self.report(DiagnosticKind::AlternativeBindings {
+                    name: name.to_string(),
+                    at,
+                });
+            }
+        }
+        bound.alternatives.pop();
+        // From here on the `|` binds what its first alternative does.
+        for (name, entry) in named {
+            bound.names.insert(name, entry);
+            bound.order.push(name);
+        }
+        let checked: Option<Vec<_>> = checked.into_iter().collect();
+        if !agree {
+            return None;
+        }
+        Some(tir::PatternKind::Or(checked?))
+    }
+
+    /// The help's guard for `name`, bound twice in the pattern `bound` checks: the pattern with
+    /// this binding renamed to a name it does not use, and the guard that compares the two, as
+    /// in `Add(x, y) if x == y`.
+    #[expect(
+        clippy::maybe_infinite_iter,
+        reason = "the pattern's text holds finitely many names, so a numbered one is free"
+    )]
+    fn twice_guard(&self, name: &ast::Ident, bound: &Bound) -> String {
+        let text = &self.source[bound.top.range()];
+        let used = |candidate: &str| {
+            text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|word| word == candidate)
+        };
+        let written = name.name.as_str();
+        let next = match written.as_bytes() {
+            &[c @ b'a'..=b'y'] => Some(char::from(c + 1).to_string()),
+            _ => None,
+        };
+        let fresh = next
+            .into_iter()
+            .chain((2..).map(|n: u32| format!("{written}{n}")))
+            .find(|candidate| !used(candidate))
+            .expect("some numbered name should be free");
+        let at = name.span.start() - bound.top.start();
+        format!(
+            "{}{fresh}{} if {written} == {fresh}",
+            &text[..at],
+            &text[at + written.len()..]
+        )
     }
 
     /// The variant that `qualifier.name(fields)` (`parens` is `None` without parentheses)
@@ -547,7 +878,9 @@ impl Checker<'_> {
     }
 
     /// Declares `name`, of type `ty`, as `keyword` binds it, unless this pattern binds it
-    /// already, which is reported.
+    /// already, which is reported. In a later alternative of an `|`, it is the first
+    /// alternative's local, which must have the same type; a name the first lacks is recorded,
+    /// and declared as `Error`.
     fn bind(
         &mut self,
         name: &ast::Ident,
@@ -555,18 +888,50 @@ impl Checker<'_> {
         keyword: &'static str,
         bound: &mut Bound,
     ) -> Option<tir::LocalId> {
-        if let Some(&first) = bound.names.get(&name.name) {
+        if let Some(&(first, _)) = bound.names.get(&name.name) {
+            let guard = (keyword == "match").then(|| self.twice_guard(name, bound));
             self.report(DiagnosticKind::BoundTwice {
                 name: name.name.to_string(),
                 at: name.span,
                 first,
+                guard,
             });
             return None;
         }
-        bound.names.insert(name.name, name.span);
-        let local = self.declare(name, ty, super::BindingKind::Unwrapped(keyword), None);
-        bound.locals.push(local);
-        Some(local)
+        let kind = super::BindingKind::Unwrapped(keyword);
+        // A later alternative binds the first's local; its type must agree, but the name is
+        // bound either way, so no alternative is reported as lacking it.
+        let mut agrees = true;
+        let local = if let Some(alternatives) = bound.alternatives.last_mut() {
+            if let Some(&local) = alternatives.first.get(&name.name) {
+                let want = self.lookup(name.name).and_then(|b| b.ty.clone());
+                if let (Some(want), Some(got)) = (want, &ty)
+                    && want != *got
+                {
+                    let (want, got) = (self.type_name(&want), self.type_name(got));
+                    self.report(DiagnosticKind::Mismatch {
+                        want: vec![want],
+                        got,
+                        at: name.span,
+                        other: None,
+                        fix: None,
+                        conversion: false,
+                    });
+                    agrees = false;
+                }
+                local
+            } else {
+                alternatives.extra.get_or_insert(name.name);
+                self.declare(name, None, kind, None)
+            }
+        } else {
+            let local = self.declare(name, ty, kind, None);
+            bound.locals.push(local);
+            local
+        };
+        bound.names.insert(name.name, (name.span, local));
+        bound.order.push(name.name);
+        agrees.then_some(local)
     }
 
     /// Declares the names in `p`, a pattern that failed, as `Error`, so that uses of them
@@ -582,6 +947,11 @@ impl Checker<'_> {
             ast::PatternKind::Variant { fields, .. } => {
                 for field in fields {
                     self.poison(field, keyword, bound);
+                }
+            }
+            ast::PatternKind::Or(alternatives) => {
+                for alternative in alternatives {
+                    self.poison(alternative, keyword, bound);
                 }
             }
             _ => {}
@@ -609,11 +979,13 @@ impl Checker<'_> {
                 tir::Arm {
                     pattern,
                     bindings,
+                    guard: None,
                     body: then_block,
                 },
                 tir::Arm {
                     pattern: other,
                     bindings: Vec::new(),
+                    guard: None,
                     body: else_block.unwrap_or_else(empty_block),
                 },
             ],

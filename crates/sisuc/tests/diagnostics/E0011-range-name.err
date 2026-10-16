@@ -1,0 +1,8 @@
+error[E0011]: expected a literal, found `hi`
+ --> E0011-range-name.sisu:3:12
+  |
+3 |         0..hi => true
+  |            ^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011

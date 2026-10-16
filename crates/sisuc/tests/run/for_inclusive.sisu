@@ -1,0 +1,12 @@
+// `a..=b` takes in `b`, even the largest `i64`, and runs no times when `b` is below `a`.
+fn main() {
+    for i in 1..=3 {
+        print(i)
+    }
+    for i in 9223372036854775806..=9223372036854775807 {
+        print(i)
+    }
+    for i in 5..=4 {
+        print(i)
+    }
+}

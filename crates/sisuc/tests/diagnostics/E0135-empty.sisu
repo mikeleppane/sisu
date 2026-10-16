@@ -1,0 +1,10 @@
+fn low(n: i64) -> bool {
+    match n {
+        5..=4 => true
+        _ => false
+    }
+}
+
+fn main() {
+    print(low(3))
+}

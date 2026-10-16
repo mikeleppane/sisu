@@ -317,8 +317,9 @@ impl Checker<'_> {
     }
 
     /// `for`, lowered to a `Loop` as in the spec's table: over an array `s` through `s[i]`
-    /// with `i < s.len()`, over a range through `i < end`. The locals are the source's, the
-    /// fresh ones, then the loop variable.
+    /// with `i < s.len()`, over a range through `i < end`, and over `start..=end` through a
+    /// flag, cleared on the last value, so `end` may be `i64::MAX`. The locals are the source's,
+    /// the fresh ones, then the loop variable.
     fn for_loop(
         &mut self,
         span: Span,
@@ -334,10 +335,7 @@ impl Checker<'_> {
                 start,
                 end,
                 inclusive,
-            } => {
-                assert!(!inclusive, "for over `..=` lands in Task 11");
-                c.for_range(span, start, end)
-            }
+            } => c.for_range(span, start, end, *inclusive),
         });
         let (x, checked) = self.in_loop(LoopContext::Body, |c| {
             c.unwrapping_block("for", name, bound, body, None)
@@ -354,6 +352,7 @@ impl Checker<'_> {
             mut stmts,
             counter,
             limit,
+            go,
             item,
         } = header;
         let at = |local_id| local(local_id, Type::I64, span);
@@ -362,26 +361,53 @@ impl Checker<'_> {
             lhs: Box::new(at(counter)),
             rhs: Box::new(expr(ExprKind::Int(1), Type::I64)),
         };
-        // The counter moves on before the body runs, so `continue` needs nothing more.
-        let then_block = tir::Block {
-            stmts: vec![
-                tir::Stmt::Let {
-                    local: x,
-                    init: item,
-                },
-                tir::Stmt::Assign {
-                    place: tir::Place::Local(counter),
-                    value: expr(next, Type::I64),
-                },
-                tir::Stmt::Expr(expr(ExprKind::Block(body), body_ty)),
-            ],
+        let step = tir::Stmt::Assign {
+            place: tir::Place::Local(counter),
+            value: expr(next, Type::I64),
+        };
+        let block = |stmts| tir::Block {
+            stmts,
             value: None,
             ty: Type::Unit,
         };
-        let cond = ExprKind::Compare {
-            operands: vec![at(counter), at(limit)],
-            ops: vec![tir::CompareOp::Lt],
+        // The counter moves on before the body runs, so `continue` needs nothing more. Over
+        // `..=`, it stays at the last value, which `i64::MAX + 1` would overflow.
+        let (moves, cond) = if let Some(go) = go {
+            let last = ExprKind::Equal {
+                negated: true,
+                lhs: Box::new(at(counter)),
+                rhs: Box::new(at(limit)),
+            };
+            let flag = || local(go, Type::Bool, span);
+            let moves = vec![
+                tir::Stmt::Assign {
+                    place: tir::Place::Local(go),
+                    value: expr(last, Type::Bool),
+                },
+                tir::Stmt::Expr(expr(
+                    ExprKind::If {
+                        cond: Box::new(flag()),
+                        then_block: block(vec![step]),
+                        else_block: None,
+                    },
+                    Type::Unit,
+                )),
+            ];
+            (moves, flag().kind)
+        } else {
+            let cond = ExprKind::Compare {
+                operands: vec![at(counter), at(limit)],
+                ops: vec![tir::CompareOp::Lt],
+            };
+            (vec![step], cond)
         };
+        let mut then_stmts = vec![tir::Stmt::Let {
+            local: x,
+            init: item,
+        }];
+        then_stmts.extend(moves);
+        then_stmts.push(tir::Stmt::Expr(expr(ExprKind::Block(body), body_ty)));
+        let then_block = block(then_stmts);
         stmts.push(tir::Stmt::Expr(lower_loop(
             then_block,
             span,
@@ -442,26 +468,30 @@ impl Checker<'_> {
             stmts,
             counter,
             limit: len,
+            go: None,
             item: expr(item, element.clone()),
         };
         (Some(header), Some(element))
     }
 
-    /// The header of `for x in start..end`, and the type of `x`, `i64`.
+    /// The header of `for x in start..end`, or `start..=end` when `inclusive`, and the type of
+    /// `x`, `i64`.
     fn for_range(
         &mut self,
         span: Span,
         start: &ast::Expr,
         end: &ast::Expr,
+        inclusive: bool,
     ) -> (Option<ForHeader>, Option<Type>) {
         let start = self.expect(start, Some(&Type::I64));
         let end = self.expect(end, Some(&Type::I64));
         let counter = self.fresh_var(Type::I64);
         let limit = self.fresh(Type::I64);
+        let go = inclusive.then(|| self.fresh_var(Type::Bool));
         let (Ok(start), Ok(end)) = (start, end) else {
             return (None, Some(Type::I64));
         };
-        let stmts = vec![
+        let mut stmts = vec![
             tir::Stmt::Let {
                 local: counter,
                 init: start,
@@ -471,11 +501,27 @@ impl Checker<'_> {
                 init: end,
             },
         ];
+        if let Some(go) = go {
+            let at = |local_id| local(local_id, Type::I64, span);
+            let some = ExprKind::Compare {
+                operands: vec![at(counter), at(limit)],
+                ops: vec![tir::CompareOp::Le],
+            };
+            stmts.push(tir::Stmt::Let {
+                local: go,
+                init: tir::Expr {
+                    kind: some,
+                    ty: Type::Bool,
+                    span,
+                },
+            });
+        }
         let item = local(counter, Type::I64, span);
         let header = ForHeader {
             stmts,
             counter,
             limit,
+            go,
             item,
         };
         (Some(header), Some(Type::I64))
@@ -736,11 +782,13 @@ impl Checker<'_> {
 }
 
 /// What a `for` binds before its `Loop`: `stmts` bind the source and the counter, which runs
-/// to `limit`, and `item` is the value of the loop variable for the current counter.
+/// to `limit`, and `item` is the value of the loop variable for the current counter. Over
+/// `..=`, `go` says whether a value is left, and the counter runs through `limit`.
 struct ForHeader {
     stmts: Vec<tir::Stmt>,
     counter: tir::LocalId,
     limit: tir::LocalId,
+    go: Option<tir::LocalId>,
     item: tir::Expr,
 }
 

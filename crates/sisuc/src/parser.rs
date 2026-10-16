@@ -1400,6 +1400,7 @@ impl<'a> Parser<'a> {
                     (PatternKind::Name(name), token.span)
                 }
             }
+            TokenKind::StrHead(_) => return Err(self.interpolated_pattern()),
             _ => return Err(self.expected("a pattern")),
         };
         // A name or a literal can start a range; no other pattern is a bound.
@@ -1408,6 +1409,32 @@ impl<'a> Parser<'a> {
         }
         self.depth = reach;
         Ok(Pattern { kind, span })
+    }
+
+    /// The error for a string pattern with an interpolation, at the next token, the string's
+    /// head: `InterpolatedPattern` on the first interpolation, once it parses.
+    fn interpolated_pattern(&mut self) -> Diagnostic {
+        // The head's text ends just after its `{`, and the next piece starts at its `}`.
+        let open = self.bump().span.end() - 1;
+        let base = self.depth;
+        let mut reach = base;
+        if let Err(error) = self.child(base, &mut reach, Self::expr) {
+            return error;
+        }
+        if matches!(self.peek().kind, TokenKind::FormatSpec(_)) {
+            self.bump();
+        }
+        let close = self.peek().span.start();
+        if !matches!(
+            self.peek().kind,
+            TokenKind::StrMiddle(_) | TokenKind::StrTail(_)
+        ) {
+            return self.expected("`}`");
+        }
+        DiagnosticKind::InterpolatedPattern {
+            at: Span::new(open, close + 1),
+        }
+        .into()
     }
 
     /// A literal pattern, or a range that starts with one, at the next token.
@@ -1722,6 +1749,16 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         let mut arms = Vec::new();
         while !self.at(&TokenKind::RBrace) {
+            // An arm above that is complete has nothing for this line to join.
+            if !arms.is_empty()
+                && matches!(
+                    self.peek().kind,
+                    TokenKind::Pipe | TokenKind::FatArrow | TokenKind::If
+                )
+            {
+                let at = self.peek().span;
+                return Err(DiagnosticKind::ArmSplit { at, join: None }.into());
+            }
             arms.push(self.child(base, &mut reach, Self::arm)?);
             if self.at(&TokenKind::Comma) {
                 return Err(self.member_comma(diagnostic::Member::Arm));
@@ -1752,8 +1789,11 @@ impl<'a> Parser<'a> {
             return Err(error);
         }
         let pattern = self.child(base, &mut reach, Self::pattern)?;
+        self.arm_split(&[TokenKind::Pipe, TokenKind::FatArrow, TokenKind::If])?;
         let guard = if self.eat(&TokenKind::If).is_some() {
-            Some(self.child(base, &mut reach, Self::expr)?)
+            let guard = self.child(base, &mut reach, Self::expr)?;
+            self.arm_split(&[TokenKind::FatArrow])?;
+            Some(guard)
         } else {
             None
         };
@@ -1772,6 +1812,29 @@ impl<'a> Parser<'a> {
             guard,
             body,
         })
+    }
+
+    /// `ArmSplit` when the line ends here and the next line with code starts with one of
+    /// `continues`, so continues the arm. The fix joins the lines, unless a comment lies between.
+    fn arm_split(&self, continues: &[TokenKind]) -> Result<(), Diagnostic> {
+        if !self.at(&TokenKind::Newline) {
+            return Ok(());
+        }
+        let Some(next) = self.tokens[self.pos..]
+            .iter()
+            .find(|t| t.kind != TokenKind::Newline)
+            .filter(|t| continues.contains(&t.kind))
+        else {
+            return Ok(());
+        };
+        let gap = self.last_code_end()..next.span.start();
+        let join =
+            (!self.comments.iter().any(|c| gap.contains(c))).then(|| Span::new(gap.start, gap.end));
+        Err(DiagnosticKind::ArmSplit {
+            at: next.span,
+            join,
+        }
+        .into())
     }
 
     /// An arm's body: an expression, or a statement that is not one (an assignment, `return`,
@@ -3982,6 +4045,10 @@ mod tests {
 
     /// The code and position of each error in a pattern, a range or a `|`, and its fix.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row per error, so the table reads in one place"
+    )]
     fn pattern_parse_errors() {
         let main = |body: &str| format!("fn main() {{\n    {body}\n}}");
         let arm = |arm: &str| main(&format!("match e {{\n        {arm}\n    }}"));
@@ -4052,6 +4119,69 @@ mod tests {
                 Some((false, main("let y = ||true"))),
             ),
             (main("let r = 0..=3"), Code::RangeOutsideFor, (2, 14), None),
+            // A line that starts with `|`, `=>` or a guard's `if` continues the arm above, and
+            // the fix joins it, across blank lines too, unless a comment would swallow it.
+            (
+                arm("A\n        | B => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A | B => 1"))),
+            ),
+            (
+                arm("A\n        => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A => 1"))),
+            ),
+            (
+                arm("A\n        if c => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A if c => 1"))),
+            ),
+            (
+                arm("A if c\n        => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A if c => 1"))),
+            ),
+            (
+                arm("A\n\n        => 1"),
+                Code::ArmSplit,
+                (5, 9),
+                Some((true, arm("A => 1"))),
+            ),
+            (arm("A // note\n        => 1"), Code::ArmSplit, (4, 9), None),
+            // A later arm that starts so has no arm above to join: the arm above is complete.
+            (
+                main("match e {\n        A => 1\n        | B => 2\n    }"),
+                Code::ArmSplit,
+                (4, 9),
+                None,
+            ),
+            (
+                main("match e {\n        A => 1\n        => 2\n    }"),
+                Code::ArmSplit,
+                (4, 9),
+                None,
+            ),
+            (
+                arm("\"{x}\" => 1"),
+                Code::InterpolatedPattern,
+                (3, 10),
+                None,
+            ),
+            (
+                arm("\"a{x:4}b\" => 1"),
+                Code::InterpolatedPattern,
+                (3, 11),
+                None,
+            ),
+            // An interpolation that does not parse reports that first.
+            (arm("\"{*}\" => 1"), Code::Expected, (3, 11), None),
+            (arm("\"{x y}\" => 1"), Code::Expected, (3, 13), None),
+            // A line that does not continue the arm leaves its `=>` missing.
+            (arm("A\n        B => 1"), Code::Expected, (3, 10), None),
         ];
         for (src, code, position, fix) in rows {
             let d = parse_diagnostic(&src);
