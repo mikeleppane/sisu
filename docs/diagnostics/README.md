@@ -138,11 +138,14 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0127](E0127.md) | error | only a name here |
 | [E0128](E0128.md) | error | wrong number of sub-patterns |
 | [E0129](E0129.md) | error | name bound twice in one pattern |
+| [E0130](E0130.md) | error | `match` that does not cover every value |
+| [E0131](E0131.md) | error | `if let` or `while let` that always matches |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |
 | [W0004](W0004.md) | warning | unused value |
 | [W0005](W0005.md) | warning | comparison with `f64.nan` |
+| [W0006](W0006.md) | warning | unreachable arm |
 
 ## Explanations
 

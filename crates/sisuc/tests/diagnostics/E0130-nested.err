@@ -1,0 +1,16 @@
+error[E0130]: `match` does not cover `Add(Mul(_, _), _)`
+  --> E0130-nested.sisu:7:5
+   |
+ 7 |     match e {
+   |     ^^^^^
+ 8 |         Num(n) => n
+ 9 |         Add(Num(n), b) => n + eval(b)
+   |         -------------- `Add(Num(_), _)` covers only `Num(_), _`
+   |
+help: add a `_ =>` arm
+   |
+12 +         _ => todo
+   |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0130

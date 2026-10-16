@@ -1,0 +1,13 @@
+error[E0130]: `match` does not cover `Mul(_, _)`
+  --> E0130.sisu:7:5
+   |
+ 7 |     match e {
+   |     ^^^^^
+   |
+help: add a `_ =>` arm
+   |
+10 +         _ => todo
+   |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0130

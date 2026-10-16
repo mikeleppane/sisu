@@ -133,6 +133,10 @@ fn type_of_v(src: &str) -> String {
     v.ty.to_string()
 }
 
+/// An enum of three variants, declared after a function so the `match` tests' lines stay put:
+/// a `_` after `A` and `B` is reachable.
+const ABC: &str = "\nenum Abc {\n    A\n    B\n    C\n}";
+
 #[test]
 fn match_join() {
     // Each row: the arms' values, in order, and the type they join to.
@@ -150,7 +154,7 @@ fn match_join() {
         // A block arm ranks by the value it ends in.
         (&["{ None }", "1"], "i64?"),
     ];
-    let patterns = ["Num(_)", "Add(_, _)", "_"];
+    let patterns = ["A", "B", "_"];
     for (values, want) in rows {
         let arms: String = patterns[3 - values.len()..]
             .iter()
@@ -159,7 +163,7 @@ fn match_join() {
             .collect::<Vec<_>>()
             .concat();
         let src = format!(
-            "{DECLS}\nfn t(e: Expr, b: u8, xs: [string]) -> i64 {{\n    let v = match e {{\n{arms}    }}\n    0\n}}"
+            "{DECLS}\nfn t(e: Abc, b: u8, xs: [string]) -> i64 {{\n    let v = match e {{\n{arms}    }}\n    0\n}}{ABC}"
         );
         assert_eq!(type_of_v(&src), want, "{values:?}");
     }
@@ -167,31 +171,31 @@ fn match_join() {
     // expects `u8`.
     codes(
         &format!(
-            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => nope\n        Add(_, _) => b\n        _ => 1\n    }}\n}}"
+            "{DECLS}\nfn t(e: Abc, b: u8) {{\n    let _ = match e {{\n        A => nope\n        B => b\n        _ => 1\n    }}\n}}{ABC}"
         ),
-        &[(Code::BindingNotFound, (15, 19))],
+        &[(Code::BindingNotFound, (15, 14))],
     );
     // A failed arm after one of a known type keeps that type for the arms after it.
     codes(
         &format!(
-            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => b\n        Add(_, _) => nope\n        _ => 1\n    }}\n}}"
+            "{DECLS}\nfn t(e: Abc, b: u8) {{\n    let _ = match e {{\n        A => b\n        B => nope\n        _ => 1\n    }}\n}}{ABC}"
         ),
-        &[(Code::BindingNotFound, (16, 22))],
+        &[(Code::BindingNotFound, (16, 14))],
     );
     // The first arm of a known type anchors the rest, not a later one: the `None` expects `u8?`.
     codes(
         &format!(
-            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => b\n        Add(_, _) => print(1)\n        _ => None\n    }}\n}}"
+            "{DECLS}\nfn t(e: Abc, b: u8) {{\n    let _ = match e {{\n        A => b\n        B => print(1)\n        _ => None\n    }}\n}}{ABC}"
         ),
-        &[(Code::NoValue, (16, 22))],
+        &[(Code::NoValue, (16, 14))],
     );
     // A `unit` arm checked first anchors only until an arm of another type: the `None` expects
     // `u8?`.
     codes(
         &format!(
-            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => print(1)\n        Add(_, _) => b\n        _ => None\n    }}\n}}"
+            "{DECLS}\nfn t(e: Abc, b: u8) {{\n    let _ = match e {{\n        A => print(1)\n        B => b\n        _ => None\n    }}\n}}{ABC}"
         ),
-        &[(Code::NoValue, (15, 19))],
+        &[(Code::NoValue, (15, 14))],
     );
     // Arms that all leave make a `never` `match`.
     clean(&format!(
@@ -268,7 +272,6 @@ fn pattern_errors() {
         ("e", "Num => 1", Code::VariantForm, 9),
         ("e", "Nmu(m) => 1", Code::UnknownVariant, 9),
         ("e", "Exr.Num(m) => 1", Code::UnknownType, 9),
-        ("n", "Ok => 1", Code::BuiltInName, 9),
         ("e", "Num(x, y) => 1", Code::SubpatternCount, 9),
         // A failed pattern binds each name once, so `x` is not bound twice.
         ("e", "Mul(x, x) => 1", Code::UnknownVariant, 9),
@@ -282,6 +285,14 @@ fn pattern_errors() {
     for (scrutinee, arm, code, col) in rows {
         codes(&arm_on_15(scrutinee, arm), &[(code, (15, col))]);
     }
+    // A built-in name still binds, so it takes every value and the `_` after it is unreachable.
+    codes(
+        &arm_on_15("n", "Ok => 1"),
+        &[
+            (Code::BuiltInName, (15, 9)),
+            (Code::UnreachableArm, (16, 9)),
+        ],
+    );
     // Each row: the statement on line 14, and the code it reports there.
     let rows = [
         ("    let _ = match p {}", Code::CannotMatch, 19),
@@ -456,10 +467,298 @@ fn failed_scrutinee_keeps_never() {
     );
     codes(
         &in_fn("    match n {}\n    print(3)"),
-        &[(Code::UnreachableCode, (15, 5))],
+        &[
+            (Code::NonExhaustive, (14, 5)),
+            (Code::UnreachableCode, (15, 5)),
+        ],
     );
     codes(
         &in_fn("    match nope {}\n    print(3)"),
         &[(Code::BindingNotFound, (14, 11))],
+    );
+}
+
+/// The declarations the coverage tests share: lines 1 to 10.
+const COVER: &str = "enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+}
+enum AB {
+    A
+    B
+}
+fn main() {}";
+
+/// A function on line 11 whose `match` on `scrutinee` has its keyword at (12, 5), each of
+/// `arms` on its own line from line 13, and its `}` on the line after them.
+fn match_on(scrutinee: &str, arms: &[&str]) -> String {
+    let arms = arms
+        .iter()
+        .map(|arm| format!("        {arm}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    format!(
+        "{COVER}\nfn t(e: Expr, ab: AB, i: i64, flag: bool) -> i64 {{\n    match {scrutinee} {{\n{arms}    }}\n}}"
+    )
+}
+
+#[test]
+fn match_coverage() {
+    let rows: [(&str, &[&str], bool); 4] = [
+        ("e", &["Num(_) => 0", "Add(_, _) => 1"], false),
+        (
+            "e",
+            &["Num(_) => 0", "Add(Num(_), _) => 1", "Mul(_, _) => 2"],
+            false,
+        ),
+        ("i", &[], false),
+        ("flag", &["b => 0"], true),
+    ];
+    for (scrutinee, arms, covered) in rows {
+        let expected = if covered {
+            vec![]
+        } else {
+            vec![(Code::NonExhaustive, (12, 5))]
+        };
+        codes(&match_on(scrutinee, arms), &expected);
+    }
+}
+
+/// The note names the first arm that has the missing value's variant at the top, and the fix
+/// adds `_ => todo` as the last arm: on the `}` line's own line, or by breaking `{}`.
+#[test]
+fn non_exhaustive_note_and_fix() {
+    let src = match_on(
+        "e",
+        &["Num(_) => 0", "Add(Num(_), _) => 1", "Mul(_, _) => 2"],
+    );
+    let d = diagnostic(&src, Code::NonExhaustive, (12, 5, "match"), &[(14, 9)]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(false, vec![(16, 1, "", "        _ => todo\n".to_string())])]
+    );
+    applied(&src, &d);
+    let src = format!("{COVER}\nfn t(i: i64) -> i64 {{\n    match i {{}}\n}}");
+    let d = diagnostic(&src, Code::NonExhaustive, (12, 5, "match"), &[]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(
+            false,
+            vec![(12, 14, "", "\n        _ => todo\n    ".to_string())]
+        )]
+    );
+    applied(&src, &d);
+    // Arms on the `match` line take one level past the line's indentation, not past `let`.
+    let src =
+        format!("{COVER}\nfn t(ab: AB) -> i64 {{\n    let v = match ab {{ A => 1 }}\n    v\n}}");
+    let d = diagnostic(&src, Code::NonExhaustive, (12, 13, "match"), &[]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(
+            false,
+            vec![(12, 31, "", "\n        _ => todo\n    ".to_string())]
+        )]
+    );
+    applied(&src, &d);
+}
+
+#[test]
+fn unreachable_arms() {
+    let src = match_on("e", &["_ => 0", "Num(n) => n"]);
+    let d = diagnostic(&src, Code::UnreachableArm, (14, 9, "Num(n)"), &[(13, 9)]);
+    // The fix takes the line break before the arm through its body.
+    assert_eq!(
+        fixes(&src, &d),
+        [(
+            false,
+            vec![(13, 15, "\n        Num(n) => n", String::new())]
+        )]
+    );
+    applied(&src, &d);
+    diagnostic(
+        &match_on("e", &["Num(n) => n", "Num(_) => 0", "_ => 1"]),
+        Code::UnreachableArm,
+        (14, 9, "Num(_)"),
+        &[(13, 9)],
+    );
+    // Three arms together cover the fourth, so no one arm does.
+    diagnostic(
+        &match_on(
+            "e",
+            &[
+                "Add(Num(_), _) => 0",
+                "Add(Mul(_, _), _) => 1",
+                "Add(Add(_, _), _) => 2",
+                "Add(_, _) => 3",
+                "_ => 4",
+            ],
+        ),
+        Code::UnreachableArm,
+        (16, 9, "Add(_, _)"),
+        &[],
+    );
+    // The first arm takes the second in two leaves, split apart by the third, and still covers it.
+    diagnostic(
+        &match_on(
+            "e",
+            &[
+                "Add(_, Num(_)) => 0",
+                "Add(_, Num(_)) => 1",
+                "Add(Num(_), _) => 2",
+                "_ => 3",
+            ],
+        ),
+        Code::UnreachableArm,
+        (14, 9, "Add(_, Num(_))"),
+        &[(13, 9)],
+    );
+    // Each arm is covered by the arm of its own variant, not by the first arm.
+    let src = match_on("ab", &["A => 0", "A => 1", "B => 2", "B => 3"]);
+    let (_, ds) = checked(&src);
+    let found: Vec<_> = ds
+        .iter()
+        .map(|d| {
+            let secondary: Vec<_> = d.secondary().iter().map(|(s, _)| at(&src, *s)).collect();
+            (d.code(), at(&src, d.span()), secondary)
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (Code::UnreachableArm, (14, 9), vec![(13, 9)]),
+            (Code::UnreachableArm, (16, 9), vec![(15, 9)]),
+        ]
+    );
+}
+
+/// The keep-alive override for this test is in `.config/nextest.toml`: specializing a column
+/// once per constructor over every row, or checking each arm against the arms before it, is
+/// quadratic and hangs instead of failing. At 50,000 variants a quadratic bucketing still ends
+/// inside the override's 30 seconds, so the test takes 200,000.
+#[test]
+fn many_arms_check_in_linear_time() {
+    const VARIANTS: usize = 200_000;
+    let variants = (0..VARIANTS)
+        .map(|i| format!("    V{i}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let arms = (0..VARIANTS)
+        .map(|i| format!("        V{i} => {i}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    clean(&format!(
+        "enum E {{\n{variants}}}\nfn f(e: E) -> i64 {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
+    ));
+}
+
+/// `enum Wide { V(Bit, ...) }` with `fields` fields, and a `match` on `w` whose `arms` start on
+/// line 8, then `_ => 0`.
+fn wide(fields: usize, arms: &[String]) -> String {
+    let fields = vec!["Bit"; fields].join(", ");
+    let arms = arms
+        .iter()
+        .map(|arm| format!("        {arm}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    format!(
+        "enum Bit {{\n    X\n    Y\n}}\nenum Wide {{ V({fields}) }}\nfn f(w: Wide) -> i64 {{\n    match w {{\n{arms}        _ => 0\n    }}\n}}\nfn main() {{}}"
+    )
+}
+
+/// `V(...)` of `count` fields, field `f` as `field(f)` says.
+fn wide_arm(count: usize, field: impl Fn(usize) -> &'static str) -> String {
+    let fields: Vec<_> = (0..count).map(field).collect();
+    format!("V({}) => 1", fields.join(", "))
+}
+
+/// The keep-alive override for this test is in `.config/nextest.toml`: without the
+/// all-wildcard row cut, and without memoization, the arms meet 2^40 matrices.
+#[test]
+fn one_named_field_per_arm_checks_in_linear_time() {
+    let arms: Vec<_> = (0..40)
+        .map(|i| wide_arm(40, |f| if f == i { "X" } else { "_" }))
+        .collect();
+    clean(&wide(40, &arms));
+    // Memoization alone saves the rows above, whose leftovers are alike. Below a first `_`,
+    // arms that each need two fields, every first field before every second, meet 2^32
+    // distinct matrices unless the cut stops at the `_`.
+    let arms: Vec<_> = std::iter::once("_ => 1".to_string())
+        .chain((0..32).map(|i| wide_arm(64, |f| if f == i || f == 32 + i { "X" } else { "_" })))
+        .collect();
+    let src = wide(64, &arms);
+    let (_, ds) = checked(&src);
+    let found: Vec<_> = ds
+        .iter()
+        .map(|d| {
+            let secondary: Vec<_> = d.secondary().iter().map(|(s, _)| at(&src, *s)).collect();
+            (d.code(), at(&src, d.span()), secondary)
+        })
+        .collect();
+    // Every arm after the `_`, the last `_ => 0` too, is the `_`'s.
+    let expected: Vec<_> = (1..=arms.len())
+        .map(|k| (Code::UnreachableArm, (8 + k, 9), vec![(8, 9)]))
+        .collect();
+    assert_eq!(found, expected);
+}
+
+/// The keep-alive override for this test is in `.config/nextest.toml`: without memoization,
+/// the `X` and `Y` branches of each field meet the same matrix, 2^39 visits in all.
+#[test]
+fn repeated_matrices_check_in_linear_time() {
+    let arms: Vec<_> = (0..39)
+        .flat_map(|i| {
+            ["X", "Y"].map(|named| {
+                wide_arm(40, move |f| match f {
+                    39 => "X",
+                    f if f == i => named,
+                    _ => "_",
+                })
+            })
+        })
+        .collect();
+    let src = wide(40, &arms);
+    let (_, ds) = checked(&src);
+    let found: Vec<_> = ds
+        .iter()
+        .map(|d| (d.code(), at(&src, d.span()), d.secondary().len()))
+        .collect();
+    // The arms start on line 8; every arm after the first two is covered by both of them.
+    let expected: Vec<_> = (2..arms.len())
+        .map(|k| (Code::UnreachableArm, (8 + k, 9), 0))
+        .collect();
+    assert_eq!(found, expected);
+}
+
+#[test]
+fn let_always_matches() {
+    // Each row: the statement on line 14, and where it always matches.
+    let rows = [
+        ("    if let V(x) = o {}", Some(12)),
+        ("    while let V(x) = o {}", Some(15)),
+        ("    if let Running(c) = s {}", None),
+        ("    if let x = maybe {}", None),
+    ];
+    for (stmt, col) in rows {
+        let expected: Vec<_> = col
+            .into_iter()
+            .map(|col| (Code::AlwaysMatches, (14, col)))
+            .collect();
+        codes(&in_fn(stmt), &expected);
+    }
+}
+
+#[test]
+fn broken_pattern_skips_coverage() {
+    codes(
+        &match_on("e", &["Nmu(n) => n", "Add(_, _) => 1"]),
+        &[(Code::UnknownVariant, (13, 9))],
+    );
+    // A sub-pattern at a field of an unknown type fails too.
+    codes(
+        &format!(
+            "{COVER}\nenum W {{\n    Wrap(Nope)\n    Other\n}}\nfn f(w: W) -> i64 {{\n    match w {{\n        Wrap(_) => 1\n    }}\n}}"
+        ),
+        &[(Code::UnknownType, (12, 10))],
     );
 }

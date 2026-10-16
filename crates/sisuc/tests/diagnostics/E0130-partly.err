@@ -1,0 +1,16 @@
+error[E0130]: `match` does not cover `Add(Num(_), _)`
+  --> E0130-partly.sisu:7:5
+   |
+ 7 |     match e {
+   |     ^^^^^
+ 8 |         Num(n) => n
+ 9 |         Add(Add(a, b), c) => eval(a) + eval(b) + eval(c)
+   |         ----------------- `Add(Add(_, _), _)` covers only `Add(_, _), _`
+   |
+help: add a `_ =>` arm
+   |
+12 +         _ => todo
+   |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0130

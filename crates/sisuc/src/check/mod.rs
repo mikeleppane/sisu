@@ -4,6 +4,7 @@
 mod array;
 mod constant;
 mod enums;
+mod exhaust;
 mod expr;
 mod number;
 mod pattern;

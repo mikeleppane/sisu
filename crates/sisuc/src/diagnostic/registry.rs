@@ -171,7 +171,10 @@ codes! {
     OnlyNamePosition = "E0127",
     SubpatternCount = "E0128",
     BoundTwice = "E0129",
+    NonExhaustive = "E0130",
+    AlwaysMatches = "E0131",
     NanComparison = "W0005",
+    UnreachableArm = "W0006",
 }
 
 impl Code {
@@ -712,6 +715,28 @@ pub(crate) enum DiagnosticKind {
         found: String,
         at: Span,
     },
+    /// The `match` whose keyword is at `at`, which does not cover `missing`. `partly` is the
+    /// first arm with `missing`'s variant at the top: its span, its pattern and its payload.
+    /// The fix inserts a `_ =>` arm at `insert`, indented by `indent`; `close` is the
+    /// indentation of the `}` it moves to a line of its own, when it shares a line.
+    NonExhaustive {
+        missing: String,
+        partly: Option<(Span, String, String)>,
+        at: Span,
+        insert: Span,
+        indent: String,
+        close: Option<String>,
+    },
+    /// The arm whose pattern is at `at`, which no value reaches; `covered_by` is the arm that
+    /// takes all its values, when one does. `remove` runs from the line break before the arm
+    /// through its body.
+    UnreachableArm {
+        at: Span,
+        covered_by: Option<Span>,
+        remove: Span,
+    },
+    /// The pattern at `at` of `keyword`, which every value of its enum matches.
+    AlwaysMatches { keyword: Unwrap, at: Span },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -1188,6 +1213,9 @@ impl DiagnosticKind {
             DiagnosticKind::SubpatternCount { .. } => Code::SubpatternCount,
             DiagnosticKind::BoundTwice { .. } => Code::BoundTwice,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
+            DiagnosticKind::NonExhaustive { .. } => Code::NonExhaustive,
+            DiagnosticKind::UnreachableArm { .. } => Code::UnreachableArm,
+            DiagnosticKind::AlwaysMatches { .. } => Code::AlwaysMatches,
         }
     }
 }
@@ -2639,6 +2667,48 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 format!("expected a pattern for `{want}`, found `{found}`"),
             ),
+            DiagnosticKind::NonExhaustive {
+                missing,
+                partly,
+                at,
+                insert,
+                indent,
+                close,
+            } => {
+                let d = Diagnostic::coded(code, at, format!("`match` does not cover `{missing}`"));
+                let d = match partly {
+                    Some((arm, pattern, payload)) => {
+                        d.with_secondary(arm, format!("`{pattern}` covers only `{payload}`"))
+                    }
+                    None => d,
+                };
+                let arm = match close {
+                    Some(close) => format!("\n{indent}_ => todo\n{close}"),
+                    None => format!("{indent}_ => todo\n"),
+                };
+                d.with_fix(unsafe_fix("add a `_ =>` arm", insert, &arm))
+            }
+            DiagnosticKind::UnreachableArm {
+                at,
+                covered_by,
+                remove,
+            } => {
+                let d = Diagnostic::coded(code, at, "unreachable arm");
+                match covered_by {
+                    Some(arm) => d.with_secondary(arm, "this arm covers it"),
+                    None => d,
+                }
+                .with_fix(unsafe_fix("remove the arm", remove, ""))
+            }
+            DiagnosticKind::AlwaysMatches { keyword, at } => match keyword {
+                Unwrap::IfLet => Diagnostic::coded(code, at, "`if let` always matches here")
+                    .with_help("use `match`"),
+                Unwrap::WhileLet => Diagnostic::coded(
+                    code,
+                    at,
+                    "`while let` always matches here, so the pattern never ends the loop",
+                ),
+            },
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };
                 let d = Diagnostic::coded(

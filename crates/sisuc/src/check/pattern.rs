@@ -3,6 +3,7 @@
 use rustc_hash::FxHashMap;
 
 use super::enums::reserved_name;
+use super::exhaust::{self, Report, Row};
 use super::expr::Branch;
 use super::{Checked, CheckedBlock, Checker, Poisoned, type_of};
 use crate::ast;
@@ -64,11 +65,13 @@ fn empty_block() -> tir::Block {
 }
 
 impl Checker<'_> {
-    /// `match scrutinee { arms }`. Each arm is checked in a scope that holds its bindings, and
-    /// the arms join as an `if`'s branches do (`join`).
+    /// `match scrutinee { arms }`, whose keyword is at `keyword`. Each arm is checked in a scope
+    /// that holds its bindings, and the arms join as an `if`'s branches do (`join`). When every
+    /// pattern checked, the arms are checked for coverage and reachability.
     pub(super) fn match_expr(
         &mut self,
         span: Span,
+        keyword: Span,
         scrutinee: &ast::Expr,
         arms: &[ast::Arm],
         expected: Option<&Type>,
@@ -116,6 +119,16 @@ impl Checker<'_> {
             }
             ty => ty,
         };
+        if let Some(ty) = &position {
+            let rows: Option<Vec<_>> = patterns
+                .iter()
+                .map(|p| p.as_ref().map(|(pattern, _)| Row { pattern }))
+                .collect();
+            if let Some(rows) = rows {
+                let report = exhaust::check(&self.lowered_enums, ty, &rows);
+                self.report_coverage(span, keyword, arms, report);
+            }
+        }
         let arms: Option<Vec<_>> = patterns
             .into_iter()
             .zip(blocks)
@@ -140,6 +153,55 @@ impl Checker<'_> {
             }),
             (.., ty) => Err(ty.map_or_else(|poisoned| poisoned, Poisoned::typed)),
         }
+    }
+
+    /// Reports what `report` found on the `arms` of the `match` at `span`, whose keyword is at
+    /// `keyword`.
+    fn report_coverage(&mut self, span: Span, keyword: Span, arms: &[ast::Arm], report: Report) {
+        let mut unreachable = report.unreachable.into_iter().peekable();
+        for arm in arms {
+            let Some(found) = unreachable.next_if(|u| u.at == arm.pattern.span) else {
+                continue;
+            };
+            // The first arm is always reached, and arms are separated by line breaks, so this
+            // arm starts its line and the line break before it is its own.
+            let start = self.source[..found.at.start()].rfind('\n').unwrap_or(0);
+            self.report(DiagnosticKind::UnreachableArm {
+                at: found.at,
+                covered_by: found.covered_by,
+                remove: Span::new(start, arm.body.span.end()),
+            });
+        }
+        let Some(missing) = report.missing else {
+            return;
+        };
+        let source = self.source;
+        let line_start = |at: usize| source[..at].rfind('\n').map_or(0, |n| n + 1);
+        // What comes before `at` on its line, when that is only whitespace.
+        let blank = |at: usize| Some(&source[line_start(at)..at]).filter(|s| s.trim().is_empty());
+        let line = &source[line_start(keyword.start())..keyword.start()];
+        let match_indent = &line[..line.len() - line.trim_start().len()];
+        // Parentheses around the `match` widen `span`, but its `}` is the last one in it.
+        let close = span.start()
+            + source[span.range()]
+                .rfind('}')
+                .expect("a `match` should end in `}`");
+        let indent = match arms.first().and_then(|arm| blank(arm.pattern.span.start())) {
+            Some(indent) => indent.to_string(),
+            None => format!("{match_indent}    "),
+        };
+        let (insert, close) = match blank(close) {
+            Some(_) => (line_start(close), None),
+            None => (close, Some(match_indent.to_string())),
+        };
+        self.report(DiagnosticKind::NonExhaustive {
+            missing: missing.pattern,
+            partly: missing.partly,
+            at: keyword,
+            insert: Span::new(insert, insert),
+            indent,
+            close,
+        });
     }
 
     /// `value`, which `keyword` tests against `pattern`, and what it does with it: unwraps an
@@ -206,6 +268,19 @@ impl Checker<'_> {
             LetValue::Match { ty } => {
                 self.scopes.push(FxHashMap::default());
                 let pattern = self.pattern_in_scope(pattern, ty.as_ref(), keyword.word());
+                // An optional takes only a name or `_`, which unwraps it: only an enum gets here.
+                if let (Some(ty @ Type::Enum(_)), Some((pattern, _))) = (&ty, &pattern) {
+                    let rows = [Row { pattern }];
+                    if exhaust::check(&self.lowered_enums, ty, &rows)
+                        .missing
+                        .is_none()
+                    {
+                        self.report(DiagnosticKind::AlwaysMatches {
+                            keyword,
+                            at: pattern.span,
+                        });
+                    }
+                }
                 (
                     LetPattern::Match { pattern },
                     self.scoped_block(block, expected),

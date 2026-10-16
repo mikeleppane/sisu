@@ -177,8 +177,10 @@ impl Checker<'_> {
                 expected,
             ),
             ExprKind::Match {
-                scrutinee, arms, ..
-            } => self.match_expr(e.span, scrutinee, arms, expected),
+                keyword,
+                scrutinee,
+                arms,
+            } => self.match_expr(e.span, *keyword, scrutinee, arms, expected),
             ExprKind::Block(block) => self.block(block, expected).map(|block| {
                 let ty = block.ty.clone();
                 tir::Expr {

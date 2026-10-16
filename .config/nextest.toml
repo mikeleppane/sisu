@@ -49,6 +49,24 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(nested_switch_calls_parse_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Specializing a column once per variant over every row, or checking each arm against the arms
+# before it, makes coverage quadratic in the arms, so this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_arms_check_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# Without the all-wildcard row cut, coverage meets 2^40 distinct matrices, so this test hangs
+# instead of failing.
+[[profile.default.overrides]]
+filter = 'test(one_named_field_per_arm_checks_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# Without memoization, both branches of each field meet the same matrix, 2^39 visits in all, so
+# this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(repeated_matrices_check_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # A harness that writes all of standard input before it reads the output would fill both pipes
 # and hang on these tests instead of failing them.
 [[profile.default.overrides]]
