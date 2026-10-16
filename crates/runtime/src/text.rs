@@ -620,6 +620,10 @@ mod tests {
     /// `split_whitespace` uses: the ASCII fast path and the decoding path agree with the
     /// standard library. Each value sits between two words, then in a run of itself.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "every scalar value takes hours under Miri; the other words tests cover each path"
+    )]
     fn words_agree_with_split_whitespace_for_every_char() {
         let mut text = String::new();
         for c in char::MIN..=char::MAX {

@@ -51,6 +51,21 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install --yes valgrind
       - run: cargo nextest run --workspace --locked --profile ci
 
+  # Miri runs the runtime's unit tests in an interpreter that stops at undefined
+  # behaviour in its unsafe code; it needs nightly, which overrides rust-toolchain.toml.
+  miri:
+    name: Miri (runtime)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          rustup toolchain install nightly --profile minimal --component miri
+          rustup override set nightly
+          cargo miri setup
+      - run: make miri
+
   deny:
     name: Dependencies (advisories, licenses, sources)
     runs-on: ubuntu-24.04

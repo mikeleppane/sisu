@@ -158,6 +158,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "100,000 rounds take hours under Miri; shortest_matches_the_spec covers the path"
+    )]
     fn shortest_reads_back() {
         let mut bits = 0x9E37_79B9_7F4A_7C15_u64;
         for _ in 0..100_000 {

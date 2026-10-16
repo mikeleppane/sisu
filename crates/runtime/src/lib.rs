@@ -649,6 +649,7 @@ mod tests {
     /// Each `sisu_eprint_*` writes its text and a newline to standard error, a zero byte
     /// included.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn eprint_writes_each_type_and_a_newline() {
         let exe = std::env::current_exe().expect("test binary path");
         let out = Command::new(exe)
@@ -661,6 +662,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn panic_bounds_exits_101_when_stderr_fails() {
         let exe = std::env::current_exe().expect("test binary path");
         let full = std::fs::OpenOptions::new()
@@ -703,38 +705,45 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn alloc_aborts_on_zero_size() {
         assert_child_aborts("zero");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn alloc_aborts_on_invalid_alignment() {
         assert_child_aborts("invalid_align");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn alloc_aborts_when_layout_overflows() {
         assert_child_aborts("overflow");
     }
 
     /// A compiler bug that breaks the string invariant stops the program.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn utf8_aborts_on_invalid_bytes() {
         assert_child_aborts("utf8_bytes");
     }
 
     /// So does a `[char]` holding a value that is no scalar value.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn utf8_aborts_on_invalid_scalar() {
         assert_child_aborts("utf8_scalar");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn realloc_aborts_on_zero_size() {
         assert_child_aborts("realloc_zero");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn realloc_aborts_when_layout_overflows() {
         assert_child_aborts("realloc_overflow");
     }
@@ -865,6 +874,7 @@ mod tests {
 
     /// `sisu_print_char` writes the character as UTF-8, then a newline.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn print_char_writes_utf8() {
         let out = run_rc_child("print_char");
         assert!(out.status.success(), "child exited with {:?}", out.status);
@@ -874,6 +884,7 @@ mod tests {
     /// `sisu_print_str` writes the bytes as they are, zero bytes included, then a newline; a
     /// string longer than the buffer still comes out in order, before the lines after it.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn print_str_writes_bytes_in_order() {
         let out = run_rc_child("print_str");
         assert!(out.status.success(), "child exited with {:?}", out.status);
@@ -912,6 +923,7 @@ mod tests {
     /// A standard output that is open but cannot be duplicated (EMFILE) is a failed write,
     /// not a closed standard output.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn print_panics_when_standard_output_cannot_be_duplicated() {
         assert_rc_exit(
             "dup_fails",
@@ -923,6 +935,7 @@ mod tests {
     /// A fault whose stdout flush fails still reports itself and exits 102, never 101 or a
     /// signal, whether stdout is full or a pipe with no reader.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn rc_fault_reports_when_the_stdout_flush_fails() {
         for case in ["fault_full_stdout", "fault_closed_stdout_pipe"] {
             assert_rc_exit(
@@ -935,6 +948,7 @@ mod tests {
 
     /// An `rc_fault` ends the program, so the lines printed before it must come out first.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn rc_fault_flushes_buffered_output() {
         let out = run_rc_child("print_then_fault");
         assert_eq!(out.status.code(), Some(102), "{:?}", out.status);
@@ -945,11 +959,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn check_exit_passes_when_balanced() {
         assert_rc_exit("balanced", Some(0), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn check_exit_reports_live_objects() {
         assert_rc_exit(
             "leak",
@@ -959,6 +975,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn rc_fault_exits_102() {
         assert_rc_exit(
             "fault1",
