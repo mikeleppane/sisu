@@ -14,9 +14,11 @@ use crate::tir::{Block, Expr, ExprKind, LocalId, Place, Stmt, Type};
 ///   type `never`, and skips the block's value then, as `Codegen::block` does. `last_use` counts
 ///   no use after a `return`, so a dead write there may find `L` already moved.
 /// - never shares `L`. Every node that could raise the count of `L`'s block, or replace it,
-///   bars `L`: a `Local(L)` or `Move(L)` read, which retains it; an `Assign` or `Append` to
-///   `Place::Local(L)`; and a node that binds `L` (`Let`, `IfSome`'s `bind`), since `L` has no
-///   value before the loop then. Two positions borrow `L` without retaining it, and do not bar:
+///   bars `L`: a `Local(L)` read, which retains it; a `Move(L)` read, which retains nothing
+///   (`move_local` transfers the reference and clears the slot) but is barred anyway, since
+///   the slot no longer holds the block; an `Assign` or `Append` to `Place::Local(L)`; and a
+///   node that binds `L` (`Let`, `IfSome`'s `bind`), since `L` has no value before the loop
+///   then. Two positions borrow `L` without retaining it, and do not bar:
 ///   the base of an `Index` whose index passes `leaves_locals` (otherwise `index` retains the
 ///   base while the index runs, and a write inside it must copy), and the operand of `Len`.
 ///   Every other read bars: `Sum` and `Contains`, which retain their base, and `Field`,

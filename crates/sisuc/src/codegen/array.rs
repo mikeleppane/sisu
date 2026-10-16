@@ -571,9 +571,10 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// The walk from `slot`, of type `ty`: at each level, load the array, check the index
     /// against its length, make the array unique if the level is at or past `unique_from`, and
     /// take the element's address as the next slot. Checking first means a level whose index
-    /// is out of bounds copies nothing; an outer level may already have copied. The levels
-    /// before `unique_from` were made unique by an enclosing loop, so a level whose index is
-    /// out of bounds may also follow that copy.
+    /// is out of bounds copies nothing; an outer level may already have copied. In a hoisted
+    /// write, the levels before `unique_from` were made unique by the enclosing loop, so a
+    /// level whose index is out of bounds may also follow that copy. A read passes
+    /// `indexes.len()`, so it makes no level unique, even of a shared array.
     fn walk(
         &self,
         mut slot: PointerValue<'ctx>,
