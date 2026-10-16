@@ -14,7 +14,7 @@ cpu=${BENCH_CPU:-2}
 python=${PYTHON:-python3.14}
 out=target/bench
 benchmarks=("$@")
-[[ ${#benchmarks[@]} -gt 0 ]] || benchmarks=(hello fib sieve binary_trees quicksort)
+[[ ${#benchmarks[@]} -gt 0 ]] || benchmarks=(hello fib sieve binary_trees quicksort nbody mandelbrot fannkuch_redux)
 
 cargo build --release --quiet -p sisuc -p sisu-runtime
 
@@ -27,7 +27,7 @@ build() {
     local lang=$1 src=bench/$2 dir=$3 start=$EPOCHREALTIME
     case $lang in
         sisu) target/release/sisuc -O2 "$src/main.sisu" "$dir/main" ;;
-        c) clang -O2 -o "$dir/main" "$src/main.c" ;;
+        c) clang -O2 -o "$dir/main" "$src/main.c" -lm ;;
         rust) rustc -C opt-level=3 -o "$dir/main" "$src/main.rs" ;;
         go) go build -o "$dir/main" "$src/main.go" ;;
         java) javac -d "$dir" "$src/Main.java" ;;

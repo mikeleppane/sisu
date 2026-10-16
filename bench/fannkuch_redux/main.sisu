@@ -1,0 +1,71 @@
+// The fannkuch-redux program of the Computer Language Benchmarks Game: for
+// every permutation of 0 to n - 1, count the prefix reversals that bring 0 to
+// the front. Prints a checksum of the counts and the largest.
+fn fannkuch(n: i64) {
+    let mut perm1 = [0; n]
+    for i in 0..n {
+        perm1[i] = i
+    }
+    let mut perm = [0; n]
+    let mut count = [0; n]
+    let mut max_flips = 0
+    let mut checksum = 0
+    let mut perm_count = 0
+    let mut r = n
+    while true {
+        while r != 1 {
+            count[r - 1] = r
+            r -= 1
+        }
+        for i in 0..n {
+            perm[i] = perm1[i]
+        }
+        let mut flips = 0
+        let mut k = perm[0]
+        while k != 0 {
+            let mut i = 0
+            let mut j = k
+            while i < j {
+                let t = perm[i]
+                perm[i] = perm[j]
+                perm[j] = t
+                i += 1
+                j -= 1
+            }
+            flips += 1
+            k = perm[0]
+        }
+        if flips > max_flips {
+            max_flips = flips
+        }
+        if perm_count % 2 == 0 {
+            checksum += flips
+        } else {
+            checksum -= flips
+        }
+        // The next permutation: rotate perm1[0] to perm1[r] left by one, and
+        // once count[r] runs out, rotate a prefix one longer.
+        while true {
+            if r == n {
+                print(checksum)
+                print("Pfannkuchen({n}) = {max_flips}")
+                return
+            }
+            let first = perm1[0]
+            for i in 0..r {
+                perm1[i] = perm1[i + 1]
+            }
+            perm1[r] = first
+            count[r] -= 1
+            if count[r] > 0 {
+                break
+            }
+            r += 1
+        }
+        perm_count += 1
+    }
+}
+
+fn main() {
+    fannkuch(10)
+}

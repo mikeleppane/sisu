@@ -170,16 +170,20 @@ pull requests only). On `main` it reports totals only. It never turns a check
 red.
 
 CodSpeed measures Sisu against itself in simulation mode. The benchmarks are
-in `codspeed.yml`: the `fib`, `sieve` and `binary_trees` programs at reduced
-inputs, and the compiler on `bench/binary_trees` (`--check` and an `-O2`
-build) and on a generated 200-function input.
+in `codspeed.yml`: the `fib`, `sieve`, `binary_trees`, `quicksort`, `nbody`,
+`mandelbrot` and `fannkuch_redux` programs at reduced inputs, and the
+compiler on `bench/hello` (an `-O2` build), on `bench/binary_trees`
+(`--check` and an `-O2` build) and on a generated 200-section input that
+uses most of the language.
 `scripts/codspeed-prep.sh` builds them and checks every program's output
 first. The `CodSpeed` workflow runs on pushes to `main` and on pull requests
-that touch the code, the benchmarks or their tooling. It never turns a check
-red. Agents read results through the CodSpeed MCP tools and do not run
+that touch the code, the benchmarks or their tooling. It never turns a pull
+request's check red. On a push to `main`, a step that fails, such as a prep
+that no longer builds, fails the run, so the benchmarks cannot stop running
+unnoticed. Agents read results through the CodSpeed MCP tools and do not run
 CodSpeed locally. To compare a change before pushing, count the instructions
 of `target/release/sisuc --check target/codspeed/large/main.sisu` under
-callgrind, as `AGENTS.md` shows.
+callgrind, as `make callgrind` does.
 
 Set these once in the CodSpeed UI: "Informational Status Checks on Failure"
 on, PR comment mode "On Change", threshold 10%. Do not make the check

@@ -9,6 +9,21 @@ benchmarks:
   - name: binary_trees
     id: binary_trees
     exec: target/codspeed/binary_trees/main
+  - name: quicksort
+    id: quicksort
+    exec: target/codspeed/quicksort/main
+  - name: nbody
+    id: nbody
+    exec: target/codspeed/nbody/main
+  - name: mandelbrot
+    id: mandelbrot
+    exec: target/codspeed/mandelbrot/main
+  - name: fannkuch_redux
+    id: fannkuch_redux
+    exec: target/codspeed/fannkuch_redux/main
+  - name: build_hello
+    id: build_hello
+    exec: target/release/sisuc -O2 bench/hello/main.sisu target/codspeed/build_hello/main
   - name: check_binary_trees
     id: check_binary_trees
     exec: target/release/sisuc --check bench/binary_trees/main.sisu

@@ -1,0 +1,30 @@
+// Counts the points of a 4000 by 4000 grid over [-1.5, 0.5] x [-1, 1] that
+// stay in the Mandelbrot set for 50 iterations, the test of the Computer
+// Language Benchmarks Game's mandelbrot program.
+fn main() {
+    let n = 4000
+    let size = f64(n)
+    let mut count = 0
+    for y in 0..n {
+        let ci = 2.0 * f64(y) / size - 1.0
+        for x in 0..n {
+            let cr = 2.0 * f64(x) / size - 1.5
+            let mut zr = 0.0
+            let mut zi = 0.0
+            let mut tr = 0.0
+            let mut ti = 0.0
+            let mut i = 0
+            while i < 50 && tr + ti <= 4.0 {
+                zi = 2.0 * zr * zi + ci
+                zr = tr - ti + cr
+                tr = zr * zr
+                ti = zi * zi
+                i += 1
+            }
+            if tr + ti <= 4.0 {
+                count += 1
+            }
+        }
+    }
+    print(count)
+}

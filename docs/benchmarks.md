@@ -9,7 +9,8 @@ with no per-language tuning.
 
 fib and sieve ran at commit 9cbd44e and binary_trees at 7c8d29e (the change
 between them is the runtime's live count), on 2026-10-12. hello ran at
-commit 4690caa and quicksort at 3dbda29, on 2026-10-15. All ran on an Intel Core i9-14900K under
+commit 4690caa and quicksort at 3dbda29, on 2026-10-15; nbody, mandelbrot
+and fannkuch_redux at d8a9603, on 2026-10-16. All ran on an Intel Core i9-14900K under
 Linux 7.0. Each figure is the median of 5 runs, pinned to one CPU. Each table
 runs from fastest to slowest wall time, with Sisu in bold.
 
@@ -68,6 +69,39 @@ runs from fastest to slowest wall time, with Sisu in bold.
 | Java | 0.64 | 0.63 | 117.6 | - | 0.196 |
 | Python | 12.66 | 12.65 | 393.7 | - | - |
 
+### nbody
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Rust | 0.11 | 0.11 | 1.9 | 358 | 0.141 |
+| C | 0.13 | 0.13 | 1.7 | 14 | 0.063 |
+| Java | 0.20 | 0.19 | 43.6 | - | 0.230 |
+| Go | 0.23 | 0.23 | 1.8 | 1495 | 0.026 |
+| **Sisu** | **0.25** | **0.25** | **1.5** | **357** | **0.083** |
+| Python | 11.25 | 11.24 | 11.3 | - | - |
+
+### mandelbrot
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C | 0.58 | 0.58 | 1.7 | 14 | 0.053 |
+| **Sisu** | **0.58** | **0.58** | **1.4** | **353** | **0.042** |
+| Go | 0.59 | 0.59 | 1.8 | 1483 | 0.078 |
+| Rust | 0.59 | 0.58 | 1.9 | 329 | 0.059 |
+| Java | 0.60 | 0.60 | 40.6 | - | 0.202 |
+| Python | 17.15 | 17.15 | 11.1 | - | - |
+
+### fannkuch_redux
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C | 0.11 | 0.11 | 1.7 | 14 | 0.065 |
+| Go | 0.12 | 0.12 | 1.8 | 1495 | 0.065 |
+| Rust | 0.12 | 0.12 | 1.9 | 331 | 0.098 |
+| **Sisu** | **0.13** | **0.13** | **1.7** | **357** | **0.061** |
+| Java | 0.17 | 0.16 | 42.9 | - | 0.210 |
+| Python | 2.76 | 2.76 | 11.1 | - | - |
+
 Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 1.99.0 with `-C opt-level=3`, Go 1.27.2, OpenJDK 25.0.4.1 (Temurin), Python
 3.14.5.
@@ -81,8 +115,9 @@ Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 | [binary_trees](../bench/binary_trees) | The [binary-trees](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/binarytrees.html) program of the Benchmarks Game, depth 18 | Allocating and freeing many small objects |
 | [hello](../bench/hello) | Prints `Hello, World!` | The time from source to output: build and startup |
 | [quicksort](../bench/quicksort) | Sorts 10 000 000 pseudo-random integers with a textbook quicksort, then prints a checksum that depends on their order | Element writes, and in Sisu whether an array passed and returned is written in place |
-
-Sisu has floats since milestone 6, but no benchmark uses them yet.
+| [nbody](../bench/nbody) | The [n-body](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/nbody.html) program of the Benchmarks Game, 5 000 000 steps | `f64` arithmetic and `sqrt`, and field writes through shared objects |
+| [mandelbrot](../bench/mandelbrot) | Counts the points of a 4000 by 4000 grid that stay in the Mandelbrot set for 50 iterations, the test of the Benchmarks Game's [mandelbrot](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/mandelbrot.html) without its bitmap output | `f64` arithmetic in a tight loop |
+| [fannkuch_redux](../bench/fannkuch_redux) | The [fannkuch-redux](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/fannkuchredux.html) program of the Benchmarks Game, n = 10 | Reads and writes of small arrays, with short loops |
 
 ## What the numbers mean
 
@@ -93,9 +128,10 @@ Sisu has floats since milestone 6, but no benchmark uses them yet.
   they need their runtime installed. A Sisu binary links the runtime
   (`libsisu_runtime.a`, written in Rust) statically, which accounts for most of
   its size.
-- **Build** is the wall time to compile the one file and link it. The hello
-  and quicksort tables give the median of 5 builds, to the millisecond. The
-  older tables time one build, so Go's 1.88 s for fib is a cold build cache.
+- **Build** is the wall time to compile the one file and link it. The hello,
+  quicksort, nbody, mandelbrot and fannkuch_redux tables give the median of
+  5 builds, to the millisecond. The older tables time one build, so Go's
+  1.88 s for fib is a cold build cache.
 - Every process runs whole, so startup counts. Java pays for JVM startup and
   JIT warm-up, Python for interpreter startup.
 - `taskset` pins each run to one CPU. Go and the JVM therefore see a single
@@ -108,6 +144,9 @@ Sisu has floats since milestone 6, but no benchmark uses them yet.
 Java is the fastest on binary_trees, because its collector allocates by
 bumping a pointer and frees short-lived objects in bulk. It pays for that with
 ten times the memory.
+
+Sisu takes about twice C's time on nbody, the widest gap in these tables. It
+has not been profiled yet.
 
 ## Where binary_trees spends its time
 
