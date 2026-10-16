@@ -3,7 +3,7 @@
 
 use rustc_hash::FxHashSet;
 
-use super::array::leaves_locals;
+use super::array::{borrowed_index_base, borrowed_local};
 use crate::tir::{Block, Expr, ExprKind, LocalId, Place, Stmt, Type};
 
 /// The locals that the loop whose body is `body` can make unique before it starts, sorted and
@@ -18,9 +18,10 @@ use crate::tir::{Block, Expr, ExprKind, LocalId, Place, Stmt, Type};
 ///   (`move_local` transfers the reference and clears the slot) but is barred anyway, since
 ///   the slot no longer holds the block; an `Assign` or `Append` to `Place::Local(L)`; and a
 ///   node that binds `L` (`Let`, `IfSome`'s `bind`), since `L` has no value before the loop
-///   then. Two positions borrow `L` without retaining it, and do not bar:
-///   the base of an `Index` whose index passes `leaves_locals` (otherwise `index` retains the
-///   base while the index runs, and a write inside it must copy), and the operand of `Len`.
+///   then. Two positions borrow `L` without retaining it, and do not bar, as codegen's
+///   `borrowed_index_base` and `borrowed_local` decide: the base of an `Index` whose index
+///   passes `leaves_locals` (otherwise `index` retains the base while the index runs, and a
+///   write inside it must copy), and the operand of `Len`.
 ///   Every other read bars: `Sum` and `Contains`, which retain their base, and `Field`,
 ///   `Chars`, `Bytes`, `Words` and `FromChars`, which codegen borrows too.
 ///
@@ -108,13 +109,13 @@ impl Walk {
                 self.barred.insert(*local);
             }
             ExprKind::Index { base, index } => {
-                if !(matches!(base.kind, ExprKind::Local(_)) && leaves_locals(index)) {
+                if borrowed_index_base(base, index).is_none() {
                     self.expr(base);
                 }
                 self.expr(index);
             }
             ExprKind::Len(operand) => {
-                if !matches!(operand.kind, ExprKind::Local(_)) {
+                if borrowed_local(operand).is_none() {
                     self.expr(operand);
                 }
             }

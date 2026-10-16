@@ -483,9 +483,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// it was borrowed: a local is loaded without a retain, and the caller then skips the
     /// release; any other expression is evaluated as usual.
     pub(super) fn borrow_or_expr(&mut self, base: &Expr) -> (Option<BasicValueEnum<'ctx>>, bool) {
-        match base.kind {
-            ExprKind::Local(local) => (self.load_local(local), true),
-            _ => (self.expr(base), false),
+        match array::borrowed_local(base) {
+            Some(local) => (self.load_local(local), true),
+            None => (self.expr(base), false),
         }
     }
 

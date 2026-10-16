@@ -59,7 +59,7 @@ fn element_of(ty: &Type) -> &Type {
 /// Whether evaluating `index` leaves every local as it was, so a local array read before it
 /// still holds the same block after it. A whitelist of node kinds that call nothing, bind
 /// nothing and move nothing: a node kind added later is excluded until it is listed here.
-pub(super) fn leaves_locals(index: &Expr) -> bool {
+fn leaves_locals(index: &Expr) -> bool {
     match &index.kind {
         ExprKind::Int(_) | ExprKind::Local(_) => true,
         ExprKind::Unary { operand, .. }
@@ -70,6 +70,21 @@ pub(super) fn leaves_locals(index: &Expr) -> bool {
         ExprKind::Compare { operands, .. } => operands.iter().all(leaves_locals),
         _ => false,
     }
+}
+
+/// The local that a read of `base` loads without retaining it, as `borrow_or_expr` does: the
+/// local keeps the block alive, so codegen skips its retain and release.
+pub(super) fn borrowed_local(base: &Expr) -> Option<LocalId> {
+    match base.kind {
+        ExprKind::Local(local) => Some(local),
+        _ => None,
+    }
+}
+
+/// The local that `index` loads without retaining it, as the base of an `Index` whose index is
+/// `index`: a local base, while the index passes `leaves_locals`.
+pub(super) fn borrowed_index_base(base: &Expr, index: &Expr) -> Option<LocalId> {
+    borrowed_local(base).filter(|_| leaves_locals(index))
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
@@ -364,10 +379,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// as it was: the local then keeps the block alive, so codegen skips its retain and
     /// release.
     pub(super) fn index(&mut self, ty: &Type, base: &Expr, index: &Expr) -> BasicValueEnum<'ctx> {
-        let local = match base.kind {
-            ExprKind::Local(local) if leaves_locals(index) => Some(local),
-            _ => None,
-        };
+        let local = borrowed_index_base(base, index);
         let array = match local {
             Some(local) => self.load_local(local),
             None => self.expr(base),
