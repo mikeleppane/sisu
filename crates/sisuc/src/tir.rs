@@ -408,10 +408,6 @@ pub(crate) enum ExprKind {
     /// type that owns it, then the first arm whose pattern matches runs.
     Match {
         scrutinee: Box<Expr>,
-        #[expect(
-            dead_code,
-            reason = "codegen reads it once it compiles `match` (Task 9)"
-        )]
         temp: LocalId,
         arms: Vec<Arm>,
     },

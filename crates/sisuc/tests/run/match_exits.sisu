@@ -1,0 +1,124 @@
+// `return`, `break` and `continue` from arm bodies while string and class bindings are live, from
+// `if let` and `while let` bodies, and a scrutinee that itself returns early. An exit releases
+// the bindings it leaves and never the scrutinee's temporary, which the commit released; an exit
+// in the scrutinee releases nothing of the `match`. Strings are built at run time, so Valgrind
+// and `--rc-checks` see every binding and temporary released exactly once.
+class Counter {
+    count: i64
+}
+
+enum Job {
+    Named(string, Counter)
+    Empty
+}
+
+enum Words {
+    Word(string, Words)
+    End
+}
+
+fn job(name: string, count: i64) -> Job {
+    Job.Named(name + "", Counter(count: count))
+}
+
+// `return` from a block body and from a bare `return` body, with `name` and `c` live.
+fn early(j: Job, stop: bool) -> i64 {
+    match j {
+        Named(name, c) => {
+            if stop {
+                return name.len()
+            }
+            c.count
+        }
+        Empty => return -1
+    }
+}
+
+// `break` and `continue` from arm bodies inside a loop.
+fn add_until_stop(jobs: [Job]) -> i64 {
+    let mut total = 0
+    for j in jobs {
+        match j {
+            Named(name, c) => {
+                if name == "stop" {
+                    break
+                }
+                if name == "skip" {
+                    continue
+                }
+                total += c.count
+            }
+            Empty => continue
+        }
+    }
+    total
+}
+
+// `return` from an `if let` body with `name` live.
+fn name_of(j: Job) -> string {
+    if let Named(name, _) = j {
+        return name
+    }
+    "nobody"
+}
+
+// `continue`, `return` and `break` from a `while let` body with `s` and `rest` live.
+fn count_words(start: Words, stop: string) -> i64 {
+    let mut w = start
+    let mut n = 0
+    while let Word(s, rest) = w {
+        w = rest
+        if s == "skip" {
+            continue
+        }
+        if s == stop {
+            return n + 100
+        }
+        if s == "end" {
+            break
+        }
+        n += 1
+    }
+    n
+}
+
+// The inner scrutinee returns early while the outer arm's `name` and `c` are live.
+fn nested(j: Job, stop: bool) -> i64 {
+    match j {
+        Named(name, c) => match (if stop { return name.len() } else { job(name, c.count + 1) }) {
+            Named(_, d) => d.count
+            Empty => 0
+        }
+        Empty => 0
+    }
+}
+
+// Every arm returns, so no arm reaches the end of the `match`, which is `never`.
+fn length(j: Job) -> i64 {
+    match j {
+        Named(name, _) => return name.len()
+        Empty => return 0
+    }
+}
+
+fn words(a: string, b: string, c: string) -> Words {
+    Words.Word(a + "", Words.Word(b + "", Words.Word(c + "", Words.End)))
+}
+
+fn main() {
+    print(early(job("four", 7), true))                                // 4
+    print(early(job("four", 7), false))                               // 7
+    print(early(Job.Empty, true))                                     // -1
+    print(add_until_stop([job("a", 1), job("skip", 10), Job.Empty, job("b", 2)]))  // 3
+    print(add_until_stop([job("a", 1), job("stop", 10), job("b", 2)]))             // 1
+    print(name_of(job("ann", 0)))                                     // ann
+    print(name_of(Job.Empty))                                         // nobody
+    print(count_words(words("a", "skip", "b"), "x"))                  // 2
+    print(count_words(words("a", "x", "b"), "x"))                     // 101
+    print(count_words(words("a", "end", "b"), "x"))                   // 1
+    print(nested(job("three", 5), true))                              // 5
+    print(nested(job("three", 5), false))                             // 6
+    print(nested(Job.Empty, true))                                    // 0
+    print(length(job("seven", 1)))                                    // 5
+    print(length(Job.Empty))                                          // 0
+}

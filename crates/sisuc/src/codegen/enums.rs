@@ -184,7 +184,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// The tag of the enum `id` at `value_addr`.
-    fn load_tag(&self, id: EnumId, value_addr: PointerValue<'ctx>) -> IntValue<'ctx> {
+    pub(super) fn load_tag(&self, id: EnumId, value_addr: PointerValue<'ctx>) -> IntValue<'ctx> {
         self.builder
             .build_load(self.enums[id.0].tag, self.tag_ptr(id, value_addr), "tag")
             .expect(POSITIONED)
@@ -240,10 +240,30 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("a box's struct should have the value at element 1")
     }
 
+    /// The address of the value of payload field `field` of variant `variant` in the enum `id`
+    /// at `value_addr`: the field's slot when it is inline, the value in its box when it is a
+    /// boxed `F`. Never for a boxed `F?`, whose box may be `null`: a pattern there is only a
+    /// name or `_`, which `payload_value` reads.
+    pub(super) fn payload_place(
+        &self,
+        value_addr: PointerValue<'ctx>,
+        id: EnumId,
+        variant: usize,
+        field: usize,
+    ) -> PointerValue<'ctx> {
+        let payload = &self.program.enums[id.0].variants[variant].fields[field];
+        if !payload.boxed {
+            return self.field_slot(value_addr, id, variant, field);
+        }
+        let boxed = self.load_box(value_addr, id, variant, field);
+        self.box_value(boxed_enum(&payload.ty), boxed)
+    }
+
     /// The value of payload field `field` of variant `variant` in the enum `id` at
-    /// `value_addr`, borrowed: not retained. Not yet for a boxed field: its helpers read the box
-    /// pointer through `load_box`, and the `match` task adds the boxed field's value.
-    fn payload_value(
+    /// `value_addr`, borrowed: not retained. A boxed `F` is the value in its box; a boxed `F?`
+    /// is `{ false, zero }` when its box is `null` and `{ true, value }` otherwise, and never
+    /// reads through a `null` box.
+    pub(super) fn payload_value(
         &self,
         value_addr: PointerValue<'ctx>,
         id: EnumId,
@@ -251,21 +271,38 @@ impl<'ctx> Codegen<'ctx, '_> {
         field: usize,
     ) -> BasicValueEnum<'ctx> {
         let payload = &self.program.enums[id.0].variants[variant].fields[field];
-        assert!(
-            !payload.boxed,
-            "a boxed field's value is not built yet (the `match` task adds it): read its box pointer"
-        );
         let ty = &payload.ty;
         let llvm_ty = self.llvm_type(ty).expect(
             "the checker should give every payload field a value type, never `unit` or `never`",
         );
-        self.builder
-            .build_load(
-                llvm_ty,
-                self.field_slot(value_addr, id, variant, field),
-                "field",
-            )
-            .expect(POSITIONED)
+        let (true, Type::Optional(inner)) = (payload.boxed, ty) else {
+            let place = self.payload_place(value_addr, id, variant, field);
+            return self
+                .builder
+                .build_load(llvm_ty, place, "field")
+                .expect(POSITIONED);
+        };
+        let boxed = self.load_box(value_addr, id, variant, field);
+        let function = self.current_function();
+        let (absent, some) = (
+            self.current_block(),
+            self.context.append_basic_block(function, "box.some"),
+        );
+        let done = self.context.append_basic_block(function, "box.done");
+        let null = self.builder.build_is_null(boxed, "null").expect(POSITIONED);
+        self.branch_on(null, done, some);
+        self.builder.position_at_end(some);
+        let inner_ty = self
+            .llvm_type(inner)
+            .expect("the checker should box only a field of an enum type or its optional");
+        let value = self
+            .builder
+            .build_load(inner_ty, self.box_value(boxed_enum(ty), boxed), "boxed")
+            .expect(POSITIONED);
+        let present = self.pair(ty, self.context.bool_type().const_int(1, false), value);
+        self.branch_to(done);
+        self.builder.position_at_end(done);
+        self.phi(llvm_ty, &[(llvm_ty.const_zero(), absent), (present, some)])
     }
 
     /// `Variant`: each argument, left to right, then the value: the tag and each field stored

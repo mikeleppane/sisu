@@ -1,0 +1,28 @@
+fn iterations() -> i64 { 1000 }
+
+// `h = step(h)` hands `h` to `step` at its last use, so the `match` owns it. At the commit `xs`
+// adds 1 and the `match` releases `h`, which held the array alone: `xs` has count 1 again, so
+// `ys[0]` writes in place and no step copies the array.
+enum Holder {
+    W([i64])
+}
+
+fn step(h: Holder) -> Holder {
+    match h {
+        W(xs) => {
+            let mut ys = xs
+            ys[0] = ys[0] + 1
+            Holder.W(ys)
+        }
+    }
+}
+
+fn main() {
+    let mut h = Holder.W([0, 0, 0])
+    for _ in 0..iterations() {
+        h = step(h)
+    }
+    match h {
+        W(xs) => print(xs[0]) // 1000 (0 with no iterations)
+    }
+}

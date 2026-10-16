@@ -4,6 +4,7 @@ mod arith;
 mod array;
 mod enums;
 mod io;
+mod matching;
 mod math;
 mod rc;
 mod string;
@@ -971,7 +972,11 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return None;
             }
             ExprKind::ReadLine => return Some(self.read_line().into()),
-            ExprKind::Match { .. } => panic!("match lands in Task 9"),
+            ExprKind::Match {
+                scrutinee,
+                temp,
+                arms,
+            } => return self.match_expr(scrutinee, *temp, arms, &e.ty),
         };
         Some(value.into())
     }

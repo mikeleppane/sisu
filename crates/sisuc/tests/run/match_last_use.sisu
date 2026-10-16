@@ -1,0 +1,69 @@
+// A scrutinee in its last use moves into the `match`. At the commit each binding adds 1 and the
+// `match` releases the scrutinee, so the parts it held alone go to the bindings, and a part
+// another copy shares stays shared. Arrays and strings are built at run time, so Valgrind and
+// `--rc-checks` see each part released exactly once.
+class Counter {
+    mut count: i64
+}
+
+enum Holder {
+    Pair(Counter, [i64])
+    Empty
+}
+
+// `Node`'s field closes the cycle, so it is a box.
+enum Tree {
+    Leaf([i64])
+    Node(Tree)
+}
+
+// `h` is in its last use: its counter and array go to `c` and `xs`.
+fn take(h: Holder) -> i64 {
+    match h {
+        Pair(c, xs) => {
+            c.count += 1
+            c.count + xs[0] + xs.len()
+        }
+        Empty => 0
+    }
+}
+
+fn first(t: Tree) -> i64 {
+    match t {
+        Node(Leaf(xs)) => xs[0]
+        Leaf(xs) => xs[0]
+        _ => -1
+    }
+}
+
+fn main() {
+    let n = 3
+    let held = Holder.Pair(Counter(count: 1), [10; n])
+    print(take(held))                          // 15
+
+    // `b` shares the box; `a` is taken apart at its last use, and `ys` copies the array, which
+    // `b` still holds whole.
+    let a = Tree.Node(Tree.Leaf([1; n]))
+    let b = a
+    match a {
+        Node(Leaf(xs)) => {
+            let mut ys = xs
+            ys[0] = 9
+            print(ys[0])                       // 9
+        }
+        _ => print("not a leaf node")
+    }
+    print(first(b))                            // 1
+
+    // A counter changed through a binding is seen through another copy of the enum.
+    let s = Holder.Pair(Counter(count: 0), [0; n])
+    let copy = s
+    match s {
+        Pair(c, _) => c.count = 5
+        Empty => {}
+    }
+    match copy {
+        Pair(c, _) => print(c.count)           // 5
+        Empty => {}
+    }
+}
