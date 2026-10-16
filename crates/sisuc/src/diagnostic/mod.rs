@@ -11,7 +11,7 @@ pub(crate) use registry::{
     BadRange, BuiltIn, Code, Conversion, Definition, DiagnosticKind, Earlier, ForeignPattern,
     ForeignRange, Immutable, InterpolateHelp, Join, LetField, Literal, LiteralKind, MatchIdiomForm,
     MathFix, Member, MismatchFix, NanFix, Operand, Owner, Panic, PowerFix, SemicolonPlace,
-    TypedLiteral, Unbuilt, Unwrap, VariantLabels,
+    TwiceGuard, TypedLiteral, Unbuilt, Unwrap, VariantLabels,
 };
 pub(crate) use suggest::{Suggestion, alias, suggestion};
 

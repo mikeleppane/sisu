@@ -398,18 +398,10 @@ impl Walk {
                 self.set(local, true);
             }
         }
-        // A walk without rewriting changes every local whose liveness inside the guard can
-        // differ: one read where it is dead, or written where it is live.
-        let start = self.trail.len();
-        let rewrite = mem::replace(&mut self.rewrite, false);
-        self.expr(guard);
-        self.rewrite = rewrite;
-        let mut touched = Vec::new();
-        for (local, was) in self.trail.drain(start..).rev() {
-            self.live[local] = was;
-            touched.push(local);
-        }
-        for local in touched {
+        // Only a local the guard reads or writes can have a liveness inside it that differs.
+        let mut mentioned = Vec::new();
+        mentions(guard, &mut mentioned);
+        for local in mentioned {
             if later.contains(&local) && !self.live[local] {
                 self.set(local, true);
             }
@@ -417,8 +409,9 @@ impl Walk {
         // shortcut: a guard that compares, or holds `&&`, `||` or an `if`, copies the dense
         // live set as any such expression does (`.scratch/diagnostics-scale/issues/02`), so
         // many such guards among many locals are quadratic; fix it with that ticket. Each guard
-        // is walked once more without rewriting, twice with an `|`, so guards nested in guards
-        // cost that factor per level; share the walks if a real program nests them deeply.
+        // collects the locals of its whole text, and with an `|` is walked once more without
+        // rewriting, so guards nested d deep cost d²; share the work if a real program nests
+        // them deeply.
         if !retries {
             self.expr(guard);
             return;
@@ -491,6 +484,127 @@ impl Walk {
             if self.live[local] {
                 self.set(local, false);
             }
+        }
+    }
+}
+
+/// Adds to `found` each local that `e` reads or assigns, and those its blocks define.
+fn mentions(e: &Expr, found: &mut Vec<usize>) {
+    match &e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Char(_)
+        | ExprKind::Str(_)
+        | ExprKind::None
+        | ExprKind::ReadLine
+        | ExprKind::Break
+        | ExprKind::Continue
+        | ExprKind::Return(None) => {}
+        ExprKind::Local(local) | ExprKind::Move(local) => found.push(local.0),
+        ExprKind::Call { args, .. }
+        | ExprKind::New { args, .. }
+        | ExprKind::Variant { args, .. }
+        | ExprKind::ArrayLit(args)
+        | ExprKind::Interpolate { parts: args, .. }
+        | ExprKind::Math { operands: args, .. }
+        | ExprKind::Compare { operands: args, .. } => {
+            for arg in args {
+                mentions(arg, found);
+            }
+        }
+        ExprKind::Field { base: operand, .. }
+        | ExprKind::Len(operand)
+        | ExprKind::Chars(operand)
+        | ExprKind::Bytes(operand)
+        | ExprKind::Words(operand)
+        | ExprKind::FromChars(operand)
+        | ExprKind::Sum(operand)
+        | ExprKind::Wrap(operand)
+        | ExprKind::Convert(operand)
+        | ExprKind::Print { operand, .. }
+        | ExprKind::Unary { operand, .. }
+        | ExprKind::Panic(operand)
+        | ExprKind::Return(Some(operand)) => mentions(operand, found),
+        ExprKind::Binary { lhs, rhs, .. }
+        | ExprKind::Concat { lhs, rhs }
+        | ExprKind::Equal { lhs, rhs, .. }
+        | ExprKind::Is { lhs, rhs }
+        | ExprKind::ArrayFill {
+            value: lhs,
+            len: rhs,
+        }
+        | ExprKind::Index {
+            base: lhs,
+            index: rhs,
+        }
+        | ExprKind::Contains {
+            base: lhs,
+            value: rhs,
+        } => {
+            mentions(lhs, found);
+            mentions(rhs, found);
+        }
+        ExprKind::If {
+            cond: scrutinee,
+            then_block,
+            else_block,
+        }
+        | ExprKind::IfSome {
+            scrutinee,
+            then_block,
+            else_block,
+            ..
+        } => {
+            mentions(scrutinee, found);
+            block_mentions(then_block, found);
+            if let Some(else_block) = else_block {
+                block_mentions(else_block, found);
+            }
+        }
+        ExprKind::Match {
+            scrutinee, arms, ..
+        } => {
+            mentions(scrutinee, found);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    mentions(guard, found);
+                }
+                block_mentions(&arm.body, found);
+            }
+        }
+        ExprKind::Loop(block) | ExprKind::Block(block) => block_mentions(block, found),
+    }
+}
+
+/// Adds to `found` each local that `block` reads or assigns.
+fn block_mentions(block: &Block, found: &mut Vec<usize>) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { local, init } => {
+                found.push(local.0);
+                mentions(init, found);
+            }
+            Stmt::Assign { place, value } | Stmt::Append { place, value } => {
+                place_mentions(place, found);
+                mentions(value, found);
+            }
+            Stmt::Expr(e) => mentions(e, found),
+        }
+    }
+    if let Some(value) = &block.value {
+        mentions(value, found);
+    }
+}
+
+/// Adds to `found` each local that `place` names or reads.
+fn place_mentions(place: &Place, found: &mut Vec<usize>) {
+    match place {
+        Place::Local(local) => found.push(local.0),
+        Place::Field { base, .. } => mentions(base, found),
+        Place::Index { base, index } => {
+            place_mentions(base, found);
+            mentions(index, found);
         }
     }
 }
@@ -928,6 +1042,88 @@ mod tests {
             "enum E {{\n{variants}}}\nfn f(e: E, c: bool) -> string {{\n{locals}    match e {{\n{arms}        _ => \"\"\n    }}\n}}"
         ));
         assert_eq!(printed.matches("(block (move s#").count(), VARIANTS);
+    }
+
+    /// A guard whose `match` holds a guard, 48 deep: a guard walked once more for each guard
+    /// around it costs 2^48, which hangs. The keep-alive override is in `.config/nextest.toml`.
+    #[test]
+    fn nested_guards_mark_last_uses_in_linear_time() {
+        const DEPTH: usize = 48;
+        let guard = (0..DEPTH).fold("c".to_owned(), |inner, _| {
+            format!("match c {{\n true if {inner} => true\n _ => false\n }}")
+        });
+        let printed = marked(&format!(
+            "enum E {{\n    V(string)\n    W\n}}\nfn f(e: E, c: bool) -> string {{\n    match e {{\n        V(s) if {guard} => s\n        _ => \"\"\n    }}\n}}"
+        ));
+        assert_eq!(printed.matches("(block (move s#").count(), 1);
+    }
+
+    /// `mentions` finds a local wherever an expression or a statement holds it: each named
+    /// local of `f` stands in one kind of node.
+    #[test]
+    fn mentions_every_kind_of_node() {
+        let src = "class O {\n    mut n: i64\n    mut s: string\n}\n\
+                   enum E {\n    V(i64)\n    W\n}\n\
+                   fn g(x: i64) -> i64 { x }\n\
+                   fn f(call: i64, new: i64, math: f64, len: [i64], chars: string, bytes: string, \
+                   words: string, from: [char], sum: [i64], field: O, wrap: i64, convert: i64, \
+                   unary: i64, binary: i64, concat: string, equal: i64, is1: O, is2: O, \
+                   fill: i64, index: [i64], contains: [i64], compare: i64, part: string, lit: i64, \
+                   variant: i64, cond: bool, some: i64?, scrutinee: E, guard: i64, looped: bool, \
+                   assigned: i64, placed: O, at: i64, root: i64, appended: O, returned: i64, panicked: string) -> i64 {\n\
+                   print(g(call))\n\
+                   let made = O(n: new, s: \"\")\n\
+                   print(math.abs())\n\
+                   print(len.len())\n\
+                   print(chars.chars().len())\n\
+                   print(bytes.bytes().len())\n\
+                   print(words.words().len())\n\
+                   print(string(from))\n\
+                   print(sum.sum())\n\
+                   print(field.n)\n\
+                   let wrapped: i64? = wrap\n\
+                   let converted = u8(convert)\n\
+                   print(-unary)\n\
+                   print(binary + 1)\n\
+                   print(concat + \"a\")\n\
+                   print(equal == 1)\n\
+                   print(is1 is is2)\n\
+                   print([fill; 2].len())\n\
+                   print(index[0])\n\
+                   print(contains.contains(1))\n\
+                   print(1 < compare < 3)\n\
+                   print(\"{part}\")\n\
+                   print([lit].len())\n\
+                   let v = E.V(variant)\n\
+                   if cond { print(1) } else { print(2) }\n\
+                   if let n = some { print(n) }\n\
+                   match scrutinee {\n        V(j) if j > guard => print(j)\n        _ => print(0)\n    }\n\
+                   while looped { break }\n\
+                   let mut local = 0\n\
+                   local = assigned\n\
+                   placed.n = 1\n\
+                   let mut xs = [1]\n\
+                   xs[at] = root\n\
+                   appended.s += \"x\"\n\
+                   if cond { return returned }\n\
+                   panic(panicked)\n\
+                   }\nfn main() {}";
+        let ast = parse_ok(src);
+        let (program, diagnostics) = check(&ast, src);
+        let program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
+        let f = program
+            .functions
+            .iter()
+            .find(|f| f.name == "f")
+            .expect("the source should define `f`");
+        let mut found = Vec::new();
+        block_mentions(&f.body, &mut found);
+        let found: FxHashSet<_> = found.into_iter().collect();
+        for (id, local) in f.locals.iter().enumerate() {
+            if let Some(name) = &local.name {
+                assert!(found.contains(&id), "`{name}` not found");
+            }
+        }
     }
 
     #[test]

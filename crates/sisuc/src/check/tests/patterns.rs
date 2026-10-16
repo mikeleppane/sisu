@@ -697,12 +697,17 @@ fn unreachable_arms() {
 /// quadratic and hangs instead of failing. At 50,000 variants a quadratic bucketing still ends
 /// inside the override's 30 seconds, so the test takes 200,000. A column of 50,000 literals is
 /// quadratic when its split rescans the column per interval, and a `V(true | false, ...)` of
-/// 20,000 fields when specializing copies or rehashes the rest of a row.
+/// 20,000 fields when specializing copies or rehashes the rest of a row. In the last `match`,
+/// each of the 16,000 alternatives' buckets holds every arm below the first, and each range arm
+/// is taken by the 500 literal arms: a list of every row that took a row's values costs
+/// alternatives × literals × ranges, which hangs.
 #[test]
 fn many_arms_check_in_linear_time() {
     const VARIANTS: usize = 200_000;
     const LITERALS: usize = 50_000;
     const FIELDS: usize = 20_000;
+    const ALTERNATIVES: usize = 16_000;
+    const TAKERS: usize = 500;
     let variants = (0..VARIANTS)
         .map(|i| format!("    V{i}\n"))
         .collect::<Vec<_>>()
@@ -727,6 +732,24 @@ fn many_arms_check_in_linear_time() {
     clean(&format!(
         "enum F {{ V({fields}) }}\nfn f(x: F) -> i64 {{\n    match x {{\n        V({pattern}) => 1\n    }}\n}}\nfn main() {{}}"
     ));
+    let variants = (0..ALTERNATIVES)
+        .map(|i| format!("    V{i}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let alternatives = (0..ALTERNATIVES)
+        .map(|i| format!("V{i}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let literals = (0..TAKERS)
+        .map(|j| format!("        Q(_, {j}) => 1\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let ranges = format!("        Q(_, 0..={}) => 2\n", TAKERS - 1).repeat(TAKERS);
+    let src = format!(
+        "enum E {{\n{variants}}}\nenum P {{ Q(E, i64) }}\nfn f(p: P) -> i64 {{\n    match p {{\n        Q({alternatives}, -1) => 0\n{literals}{ranges}        Q(_, _) => 3\n    }}\n}}\nfn main() {{}}"
+    );
+    let codes: Vec<_> = diags(&src).iter().map(Diagnostic::code).collect();
+    assert_eq!(codes, vec![Code::UnreachableArm; TAKERS]);
 }
 
 /// The keep-alive override for this test is in `.config/nextest.toml`: an arm whose last-use walk

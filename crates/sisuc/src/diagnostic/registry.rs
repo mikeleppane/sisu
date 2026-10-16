@@ -700,10 +700,9 @@ pub(crate) enum DiagnosticKind {
     CannotMatch { ty: String, at: Span },
     /// The upper-case name `name`, at `at`, in a pattern where no enum is expected.
     NotVariantHere { name: String, at: Span },
-    /// The constant `name`, at `at`, written as a pattern. `guard` is the arm's pattern with `at`
-    /// renamed and the guard that compares the name with the constant, which the help shows: in
-    /// a `match` arm, and not for a range bound, where `n == LIMIT` would change what the range
-    /// means.
+    /// The constant `name`, at `at`, written as a pattern. `guard` is a name and the guard that
+    /// compares it with the constant, `n if n == LIMIT`, which the help shows: in a `match` arm,
+    /// and not for a range bound, where `n == LIMIT` would change what the range means.
     ConstantInPattern {
         name: String,
         at: Span,
@@ -720,13 +719,12 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// The name `name`, at `at`, bound again in one pattern; `first` is its first binding.
-    /// `guard` is the arm's pattern with `at` renamed and the guard that compares the two, which
-    /// the help shows, in a `match` arm.
+    /// `guard` is the guard the help shows, in a `match` arm.
     BoundTwice {
         name: String,
         at: Span,
         first: Span,
-        guard: Option<String>,
+        guard: Option<TwiceGuard>,
     },
     /// The pattern at `at`, `found` as written (`Shape.Circle`, `None`), at a position of type
     /// `want`.
@@ -1057,6 +1055,14 @@ pub(crate) enum ForeignRange {
     },
     /// `start...end`.
     Ellipsis { start: String, end: Option<String> },
+}
+
+/// The guard `BoundTwice`'s help suggests.
+pub(crate) enum TwiceGuard {
+    /// The arm's pattern with the second binding renamed, and the guard that compares the two.
+    Rewritten(String),
+    /// In words: the arm holds an `|`, whose other alternatives would not bind a renamed name.
+    InWords,
 }
 
 /// What is wrong with a range pattern.
@@ -2759,7 +2765,12 @@ impl From<DiagnosticKind> for Diagnostic {
                     Diagnostic::coded(code, at, format!("`{name}` is bound twice in this pattern"))
                         .with_secondary(first, "first bound here");
                 match guard {
-                    Some(guard) => d.with_help(format!("use a guard: `{guard}`")),
+                    Some(TwiceGuard::Rewritten(guard)) => {
+                        d.with_help(format!("use a guard: `{guard}`"))
+                    }
+                    Some(TwiceGuard::InWords) => d.with_help(format!(
+                        "use a guard: bind a second name and compare it with `{name}`"
+                    )),
                     None => d,
                 }
             }

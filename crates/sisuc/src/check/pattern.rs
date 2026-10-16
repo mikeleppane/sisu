@@ -10,7 +10,9 @@ use super::exhaust::{self, Report, Row};
 use super::expr::Branch;
 use super::{Checked, CheckedBlock, Checker, Poisoned, type_of};
 use crate::ast;
-use crate::diagnostic::{BadRange, Definition, DiagnosticKind, Span, Unwrap, suggestion};
+use crate::diagnostic::{
+    BadRange, Definition, DiagnosticKind, Span, TwiceGuard, Unwrap, suggestion,
+};
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
 
@@ -507,9 +509,9 @@ impl Checker<'_> {
             if self.constants.contains_key(&name.name) {
                 let candidates =
                     iter::once("n".to_string()).chain((2..).map(|n: u32| format!("n{n}")));
-                let guard = self.guard_help(bound, name.span, candidates, |fresh| {
-                    format!("{fresh} == {text}")
-                });
+                let guard = self
+                    .guard_help(bound, candidates)
+                    .map(|(fresh, own)| format!("{fresh} if {fresh} == {text}{own}"));
                 self.report(DiagnosticKind::ConstantInPattern {
                     name: text.to_string(),
                     at: name.span,
@@ -783,17 +785,14 @@ impl Checker<'_> {
         Some(tir::PatternKind::Or(checked?))
     }
 
-    /// The guard a help suggests for what the pattern `bound` checks cannot test: the pattern
-    /// with the name at `at` renamed to the first of `candidates` that the arm does not read,
-    /// then `test` of that name, then the arm's own guard, as in `Add(x, y) if x == y`. `None`
-    /// outside a `match` arm.
+    /// For a guard a help suggests in place of what the pattern `bound` checks cannot test: the
+    /// first of `candidates` that no word of the `match` arm uses, a name to bind, and the arm's
+    /// own guard as the suffix ` && <guard>`, empty without one. `None` outside a `match` arm.
     fn guard_help(
         &self,
         bound: &Bound<'_>,
-        at: Span,
         mut candidates: impl Iterator<Item = String>,
-        test: impl FnOnce(&str) -> String,
-    ) -> Option<String> {
+    ) -> Option<(String, String)> {
         let arm = bound.arm?;
         let source = self.source;
         let read = iter::once(arm.pattern.span)
@@ -807,8 +806,6 @@ impl Checker<'_> {
         let fresh = candidates
             .find(|candidate| !words.contains(candidate.as_str()))
             .expect("some numbered name should be free");
-        let pattern = &source[bound.top.range()];
-        let (start, end) = (at.start() - bound.top.start(), at.end() - bound.top.start());
         let own = match &arm.guard {
             None => String::new(),
             // `&&` binds tighter than `||`, which the guard's own text would then lose.
@@ -824,12 +821,7 @@ impl Checker<'_> {
             ) => format!(" && ({})", &source[guard.span.range()]),
             Some(guard) => format!(" && {}", &source[guard.span.range()]),
         };
-        Some(format!(
-            "{}{fresh}{} if {}{own}",
-            &pattern[..start],
-            &pattern[end..],
-            test(&fresh)
-        ))
+        Some((fresh, own))
     }
 
     /// The variant that `qualifier.name(fields)` (`parens` is `None` without parentheses)
@@ -934,9 +926,21 @@ impl Checker<'_> {
             let candidates = next
                 .into_iter()
                 .chain((2..).map(|n: u32| format!("{written}{n}")));
-            let guard = self.guard_help(bound, name.span, candidates, |fresh| {
-                format!("{written} == {fresh}")
-            });
+            // Renamed in one alternative of an `|`, the name would be missing from the others.
+            let guard = if bound.arm.is_some_and(|arm| has_or(&arm.pattern)) {
+                Some(TwiceGuard::InWords)
+            } else {
+                self.guard_help(bound, candidates).map(|(fresh, own)| {
+                    let pattern = &self.source[bound.top.range()];
+                    let start = name.span.start() - bound.top.start();
+                    let end = name.span.end() - bound.top.start();
+                    TwiceGuard::Rewritten(format!(
+                        "{}{fresh}{} if {written} == {fresh}{own}",
+                        &pattern[..start],
+                        &pattern[end..]
+                    ))
+                })
+            };
             self.report(DiagnosticKind::BoundTwice {
                 name: name.name.to_string(),
                 at: name.span,
@@ -1037,5 +1041,14 @@ impl Checker<'_> {
                 },
             ],
         }
+    }
+}
+
+/// Whether `pattern` holds an `|`.
+fn has_or(pattern: &ast::Pattern) -> bool {
+    match &pattern.kind {
+        ast::PatternKind::Or(_) => true,
+        ast::PatternKind::Variant { fields, .. } => fields.iter().any(has_or),
+        _ => false,
     }
 }

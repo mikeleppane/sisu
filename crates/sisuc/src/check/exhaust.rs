@@ -129,8 +129,7 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
                 }
                 continue;
             }
-            &Reach::Taken(by) => Some(rows[by].pattern.span),
-            Reach::Several(_) => None,
+            &Reach::Taken(first, last) => (first == last).then(|| rows[first].pattern.span),
         };
         unreachable.push(Unreachable {
             at: row.pattern.span,
@@ -149,8 +148,10 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
         let mut query = stacks[..k].to_vec();
         query.push(solver.push(pat, col, bottom(rows[k].guarded)));
         query.push(stacks[rows.len()]);
-        if let Reach::Taken(by) = solver.solve(query.into()).reach[k] {
-            unreachable[index].covered_by = Some(rows[by].pattern.span);
+        if let Reach::Taken(first, last) = solver.solve(query.into()).reach[k]
+            && first == last
+        {
+            unreachable[index].covered_by = Some(rows[first].pattern.span);
         }
     }
     let missing = result.witness.map(|witness| {
@@ -279,58 +280,40 @@ struct Node {
     wild: bool,
 }
 
-/// Where one row of a matrix stands, from the leaves below it. The rows that took its values
-/// are kept, not just counted: two of them can be alternatives of one row of the matrix above.
-#[derive(Clone)]
+/// Where one row of a matrix stands, from the leaves below it.
+#[derive(Clone, Copy)]
 enum Reach {
     /// A leaf reached it.
     Reached,
-    /// No leaf reached it, and this row, an earlier one, took every leaf's values.
-    Taken(usize),
-    /// No leaf reached it, and these rows, more than one, in order, took the leaves' values.
-    Several(Rc<[usize]>),
+    /// No leaf reached it, and the earlier rows that took the leaves' values run from the first
+    /// to the last of these, equal when one row took them all. The two ends are enough: renaming
+    /// a child's rows to the matrix above keeps their order, so the ends stay the ends.
+    Taken(usize, usize),
 }
 
-/// What the leaves under one row say so far: whether one reached it, and else the rows that
-/// took its values, repeats and all, so adding a leaf's costs its own takers only.
+/// What the leaves under one row say so far, `None` before the first.
 #[derive(Default)]
-struct Takers {
-    reached: bool,
-    rows: Vec<usize>,
-}
+struct Takers(Option<Reach>);
 
 impl Takers {
-    /// Adds what `found` says, its takers renamed by `rename`.
-    fn add(&mut self, found: &Reach, rename: impl Fn(usize) -> usize) {
-        if self.reached {
-            return;
-        }
-        let takers = match found {
-            Reach::Reached => {
-                self.reached = true;
-                self.rows = Vec::new();
-                return;
-            }
-            Reach::Taken(by) => std::slice::from_ref(by),
-            Reach::Several(by) => by,
+    /// Adds what `found` says, its takers renamed by `rename`, which keeps their order.
+    fn add(&mut self, found: Reach, rename: impl Fn(usize) -> usize) {
+        let found = match found {
+            Reach::Reached => Reach::Reached,
+            Reach::Taken(first, last) => Reach::Taken(rename(first), rename(last)),
         };
-        self.rows.extend(takers.iter().map(|&row| rename(row)));
+        self.0 = Some(match (self.0, found) {
+            (None, found) => found,
+            (Some(Reach::Reached), _) | (_, Reach::Reached) => Reach::Reached,
+            (Some(Reach::Taken(first, last)), Reach::Taken(other_first, other_last)) => {
+                Reach::Taken(first.min(other_first), last.max(other_last))
+            }
+        });
     }
 
     /// What every leaf added says, once at least one was.
-    fn reach(mut self) -> Reach {
-        if self.reached {
-            return Reach::Reached;
-        }
-        self.rows
-            .first()
-            .expect("a row should land in a child matrix");
-        self.rows.sort_unstable();
-        self.rows.dedup();
-        match self.rows[..] {
-            [by] => Reach::Taken(by),
-            _ => Reach::Several(self.rows.into()),
-        }
+    fn reach(self) -> Reach {
+        self.0.expect("a row should land in a child matrix")
     }
 }
 
@@ -395,9 +378,12 @@ impl Frame {
     /// Takes in what the child `next` found, and moves on to the next child.
     fn feed(&mut self, solved: &Solved) {
         let child = &self.children[self.next];
+        // `Reach::Taken` keeps only the ends: renaming keeps the order, since a child's members
+        // and the expanded rows' origins both ascend.
+        debug_assert!(child.members.is_sorted(), "a child's members should ascend");
         // A row another takes is named by its matrix row, so two alternatives of one row that
         // take a row's values are one row.
-        for (&e, found) in child.members.iter().zip(&solved.reach) {
+        for (&e, &found) in child.members.iter().zip(&solved.reach) {
             let expanded = &self.expanded;
             self.reach[e].add(found, |by| expanded[child.members[by]].origin);
         }
@@ -664,7 +650,7 @@ impl Solver<'_> {
     fn start(&mut self, rows: Box<[StackId]>, frames: &mut Vec<Frame>) -> Option<Rc<Solved>> {
         // The all-wildcard row cut: the first row takes every value the matrix stands for.
         if self.nodes[rows[0]].wild {
-            let mut reach = vec![Reach::Taken(0); rows.len()];
+            let mut reach = vec![Reach::Taken(0, 0); rows.len()];
             reach[0] = Reach::Reached;
             // Alone, the first row is the sentinel, already a `_` for each column.
             let witness = (rows.len() == 1).then_some(rows[0]);
@@ -682,7 +668,7 @@ impl Solver<'_> {
                 .iter()
                 .position(|&row| row == EMPTY)
                 .expect("the sentinel should have no guard");
-            let mut reach = vec![Reach::Taken(first); rows.len()];
+            let mut reach = vec![Reach::Taken(first, first); rows.len()];
             reach[..=first].fill(Reach::Reached);
             let witness = (first == rows.len() - 1).then_some(EMPTY);
             return Some(Rc::new(Solved {
@@ -928,7 +914,7 @@ impl Solver<'_> {
             if let (Reach::Reached, Some(alternative)) = (&found, row.alternative) {
                 self.reached.insert(alternative);
             }
-            reach[row.origin].add(&found, |by| by);
+            reach[row.origin].add(found, |by| by);
         }
         let solved = Rc::new(Solved {
             reach: reach.into_iter().map(Takers::reach).collect(),

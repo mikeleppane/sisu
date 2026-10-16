@@ -1,0 +1,14 @@
+const LIMIT = 9
+
+enum Expr {
+    Num(i64)
+    Add(i64, i64)
+}
+
+fn main() {
+    let n = 3
+    match Expr.Num(n) {
+        Num(LIMIT) | Add(_, _) => print(n)
+        _ => print(2)
+    }
+}

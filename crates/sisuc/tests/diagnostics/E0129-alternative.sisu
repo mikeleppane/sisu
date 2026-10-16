@@ -1,0 +1,17 @@
+enum Expr {
+    Num(i64)
+    Add(i64, i64)
+    Sum(i64, i64, bool)
+}
+
+fn main() {
+    let e = Expr.Num(1)
+    match e {
+        Add(x, x) | Num(x) => print(x)
+        _ => print(0)
+    }
+    match e {
+        Sum(y, y, true | false) => print(y)
+        _ => print(0)
+    }
+}
