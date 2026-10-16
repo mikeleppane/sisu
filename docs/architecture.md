@@ -109,7 +109,10 @@ largest alignment first, and fields of equal alignment in declared order, so
 less padding sits between them; `tir` and every diagnostic keep declared
 order. Codegen emits the helpers that
 manage them: `sisu_rc.retain`, and for each class `sisu_rc.release.<Class>`,
-`sisu_rc.drop.<Class>` and `sisu_rc.eq.<Class>`, which `==` calls.
+`sisu_rc.drop.<Class>` and `sisu_rc.eq.<Class>`, which `==` calls. A field
+read and a field assignment tag their load and store with a TBAA tag of that
+field's own, `<Class>.<field>`, so LLVM knows that writing one field changes
+no other field, and no count, length or element.
 
 An enum value has no heap block of its own. It is a tag and its variant's
 payload, held inline in `%sisu.<Enum>`, with a struct `%sisu.<Enum>.<Variant>`
