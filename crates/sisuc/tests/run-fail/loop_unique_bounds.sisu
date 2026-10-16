@@ -1,0 +1,12 @@
+// `b` shares `a` when the loop starts, so the hoist copies it. The write at index 3 still panics
+// at its own position.
+fn main() {
+    let a = [1, 2, 3]
+    let mut b = a
+    print(a[0])                       // 1
+    for j in 0..4 {
+        b[j] = 0
+    }
+    // Never runs, but keeps `a` live, so `b` shares it when the loop starts.
+    print(a[1])
+}

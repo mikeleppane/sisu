@@ -213,6 +213,24 @@ commit c75ef2d; "after" is 3dbda29, which adds the change described below.
 | After, count checks removed | 582 | 1.07 | 3.99 |
 | After, bounds checks removed | 586 | 1.08 | 3.57 |
 
+A later session, on a busy machine, measured loop hoisting (ADR 0021). Its ms
+do not compare with the rows above, so it has its own table and its own C
+baseline. Each binary ran 40 times in turn, pinned to CPU 2 with `taskset`.
+The mean and the median swung by 30% under the load, so the minimum is the
+figure to read; the instruction counts come from callgrind and do not vary.
+
+| Build | Min (ms) | Median (ms) | Mean (ms) | Times C (min) | Instructions (billions) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C, for comparison | 610 | 760 | 958 | 1.00 | |
+| Before loop hoisting (552dbac) | 690 | 870 | 1078 | 1.13 | 4.82 |
+| After loop hoisting (cf07f6d) | 640 | 790 | 988 | 1.05 | 4.04 |
+
+552dbac is main before loop hoisting, and cf07f6d is the commit that adds
+it. The timings were taken on the same changes before they were rebased
+onto 552dbac. The counts reproduce on the rebased branch: callgrind counts
+4,822,781,453 instructions at 552dbac and 4,043,218,655 at 92bec34, with
+the same checksum. 4.82 billion is also the "After" row above.
+
 The checks are the whole gap to C. The overflow checks cost no measurable
 time: without them the program ran fewer instructions but no faster.
 
@@ -233,10 +251,21 @@ time. Together they remove them: quicksort takes 622 ms instead of 688, and
 runs 25% fewer instructions. Marking `sisu_alloc`'s result `noalias` in place
 of the reorder removes none of them.
 
-Two costs remain. Removing the count checks that are left would take the
-time from 622 to 582 ms. That bounds what proving at compile time that an
-array has one holder, as Roc's Morphic analysis does, could gain here.
-Removing the bounds checks that are left would gain about as much.
+Two costs remained: the count checks, which removing by hand would have
+taken the time from 622 to 582 ms, and the bounds checks. A loop now makes
+its written arrays unique once before it starts (ADR 0021). The count check
+had made the array's pointer a phi in the loop (the helper may store a new
+block into the local), so LLVM could neither hoist the check nor the length
+load. With the check outside the loop, the quicksort benchmark runs 4.04
+billion instructions in all, not 4.82, and its fastest run takes 640 ms
+instead of 690 (C: 610 ms, in the same session). In the `-O2` IR of `quicksort`, one count check is
+left in each call, before the partition loop. The writes in the loop and the
+writes after it run without one.
+
+What remains are the bounds checks, which LLVM cannot remove: `lo` may be
+negative, so nothing shows `j` is below the length. Removing them by hand
+took the time from 622 to 586 ms before the change above. Proving a range
+fact about the loop is a roadmap entry.
 
 ## Where a hello build spends its time
 
