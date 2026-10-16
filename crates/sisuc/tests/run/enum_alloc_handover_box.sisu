@@ -1,0 +1,32 @@
+fn iterations() -> i64 { 1000 }
+
+// The handover through a box with count one: releasing `t` at the commit frees its box, which
+// held the array alone, so `xs` has count 1 again and `ys[0]` writes in place. Each step
+// allocates one new box for `Node` and copies no array. Reusing the old box would make it no
+// allocation at all; `match` does not reuse boxes yet.
+enum Tree {
+    Leaf([i64])
+    Node(Tree)
+}
+
+fn step(t: Tree) -> Tree {
+    match t {
+        Node(Leaf(xs)) => {
+            let mut ys = xs
+            ys[0] = ys[0] + 1
+            Tree.Node(Tree.Leaf(ys))
+        }
+        _ => panic("not a leaf node")
+    }
+}
+
+fn main() {
+    let mut t = Tree.Node(Tree.Leaf([0, 0, 0]))
+    for _ in 0..iterations() {
+        t = step(t)
+    }
+    match t {
+        Node(Leaf(xs)) => print(xs[0]) // 1000 (0 with no iterations)
+        _ => panic("not a leaf node")
+    }
+}

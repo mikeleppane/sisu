@@ -1,0 +1,15 @@
+error[E0015]: an arm ends at the end of the line
+ --> E0015-arm.sisu:9:27
+  |
+9 |         Num(n) => print(n),
+  |                           ^
+  |
+  = help: put each arm on its own line
+help: remove the comma and break the line
+  |
+9 -         Num(n) => print(n),
+9 +         Num(n) => print(n)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0015

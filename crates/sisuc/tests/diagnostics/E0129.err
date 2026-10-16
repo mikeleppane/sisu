@@ -1,0 +1,10 @@
+error[E0129]: `x` is bound twice in this pattern
+ --> E0129.sisu:9:16
+  |
+9 |         Add(x, x) => print(1)
+  |             -  ^
+  |             |
+  |             first bound here
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0129

@@ -18,7 +18,7 @@ mod strings;
 mod u8;
 mod unused;
 
-fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
+pub(super) fn checked(src: &str) -> (Option<tir::Program>, Vec<Diagnostic>) {
     check(&parse_ok(src), src)
 }
 
@@ -55,6 +55,20 @@ fn codes(src: &str, expected: &[(Code, (usize, usize))]) {
         failed,
         "only an error withholds the `tir`"
     );
+}
+
+/// A diagnostic's code, its primary position and its secondary positions.
+type Found = (Code, (usize, usize), Vec<(usize, usize)>);
+
+/// Each diagnostic of `src`, in order.
+fn found(src: &str) -> Vec<Found> {
+    let (_, ds) = checked(src);
+    ds.iter()
+        .map(|d| {
+            let secondary = d.secondary().iter().map(|(s, _)| at(src, *s)).collect();
+            (d.code(), at(src, d.span()), secondary)
+        })
+        .collect()
 }
 
 /// Exactly one diagnostic, of `code`, whose primary span is `pos` = (line, col, text) and whose

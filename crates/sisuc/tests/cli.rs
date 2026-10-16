@@ -145,7 +145,7 @@ fn emit_tokens_strings() {
 #[test]
 fn emit_tokens_reserved() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    fs::write(dir.join("emit_tokens_reserved.sisu"), "match\nconst\n").expect("writes");
+    fs::write(dir.join("emit_tokens_reserved.sisu"), "record\nconst\n").expect("writes");
     let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
         .current_dir(dir)
         .args(["--emit", "tokens", "emit_tokens_reserved.sisu"])
@@ -153,7 +153,7 @@ fn emit_tokens_reserved() {
         .expect("sisuc starts");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.starts_with("1:1 Reserved match\n"), "{stdout}");
+    assert!(stdout.starts_with("1:1 Reserved record\n"), "{stdout}");
     assert!(stdout.contains("\n2:1 Const const\n"), "{stdout}");
 }
 
@@ -996,6 +996,22 @@ fn emit_tokens_enum() {
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "1:1 Enum enum\n1:5 Eof\n"
+    );
+}
+
+#[test]
+fn emit_tokens_match() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("emit_tokens_match.sisu"), "match =>\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_match.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1:1 Match match\n1:7 FatArrow =>\n1:9 Eof\n"
     );
 }
 

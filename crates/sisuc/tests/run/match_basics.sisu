@@ -1,0 +1,163 @@
+// `match`, `if let` and `while let` on enums and scalars: each arm's pattern is tested in place
+// against the owned scrutinee, the first that matches runs, and the arms' values join. Strings
+// are built at run time, so Valgrind and `--rc-checks` see each binding released once.
+
+// The tail is a boxed `L?`: `None` is a null box pointer, which a binding takes whole.
+enum L {
+    Cons(i64, L?)
+}
+
+// Every `Expr` field closes the cycle, so each is a boxed `Expr`.
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+}
+
+class Counter {
+    mut count: i64
+}
+
+enum State {
+    Idle
+    Running(Counter)
+    Done(string)
+}
+
+enum List {
+    Nil
+    Cons(i64, List)
+}
+
+enum Op {
+    Plus(i64)
+    Minus
+}
+
+// `Op` closes no cycle, so `Pair` holds it inline, not in a box.
+enum Instr {
+    Pair(Op, i64)
+}
+
+// `t` binds the boxed `L?` tail: present, then `None` at the end of the list.
+fn total(l: L) -> i64 {
+    match l {
+        Cons(h, t) => if let rest = t { h + total(rest) } else { h }
+    }
+}
+
+fn eval(e: Expr) -> i64 {
+    match e {
+        Num(n) => n
+        Add(a, b) => eval(a) + eval(b)
+        Mul(a, b) => eval(a) * eval(b)
+    }
+}
+
+// Three levels deep through two boxes, and `b` binds a boxed `Expr` by name.
+fn shape(e: Expr) -> i64 {
+    match e {
+        Add(Mul(Num(a), _), b) => a * 100 + eval(b)
+        _ => -1
+    }
+}
+
+// The nested patterns test `Op` in place inside `Pair`'s payload.
+fn apply(i: Instr) -> i64 {
+    match i {
+        Pair(Plus(k), n) => n + k
+        Pair(Minus, n) => -n
+    }
+}
+
+// `match` as an expression.
+fn describe(s: State) -> string {
+    match s {
+        Idle => "idle"
+        Running(c) => "running {c.count}"
+        Done(why) => why
+    }
+}
+
+// `match` as a statement.
+fn bump(s: State) {
+    match s {
+        Idle => print("nothing to bump")
+        Running(c) => c.count += 1
+        Done(why) => print("done: {why}")
+    }
+}
+
+// A `match` whose value is an `i64?`: one arm gives an `i64`, the other `None`.
+fn count(s: State) -> i64? {
+    match s {
+        Running(c) => c.count
+        _ => None
+    }
+}
+
+// `Num(_)` is unreachable (a warning), so `Num(n)` always takes a `Num`.
+fn first(e: Expr) -> i64 {
+    match e {
+        Num(n) => n
+        Num(_) => 0
+        _ => -1
+    }
+}
+
+fn sum(start: List) -> i64 {
+    let mut l = start
+    let mut total = 0
+    while let Cons(h, t) = l {
+        total += h
+        l = t
+    }
+    total
+}
+
+fn head(l: List) -> i64 {
+    if let Cons(h, _) = l { h } else { -1 }
+}
+
+fn main() {
+    print(total(L.Cons(1, L.Cons(2, L.Cons(3, None)))))       // 6
+    print(total(L.Cons(5, None)))                              // 5
+    let e = Expr.Add(Expr.Mul(Expr.Num(2), Expr.Num(3)), Expr.Num(4))
+    print(eval(e))                                             // 10
+    print(shape(e))                                            // 204
+    print(shape(Expr.Add(Expr.Num(2), Expr.Num(4))))           // -1
+    print(shape(Expr.Add(Expr.Mul(Expr.Add(e, e), e), e)))     // -1
+    print(apply(Instr.Pair(Op.Plus(2), 40)))                   // 42
+    print(apply(Instr.Pair(Op.Minus, 40)))                     // -40
+    print(first(Expr.Num(7)))                                  // 7
+    print(first(e))                                            // -1
+    let c = Counter(count: 1)
+    let running = State.Running(c)
+    print(describe(State.Idle))                                // idle
+    print(describe(running))                                   // running 1
+    print(describe(State.Done("fin" + "ished")))               // finished
+    bump(State.Idle)                                           // nothing to bump
+    bump(running)
+    print(c.count)                                             // 2
+    bump(State.Done("a" + "b"))                                // done: ab
+    print(count(running) ?? -1)                                // 2
+    print(count(State.Idle) ?? -1)                             // -1
+    let list = List.Cons(1, List.Cons(2, List.Cons(3, List.Nil)))
+    print(sum(list))                                           // 6
+    print(sum(List.Nil))                                       // 0
+    print(head(list))                                          // 1
+    print(head(List.Nil))                                      // -1
+    // A binding takes a scalar scrutinee whole; `_` takes it and binds nothing.
+    print(match 41 { n => n + 1 })                             // 42
+    print(match 41 { _ => 0 })                                 // 0
+    print(match head(list) == 1 { b => !b })                   // false
+    print(match true { _ => 1 })                               // 1
+    let byte: u8 = 254
+    print(match byte { b => b + 1 })                           // 255
+    print(match 'x' { c => c })                                // x
+    print(match 'x' { _ => 'y' })                              // y
+    print(match "st" + "ring" { s => s + "!" })                // string!
+    print(match "st" + "ring" { _ => "none" })                 // none
+    // A binding takes an enum scrutinee whole.
+    print(match e { whole => eval(whole) })                    // 10
+}

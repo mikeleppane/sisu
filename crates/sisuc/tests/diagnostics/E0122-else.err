@@ -1,0 +1,14 @@
+error[E0122]: write `_`
+ --> E0122-else.sisu:9:9
+  |
+9 |         else => 0
+  |         ^^^^
+  |
+help: write `_`
+  |
+9 -         else => 0
+9 +         _ => 0
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0122

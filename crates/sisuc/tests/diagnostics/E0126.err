@@ -1,0 +1,8 @@
+error[E0126]: `LIMIT` is a constant; a pattern cannot compare with it
+ --> E0126.sisu:6:9
+  |
+6 |         LIMIT => print(1)
+  |         ^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0126

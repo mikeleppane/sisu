@@ -1,0 +1,10 @@
+enum Pair {
+    P(i64, i64)
+}
+
+fn main() {
+    let p = Pair.P(1, 2)
+    if let P(a, b) = p {
+        print(a + b)
+    }
+}

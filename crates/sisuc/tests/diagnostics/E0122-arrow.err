@@ -1,0 +1,14 @@
+error[E0122]: an arm uses `=>`
+ --> E0122-arrow.sisu:8:16
+  |
+8 |         Num(n) -> n
+  |                ^^
+  |
+help: write `=>`
+  |
+8 -         Num(n) -> n
+8 +         Num(n) => n
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0122

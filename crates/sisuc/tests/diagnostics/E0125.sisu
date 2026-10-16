@@ -1,0 +1,12 @@
+enum State {
+    Idle
+    Busy
+}
+
+fn main() {
+    let n = 3
+    match n {
+        Big => print(1)
+        _ => print(2)
+    }
+}

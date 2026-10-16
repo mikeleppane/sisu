@@ -30,6 +30,11 @@ fn some(x: i64) -> i64? {
     x
 }
 
+enum R {
+    A(R)
+    Z
+}
+
 ";
 
 /// A generated program and the byte offset of the token where the depth runs out.
@@ -155,6 +160,26 @@ fn array_type(n: usize) -> Generated {
     in_main(&wrapped("let a: ", "[", "i64", "]", " = []", n), 11 + n)
 }
 
+/// `match` nested `n` times in its arm's body, then `1`; fails at the last `match`'s scrutinee.
+fn match_body(n: usize) -> Generated {
+    let first = "    let y = 1\n";
+    let line = wrapped("let _ = ", "match y { _ => ", "1", " }", "", n);
+    in_main(
+        &format!("{first}{line}"),
+        first.len() + 12 + 15 * (n - 1) + 6,
+    )
+}
+
+/// A pattern `n` variants deep; fails at its `_`.
+fn match_pattern(n: usize) -> Generated {
+    let first = "    let r = R.Z\n    let _ = match r {\n";
+    let arm = wrapped("    ", "A(", "_", ")", " => 1", n);
+    in_main(
+        &format!("{first}{arm}        _ => 2\n    }}\n"),
+        first.len() + 8 + 2 * n,
+    )
+}
+
 /// Where the byte `offset` of `source` is, as 1-based `(line, column)`.
 fn line_col(source: &str, offset: usize) -> (usize, usize) {
     let before = &source[..offset];
@@ -255,6 +280,35 @@ construct!(else_if_chain, else_if, 252);
 construct!(whiles, nested_while, 253);
 construct!(fors, nested_for, 253);
 construct!(array_types, array_type, 254);
+construct!(match_bodies, match_body, 254);
+construct!(match_patterns, match_pattern, 253);
+
+/// An assignment arm body sits in a block of its own, one level more, so `x = match …` nests half
+/// as far as `match … => match …` (`match_bodies`). Its arms have no value, so the program stops at
+/// `--emit ast`, before the checker.
+#[test]
+fn match_nests_to_the_limit() {
+    type Program = fn(usize) -> String;
+    let cases: [(&str, usize, Program); 1] = [("assignment", 127, |n| {
+        "x = ".to_string() + &"match y { _ => x = ".repeat(n) + "1" + &" }".repeat(n)
+    })];
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    for (name, limit, program) in cases {
+        for (n, code) in [(limit, Some(0)), (limit + 1, Some(1))] {
+            let file = format!("nesting_match_{name}.sisu");
+            let source = format!("fn main() {{\n    {}\n}}\n", program(n));
+            fs::write(dir.join(&file), source).expect("writes");
+            let out = sisuc(dir, &["--emit", "ast", &file]);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), code, "{name} {n}: {stderr}");
+            assert_eq!(
+                stderr.contains("error[E0071]: nesting is too deep"),
+                n > limit,
+                "{name} {n}: {stderr}"
+            );
+        }
+    }
+}
 
 /// The right side of a `**` is parsed as a `*`'s would be, one level in: the parser reports the
 /// `**` up to 253 parentheses deep, and the depth past that, which no other construct ends with.
@@ -312,6 +366,22 @@ fn a_hundred_thousand_levels_is_an_error_not_an_abort() {
         &format!(
             "fn main() {{\n    let x = 1\n    if x == 0 {{\n    }}{} else {{\n    }}\n}}\n",
             " else if x == 0 {\n    }".repeat(n)
+        ),
+    );
+    assert_too_deep(
+        "nesting_huge_pattern",
+        &format!(
+            "fn main() {{\n    match e {{\n        {}_{} => 1\n    }}\n}}\n",
+            "A(".repeat(n),
+            ")".repeat(n)
+        ),
+    );
+    assert_too_deep(
+        "nesting_huge_match",
+        &format!(
+            "fn main() {{\n    {}1{}\n}}\n",
+            "match e { _ => ".repeat(n),
+            " }".repeat(n)
         ),
     );
     assert_too_deep(

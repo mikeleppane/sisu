@@ -53,7 +53,9 @@ It reports one error per broken item, then resumes at the next item. The
 intact items go on to the checker, and a broken item keeps its name, so a use
 of it is not reported as missing. It parses a format spec's text into its alignment, width and precision, and
 reports a malformed or unsupported one without breaking its item. An `enum` item parses into its variants, each with
-an optional payload of labeled or unlabeled fields, and its methods. It rejects an item that nests deeper than
+an optional payload of labeled or unlabeled fields, and its methods. A `match`
+parses into its scrutinee and its arms, one per line, each a pattern, `=>` and
+a body; `if let` and `while let` take a pattern too. It rejects an item that nests deeper than
 256 levels, because every later stage walks the tree recursively.
 
 **Front end** (`front_end.rs`). Runs the lexer, parser, checker and last-use
@@ -76,7 +78,15 @@ value that is not an `f64` is an error. A method on a number, such as
 enum that no value can be built of, and finds the payload fields that close a
 cycle of enums, the ones that go behind a box, and the enums that hold a
 counted part. Building a variant, `Expr.Num(2)`, becomes a `Variant` node
-([ADR 0019](adr/0019-enums-are-values-named-through-their-enum.md)). It reports
+([ADR 0019](adr/0019-enums-are-values-named-through-their-enum.md)).
+`check/pattern.rs` checks each pattern against the type at its position and
+declares the names it binds. `if let` on an enum becomes a `match` whose `_`
+arm is the `else`, and `while let` on one a loop around a `match` whose `_` arm
+breaks. `check/exhaust.rs` runs Maranget's usefulness algorithm over each
+`match`'s arms: a `match` that misses a value is an error that names one it
+misses as a pattern, such as `Mul(_, _)`, and an arm that no value reaches is
+a warning. The same check rejects an `if let` or `while let` whose pattern
+always matches. It reports
 every error
 in one run: an expression that already failed gets the poison type, so one
 mistake produces one diagnostic. A program with no errors comes out as the
@@ -124,6 +134,14 @@ which switch on the tag. A box whose count reaches zero is not freed by
 recursion. It joins a pending list, linked through its dead count word, and
 `sisu_rc.drain.<Enum>` frees the boxes on the list one by one, so the stack
 stays the same size for a value of any depth.
+
+`codegen/matching.rs` compiles a `match`. It evaluates the scrutinee once into
+a temporary that the `match` owns, then tests the arms' patterns against it in
+order, reading a boxed field through its box. The first arm that matches adds
+1 to each value it binds, releases the temporary and runs its body. The arms'
+values join in a `phi`. After the last arm, the `match` calls `llvm.trap`: the
+checker has proved that some arm matches, and a checker bug must not become
+undefined behaviour.
 
 An array is one counted heap block too: a header of two `i64`s, the count and
 the length, then the elements. Each array type gets the same helpers, such as

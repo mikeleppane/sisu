@@ -1,0 +1,8 @@
+error[E0127]: a `Expr?` position takes only a name or `_`
+ --> E0127-optional.sisu:8:12
+  |
+8 |     if let Num(n) = maybe {
+  |            ^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0127

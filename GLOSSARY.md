@@ -127,7 +127,7 @@ _Avoid_: global, static
 
 **Reserved keyword**:
 A word that the lexer already treats as a keyword for a feature that comes in
-a later milestone, such as `match` or `import`. Using one as a name is an
+a later milestone, such as `record` or `import`. Using one as a name is an
 error, so a program written today does not break when the feature lands.
 _Avoid_: future keyword
 
@@ -206,6 +206,17 @@ _Avoid_: case, constructor, member
 The fields a variant carries, all labeled or none: `Num(i64)`,
 `Rect(w: i64, h: i64)`.
 _Avoid_: associated value, data
+
+**Scrutinee**:
+The value a `match`, `if let` or `while let` tests against a pattern: the `e`
+in `match e { ... }`. A `match` evaluates it once, before it tries any arm.
+_Avoid_: subject, matched value
+
+**Arm**:
+One case of a `match`, on its own line: a pattern, `=>`, and a body, which is
+an expression, an assignment, `return`, `break`, `continue` or a block. The
+arms are tried top to bottom, and the first whose pattern matches runs.
+_Avoid_: case, branch (the two sides of an `if`)
 
 **Pattern**:
 The shape a `match` arm, `if let` or `while let` tests a value against. A

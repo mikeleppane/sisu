@@ -1,0 +1,41 @@
+// An arm body reassigns the scrutinee's variable while its bindings are live. The `Idle` arm
+// leaves `s` as it is, and `s` is read again after the `match` and on the loop's next iteration,
+// so the scrutinee is never a last-use `Move`: it is a live variable copied into the `match`'s
+// retained temporary. The bindings keep their counter and string after `s` drops the old value,
+// which is released exactly once.
+class Counter {
+    mut count: i64
+}
+
+enum State {
+    Idle
+    Running(Counter)
+    Done(string)
+}
+
+fn describe(s: State) -> string {
+    match s {
+        Idle => "idle"
+        Running(c) => "running {c.count}"
+        Done(why) => "done {why}"
+    }
+}
+
+fn main() {
+    let mut s = State.Running(Counter(count: 0))
+    for _ in 0..3 {
+        match s {
+            Running(c) => {
+                s = State.Done("fini" + "shed")
+                c.count += 1
+                print(c.count)                     // 1
+            }
+            Done(why) => {
+                s = State.Idle
+                print(why)                         // finished
+            }
+            Idle => print("idle")                  // idle
+        }
+        print(describe(s))  // done finished, then idle, then idle
+    }
+}

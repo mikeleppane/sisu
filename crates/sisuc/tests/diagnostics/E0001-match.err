@@ -1,0 +1,10 @@
+error[E0001]: cannot assign to `x`
+  --> E0001-match.sisu:10:13
+   |
+ 9 |         Num(x) => {
+   |             - bound by `match` here
+10 |             x = 1
+   |             ^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0001

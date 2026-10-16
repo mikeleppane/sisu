@@ -1,0 +1,12 @@
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+}
+
+fn main() {
+    let n = 3
+    match n {
+        Num(m) => print(m)
+        _ => print(0)
+    }
+}

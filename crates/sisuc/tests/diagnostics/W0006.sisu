@@ -1,0 +1,15 @@
+enum Light {
+    Red
+    Green
+}
+
+fn go(l: Light) -> bool {
+    match l {
+        _ => false
+        Green => true
+    }
+}
+
+fn main() {
+    print(go(Light.Green))
+}

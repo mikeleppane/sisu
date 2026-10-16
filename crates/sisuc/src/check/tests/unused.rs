@@ -123,4 +123,34 @@ fn unused_value_fix() {
     let fixed = applied(src, &d);
     assert_eq!(fixed, "fn g() { let _ = 1 }\nfn main() {}");
     clean(&fixed);
+    // An arm's body takes no `let` outside a block, so the fix writes one around it.
+    let src = "fn f() -> i64 { 1 }\nfn main() {\n    match 1 {\n        t => f()\n    }\n}";
+    let d = diagnostic(src, Code::UnusedValue, (4, 14, "f()"), &[]);
+    assert_eq!(
+        fixes(src, &d),
+        [(
+            false,
+            vec![(4, 14, "", "{ let _ = ".into()), (4, 17, "", " }".into())]
+        )]
+    );
+    let fixed = applied(src, &d);
+    assert_eq!(
+        fixed,
+        "fn f() -> i64 { 1 }\nfn main() {\n    match 1 {\n        t => { let _ = f() }\n    }\n}"
+    );
+    clean(&fixed);
+}
+
+/// A `match` statement is not itself the value: each arm's is.
+#[test]
+fn match_unused_value() {
+    warns(
+        "enum E {\n    A\n    B\n}\nfn main() {\n    let e = E.A\n    match e {\n        A => 1\n        B => {\n            2\n        }\n    }\n    print(1)\n}",
+        &[(8, 14, "1"), (10, 13, "2")],
+    );
+    // `if let` on an enum lowers to a `match`, and each branch's value is unused too.
+    warns(
+        "enum E {\n    A\n    B\n}\nfn main() {\n    let e = E.A\n    if let A = e { 1 } else { 2 }\n    print(1)\n}",
+        &[(7, 20, "1"), (7, 31, "2")],
+    );
 }

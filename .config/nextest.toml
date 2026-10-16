@@ -43,6 +43,48 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(nested_joins_check_in_quadratic_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# A call `switch(...)` once was parsed twice, as C's `switch` and then as a call, so nested calls
+# were exponential and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(nested_switch_calls_parse_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# Specializing a column once per variant over every row, or checking each arm against the arms
+# before it, makes coverage quadratic in the arms, so this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_arms_check_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# Each arm once copied and joined the set of every local in the function, so last use was
+# quadratic in the arms and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_arms_mark_last_uses_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# A variant pattern once copied its variant's field types before checking its form, so short
+# malformed patterns of a wide variant were quadratic and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(malformed_patterns_of_a_wide_variant_check_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# Without the all-wildcard row cut, coverage meets 2^40 distinct matrices, so this test hangs
+# instead of failing.
+[[profile.default.overrides]]
+filter = 'test(one_named_field_per_arm_checks_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# Without memoization, both branches of each field meet the same matrix, 2^39 visits in all, so
+# this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(repeated_matrices_check_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+# A witness copied at each of its columns is quadratic in them, so this test hangs instead of
+# failing.
+[[profile.default.overrides]]
+filter = 'test(/^check::tests::patterns::(wide_witness|default_witness_head)_builds_in_linear_time$/)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # A harness that writes all of standard input before it reads the output would fill both pipes
 # and hang on these tests instead of failing them.
 [[profile.default.overrides]]

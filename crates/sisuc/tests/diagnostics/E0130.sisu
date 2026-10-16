@@ -1,0 +1,15 @@
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+}
+fn eval(e: Expr) -> i64 {
+    match e {
+        Num(n) => n
+        Add(a, b) => eval(a) + eval(b)
+    }
+}
+
+fn main() {
+    print(eval(Expr.Num(1)))
+}

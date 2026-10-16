@@ -1,0 +1,14 @@
+error[E0122]: write `enum Color`
+ --> E0122-enum-class.sisu:1:6
+  |
+1 | enum class Color {
+  |      ^^^^^
+  |
+help: remove the `class`
+  |
+1 - enum class Color {
+1 + enum Color {
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0122

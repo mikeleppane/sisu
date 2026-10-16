@@ -17,7 +17,7 @@ use crate::tir::{Block, Expr, ExprKind, LocalId, Place, Stmt, Type};
 ///   bars `L`: a `Local(L)` read, which retains it; a `Move(L)` read, which retains nothing
 ///   (`move_local` transfers the reference and clears the slot) but is barred anyway, since
 ///   the slot no longer holds the block; an `Assign` or `Append` to `Place::Local(L)`; and a
-///   node that binds `L` (`Let`, `IfSome`'s `bind`), since `L` has no value before the loop
+///   node that binds `L` (`Let`, `IfSome`'s `bind`, `Match`'s `temp` and its arms' bindings), since `L` has no value before the loop
 ///   then. Two positions borrow `L` without retaining it, and do not bar, as codegen's
 ///   `borrowed_index_base` and `borrowed_local` decide: the base of an `Index` whose index
 ///   passes `leaves_locals` (otherwise `index` retains the base while the index runs, and a
@@ -176,6 +176,18 @@ impl Walk {
                 self.barred.insert(*bind);
                 self.expr(scrutinee);
                 self.branches(then_block, else_block.as_ref());
+            }
+            ExprKind::Match {
+                scrutinee,
+                temp,
+                arms,
+            } => {
+                self.barred.insert(*temp);
+                self.expr(scrutinee);
+                for arm in arms {
+                    self.barred.extend(arm.bindings.iter().copied());
+                    self.block(&arm.body);
+                }
             }
             ExprKind::Loop(block) | ExprKind::Block(block) => self.block(block),
         }
@@ -392,6 +404,12 @@ pub(super) mod tests {
             "declared_in_outer_body",
             "fn f() -> i64 {\n    let mut s = 0\n    for i in 0..2 {\n        let mut row = [0; 3]\n        for j in 0..3 {\n            row[j] = 1\n        }\n        s += row[0]\n    }\n    s\n}",
             &[&[], &["row"]],
+        ),
+        // A write in a `match` arm hoists; the scrutinee and an arm's body read `a`, and bar it.
+        (
+            "match_arms",
+            "enum H {\n    Arr([i64])\n    Empty\n}\nfn f(xs: [i64], h: H) -> [i64] {\n    let mut a = xs\n    for j in 0..3 {\n        match h {\n            Arr(b) => a[j] = b[0]\n            Empty => a[j] = 0\n        }\n    }\n    for j in 0..3 {\n        match H.Arr(a) {\n            Arr(b) => print(b[0])\n            Empty => {}\n        }\n        a[j] = 0\n    }\n    for j in 0..3 {\n        match h {\n            Arr(_) => print(a.sum())\n            Empty => {}\n        }\n        a[j] = 0\n    }\n    a\n}",
+            &[&["a"], &[], &[]],
         ),
         // Not in the plan: a value use of `a` inside each kind of expression that no row above
         // reaches bars `a`, in each loop.

@@ -1,0 +1,13 @@
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+}
+
+fn eval(e: Expr) -> i64 {
+    switch e {
+        Num(n) => n
+        Add(a, b) => eval(a) + eval(b)
+    }
+}
+
+fn main() {}

@@ -1,0 +1,6 @@
+fn main() {
+    let n: u8 = 3
+    if let m = n {
+        print(m)
+    }
+}

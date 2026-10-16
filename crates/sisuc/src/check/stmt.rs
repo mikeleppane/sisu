@@ -4,6 +4,7 @@ use rustc_hash::FxHashMap;
 
 use super::array::optional_array;
 use super::expr::local;
+use super::pattern::LetPattern;
 use super::{
     Binding, BindingKind, CheckedBlock, Checker, LoopContext, Poisoned, block_expr, tail, type_of,
 };
@@ -22,7 +23,11 @@ impl Checker<'_> {
     }
 
     /// `block`, in the scope just opened for it, which it closes.
-    fn scoped_block(&mut self, block: &ast::Block, expected: Option<&Type>) -> CheckedBlock {
+    pub(super) fn scoped_block(
+        &mut self,
+        block: &ast::Block,
+        expected: Option<&Type>,
+    ) -> CheckedBlock {
         let mut stmts = Vec::new();
         let mut ty = Some(Type::Unit);
         let (mut failed, mut warned, mut mismatch) = (false, false, false);
@@ -93,9 +98,14 @@ impl Checker<'_> {
     }
 
     /// Warns "unused value" at `source`, whose checked form is `checked`, unless its type is
-    /// `unit` or `never`. An `if`, an `if let` or a block is not itself the value: the tail of
-    /// each branch is.
+    /// `unit` or `never`. An `if`, an `if let`, a `match` or a block is not itself the value: the
+    /// tail of each branch or arm is.
     pub(super) fn discard(&mut self, source: &ast::Expr, checked: &tir::Expr) {
+        self.discarded(source, checked, false);
+    }
+
+    /// `discard`, where `arm` is whether `source` is a `match` arm's whole body.
+    fn discarded(&mut self, source: &ast::Expr, checked: &tir::Expr, arm: bool) {
         // An optional join wraps a whole branch value, an inner `if` too.
         let checked = match &checked.kind {
             ExprKind::Wrap(inner) => inner,
@@ -131,6 +141,30 @@ impl Checker<'_> {
                     self.discard_tail(source, checked);
                 }
             }
+            (
+                ast::ExprKind::IfLet {
+                    then_block,
+                    else_block,
+                    ..
+                },
+                ExprKind::Match { arms, .. },
+            ) => {
+                self.discard_tail(then_block, &arms[0].body);
+                if let Some(source) = else_block {
+                    self.discard_tail(source, &arms[1].body);
+                }
+            }
+            (ast::ExprKind::Match { arms: sources, .. }, ExprKind::Match { arms, .. }) => {
+                for (source, arm) in sources.iter().zip(arms) {
+                    if let ast::ExprKind::Block(source) = &source.body.kind {
+                        self.discard_tail(source, &arm.body);
+                    } else {
+                        let value = arm.body.value.as_ref();
+                        let value = value.expect("an expression arm should keep its value");
+                        self.discarded(&source.body, value, true);
+                    }
+                }
+            }
             (ast::ExprKind::Block(source), ExprKind::Block(checked)) => {
                 self.discard_tail(source, checked);
             }
@@ -138,15 +172,18 @@ impl Checker<'_> {
                 debug_assert!(
                     !matches!(
                         source.kind,
-                        ast::ExprKind::If { .. } | ast::ExprKind::IfLet { .. }
+                        ast::ExprKind::If { .. }
+                            | ast::ExprKind::IfLet { .. }
+                            | ast::ExprKind::Match { .. }
                     ),
-                    "the checker should lower an `if` to `If` and an `if let` to `IfSome`"
+                    "the checker should lower an `if` to `If`, an `if let` to `IfSome` or `Match`, and a `match` to `Match`"
                 );
                 if !matches!(checked.ty, Type::Unit | Type::Never) {
                     let ty = self.type_name(&checked.ty);
                     self.report(DiagnosticKind::UnusedValue {
                         ty,
                         at: source.span,
+                        arm,
                     });
                 }
             }
@@ -161,6 +198,10 @@ impl Checker<'_> {
     }
 
     /// The statement, or its type when it failed. `expected` is for an expression statement.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per statement kind, so the dispatch reads in one place"
+    )]
     fn stmt(&mut self, stmt: &ast::Stmt, expected: Option<&Type>) -> Result<tir::Stmt, Poisoned> {
         let unit = || Poisoned::typed(Type::Unit);
         match &stmt.kind {
@@ -217,12 +258,16 @@ impl Checker<'_> {
                     },
                 )))
             }
-            StmtKind::WhileLet { name, value, body } => {
+            StmtKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
                 let header = LoopContext::Header(keyword_span(stmt.span, "while"));
-                let (scrutinee, bound, _) =
-                    self.in_loop(header, |c| c.unwrapped(Unwrap::WhileLet, value));
-                let (bind, checked) = self.in_loop(LoopContext::Body, |c| {
-                    c.unwrapping_block("while let", name, bound, body, None)
+                let (scrutinee, form, _) =
+                    self.in_loop(header, |c| c.let_value(Unwrap::WhileLet, pattern, value));
+                let (bound, checked) = self.in_loop(LoopContext::Body, |c| {
+                    c.let_block(Unwrap::WhileLet, form, pattern, body, None)
                 });
                 if let Ok(checked) = &checked {
                     self.discard_tail(body, checked);
@@ -230,14 +275,29 @@ impl Checker<'_> {
                 let (Ok(scrutinee), Ok(body)) = (scrutinee, checked) else {
                     return Err(unit());
                 };
+                let pattern = match bound {
+                    LetPattern::Some { bind } => {
+                        return Ok(tir::Stmt::Expr(lower_loop(
+                            body,
+                            stmt.span,
+                            |then_block, exit| ExprKind::IfSome {
+                                bind,
+                                scrutinee: Box::new(scrutinee),
+                                then_block,
+                                else_block: Some(exit),
+                            },
+                        )));
+                    }
+                    LetPattern::Match {
+                        pattern: Some(pattern),
+                    } => pattern,
+                    LetPattern::Match { pattern: None } => return Err(unit()),
+                };
                 Ok(tir::Stmt::Expr(lower_loop(
                     body,
                     stmt.span,
-                    |then_block, exit| ExprKind::IfSome {
-                        bind,
-                        scrutinee: Box::new(scrutinee),
-                        then_block,
-                        else_block: Some(exit),
+                    |then_block, exit| {
+                        self.if_let_match(scrutinee, pattern, then_block, Some(exit))
                     },
                 )))
             }
@@ -577,6 +637,17 @@ impl Checker<'_> {
                 at: name.span,
             });
         }
+        self.insert_local(name, ty, kind, keyword)
+    }
+
+    /// `declare` without its checks of the name.
+    pub(super) fn insert_local(
+        &mut self,
+        name: &ast::Ident,
+        ty: Option<Type>,
+        kind: BindingKind,
+        keyword: Option<Span>,
+    ) -> tir::LocalId {
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
             name: Some(name.name.to_string()),

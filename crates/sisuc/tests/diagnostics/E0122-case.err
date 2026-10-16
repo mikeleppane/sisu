@@ -1,0 +1,14 @@
+error[E0122]: an arm is `pattern => body`, with no `case`
+ --> E0122-case.sisu:8:9
+  |
+8 |         case Num(n) => n
+  |         ^^^^
+  |
+help: remove the `case`
+  |
+8 -         case Num(n) => n
+8 +         Num(n) => n
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0122

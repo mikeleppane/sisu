@@ -53,6 +53,7 @@ pub(crate) enum TokenKind {
     Class,
     Const,
     Enum,
+    Match,
     NoneKw,
     Is,
     SelfKw,
@@ -86,6 +87,7 @@ pub(crate) enum TokenKind {
     Comma,
     Colon,
     Arrow,
+    FatArrow,
     Dot,
     DotDot,
     LBracket,
@@ -139,6 +141,7 @@ impl TokenKind {
             TokenKind::Class => "Class",
             TokenKind::Const => "Const",
             TokenKind::Enum => "Enum",
+            TokenKind::Match => "Match",
             TokenKind::NoneKw => "NoneKw",
             TokenKind::Is => "Is",
             TokenKind::SelfKw => "SelfKw",
@@ -172,6 +175,7 @@ impl TokenKind {
             TokenKind::Comma => "Comma",
             TokenKind::Colon => "Colon",
             TokenKind::Arrow => "Arrow",
+            TokenKind::FatArrow => "FatArrow",
             TokenKind::Dot => "Dot",
             TokenKind::DotDot => "DotDot",
             TokenKind::LBracket => "LBracket",
@@ -213,6 +217,7 @@ impl TokenKind {
             TokenKind::Class => "class",
             TokenKind::Const => "const",
             TokenKind::Enum => "enum",
+            TokenKind::Match => "match",
             TokenKind::NoneKw => "None",
             TokenKind::Is => "is",
             TokenKind::SelfKw => "self",
@@ -248,6 +253,7 @@ impl TokenKind {
             // A format spec starts at its `:`.
             TokenKind::Colon | TokenKind::FormatSpec(_) => ":",
             TokenKind::Arrow => "->",
+            TokenKind::FatArrow => "=>",
             TokenKind::Dot => ".",
             TokenKind::DotDot => "..",
             TokenKind::LBracket => "[",
@@ -683,7 +689,7 @@ fn can_end_statement(token: Option<&Token>) -> bool {
 }
 
 /// Layout rules 2 and 3 where the parser cannot see them; `kind` starts a line.
-/// A `{` only ever follows `fn …`, `if …`, `else` or `while …` on its own line, so a
+/// A `{` only ever follows `fn …`, `if …`, `else`, `match …` or `while …` on its own line, so a
 /// line-initial `{` after a token that could end a statement, or after `else`, breaks
 /// rule 2 at any depth. Inside `( )` and `[ ]`, where no `Newline` reaches the parser, so does
 /// a line-initial `else` (rule 3), and a line-initial `[` after a token that could end a
@@ -780,6 +786,7 @@ fn is_header(t: &Token) -> bool {
             | TokenKind::Class
             | TokenKind::Enum
             | TokenKind::If
+            | TokenKind::Match
             | TokenKind::Else
             | TokenKind::While
             | TokenKind::For
@@ -876,7 +883,6 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "var" => TokenKind::Var,
         "import" => TokenKind::Reserved("import"),
         "pub" => TokenKind::Reserved("pub"),
-        "match" => TokenKind::Reserved("match"),
         "record" => TokenKind::Reserved("record"),
         "type" => TokenKind::Reserved("type"),
         "weak" => TokenKind::Reserved("weak"),
@@ -897,6 +903,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "class" => TokenKind::Class,
         "const" => TokenKind::Const,
         "enum" => TokenKind::Enum,
+        "match" => TokenKind::Match,
         "None" => TokenKind::NoneKw,
         "is" => TokenKind::Is,
         "self" => TokenKind::SelfKw,
@@ -918,10 +925,10 @@ pub(crate) fn literal_too_large(at: Span) -> Diagnostic {
 /// The operator or punctuation starting with `c`, consuming a second char when it has one.
 fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
     use TokenKind::{
-        AndAnd, Arrow, Bang, Colon, Comma, Dot, DotDot, Eq, EqEq, Ge, Gt, LBrace, LBracket, LParen,
-        Le, Lt, Minus, MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq, QuestionDot,
-        QuestionQuestion, RBrace, RBracket, RParen, Semicolon, Slash, SlashEq, Star, StarEq,
-        StarStar,
+        AndAnd, Arrow, Bang, Colon, Comma, Dot, DotDot, Eq, EqEq, FatArrow, Ge, Gt, LBrace,
+        LBracket, LParen, Le, Lt, Minus, MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq,
+        QuestionDot, QuestionQuestion, RBrace, RBracket, RParen, Semicolon, Slash, SlashEq, Star,
+        StarEq, StarStar,
     };
     let mut eat = |want| chars.next_if(|&(_, n)| n == want).is_some();
     Some(match c {
@@ -938,6 +945,7 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
         '%' if eat('=') => PercentEq,
         '%' => Percent,
         '=' if eat('=') => EqEq,
+        '=' if eat('>') => FatArrow,
         '=' => Eq,
         '!' if eat('=') => NotEq,
         '!' => Bang,
@@ -1069,7 +1077,6 @@ mod tests {
         let words = [
             "import",
             "pub",
-            "match",
             "record",
             "type",
             "weak",
@@ -1091,10 +1098,33 @@ mod tests {
             kinds(&format!("{} matches type_ pubx ask", words.join(" "))),
             expected
         );
-        // `enum` is a keyword now; `match` stays reserved until it has a meaning.
+        // `enum` and `match` are keywords now.
         assert_eq!(
-            kinds("enum enums match"),
-            [TokenKind::Enum, ident("enums"), Reserved("match"), Eof]
+            kinds("enum enums match matches"),
+            [
+                TokenKind::Enum,
+                ident("enums"),
+                TokenKind::Match,
+                ident("matches"),
+                Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn fat_arrow_is_one_token() {
+        use TokenKind::{Eof, Eq, FatArrow, Gt, Newline};
+        assert_eq!(kinds("a => b"), [ident("a"), FatArrow, ident("b"), Eof]);
+        assert_eq!(kinds("a=>b"), [ident("a"), FatArrow, ident("b"), Eof]);
+        assert_eq!(
+            kinds("a = > b"),
+            [ident("a"), Eq, Gt, ident("b"), Eof],
+            "a gap splits the token"
+        );
+        // `=>` joins the next line, as a binary operator does, so no `Newline` follows it.
+        assert_eq!(
+            all_kinds("a =>\nb"),
+            [ident("a"), FatArrow, ident("b"), Newline, Eof]
         );
     }
 
@@ -2625,6 +2655,11 @@ mod tests {
             ("fn main()\n{\n}", (9, 10), (2, 1)),
             ("class A\n{\n}", (7, 8), (2, 1)),
             ("enum A\n{\n}", (6, 7), (2, 1)),
+            (
+                "fn main() {\n    match x\n    {\n    }\n}",
+                (23, 28),
+                (3, 5),
+            ),
             (
                 "fn main() {\n    if true\n    {\n    }\n}",
                 (23, 28),

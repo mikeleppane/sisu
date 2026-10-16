@@ -404,11 +404,45 @@ pub(crate) enum ExprKind {
         then_block: Block,
         else_block: Option<Block>,
     },
+    /// `match scrutinee { arms }`: the scrutinee is evaluated once into `temp`, a local of its
+    /// type that owns it, then the first arm whose pattern matches runs.
+    Match {
+        scrutinee: Box<Expr>,
+        temp: LocalId,
+        arms: Vec<Arm>,
+    },
     Loop(Block),
     Break,
     Continue,
     Return(Option<Box<Expr>>),
     Block(Block),
+}
+
+/// One arm of a `Match`. `bindings` holds each local its pattern binds, once.
+#[derive(Debug)]
+pub(crate) struct Arm {
+    pub(crate) pattern: Pattern,
+    pub(crate) bindings: Vec<LocalId>,
+    pub(crate) body: Block,
+}
+
+#[derive(Debug)]
+pub(crate) struct Pattern {
+    pub(crate) kind: PatternKind,
+    pub(crate) span: Span,
+}
+
+#[derive(Debug)]
+pub(crate) enum PatternKind {
+    /// `_`.
+    Wild,
+    /// A name: binds the value at its position to the local.
+    Bind(LocalId),
+    /// The variant `variant` of the enum at its position, each field against its payload.
+    Variant {
+        variant: usize,
+        fields: Vec<Pattern>,
+    },
 }
 
 impl Type {
@@ -503,6 +537,9 @@ impl Expr {
                     || then_block.exits()
                     || else_block.as_ref().is_some_and(Block::exits)
             }
+            ExprKind::Match {
+                scrutinee, arms, ..
+            } => scrutinee.exits() || arms.iter().any(|arm| arm.body.exits()),
             ExprKind::Loop(block) | ExprKind::Block(block) => block.exits(),
         }
     }
@@ -616,6 +653,10 @@ impl Printer<'_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per node kind, so the printed form reads in one place"
+    )]
     fn expr(&self, f: &mut fmt::Formatter<'_>, expr: &Expr) -> fmt::Result {
         match &expr.kind {
             ExprKind::Int(n) if expr.ty == Type::U8 => write!(f, "{n}u8"),
@@ -706,6 +747,20 @@ impl Printer<'_> {
                 self.expr(f, scrutinee)?;
                 self.branches(f, then_block, else_block.as_ref())
             }
+            ExprKind::Match {
+                scrutinee, arms, ..
+            } => {
+                f.write_str("(match ")?;
+                self.expr(f, scrutinee)?;
+                for arm in arms {
+                    f.write_str(" (arm ")?;
+                    self.pattern(f, &arm.pattern, &scrutinee.ty)?;
+                    f.write_str(" ")?;
+                    self.block(f, &arm.body)?;
+                    f.write_str(")")?;
+                }
+                f.write_str(")")
+            }
             ExprKind::Loop(body) => {
                 f.write_str("(loop ")?;
                 self.block(f, body)?;
@@ -716,6 +771,32 @@ impl Printer<'_> {
             ExprKind::Return(None) => f.write_str("(return)"),
             ExprKind::Return(Some(value)) => self.unary(f, "return", value),
             ExprKind::Block(block) => self.block(f, block),
+        }
+    }
+
+    /// `_`, a local, a payload-free variant's name, or `(Name field ...)`, at a position of
+    /// type `ty`.
+    fn pattern(&self, f: &mut fmt::Formatter<'_>, pattern: &Pattern, ty: &Type) -> fmt::Result {
+        match &pattern.kind {
+            PatternKind::Wild => f.write_str("_"),
+            PatternKind::Bind(local) => self.local(f, *local),
+            PatternKind::Variant { variant, fields } => {
+                let Type::Enum(id) = ty else {
+                    panic!(
+                        "the checker should only emit a variant pattern at an enum position, not `{ty}`"
+                    )
+                };
+                let variant = &self.program.enums[id.0].variants[*variant];
+                if fields.is_empty() {
+                    return f.write_str(&variant.name);
+                }
+                write!(f, "({}", variant.name)?;
+                for (field, payload) in fields.iter().zip(&variant.fields) {
+                    f.write_str(" ")?;
+                    self.pattern(f, field, &payload.ty)?;
+                }
+                f.write_str(")")
+            }
         }
     }
 
@@ -1080,6 +1161,97 @@ mod tests {
         assert_eq!(
             program.to_string(),
             "(fn f ((n#0 i64)) i64 (block (let mut x#1 n#0) (= x#1 (+ x#1 1)) (let #2 (call f (- 3))) (if (!= x#1 2) (block (print (< 1 n#0 <= 9)))) (loop (block (if true (block (break)) (block)))) (return x#1)))"
+        );
+    }
+
+    /// `match s { Running(c) => c  Idle => 0  _ => 1 }` over `enum State { Idle  Running(i64) }`.
+    #[test]
+    fn prints_match() {
+        let state = Type::Enum(EnumId(0));
+        let pattern = |kind| Pattern {
+            kind,
+            span: Span::new(0, 0),
+        };
+        let arm = |kind, bindings, value| Arm {
+            pattern: pattern(kind),
+            bindings,
+            body: Block {
+                stmts: vec![],
+                value: Some(Box::new(value)),
+                ty: Type::I64,
+            },
+        };
+        let arms = vec![
+            arm(
+                PatternKind::Variant {
+                    variant: 1,
+                    fields: vec![pattern(PatternKind::Bind(LocalId(1)))],
+                },
+                vec![LocalId(1)],
+                local(1),
+            ),
+            arm(
+                PatternKind::Variant {
+                    variant: 0,
+                    fields: vec![],
+                },
+                vec![],
+                int(0),
+            ),
+            arm(PatternKind::Wild, vec![], int(1)),
+        ];
+        let matched = expr(
+            ExprKind::Match {
+                scrutinee: Box::new(expr(ExprKind::Local(LocalId(0)), state.clone())),
+                temp: LocalId(2),
+                arms,
+            },
+            Type::I64,
+        );
+        let program = Program {
+            classes: vec![],
+            enums: vec![Enum {
+                name: "State".into(),
+                variants: vec![
+                    Variant {
+                        name: "Idle".into(),
+                        fields: vec![],
+                    },
+                    Variant {
+                        name: "Running".into(),
+                        fields: vec![Payload {
+                            ty: Type::I64,
+                            boxed: false,
+                        }],
+                    },
+                ],
+                counted: false,
+                cycle: None,
+            }],
+            functions: vec![Function {
+                name: "f".into(),
+                params: vec![LocalId(0)],
+                ret: Type::I64,
+                locals: vec![
+                    param("s", state.clone()),
+                    param("c", Type::I64),
+                    Local {
+                        name: None,
+                        ty: state,
+                        mutable: false,
+                    },
+                ],
+                body: Block {
+                    stmts: vec![],
+                    value: Some(Box::new(matched)),
+                    ty: Type::I64,
+                },
+            }],
+        };
+        assert_eq!(
+            program.to_string(),
+            "(enum State Idle (Running i64))\n\
+             (fn f ((s#0 State)) i64 (block (match s#0 (arm (Running c#1) (block c#1)) (arm Idle (block 0)) (arm _ (block 1)))))"
         );
     }
 

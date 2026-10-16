@@ -134,7 +134,7 @@ fn allocs_in_panics_without_the_summary_line() {
 }
 
 /// Program, stdout at k = 1000, stdout at k = 0, extra allocations.
-const ALLOCATIONS: [(&str, &str, &str, i64); 16] = [
+const ALLOCATIONS: [(&str, &str, &str, i64); 19] = [
     // `big = fill(big, i, i % 2 + 1)` writes in place.
     ("handover", "999\n", "0\n", 0),
     // `saved` is live across each write, so each `fill` copies once.
@@ -169,6 +169,13 @@ const ALLOCATIONS: [(&str, &str, &str, i64); 16] = [
     ),
     // `Add(Num(1), Num(2))` allocates one box for each of its two fields, and nothing else.
     ("enum_alloc_boxes", "1000\n", "0\n", 2000),
+    // `match` hands the payload of a scrutinee in its last use to its binding: no array copy.
+    ("enum_alloc_handover", "1000\n", "0\n", 0),
+    // The same through a box with count one: one new box per step, no array copy. Reusing the
+    // old box in `match` would make it 0.
+    ("enum_alloc_handover_box", "1000\n", "0\n", 1000),
+    // Through a shared box: one new box and one array copy per step.
+    ("enum_alloc_shared_box", "1000\n499500\n", "0\n0\n", 2000),
 ];
 
 #[test]

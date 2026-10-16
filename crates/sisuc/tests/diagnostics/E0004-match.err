@@ -1,0 +1,13 @@
+error[E0004]: `{` must be on the same line as `fn`, `class`, `enum`, `if`, `else`, `match`, `while` or `for`
+ --> E0004-match.sisu:9:5
+  |
+9 |     {
+  |     ^
+  |
+help: move `{` to the end of the line above
+  |
+8 |     match e {
+  |            +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0004

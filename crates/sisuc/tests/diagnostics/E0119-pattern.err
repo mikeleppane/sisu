@@ -1,0 +1,14 @@
+error[E0119]: `Idle` holds nothing; write `Idle`
+ --> E0119-pattern.sisu:9:13
+  |
+9 |         Idle() => print(0)
+  |             ^^
+  |
+help: remove the parentheses
+  |
+9 -         Idle() => print(0)
+9 +         Idle => print(0)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0119

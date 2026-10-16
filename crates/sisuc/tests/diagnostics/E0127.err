@@ -1,0 +1,8 @@
+error[E0127]: a `Point` position takes only a name or `_`
+  --> E0127.sisu:13:17
+   |
+13 |         Wrapped(Num(n)) => print(n)
+   |                 ^^^^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0127

@@ -1,0 +1,39 @@
+fn iterations() -> i64 { 1000 }
+
+// The handover through a shared box: `saved` shares `t`'s box during each `match`, so releasing
+// `t` at the commit leaves the box and its array alive, `xs` keeps count 2, and `ys[0]` copies
+// the array. Each step allocates one box and one array copy.
+enum Tree {
+    Leaf([i64])
+    Node(Tree)
+}
+
+fn step(t: Tree) -> Tree {
+    match t {
+        Node(Leaf(xs)) => {
+            let mut ys = xs
+            ys[0] = ys[0] + 1
+            Tree.Node(Tree.Leaf(ys))
+        }
+        _ => panic("not a leaf node")
+    }
+}
+
+fn first(t: Tree) -> i64 {
+    match t {
+        Node(Leaf(xs)) => xs[0]
+        _ => panic("not a leaf node")
+    }
+}
+
+fn main() {
+    let mut t = Tree.Node(Tree.Leaf([0, 0, 0]))
+    let mut total = 0
+    for _ in 0..iterations() {
+        let saved = t
+        t = step(t)
+        total += first(saved)
+    }
+    print(first(t)) // 1000 (0 with no iterations)
+    print(total)    // 0 + 1 + ... + 999 = 499500 (0 with no iterations)
+}
