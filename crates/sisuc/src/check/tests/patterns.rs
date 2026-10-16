@@ -185,6 +185,14 @@ fn match_join() {
         ),
         &[(Code::NoValue, (16, 22))],
     );
+    // A `unit` arm checked first anchors only until an arm of another type: the `None` expects
+    // `u8?`.
+    codes(
+        &format!(
+            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => print(1)\n        Add(_, _) => b\n        _ => None\n    }}\n}}"
+        ),
+        &[(Code::NoValue, (15, 19))],
+    );
     // Arms that all leave make a `never` `match`.
     clean(&format!(
         "{DECLS}\nfn t(e: Expr) -> i64 {{\n    match e {{\n        Num(_) => return 1\n        _ => return 2\n    }}\n}}"

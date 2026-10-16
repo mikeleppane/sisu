@@ -961,10 +961,12 @@ impl Checker<'_> {
     /// The `sources.len()` branches of an `if` or arms of a `match`, `check(i)` checking branch
     /// `i`, and their type. With no `expected` type, the branch whose value is of lowest `rank`
     /// is checked first, the first in source order on a tie, and each after it expects the type
-    /// of the first of a known type that is not `never`, made optional. Then a `never` branch, and after it an
-    /// `Error` one, takes the others' type; a `T` and a `T?` join to `T?`, the `T` branches
-    /// wrapped; other types that differ are reported. A join that fails for a branch that
-    /// rejected `expected` is a mismatch too. With no branches, the type is `never`.
+    /// of the first of a known type that is not `never`, made optional. A failed or `unit`
+    /// branch sets what the branches after it expect only until a branch of another known type
+    /// is checked. Then a `never` branch, and after it an `Error` one, takes the others' type; a
+    /// `T` and a `T?` join to `T?`, the `T` branches wrapped; other types that differ are
+    /// reported. A join that fails for a branch that rejected `expected` is a mismatch too.
+    /// With no branches, the type is `never`.
     pub(super) fn join(
         &mut self,
         sources: &[Branch<'_>],
@@ -982,10 +984,13 @@ impl Checker<'_> {
                 .as_ref()
                 .and_then(|ty: &Option<Type>| after_branch(ty.as_ref()));
             let block = check(self, i, expected.or(after.as_ref()));
-            // The first branch of a known type anchors the rest; a failed one only until then.
+            // The first branch of a known type anchors the rest; a failed or `unit` one only
+            // until then.
             match block_type(&block) {
                 Some(Type::Never) => {}
-                Some(t) if !matches!(anchor, Some(Some(_))) => anchor = Some(Some(t.clone())),
+                Some(t) if matches!(anchor, None | Some(None | Some(Type::Unit))) => {
+                    anchor = Some(Some(t.clone()));
+                }
                 None if anchor.is_none() => anchor = Some(None),
                 _ => {}
             }
