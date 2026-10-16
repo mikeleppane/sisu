@@ -56,11 +56,11 @@ fn element_of(ty: &Type) -> &Type {
     element
 }
 
-/// Whether evaluating `index` leaves every local as it was, so a local array read before it
-/// still holds the same block after it. A whitelist of node kinds that call nothing, bind
-/// nothing and move nothing: a node kind added later is excluded until it is listed here.
-fn leaves_locals(index: &Expr) -> bool {
-    match &index.kind {
+/// Whether evaluating `expr` leaves every local as it was, so a local read before it still
+/// holds the same block after it. A whitelist of node kinds that call nothing, bind nothing and
+/// move nothing: a node kind added later is excluded until it is listed here.
+pub(super) fn leaves_locals(expr: &Expr) -> bool {
+    match &expr.kind {
         ExprKind::Int(_) | ExprKind::Local(_) => true,
         ExprKind::Unary { operand, .. }
         | ExprKind::Convert(operand)

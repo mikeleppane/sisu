@@ -71,7 +71,9 @@ impl Checker<'_> {
 
     /// `x op= e` is `x = x op e`. On any other place, each of its operands is bound to a fresh
     /// local first, in source order, so it runs once: `p[e] op= v` is
-    /// `Block { let t = e; Assign { p[t], p[t] op v } }`. The root binding is never copied.
+    /// `Block { let t = e; Assign { p[t], p[t] op v } }`. The root binding is never copied, and
+    /// neither is an operand that is an immutable local, which `v` cannot change: `p[i] op= v`
+    /// is `Assign { p[i], p[i] op v }`.
     /// `op` takes `u8`s when the place holds a `u8`, else `i64`s; `+=` on a `string` joins. `op`
     /// comes with its token's span.
     pub(super) fn compound_assign(
@@ -136,6 +138,12 @@ impl Checker<'_> {
                 .operands
                 .into_iter()
                 .map(|init| {
+                    // Nothing can reassign an immutable local, so it is read twice.
+                    if let ExprKind::Local(l) = init.kind
+                        && !self.locals[l.0].mutable
+                    {
+                        return (l, init.ty, init.span);
+                    }
                     let temp = self.fresh(init.ty.clone());
                     let read = (temp, init.ty.clone(), init.span);
                     lets.push(tir::Stmt::Let { local: temp, init });

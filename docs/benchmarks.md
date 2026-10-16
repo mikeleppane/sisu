@@ -9,8 +9,8 @@ with no per-language tuning.
 
 fib and sieve ran at commit 9cbd44e and binary_trees at 7c8d29e (the change
 between them is the runtime's live count), on 2026-10-12. hello ran at
-commit 4690caa and quicksort at 3dbda29, on 2026-10-15; nbody, mandelbrot
-and fannkuch_redux at d8a9603, on 2026-10-16. All ran on an Intel Core i9-14900K under
+commit 4690caa and quicksort at 3dbda29, on 2026-10-15; mandelbrot and
+fannkuch_redux at d8a9603, and nbody at 10bb08f, on 2026-10-16. All ran on an Intel Core i9-14900K under
 Linux 7.0. Each figure is the median of 5 runs, pinned to one CPU. Each table
 runs from fastest to slowest wall time, with Sisu in bold.
 
@@ -73,12 +73,12 @@ runs from fastest to slowest wall time, with Sisu in bold.
 
 | Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Rust | 0.11 | 0.11 | 1.9 | 358 | 0.141 |
-| C | 0.13 | 0.13 | 1.7 | 14 | 0.063 |
-| Java | 0.20 | 0.19 | 43.6 | - | 0.230 |
-| Go | 0.23 | 0.23 | 1.8 | 1495 | 0.026 |
-| **Sisu** | **0.25** | **0.25** | **1.5** | **357** | **0.083** |
-| Python | 11.25 | 11.24 | 11.3 | - | - |
+| Rust | 0.12 | 0.12 | 1.9 | 358 | 0.094 |
+| C | 0.14 | 0.14 | 1.7 | 14 | 0.067 |
+| **Sisu** | **0.14** | **0.14** | **1.4** | **357** | **0.067** |
+| Java | 0.20 | 0.19 | 43.8 | - | 0.226 |
+| Go | 0.23 | 0.23 | 1.8 | 1495 | 0.029 |
+| Python | 12.16 | 12.16 | 11.2 | - | - |
 
 ### mandelbrot
 
@@ -144,9 +144,6 @@ Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 Java is the fastest on binary_trees, because its collector allocates by
 bumping a pointer and frees short-lived objects in bulk. It pays for that with
 ten times the memory.
-
-Sisu takes about twice C's time on nbody, the widest gap in these tables. It
-has not been profiled yet.
 
 ## Where binary_trees spends its time
 

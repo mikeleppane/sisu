@@ -66,7 +66,7 @@ fn compound_assign_types_literal() {
     );
     contains(
         "class P {\n    mut b: u8\n}\nfn main() {\n    let p = P(b: 0)\n    p.b += 250\n}",
-        &["(= (. #1 b) (+ (. #1 b) 250u8))"],
+        &["(= (. p#0 b) (+ (. p#0 b) 250u8))"],
     );
 }
 

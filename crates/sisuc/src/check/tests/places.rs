@@ -29,13 +29,23 @@ fn lowers_element_writes() {
     }
 }
 
-/// Each index, and a field root's base, is bound once; the root binding is not.
+/// Each index, and a field root's base, is bound once, unless it is an immutable local; the root
+/// binding is not.
 #[test]
 fn lowers_compound_element_writes() {
     let rows = [
         (
             "fn f(i: i64) {\n    let mut xs = [0]\n    xs[i] += 1\n}\nfn main() {}".to_owned(),
-            "(block (let #2 i#0) (= (index xs#1 #2) (+ (index xs#1 #2) 1)))",
+            "(block (= (index xs#1 i#0) (+ (index xs#1 i#0) 1)))",
+        ),
+        (
+            "fn f(i: i64) {\n    let mut j = i\n    let mut xs = [0]\n    xs[j] += 1\n    j += 1\n}\nfn main() {}"
+                .to_owned(),
+            "(block (let #3 j#1) (= (index xs#2 #3) (+ (index xs#2 #3) 1)))",
+        ),
+        (
+            format!("{C}fn g() {{\n    let c = C(cells: [0])\n    c.cells[0] += 1\n}}\nfn main() {{}}"),
+            "(block (let #1 0) (= (index (. c#0 cells) #1) (+ (index (. c#0 cells) #1) 1)))",
         ),
         (
             "fn n() -> i64 { 0 }\nfn g() {\n    let mut grid = [[0]]\n    grid[n()][n()] += 1\n}\nfn main() {}"
@@ -104,7 +114,7 @@ fn recognises_appends() {
     ));
     assert!(
         printed.contains(
-            "(block (let mut names#3 (array \"a\")) (block (let #4 p#0) (append (. #4 name) \"x\")) (append (. p#0 name) \"x\") (block (let #5 i#1) (append (index names#3 #5) \"x\")) (append (index names#3 0) \"x\") (block (let #6 (call k)) (append (index names#3 #6) t#2)))"
+            "(block (let mut names#3 (array \"a\")) (block (append (. p#0 name) \"x\")) (append (. p#0 name) \"x\") (block (append (index names#3 i#1) \"x\")) (append (index names#3 0) \"x\") (block (let #4 (call k)) (append (index names#3 #4) t#2)))"
         ),
         "{printed}"
     );
@@ -121,7 +131,7 @@ fn does_not_recognise() {
     assert!(!printed.contains("(append"), "{printed}");
     assert!(
         printed.contains(
-            "(= (. p#0 name) (concat (. q#1 name) \"x\")) (= (index names#3 0) (concat (index names#3 1) \"x\")) (= (index names#3 (call f)) (concat (index names#3 (call f)) \"x\")) (= (. p#0 name) (concat \"x\" (. p#0 name))) (block (let #4 p#0) (block (let #7 #4) (let #8 (block (let #5 (. #4 name)) (let #6 (if c#2 (block (return)) (block \"x\"))) (concat #5 #6))) (= (. #7 name) #8)))"
+            "(= (. p#0 name) (concat (. q#1 name) \"x\")) (= (index names#3 0) (concat (index names#3 1) \"x\")) (= (index names#3 (call f)) (concat (index names#3 (call f)) \"x\")) (= (. p#0 name) (concat \"x\" (. p#0 name))) (block (block (let #6 p#0) (let #7 (block (let #4 (. p#0 name)) (let #5 (if c#2 (block (return)) (block \"x\"))) (concat #4 #5))) (= (. #6 name) #7)))"
         ),
         "{printed}"
     );
@@ -149,7 +159,7 @@ fn element_type_is_expected_of_the_value() {
     );
     contains(
         "fn f(i: i64) {\n    let mut bytes: [u8] = [0]\n    bytes[i] += 1\n}\nfn main() {}",
-        &["(+ (index bytes#1 #2) 1u8)"],
+        &["(+ (index bytes#1 i#0) 1u8)"],
     );
 }
 
