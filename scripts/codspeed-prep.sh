@@ -33,10 +33,11 @@ reduce fib 's/fib(40)/fib(27)/'
 reduce sieve 's/sieve(50_000_000)/sieve(1_000_000)/'
 reduce binary_trees 's/max_depth = 18/max_depth = 10/'
 
-# f0 returns its argument; fi adds 1 through an array, a class and an optional
-# chain, then calls f(i-1). main prints f(N-1)(0) = N-1.
+# step0 returns its argument; stepi adds 1 through an array, a class and an
+# optional chain, then calls step(i-1). main prints step(N-1)(0) = N-1. Not fi:
+# f64 is a built-in type.
 {
-    echo 'fn f0(x: i64) -> i64 { x }'
+    echo 'fn step0(x: i64) -> i64 { x }'
     for ((i = 1; i < sections; i++)); do
         cat <<SISU
 
@@ -46,16 +47,16 @@ class C$i {
     fn get(self) -> i64 { self.v }
 }
 
-fn f$i(x: i64) -> i64 {
+fn step$i(x: i64) -> i64 {
     let xs = [x, $i, 1]
     let mut sum = 0
     for v in xs { sum += v }
     let c: C$i? = C$i(v: sum - x - xs[1])
-    f$((i - 1))(x + (c?.get() ?? 0))
+    step$((i - 1))(x + (c?.get() ?? 0))
 }
 SISU
     done
-    printf '\nfn main() {\n    print(f%d(0))\n}\n' $((sections - 1))
+    printf '\nfn main() {\n    print(step%d(0))\n}\n' $((sections - 1))
 } >"$out/large/main.sisu"
 
 # Reads codspeed.yml strictly: a "benchmarks:" line, then per entry the lines
