@@ -410,6 +410,25 @@ fn last_use_through_match() {
         let part = "(print (len (move xs#1)))";
         assert_eq!(printed.contains(part), moved, "{idle}: {printed}");
     }
+    // An arm that returns or breaks empties or replaces the live set; the next arm still starts
+    // from the set live after the `match`, where `xs` is live, so neither read moves it.
+    for (src, xs) in [
+        (
+            "fn t(s: State) -> i64 {\n    let xs = [0]\n    print(xs.len())\n    match s {\n        Running(_) => return 1\n        Idle => {}\n    }\n    xs.len()\n}",
+            "xs#1",
+        ),
+        (
+            "fn t(s: State, c: bool) {\n    let xs = [0]\n    while c {\n        match s {\n            Running(_) => break\n            Idle => print(xs.len())\n        }\n    }\n}",
+            "xs#2",
+        ),
+    ] {
+        let src = format!("{DECLS}\n{src}");
+        let (program, ds) = crate::front_end::front_end(&src);
+        assert!(ds.is_empty(), "{ds:?}");
+        let printed = program.expect("the source should check clean").to_string();
+        let moved = format!("(print (len (move {xs})))");
+        assert!(!printed.contains(&moved), "{printed}");
+    }
     // An arm's bindings are dead before its test, so the loop moves `l` into the `match` and
     // `t` into `l`.
     let src = "enum L {\n    Cons(i64, L)\n    Nil\n}\nfn main() {}\nfn t(l0: L) {\n    let mut l = l0\n    while let Cons(h, t) = l {\n        print(h)\n        l = t\n    }\n}";
@@ -726,13 +745,8 @@ fn malformed_patterns_of_a_wide_variant_check_in_linear_time() {
     let src = format!(
         "enum E {{ V({fields}) }}\nfn f(e: E) -> i64 {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
     );
-    let ds = diags(&src);
-    assert_eq!(ds.len(), FIELDS);
-    assert!(
-        ds.iter().all(|d| d.code() == Code::VariantForm),
-        "{:?}",
-        ds[0]
-    );
+    let codes: Vec<_> = diags(&src).iter().map(Diagnostic::code).collect();
+    assert_eq!(codes, vec![Code::VariantForm; FIELDS]);
 }
 
 /// A payload of 32,768 fields gives a matrix 32,768 columns deep, which the solver must not meet

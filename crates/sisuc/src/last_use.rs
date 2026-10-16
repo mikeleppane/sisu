@@ -39,7 +39,7 @@ pub(crate) fn mark(program: &mut Program) {
             rewrite: true,
             loops: Vec::new(),
             trail: Vec::new(),
-            undoing: 0,
+            undoing: false,
         };
         walk.block(&mut function.body);
     }
@@ -55,12 +55,12 @@ struct Walk {
     rewrite: bool,
     /// The enclosing loops, innermost last: the set live after each, and at its head.
     loops: Vec<(Vec<bool>, Vec<bool>)>,
-    /// Inside a `match`'s arms: each change to `live`, as the local and the value it had, so
-    /// that an arm is undone in the locals it changed rather than in every local.
+    /// Inside a `match`'s arms: each write to `live`, as the local and the value it had, so that
+    /// an arm is undone in the locals it wrote rather than in every local.
     trail: Vec<(usize, bool)>,
-    /// How many `match`es' arms enclose the walk; outside them nothing is undone, so the trail
+    /// Whether the walk is inside a `match`'s arms; outside them nothing is undone, so the trail
     /// records nothing.
-    undoing: usize,
+    undoing: bool,
 }
 
 impl Walk {
@@ -303,9 +303,9 @@ impl Walk {
     /// the trail, so an arm costs the locals it changes, not every local of the function.
     fn arms(&mut self, arms: &mut [Arm]) {
         let mark = self.trail.len();
-        self.undoing += 1;
-        // Each local an arm changed: the last arm that did, how many did, and whether one left
-        // it live.
+        let outer = mem::replace(&mut self.undoing, true);
+        // Each local an arm wrote: the last arm that did, how many did, and whether one left it
+        // live.
         let mut changed: FxHashMap<usize, (usize, usize, bool)> = FxHashMap::default();
         for (i, arm) in arms.iter_mut().enumerate() {
             self.block(&mut arm.body);
@@ -320,7 +320,7 @@ impl Walk {
                 }
             }
         }
-        self.undoing -= 1;
+        self.undoing = outer;
         for (local, (_, count, live)) in changed {
             // An arm that left the local alone kept the value it has after the `match`.
             let kept = count < arms.len() && self.live[local];
@@ -333,49 +333,48 @@ impl Walk {
         }
     }
 
-    /// Sets whether `local` is live, recording the change while an arm may be undone.
+    /// Sets whether `local` is live, recording the write while an arm may be undone.
     fn set(&mut self, local: usize, live: bool) {
         let was = mem::replace(&mut self.live[local], live);
-        if was != live && self.undoing > 0 {
+        if self.undoing {
             self.trail.push((local, was));
         }
     }
 
-    // Outside an arm nothing is recorded, so the whole-set changes below copy or fill instead
-    // of setting each local.
-
-    /// Makes `other` the live set.
+    /// Makes `other` the live set. Outside an arm nothing is recorded, so it copies; inside
+    /// one it records only the locals it changes.
     fn assign(&mut self, other: &[bool]) {
-        if self.undoing == 0 {
+        if !self.undoing {
             self.live.copy_from_slice(other);
             return;
         }
         for (local, &live) in other.iter().enumerate() {
-            self.set(local, live);
+            if self.live[local] != live {
+                self.set(local, live);
+            }
         }
     }
 
+    /// Adds `other`, a set the walk held earlier in the same arm, to the live set. It records
+    /// nothing: each local it makes live again was written since `other` was taken, and the
+    /// trail holds that write, whose undo restores the local.
     fn join(&mut self, other: &[bool]) {
-        if self.undoing == 0 {
-            for (live, other) in self.live.iter_mut().zip(other) {
-                *live |= *other;
-            }
-            return;
-        }
-        for (local, &live) in other.iter().enumerate() {
-            if live {
-                self.set(local, true);
-            }
+        for (live, other) in self.live.iter_mut().zip(other) {
+            *live |= *other;
         }
     }
 
+    /// Empties the live set. Outside an arm nothing is recorded, so it fills; inside one it
+    /// records only the locals it changes.
     fn clear(&mut self) {
-        if self.undoing == 0 {
+        if !self.undoing {
             self.live.fill(false);
             return;
         }
         for local in 0..self.live.len() {
-            self.set(local, false);
+            if self.live[local] {
+                self.set(local, false);
+            }
         }
     }
 }
