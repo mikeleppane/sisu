@@ -77,6 +77,10 @@ impl Checker<'_> {
         arms: &[ast::Arm],
         expected: Option<&Type>,
     ) -> Checked {
+        assert!(
+            arms.iter().all(|arm| arm.guard.is_none()),
+            "guards land in Task 11"
+        );
         let checked = self.value(scrutinee, None);
         let mut position = type_of(&checked).cloned();
         let cannot = position.take_if(|ty| !matchable(ty));
@@ -234,7 +238,11 @@ impl Checker<'_> {
                 name: Symbol::intern("_"),
                 span: pattern.span,
             }),
-            ast::PatternKind::None | ast::PatternKind::Variant { .. } => None,
+            ast::PatternKind::None
+            | ast::PatternKind::Variant { .. }
+            | ast::PatternKind::Literal(_)
+            | ast::PatternKind::Range { .. }
+            | ast::PatternKind::Or(_) => None,
         };
         match (ty, name) {
             (Some(Type::Optional(payload)), Some(name)) => {
@@ -331,6 +339,9 @@ impl Checker<'_> {
         };
         let names_only = !matchable(ty);
         match &p.kind {
+            ast::PatternKind::Literal(_) => panic!("literal patterns land in Task 11"),
+            ast::PatternKind::Range { .. } => panic!("range patterns land in Task 11"),
+            ast::PatternKind::Or(_) => panic!("alternatives land in Task 11"),
             ast::PatternKind::Wild => Some(pattern(tir::PatternKind::Wild)),
             ast::PatternKind::Name(name) => {
                 self.name_pattern(name, ty, keyword, bound).map(pattern)

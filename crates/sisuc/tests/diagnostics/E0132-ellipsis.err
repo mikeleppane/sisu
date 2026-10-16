@@ -1,0 +1,8 @@
+error[E0132]: write `1..=5` to include `5`, or `1..5` to leave it out
+ --> E0132-ellipsis.sisu:4:10
+  |
+4 |         1...5 => print(1)
+  |          ^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0132

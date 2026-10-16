@@ -1,0 +1,14 @@
+error[E0132]: write `0..n`
+ --> E0132.sisu:3:15
+  |
+3 |     for i in 0..<n {
+  |               ^^^
+  |
+help: remove the `<`
+  |
+3 -     for i in 0..<n {
+3 +     for i in 0..n {
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0132

@@ -1,0 +1,8 @@
+error[E0011]: expected a literal, found `|`
+ --> E0011-range-end.sisu:3:12
+  |
+3 |         0..| => print(1)
+  |            ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011

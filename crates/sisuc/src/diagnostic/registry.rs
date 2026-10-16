@@ -173,6 +173,7 @@ codes! {
     BoundTwice = "E0129",
     NonExhaustive = "E0130",
     AlwaysMatches = "E0131",
+    ForeignRange = "E0132",
     NanComparison = "W0005",
     UnreachableArm = "W0006",
 }
@@ -739,6 +740,8 @@ pub(crate) enum DiagnosticKind {
     },
     /// The pattern at `at` of `keyword`, which every value of its enum matches.
     AlwaysMatches { keyword: Unwrap, at: Span },
+    /// A range written another language's way, with its operator at `at`.
+    ForeignRange { form: ForeignRange, at: Span },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -1006,6 +1009,18 @@ pub(crate) enum ForeignPattern {
     },
 }
 
+/// A range written another language's way. `start` and `end` are its bounds as written.
+pub(crate) enum ForeignRange {
+    /// `start..<end`; `remove` is the `<`, unless removing it leaves a range the parser rejects.
+    Exclusive {
+        start: String,
+        end: String,
+        remove: Option<Span>,
+    },
+    /// `start...end`.
+    Ellipsis { start: String, end: String },
+}
+
 /// What owns a method.
 #[derive(Clone)]
 pub(crate) enum Owner {
@@ -1218,6 +1233,7 @@ impl DiagnosticKind {
             DiagnosticKind::NonExhaustive { .. } => Code::NonExhaustive,
             DiagnosticKind::UnreachableArm { .. } => Code::UnreachableArm,
             DiagnosticKind::AlwaysMatches { .. } => Code::AlwaysMatches,
+            DiagnosticKind::ForeignRange { .. } => Code::ForeignRange,
         }
     }
 }
@@ -1538,9 +1554,11 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "cannot assign through `?.`")
                     .with_help("unwrap it with `if let`")
             }
-            DiagnosticKind::RangeOutsideFor { at } => {
-                Diagnostic::coded(code, at, "ranges are only allowed in `for`")
-            }
+            DiagnosticKind::RangeOutsideFor { at } => Diagnostic::coded(
+                code,
+                at,
+                "ranges are only allowed in `for` and in patterns",
+            ),
             DiagnosticKind::EqualityChain { at } => {
                 Diagnostic::coded(code, at, "`==`, `!=` and `is` do not chain")
                     .with_help("join the comparisons with `&&`")
@@ -2724,6 +2742,22 @@ impl From<DiagnosticKind> for Diagnostic {
                     code,
                     at,
                     "`while let` always matches here, so the pattern never ends the loop",
+                ),
+            },
+            DiagnosticKind::ForeignRange { form, at } => match form {
+                ForeignRange::Exclusive { start, end, remove } => {
+                    let d = Diagnostic::coded(code, at, format!("write `{start}..{end}`"));
+                    match remove {
+                        Some(lt) => d.with_fix(safe_fix("remove the `<`", lt, "")),
+                        None => d,
+                    }
+                }
+                ForeignRange::Ellipsis { start, end } => Diagnostic::coded(
+                    code,
+                    at,
+                    format!(
+                        "write `{start}..={end}` to include `{end}`, or `{start}..{end}` to leave it out"
+                    ),
                 ),
             },
             DiagnosticKind::NanComparison { at, negated, fix } => {

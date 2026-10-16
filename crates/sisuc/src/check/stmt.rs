@@ -330,7 +330,14 @@ impl Checker<'_> {
         let context = LoopContext::Header(keyword_span(span, "for"));
         let (header, bound) = self.in_loop(context, |c| match source {
             ast::ForSource::Array(e) => c.for_array(span, e),
-            ast::ForSource::Range { start, end } => c.for_range(span, start, end),
+            ast::ForSource::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                assert!(!inclusive, "for over `..=` lands in Task 11");
+                c.for_range(span, start, end)
+            }
         });
         let (x, checked) = self.in_loop(LoopContext::Body, |c| {
             c.unwrapping_block("for", name, bound, body, None)
