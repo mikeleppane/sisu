@@ -45,9 +45,11 @@ enums with `match`.
 - `match` on an enum, `i64`, `u8`, `bool`, `char` or `string`, as an
   expression or a statement, with one arm per line; a pattern is a variant,
   bare or through its enum (`Num(n)`, `Expr.Num(n)`), whose sub-patterns
-  nest, or a name that binds, or `_`, and on a type that is not an enum an
-  arm takes only a name or `_`; a pattern is also a literal (`0`, `'a'`,
-  `"x"`, `true`), a range (`'A'..='Z'`, `0..10`), or alternatives
+  nest, or a name that binds, or `_`; a pattern is also a literal (`0`, `'a'`,
+  `"x"`, `true`) on `i64`, `u8`, `char`, `bool` and `string`,
+  or a range (`'A'..='Z'`, `0..10`) on `i64`, `u8` and `char`, while at a
+  class, array or optional position it is only a name or `_`; patterns may
+  be alternatives
   (`Add(Num(0), x) | Add(x, Num(0))`), and an arm may add a guard,
   `n if n > 0 =>`; a `match` that misses a value does not compile and names
   one it misses, such as `Mul(_, _)`, and an arm that no value reaches warns
@@ -459,7 +461,7 @@ The compiler is fuzzed in two stages:
 | --- | --- | --- |
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface; `Option` and `Result` join the prelude, with the bare names `Some`, `None`, `Ok` and `Err` in expressions and patterns, and on a `T?` a pattern whose outermost name is `Some` or `None` matches the optional itself while any other pattern matches the value inside it | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
-| 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
+| 10 | Records, named arguments, default parameters, and `p as name` to bind a whole sub-pattern | A `Point` record prints and compares with no hand-written methods |
 | 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`), including `os.env(name)`, `os.exit(code)`, and an `io` module with `read_lines()`, read-everything and `read_bytes()` | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
 
@@ -549,15 +551,14 @@ settle before work starts.
 
 ### What can start now
 
-With milestone 4 done, each of these tracks can run beside the others once
-the decisions it needs are settled:
+With milestones 1 to 7 done, each of these tracks can run beside the others
+once the decisions it needs are settled:
 
 - **Decisions**: every entry in "Open decisions" is design work with no
   code. Settle the shared ones first, because several tracks build on each:
-  values with fields, names and namespaces, argument labels, closure syntax,
-  and the cycle part of equality and hashing.
-- **The language core**: milestone 5. Milestone 6 can be built in parallel.
-- **Enums**: milestone 7. It does not need floats or I/O.
+  what is left of argument labels (records and named arguments), names and
+  namespaces for modules, closure syntax for closures, values with fields
+  for records, and the cycle part of equality and hashing.
 - **Closures**: `weak` fields, then closures and function types from
   milestone 9. A function type names concrete types, such as
   `(i64) -> bool`, so closures need no generics.
@@ -650,9 +651,6 @@ Each is small once its milestone's main feature exists:
   own parentheses, as Rust writes `|(k, v)|`: `entries.map(((k, v)) => k)` takes one tuple apart, and
   `(k, v) => k` always has two parameters. The meaning is in the syntax, so
   a reader does not need `map`'s signature to know which it is.
-- Milestone 10: binding a whole sub-pattern, `p as name`, which moved here
-  from milestone 7 so it lands beside records. Array patterns stay in "Later
-  and stretch goals".
 - Milestone 10: records declare fields in the body, one per line, as
   classes do (ADR 0011). A record's fields take no `mut`: nothing in
   `let p` changes, and any field of `let mut p` can. A method that changes
@@ -1031,7 +1029,7 @@ These do not make code nicer to write, so they wait:
   error. From milestone 9, calls through closures cannot be inlined. At
   `-O2`, LLVM already inlines small functions, so this waits for a need.
 - More patterns after milestone 7: array patterns such as `[first, ..rest]`.
-  Binding a whole sub-pattern with `p as name` is in milestone 10, beside
+  `p as name` is in milestone 10, beside
   records.
 - Doc comments, `///` before a declaration. The lexer drops comments today,
   so they wait for the formatter, which must keep comments anyway, and for
@@ -1251,7 +1249,8 @@ standard library. The milestones after 12 then follow from it.
     pair today, would allocate once it becomes `Option<i64>` in milestone 8.
     Milestone 7 always stores a tag; using the null pointer as the tag of an
     enum with one empty variant and one that holds a class, a string or an
-    array, as `T?` does today, is not built.
+    array, as `T?` does today, is not built. Milestone 8 may add that niche
+    for `Option`-shaped enums, since a program cannot see layout.
   - A payload cannot change in place. A pattern such as `Circle(r)` binds a
     copy, not a reference, so `let mut e` changes only by a new value:
     `e = Circle(2.0)`. Payloads have no place to assign to, because the
@@ -1302,11 +1301,15 @@ standard library. The milestones after 12 then follow from it.
     through a closure keeps them. Swift dropped labels from function types;
   - that arguments are still evaluated left to right as written, which the
     last-use pass already assumes, even when labels reorder them.
-- **Closure syntax.** `=>` ends a `match` arm, `Circle(r) => ...`, as
-  milestone 7 built it. Decide before closures: a closure's parameters end
-  with `=>` too, `w => w.len() > 3`, so a closure inside an arm reads
-  `n => xs.filter(x => x > n)`. Decide how the two parse together, and what
-  the newline rule (ADR 0001) does after `=>` at the end of a line.
+- **Closure syntax.** Resolved for `match` in milestone 7; the rest stays
+  with milestone 9. The arm's pattern comes before its `=>` and an expression
+  after it, so a closure inside an arm body, `n => xs.filter(x => x > n)`,
+  parses as it reads. A guard ends at the first `=>` outside brackets, so a
+  closure in a guard must be inside parentheses or an argument list,
+  `Num(n) if xs.any(x => x > n) => ...`. An arm body may itself be a closure,
+  and `=>` groups to the right: `F(n) => x => x + n`. Still to decide in
+  milestone 9: the closure forms beyond these, and what the newline rule
+  (ADR 0001) does after `=>` at the end of a line.
 - **Weak captures.** Decide before closures. A closure stored in a field of
   the object it captures is a cycle that a `weak` field cannot break
   (ADR 0008). Decide how a closure captures one name weakly, as Swift's
