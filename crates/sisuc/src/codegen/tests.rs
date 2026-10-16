@@ -1080,6 +1080,32 @@ fn len_and_field_of_a_value_release_the_base() {
     }
 }
 
+/// `o.x = o.x + 1` on a local neither retains nor releases `o`: the value cannot replace or
+/// move the local, which keeps the object alive. `tests/run/field_assign_local_base.sisu` runs
+/// the values that can.
+#[test]
+fn field_assignment_to_a_local_skips_base_count() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class O {\n    mut x: i64\n}\n\
+         fn f(o: O) -> O {\n    o.x = o.x + 1\n    print(o.x)\n    o\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "define internal ptr @sisu.f(ptr");
+    let (before, _) = body
+        .split_once("call void @sisu_print_int(")
+        .unwrap_or_else(|| panic!("no print in\n{body}"));
+    assert!(before.contains("store i64"), "no field store in\n{body}");
+    for unwanted in ["@sisu_rc.retain(", "@sisu_rc.release.O("] {
+        assert!(
+            !before.contains(unwanted),
+            "{unwanted:?} before the print in\n{body}"
+        );
+    }
+}
+
 /// `words()` of a string that is not a local releases it, once the words are copied out; of a
 /// local it leaves the string to its owner.
 #[test]

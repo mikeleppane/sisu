@@ -771,8 +771,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             } => {
                 // Left to right: the base, then the value, then the store, then the release
                 // of the old value, then of the base, which keeps the object alive until then.
-                let object = self
-                    .expr(base)
+                // A local base is borrowed instead when the value cannot replace or move it:
+                // the local keeps the object alive.
+                let (object, borrowed) = if array::leaves_locals(value) {
+                    self.borrow_or_expr(base)
+                } else {
+                    (self.expr(base), false)
+                };
+                let object = object
                     .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
                     .into_pointer_value();
                 let ty = &value.ty;
@@ -785,7 +791,9 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .then(|| self.load(value.get_type(), field));
                 self.store(field, value);
                 self.discard(old, ty);
-                self.release(object.into(), &base.ty);
+                if !borrowed {
+                    self.release(object.into(), &base.ty);
+                }
             }
             Stmt::Assign {
                 place: place @ Place::Index { .. },

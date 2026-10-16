@@ -1,0 +1,31 @@
+// A field assignment borrows a local base only when its value can neither replace nor move
+// the local. Otherwise the base is retained until the store, which then writes to the object
+// the local held before the value ran.
+class N {
+    v: i64
+}
+
+class O {
+    mut n: N
+    mut x: i64
+}
+
+fn take(o: O) -> N {
+    print(o.x)
+    N(v: o.x)
+}
+
+fn main() {
+    let mut o = O(n: N(v: 1), x: 2)
+    o.x = o.x + o.n.v      // borrowed
+    let m = N(v: 4)
+    o.n = m                // borrowed: the store releases the old `N(v: 1)`
+    print(o.x)             // 3
+    print(o.n.v)           // 4
+    o.n = {                // replaces the local: the store writes to the old object
+        o = O(n: N(v: 5), x: 6)
+        N(v: 7)
+    }
+    print(o.n.v)           // 5
+    o.n = take(o)          // moves the local: take prints 6, then the store writes to that object
+}
