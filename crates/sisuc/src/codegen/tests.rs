@@ -1509,5 +1509,6 @@ fn a_loop_makes_its_written_arrays_unique_before_it_starts() {
         .iter()
         .map(|&(name, _, counts)| (name, counts.to_vec()))
         .collect();
-    assert_eq!(found, expected, "{}", irs.join("\n"));
+    let irs = irs.join("\n");
+    assert_eq!(found, expected, "{irs}");
 }

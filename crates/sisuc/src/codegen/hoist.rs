@@ -218,7 +218,8 @@ pub(super) mod tests {
     fn program(src: &str) -> Program {
         let src = format!("{src}\nfn main() {{}}");
         let (program, diagnostics) = check(&parse_ok(&src), &src);
-        let mut program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
+        assert!(program.is_some(), "{diagnostics:?}");
+        let mut program = program.expect("the assert above should have stopped a failed check");
         crate::last_use::mark(&mut program);
         program
     }
