@@ -183,11 +183,14 @@ figure to read; the instruction counts come from callgrind and do not vary.
 | Build | Min (ms) | Median (ms) | Mean (ms) | Times C (min) | Instructions (billions) |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | C, for comparison | 610 | 760 | 958 | 1.00 | |
-| Before loop hoisting (d970043) | 690 | 870 | 1078 | 1.13 | 4.82 |
-| After loop hoisting (c980444) | 640 | 790 | 988 | 1.05 | 4.04 |
+| Before loop hoisting (552dbac) | 690 | 870 | 1078 | 1.13 | 4.82 |
+| After loop hoisting (cf07f6d) | 640 | 790 | 988 | 1.05 | 4.04 |
 
-d970043 is the last commit before loop hoisting, and the same code as the
-"After" row above.
+552dbac is main before loop hoisting, and cf07f6d is the commit that adds
+it. The timings were taken on the same changes before they were rebased
+onto 552dbac. The counts reproduce on the rebased branch: callgrind counts
+4,822,781,453 instructions at 552dbac and 4,043,218,655 at 92bec34, with
+the same checksum. 4.82 billion is also the "After" row above.
 
 The checks are the whole gap to C. The overflow checks cost no measurable
 time: without them the program ran fewer instructions but no faster.

@@ -8,17 +8,18 @@ iteration. The writes inside the loop then skip the count check for that
 array. Nothing in the loop shares the local when the loop reads it only
 with `len`, or by an index built from variables, literals, fields, `len`
 and operators, and never binds it, passes it, stores it, returns it,
-replaces it, declares it, or reads it for the last time. An index that calls a function or holds a
-block, such as `a[if c { a[0] = 9; 0 } else { 1 }]`, keeps a second
-reference to the array while it runs, so the write inside it must still
-check the count.
+replaces it, declares it, or reads it for the last time. An index that
+calls a function or holds a block, such as `a[if c { a[0] = 9; 0 } else
+{ 1 }]`, keeps a second reference to the array while it runs, so the
+write inside it must still check the count.
 
 We chose this for performance, which ADR 0006 ranks last, because it
 changes no value. The count check made the array's pointer change inside
-the loop as far as LLVM could tell, so LLVM kept the check and the length
-load in every iteration. On quicksort, moving the check out of the
-partition loop took the benchmark from 4.82 to 4.04 billion
-instructions, and its fastest run from 690 to 640 ms, against C's 610 in the same session
+the loop as far as LLVM could tell, so LLVM kept the check and the
+length load in every iteration. On quicksort, moving the check out of
+the partition loop took the benchmark from 4.82 to 4.04 billion
+instructions, and its fastest run from 690 to 640 ms, against C's 610 in
+the same session
 ([Benchmarks](../benchmarks.md#quicksort-on-an-array-value)). Swift's
 optimizer copies its copy-on-write check to the start of a loop when the
 array does not escape the loop, so that the checks inside it fold away.

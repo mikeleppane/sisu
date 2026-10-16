@@ -76,8 +76,9 @@ These are adopted. Together they give Sisu a working imperative core.
 - `panic("why")`, which stops the program with a message, and the keyword
   `todo`, which does the same and warns at compile time; either may stand on
   the right of `??`, as in `name ?? panic("no name")`
-- copy-on-write arrays: `let b = a` shares until one of them is written, and a
-  counted local's last read moves it instead of copying
+- copy-on-write arrays: `let b = a` shares until one of them is written, or
+  until a loop that writes one of them starts (ADR 0021), and a counted
+  local's last read moves it instead of copying
 - `let _ = e` and `for _ in ...`, which drop a value without a name;
   shadowing in the same scope; `0x`, `0b` and `0o` integer literals; block
   expressions such as `let a = { ... }`; and top-level `const`
