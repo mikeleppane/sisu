@@ -1780,7 +1780,10 @@ impl<'a> Parser<'a> {
                 });
             }
         };
-        Err(DiagnosticKind::TodoForm { at, delete }.into())
+        // A word right after the deleted text would join `todo`: `todo!x` is not `todo x`.
+        let rest = &self.source[delete.end()..];
+        let safe = !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        Err(DiagnosticKind::TodoForm { at, delete, safe }.into())
     }
 
     /// The rest of a string literal with interpolations, after its `StrHead` at `start` with the
@@ -3265,6 +3268,24 @@ mod tests {
             let src = format!("fn main() {{\n    {line}\n}}");
             assert_eq!(parse_err(&src), (Code::TodoForm, 2, col), "{src}");
             assert_eq!(fixed(&src), format!("fn main() {{\n    {after}\n}}"));
+        }
+    }
+
+    /// A removal that would join `todo` to the word after it, as `todo!x` to `todox`, is an
+    /// unsafe fix; a symbol after it keeps the fix safe.
+    #[test]
+    fn todo_fix_before_a_word_is_unsafe() {
+        for (line, safe) in [
+            ("todo!x", false),
+            ("todo!0e", false),
+            ("todo()_", false),
+            ("todo!()y", false),
+            ("todo!+1", true),
+        ] {
+            let src = format!("fn main() {{\n    {line}\n}}");
+            let d = parse_diagnostic(&src);
+            assert_eq!(d.code(), Code::TodoForm, "{src}");
+            assert_eq!(fix_edits(&d).map(|(s, _)| s), Some(safe), "{src}");
         }
     }
 

@@ -592,8 +592,9 @@ pub(crate) enum DiagnosticKind {
     /// The `todo` at `at`, which panics when it runs.
     TodoLeft { at: Span },
     /// A `todo` written as Rust's `todo!` or as `todo()`: `at` is the first extra token, and
-    /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`.
-    TodoForm { at: Span, delete: Span },
+    /// `delete` is the text whose removal leaves bare `todo` or `todo(message)`; unless `safe`, the
+    /// removal joins `todo` to the word after it.
+    TodoForm { at: Span, delete: Span, safe: bool },
     /// The conversion to `to` at `at`, in a constant's value, which can fail; `fix` is the
     /// literal that replaces it, when the value is known and a literal shows it plainly.
     ConversionInConstant {
@@ -2154,14 +2155,14 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::TodoLeft { at } => {
                 Diagnostic::coded(code, at, "`todo` panics when it runs")
             }
-            DiagnosticKind::TodoForm { at, delete } => Diagnostic::coded(
+            DiagnosticKind::TodoForm { at, delete, safe } => Diagnostic::coded(
                 code,
                 at,
                 "`todo` takes one message in parentheses, or none",
             )
             .with_fix(Fix {
                 message: "remove it".to_string(),
-                safe: true,
+                safe,
                 edits: vec![Edit {
                     span: delete,
                     replacement: String::new(),
