@@ -163,6 +163,14 @@ codes! {
     VariantForm = "E0119",
     MemberKind = "E0120",
     EnumField = "E0121",
+    MatchIdiom = "E0122",
+    PatternForm = "E0123",
+    CannotMatch = "E0124",
+    NotVariantHere = "E0125",
+    ConstantInPattern = "E0126",
+    OnlyNamePosition = "E0127",
+    SubpatternCount = "E0128",
+    BoundTwice = "E0129",
     NanComparison = "W0005",
 }
 
@@ -397,6 +405,8 @@ pub(crate) enum DiagnosticKind {
         keyword: Unwrap,
         found: String,
         at: Span,
+        /// Whether `found` is a type `==` compares: `i64`, `u8`, `bool`, `string` or `char`.
+        compare: bool,
     },
     /// A call at `at` of `name`, which names no function.
     FunctionNotFound {
@@ -673,6 +683,35 @@ pub(crate) enum DiagnosticKind {
     },
     /// The field at `at`, read or assigned on a value of the enum `enum_name`.
     EnumField { enum_name: String, at: Span },
+    /// An idiom of another language for an enum or `match`, at `at`.
+    MatchIdiom { form: MatchIdiomForm, at: Span },
+    /// A pattern written another language's way, from `at`.
+    PatternForm { form: ForeignPattern, at: Span },
+    /// The scrutinee at `at`, of type `ty`, which `match` cannot take.
+    CannotMatch { ty: String, at: Span },
+    /// The upper-case name `name`, at `at`, in a pattern where no enum is expected.
+    NotVariantHere { name: String, at: Span },
+    /// The constant `name`, at `at`, written as a pattern.
+    ConstantInPattern { name: String, at: Span },
+    /// The pattern at `at`, neither a name nor `_`, at a position of type `ty`, which takes only
+    /// those.
+    OnlyNamePosition { ty: String, at: Span },
+    /// The pattern at `at` for `variant`, which has `fields` fields, with `found` sub-patterns.
+    SubpatternCount {
+        variant: String,
+        fields: usize,
+        found: usize,
+        at: Span,
+    },
+    /// The name `name`, at `at`, bound again in one pattern; `first` is its first binding.
+    BoundTwice { name: String, at: Span, first: Span },
+    /// The pattern at `at`, `found` as written (`Shape.Circle`, `None`), at a position of type
+    /// `want`.
+    PatternMismatch {
+        want: String,
+        found: String,
+        at: Span,
+    },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -776,7 +815,7 @@ pub(crate) enum Unwrap {
 }
 
 impl Unwrap {
-    fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Unwrap::IfLet => "if let",
             Unwrap::WhileLet => "while let",
@@ -895,6 +934,7 @@ pub(crate) enum SemicolonPlace {
 pub(crate) enum Member {
     Field,
     Variant,
+    Arm,
 }
 
 impl std::fmt::Display for Member {
@@ -902,8 +942,41 @@ impl std::fmt::Display for Member {
         f.write_str(match self {
             Member::Field => "field",
             Member::Variant => "variant",
+            Member::Arm => "arm",
         })
     }
+}
+
+/// The idiom of another language that a `MatchIdiom` reports, at the diagnostic's span.
+pub(crate) enum MatchIdiomForm {
+    /// `switch` for `match`.
+    Switch,
+    /// `case` starting an arm; `remove` is `case ` and, for Swift's `case let .p`, `let ` and the
+    /// `.`.
+    Case { remove: Vec<Span> },
+    /// `default:` starting an arm.
+    Default,
+    /// `else` starting an arm, before its `=>`.
+    Else,
+    /// `->` after an arm's pattern.
+    Arrow,
+    /// `class` after `enum`, in the enum `name`; `remove` is it and the spaces after it.
+    EnumClass { name: String, remove: Span },
+    /// `::` between `name` and `member`.
+    Path { name: String, member: String },
+}
+
+/// A pattern written another language's way. `form` is how Sisu writes it: `Rect(x, y)`.
+pub(crate) enum ForeignPattern {
+    /// Labels on the sub-patterns; `labels` are each `label: ` the fix deletes.
+    Labels { form: String, labels: Vec<Span> },
+    /// Rust's braces, `Rect { w, h }`; `replace` is what the fix replaces with `(w, h)`, from the
+    /// end of the name through the `}`.
+    Braces {
+        form: String,
+        replace: Span,
+        fields: String,
+    },
 }
 
 /// What owns a method.
@@ -1018,7 +1091,9 @@ impl DiagnosticKind {
             DiagnosticKind::MainSignature { .. } => Code::MainSignature,
             DiagnosticKind::UnknownType { .. } => Code::UnknownType,
             DiagnosticKind::BodyHasNoValue { .. } => Code::BodyHasNoValue,
-            DiagnosticKind::Mismatch { .. } => Code::Mismatch,
+            DiagnosticKind::Mismatch { .. } | DiagnosticKind::PatternMismatch { .. } => {
+                Code::Mismatch
+            }
             DiagnosticKind::BindingNotFound { .. } => Code::BindingNotFound,
             DiagnosticKind::DefinedTwice { .. } => Code::DefinedTwice,
             DiagnosticKind::ForNeedsArray { .. } => Code::ForNeedsArray,
@@ -1104,6 +1179,14 @@ impl DiagnosticKind {
             DiagnosticKind::VariantForm { .. } => Code::VariantForm,
             DiagnosticKind::MemberKind { .. } => Code::MemberKind,
             DiagnosticKind::EnumField { .. } => Code::EnumField,
+            DiagnosticKind::MatchIdiom { .. } => Code::MatchIdiom,
+            DiagnosticKind::PatternForm { .. } => Code::PatternForm,
+            DiagnosticKind::CannotMatch { .. } => Code::CannotMatch,
+            DiagnosticKind::NotVariantHere { .. } => Code::NotVariantHere,
+            DiagnosticKind::ConstantInPattern { .. } => Code::ConstantInPattern,
+            DiagnosticKind::OnlyNamePosition { .. } => Code::OnlyNamePosition,
+            DiagnosticKind::SubpatternCount { .. } => Code::SubpatternCount,
+            DiagnosticKind::BoundTwice { .. } => Code::BoundTwice,
             DiagnosticKind::NanComparison { .. } => Code::NanComparison,
         }
     }
@@ -1335,7 +1418,9 @@ impl From<DiagnosticKind> for Diagnostic {
                 member,
                 remove,
                 replacement,
-            } => Diagnostic::coded(code, at, format!("a {member} ends at the end of the line"))
+            } => {
+                let article = if matches!(member, Member::Arm) { "an" } else { "a" };
+                Diagnostic::coded(code, at, format!("{article} {member} ends at the end of the line"))
                 .with_help(format!("put each {member} on its own line"))
                 .with_fix(Fix {
                     message: "remove the comma and break the line".to_string(),
@@ -1344,7 +1429,8 @@ impl From<DiagnosticKind> for Diagnostic {
                         span: remove,
                         replacement,
                     }],
-                }),
+                })
+            }
             DiagnosticKind::FieldLet { at, rest } => {
                 let d = Diagnostic::coded(code, at, "a field takes no `let`");
                 match rest {
@@ -1737,11 +1823,26 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, format!("cannot infer the type of `{literal}`"))
                     .with_help(format!("write the type: `{example}`"))
             }
-            DiagnosticKind::UnwrapNeedsOptional { keyword, found, at } => Diagnostic::coded(
-                code,
+            DiagnosticKind::UnwrapNeedsOptional {
+                keyword,
+                found,
                 at,
-                format!("`{}` needs an optional; this is `{found}`", keyword.word()),
-            ),
+                compare,
+            } => {
+                let d = Diagnostic::coded(
+                    code,
+                    at,
+                    format!(
+                        "`{}` needs an enum or an optional; this is `{found}`",
+                        keyword.word()
+                    ),
+                );
+                if compare {
+                    d.with_help("compare with `==`")
+                } else {
+                    d
+                }
+            }
             DiagnosticKind::FunctionNotFound {
                 name,
                 at,
@@ -2430,6 +2531,114 @@ impl From<DiagnosticKind> for Diagnostic {
                 at,
                 format!("`{enum_name}` has no fields; take it apart with `match`"),
             ),
+            DiagnosticKind::MatchIdiom { form, at } => match form {
+                MatchIdiomForm::Switch => Diagnostic::coded(code, at, "Sisu writes `match`")
+                    .with_fix(unsafe_fix("write `match`", at, "match")),
+                MatchIdiomForm::Case { remove } => Diagnostic::coded(
+                    code,
+                    at,
+                    "an arm is `pattern => body`, with no `case`",
+                )
+                .with_fix(Fix {
+                    message: "remove the `case`".to_string(),
+                    safe: false,
+                    edits: remove
+                        .into_iter()
+                        .map(|span| Edit {
+                            span,
+                            replacement: String::new(),
+                        })
+                        .collect(),
+                }),
+                MatchIdiomForm::Default => Diagnostic::coded(code, at, "write `_ =>`")
+                    .with_fix(safe_fix("write `_ =>`", at, "_ =>")),
+                MatchIdiomForm::Else => Diagnostic::coded(code, at, "write `_ =>`")
+                    .with_fix(safe_fix("write `_`", at, "_")),
+                MatchIdiomForm::Arrow => Diagnostic::coded(code, at, "an arm uses `=>`")
+                    .with_fix(safe_fix("write `=>`", at, "=>")),
+                MatchIdiomForm::EnumClass { name, remove } => {
+                    Diagnostic::coded(code, at, format!("write `enum {name}`"))
+                        .with_fix(safe_fix("remove the `class`", remove, ""))
+                }
+                MatchIdiomForm::Path { name, member } => {
+                    Diagnostic::coded(code, at, format!("write `{name}.{member}`"))
+                        .with_fix(safe_fix("write `.`", at, "."))
+                }
+            },
+            DiagnosticKind::PatternForm { form, at } => match form {
+                ForeignPattern::Labels { form, labels } => Diagnostic::coded(
+                    code,
+                    at,
+                    format!("a pattern binds by position: `{form}`"),
+                )
+                .with_fix(Fix {
+                    message: "remove the labels".to_string(),
+                    // Labels out of order would swap the bindings.
+                    safe: false,
+                    edits: labels
+                        .into_iter()
+                        .map(|span| Edit {
+                            span,
+                            replacement: String::new(),
+                        })
+                        .collect(),
+                }),
+                ForeignPattern::Braces {
+                    form,
+                    replace,
+                    fields,
+                } => Diagnostic::coded(code, at, format!("write `{form}`")).with_fix(unsafe_fix(
+                    &format!("write `{form}`"),
+                    replace,
+                    &fields,
+                )),
+            },
+            DiagnosticKind::CannotMatch { ty, at } => {
+                Diagnostic::coded(code, at, format!("cannot `match` on `{ty}`"))
+                    .with_help("`match` takes enums, integers, `bool`, `char` and `string`")
+            }
+            DiagnosticKind::NotVariantHere { name, at } => {
+                let mut lower = name.clone();
+                // A name that is not a variant here starts with an upper-case letter.
+                if let Some(first) = name.chars().next() {
+                    lower.replace_range(..first.len_utf8(), &first.to_lowercase().to_string());
+                }
+                Diagnostic::coded(code, at, format!("`{name}` is not a variant here"))
+                    .with_help("a binding starts with a lower-case letter")
+                    .with_fix(unsafe_fix(&format!("write `{lower}`"), at, &lower))
+            }
+            DiagnosticKind::ConstantInPattern { name, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{name}` is a constant; a pattern cannot compare with it"),
+            ),
+            DiagnosticKind::OnlyNamePosition { ty, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("a `{ty}` position takes only a name or `_`"),
+            ),
+            DiagnosticKind::SubpatternCount {
+                variant,
+                fields,
+                found,
+                at,
+            } => {
+                let plural = if fields == 1 { "" } else { "s" };
+                Diagnostic::coded(
+                    code,
+                    at,
+                    format!("`{variant}` has {fields} field{plural}, the pattern has {found}"),
+                )
+            }
+            DiagnosticKind::BoundTwice { name, at, first } => {
+                Diagnostic::coded(code, at, format!("`{name}` is bound twice in this pattern"))
+                    .with_secondary(first, "first bound here")
+            }
+            DiagnosticKind::PatternMismatch { want, found, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("expected a pattern for `{want}`, found `{found}`"),
+            ),
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };
                 let d = Diagnostic::coded(
@@ -2561,6 +2770,14 @@ fn is_format(c: char) -> bool {
 }
 
 /// The unsafe fix `message` that replaces `span` with `replacement`.
+/// The safe fix `message` that replaces `span` with `replacement`.
+fn safe_fix(message: &str, span: Span, replacement: &str) -> Fix {
+    Fix {
+        safe: true,
+        ..unsafe_fix(message, span, replacement)
+    }
+}
+
 fn unsafe_fix(message: &str, span: Span, replacement: &str) -> Fix {
     Fix {
         message: message.to_string(),

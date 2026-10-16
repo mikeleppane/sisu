@@ -9,8 +9,8 @@ use crate::ast::{
     Variant,
 };
 use crate::diagnostic::{
-    self, BuiltIn, Diagnostic, DiagnosticKind, Join, LetField, Owner, PowerFix, SemicolonPlace,
-    Span,
+    self, BuiltIn, Diagnostic, DiagnosticKind, ForeignPattern, Join, LetField, MatchIdiomForm,
+    Owner, PowerFix, SemicolonPlace, Span,
 };
 use crate::lexer::{Lexed, MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
 use crate::symbol::Symbol;
@@ -837,6 +837,21 @@ impl<'a> Parser<'a> {
         methods: &mut Vec<Range<usize>>,
     ) -> Result<Enum, Diagnostic> {
         self.expect(&TokenKind::Enum)?;
+        // `class` is not `Eof`, so the token after it exists.
+        if self.at(&TokenKind::Class)
+            && let next = &self.tokens[self.pos + 1]
+            && let TokenKind::Ident(_) = next.kind
+        {
+            let class = self.peek().span;
+            return Err(DiagnosticKind::MatchIdiom {
+                form: MatchIdiomForm::EnumClass {
+                    name: self.source[next.span.range()].to_string(),
+                    remove: Span::new(class.start(), next.span.start()),
+                },
+                at: class,
+            }
+            .into());
+        }
         let name = self.name("an enum name")?;
         let owner = Owner::Enum(name.name.to_string());
         self.expect(&TokenKind::LBrace)?;
@@ -1267,29 +1282,55 @@ impl<'a> Parser<'a> {
                     name,
                     span: self.bump().span,
                 };
+                if let Some(error) = self.path_idiom(first.span) {
+                    return Err(error);
+                }
                 let (qualifier, name) = if self.eat(&TokenKind::Dot).is_some() {
                     (Some(first), self.ident("a variant name")?)
                 } else {
                     (None, first)
                 };
+                // The pattern as written up to the end of the variant name.
+                let path = Span::new(token.span.start(), name.span.end());
                 if self.at(&TokenKind::LParen) {
-                    let open = self.bump().span;
-                    let mut fields = Vec::new();
-                    while !self.at(&TokenKind::RParen) {
-                        fields.push(self.child(base, &mut reach, Self::pattern)?);
-                        if self.eat(&TokenKind::Comma).is_none() {
-                            break;
+                    let (fields, labels, parens) =
+                        self.sub_patterns(base, &mut reach, &TokenKind::RParen)?;
+                    if let Some(&(first_label, _)) = labels.first() {
+                        return Err(DiagnosticKind::PatternForm {
+                            form: ForeignPattern::Labels {
+                                form: format!(
+                                    "{}{}",
+                                    &self.source[path.range()],
+                                    self.listed(&fields)
+                                ),
+                                labels: labels.into_iter().map(|(_, remove)| remove).collect(),
+                            },
+                            at: first_label,
                         }
+                        .into());
                     }
-                    let close = self.expect(&TokenKind::RParen)?.span;
-                    let span = token.span.to(close);
+                    let span = token.span.to(parens);
                     let kind = PatternKind::Variant {
                         qualifier,
                         name,
                         fields,
-                        parens: Some(open.to(close)),
+                        parens: Some(parens),
                     };
                     (kind, span)
+                } else if self.at(&TokenKind::LBrace) {
+                    // Rust's `Rect { w, h }`, or with labels, `Rect { w: x, h: y }`.
+                    let (fields, _, braces) =
+                        self.sub_patterns(base, &mut reach, &TokenKind::RBrace)?;
+                    let fields = self.listed(&fields);
+                    return Err(DiagnosticKind::PatternForm {
+                        form: ForeignPattern::Braces {
+                            form: format!("{}{fields}", &self.source[path.range()]),
+                            replace: Span::new(path.end(), braces.end()),
+                            fields,
+                        },
+                        at: braces,
+                    }
+                    .into());
                 } else if qualifier.is_some() {
                     let span = token.span.to(name.span);
                     let kind = PatternKind::Variant {
@@ -1309,6 +1350,141 @@ impl<'a> Parser<'a> {
         Ok(Pattern { kind, span })
     }
 
+    /// The sub-patterns after the `(` or `{` at the next token, through `close`; the label
+    /// before each one that has it, with the span its fix deletes; and the span from the opening
+    /// token through `close`.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the one caller of each part takes it apart at once"
+    )]
+    fn sub_patterns(
+        &mut self,
+        base: usize,
+        reach: &mut usize,
+        close: &TokenKind,
+    ) -> Result<(Vec<Pattern>, Vec<(Span, Span)>, Span), Diagnostic> {
+        let open = self.bump().span;
+        let mut fields = Vec::new();
+        let mut labels = Vec::new();
+        while !self.at(close) {
+            if let Some(label) = self.pattern_label() {
+                labels.push(label);
+            }
+            fields.push(self.child(base, reach, Self::pattern)?);
+            if self.eat(&TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        let close = self.expect(close)?.span;
+        Ok((fields, labels, open.to(close)))
+    }
+
+    /// Skips a `label:` before a sub-pattern, and returns the label's span and the span from it
+    /// to the sub-pattern. `Name::` is no label: `pattern` reports the path.
+    fn pattern_label(&mut self) -> Option<(Span, Span)> {
+        let label = self.peek();
+        // A name is not `Eof`, so the token after it exists, and so does the one after a `:`.
+        if !matches!(label.kind, TokenKind::Ident(_))
+            || self.tokens[self.pos + 1].kind != TokenKind::Colon
+        {
+            return None;
+        }
+        let (colon, next) = (&self.tokens[self.pos + 1], &self.tokens[self.pos + 2]);
+        if next.kind == TokenKind::Colon && next.span.start() == colon.span.end() {
+            return None;
+        }
+        self.pos += 2;
+        Some((label.span, Span::new(label.span.start(), next.span.start())))
+    }
+
+    /// `patterns` as written, in parentheses: `(x, y)`.
+    fn listed(&self, patterns: &[Pattern]) -> String {
+        let written: Vec<&str> = patterns
+            .iter()
+            .map(|p| &self.source[p.span.range()])
+            .collect();
+        format!("({})", written.join(", "))
+    }
+
+    /// C++'s and Rust's `Name::member` at the next token, after the name at `name`.
+    fn path_idiom(&self, name: Span) -> Option<Diagnostic> {
+        let first = self.peek();
+        if first.kind != TokenKind::Colon {
+            return None;
+        }
+        // A `:` is not `Eof`, so the token after each exists.
+        let second = &self.tokens[self.pos + 1];
+        if second.kind != TokenKind::Colon || second.span.start() != first.span.end() {
+            return None;
+        }
+        let member = &self.tokens[self.pos + 2];
+        let TokenKind::Ident(_) = member.kind else {
+            return None;
+        };
+        Some(
+            DiagnosticKind::MatchIdiom {
+                form: MatchIdiomForm::Path {
+                    name: self.source[name.range()].to_string(),
+                    member: self.source[member.span.range()].to_string(),
+                },
+                at: first.span.to(second.span),
+            }
+            .into(),
+        )
+    }
+
+    /// C's `switch e {` at the next token, a name `switch`: the expression after it is parsed
+    /// ahead, and the parser backs out when no `{` follows it.
+    fn switch_idiom(&mut self) -> Option<Diagnostic> {
+        let at = self.peek().span;
+        let (pos, depth, specs) = (self.pos, self.depth, self.specs.len());
+        self.bump();
+        let switch = self.expr().is_ok() && self.at(&TokenKind::LBrace);
+        self.pos = pos;
+        self.depth = depth;
+        self.specs.truncate(specs);
+        switch.then(|| {
+            DiagnosticKind::MatchIdiom {
+                form: MatchIdiomForm::Switch,
+                at,
+            }
+            .into()
+        })
+    }
+
+    /// `case`, `default:` or `else =>` where an arm starts.
+    fn arm_idiom(&self) -> Option<Diagnostic> {
+        let token = self.peek();
+        if !matches!(token.kind, TokenKind::Ident(_) | TokenKind::Else) {
+            return None;
+        }
+        // Neither is `Eof`, so the token after it exists.
+        let next = &self.tokens[self.pos + 1];
+        let text = &self.source[token.span.range()];
+        let (form, at) = match (&token.kind, &next.kind) {
+            (TokenKind::Ident(_), kind) if text == "case" && *kind != TokenKind::FatArrow => {
+                // Swift's `case let .some(x)` also loses its `let` and its `.`. A `let` is not
+                // `Eof`, so the token after it exists.
+                let mut remove = vec![Span::new(token.span.start(), next.span.start())];
+                let mut after = next;
+                if next.kind == TokenKind::Let {
+                    after = &self.tokens[self.pos + 2];
+                    remove.push(Span::new(next.span.start(), after.span.start()));
+                }
+                if after.kind == TokenKind::Dot {
+                    remove.push(after.span);
+                }
+                (MatchIdiomForm::Case { remove }, token.span)
+            }
+            (TokenKind::Ident(_), TokenKind::Colon) if text == "default" => {
+                (MatchIdiomForm::Default, token.span.to(next.span))
+            }
+            (TokenKind::Else, TokenKind::FatArrow) => (MatchIdiomForm::Else, token.span),
+            _ => return None,
+        };
+        Some(DiagnosticKind::MatchIdiom { form, at }.into())
+    }
+
     /// `match scrutinee {`, then one arm per line, then `}`.
     fn match_expr(&mut self) -> Result<Expr, Diagnostic> {
         let keyword = self.bump().span;
@@ -1320,6 +1496,9 @@ impl<'a> Parser<'a> {
         let mut arms = Vec::new();
         while !self.at(&TokenKind::RBrace) {
             arms.push(self.child(base, &mut reach, Self::arm)?);
+            if self.at(&TokenKind::Comma) {
+                return Err(self.member_comma(diagnostic::Member::Arm));
+            }
             if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
                 return Err(self.end_of_line());
             }
@@ -1341,7 +1520,17 @@ impl<'a> Parser<'a> {
     fn arm(&mut self) -> Result<Arm, Diagnostic> {
         let base = self.depth;
         let mut reach = base;
+        if let Some(error) = self.arm_idiom() {
+            return Err(error);
+        }
         let pattern = self.child(base, &mut reach, Self::pattern)?;
+        if self.at(&TokenKind::Arrow) {
+            return Err(DiagnosticKind::MatchIdiom {
+                form: MatchIdiomForm::Arrow,
+                at: self.peek().span,
+            }
+            .into());
+        }
         self.expect(&TokenKind::FatArrow)?;
         let body = self.child(base, &mut reach, Self::arm_body)?;
         self.depth = reach;
@@ -1771,6 +1960,10 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per kind of operand, so the dispatch reads in one place"
+    )]
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.peek().clone();
         let kind = match token.kind {
@@ -1821,7 +2014,15 @@ impl<'a> Parser<'a> {
                 ExprKind::NoneLit
             }
             TokenKind::Ident(name) => {
+                if &self.source[token.span.range()] == "switch"
+                    && let Some(error) = self.switch_idiom()
+                {
+                    return Err(error);
+                }
                 self.bump();
+                if let Some(error) = self.path_idiom(token.span) {
+                    return Err(error);
+                }
                 if self.at(&TokenKind::LParen) {
                     let (args, close) = self.args()?;
                     return Ok(Expr {
@@ -3212,6 +3413,10 @@ mod tests {
             ("match e => 1", 1, 13),
             ("match e {\n    A(a b) => 1\n}", 2, 9),
             ("match e {\n    A => return *\n}", 2, 17),
+            ("match e {\n    A { w => 1 }\n}", 2, 11),
+            // `::` takes a name, with nothing between its colons.
+            ("let c = C::1", 1, 14),
+            ("let c = C: :D", 1, 14),
         ];
         for (src, line, col) in rows {
             assert_eq!(
@@ -3219,6 +3424,169 @@ mod tests {
                 (Code::Expected, line + 1, col),
                 "{src}"
             );
+        }
+    }
+
+    /// Another language's way of writing a `match`, an enum or a pattern, and a comma after an
+    /// arm: each at its token, with its fix.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row per idiom, so the table reads in one place"
+    )]
+    fn match_errors() {
+        let main = |body: &str| format!("fn main() {{\n{body}\n}}");
+        let arm = |arm: &str| main(&format!("    match e {{\n        {arm}\n    }}"));
+        // Each row: the source, its code, the position and text of the label, whether the fix
+        // is safe, and the source the fix gives.
+        let rows = [
+            (
+                main("    let x = switch e {\n        A => 1\n    }"),
+                Code::MatchIdiom,
+                (2, 13, "switch"),
+                false,
+                main("    let x = match e {\n        A => 1\n    }"),
+            ),
+            (
+                main("    switch (e) {\n        A => 1\n    }"),
+                Code::MatchIdiom,
+                (2, 5, "switch"),
+                false,
+                main("    match (e) {\n        A => 1\n    }"),
+            ),
+            (
+                arm("case A => 1"),
+                Code::MatchIdiom,
+                (3, 9, "case"),
+                false,
+                arm("A => 1"),
+            ),
+            (
+                arm("case let .a(x) => 1"),
+                Code::MatchIdiom,
+                (3, 9, "case"),
+                false,
+                arm("a(x) => 1"),
+            ),
+            (
+                arm("default: 1"),
+                Code::MatchIdiom,
+                (3, 9, "default:"),
+                true,
+                arm("_ => 1"),
+            ),
+            (
+                arm("default:\n            1"),
+                Code::MatchIdiom,
+                (3, 9, "default:"),
+                true,
+                arm("_ =>\n            1"),
+            ),
+            (
+                arm("else => 1"),
+                Code::MatchIdiom,
+                (3, 9, "else"),
+                true,
+                arm("_ => 1"),
+            ),
+            (
+                arm("A -> 1"),
+                Code::MatchIdiom,
+                (3, 11, "->"),
+                true,
+                arm("A => 1"),
+            ),
+            (
+                "enum class Color {\n    Red\n}".to_string(),
+                Code::MatchIdiom,
+                (1, 6, "class"),
+                true,
+                "enum Color {\n    Red\n}".to_string(),
+            ),
+            (
+                main("    let x = Color::Red"),
+                Code::MatchIdiom,
+                (2, 18, "::"),
+                true,
+                main("    let x = Color.Red"),
+            ),
+            (
+                arm("Color::Red => 1"),
+                Code::MatchIdiom,
+                (3, 14, "::"),
+                true,
+                arm("Color.Red => 1"),
+            ),
+            (
+                arm("Rect(w: x, h: y) => 1"),
+                Code::PatternForm,
+                (3, 14, "w"),
+                false,
+                arm("Rect(x, y) => 1"),
+            ),
+            (
+                arm("Rect(w:x, h:y) => 1"),
+                Code::PatternForm,
+                (3, 14, "w"),
+                false,
+                arm("Rect(x, y) => 1"),
+            ),
+            (
+                arm("Rect(Shape::Wide) => 1"),
+                Code::MatchIdiom,
+                (3, 19, "::"),
+                true,
+                arm("Rect(Shape.Wide) => 1"),
+            ),
+            (
+                arm("case .a(x) => 1"),
+                Code::MatchIdiom,
+                (3, 9, "case"),
+                false,
+                arm("a(x) => 1"),
+            ),
+            (
+                arm("Rect { w, h } => 1"),
+                Code::PatternForm,
+                (3, 14, "{ w, h }"),
+                false,
+                arm("Rect(w, h) => 1"),
+            ),
+            (
+                main("    match e {\n        A => 1,\n        B => 2\n    }"),
+                Code::FieldComma,
+                (3, 15, ","),
+                true,
+                main("    match e {\n        A => 1\n        B => 2\n    }"),
+            ),
+            (
+                main("    match e {\n        A => 1, B => 2\n    }"),
+                Code::FieldComma,
+                (3, 15, ","),
+                true,
+                main("    match e {\n        A => 1\n        B => 2\n    }"),
+            ),
+        ];
+        for (src, code, (line, col, text), safe, expected) in rows {
+            let d = parse_diagnostic(&src);
+            assert_eq!(d.code(), code, "{src}");
+            let span = d.span();
+            assert_eq!(
+                (line_col(&src, span.start()), &src[span.range()]),
+                ((line, col), text),
+                "{src}"
+            );
+            let (fix_safe, _) = fix_edits(&d).expect("each row's error has a fix");
+            assert_eq!(fix_safe, safe, "{src}");
+            assert_eq!(apply_fix(&src, &d), expected, "{src}");
+        }
+        // A name `switch`, `case` or `default` is still a name where no idiom fits. A call
+        // `switch(x)` followed by `{` reads as C's `switch`.
+        for src in [
+            "fn main() {\n    let x = switch\n    let y = switch(1) + 1\n}",
+            "fn main() {\n    match e {\n        case => 1\n        default => 2\n    }\n}",
+        ] {
+            parse_ok(src);
         }
     }
 

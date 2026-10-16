@@ -1,0 +1,15 @@
+error[E0125]: `Big` is not a variant here
+ --> E0125.sisu:9:9
+  |
+9 |         Big => print(1)
+  |         ^^^
+  |
+  = help: a binding starts with a lower-case letter
+help: write `big`
+  |
+9 -         Big => print(1)
+9 +         big => print(1)
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0125

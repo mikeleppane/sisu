@@ -6,6 +6,7 @@ mod constant;
 mod enums;
 mod expr;
 mod number;
+mod pattern;
 mod place;
 mod prelude;
 mod stmt;
@@ -339,6 +340,7 @@ impl Checker<'_> {
                     self.enums.push(EnumInfo {
                         name: e.name.clone(),
                         variants: Vec::new(),
+                        index: FxHashMap::default(),
                         methods: FxHashMap::default(),
                     });
                     if !self.built_in(&e.name)
@@ -822,7 +824,9 @@ impl Checker<'_> {
                 .zip(source.filter(|e| {
                     !matches!(
                         e.kind,
-                        ast::ExprKind::If { .. } | ast::ExprKind::IfLet { .. }
+                        ast::ExprKind::If { .. }
+                            | ast::ExprKind::IfLet { .. }
+                            | ast::ExprKind::Match { .. }
                     )
                 }))
                 .map(|(to, e)| {

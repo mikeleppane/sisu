@@ -1,0 +1,12 @@
+enum State {
+    Idle
+    Busy
+}
+
+fn main() {
+    let s = State.Idle
+    match s {
+        Idle() => print(0)
+        _ => print(1)
+    }
+}

@@ -971,6 +971,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 return None;
             }
             ExprKind::ReadLine => return Some(self.read_line().into()),
+            ExprKind::Match { .. } => panic!("match lands in Task 9"),
         };
         Some(value.into())
     }

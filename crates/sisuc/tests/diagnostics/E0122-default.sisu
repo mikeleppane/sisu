@@ -1,0 +1,13 @@
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+}
+
+fn eval(e: Expr) -> i64 {
+    match e {
+        Num(n) => n
+        default: 0
+    }
+}
+
+fn main() {}

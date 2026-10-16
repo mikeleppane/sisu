@@ -8,6 +8,9 @@
 //!   `Interpolate` its parts; `Index` evaluates base then index; `Contains` base then value;
 //!   `ArrayFill` value then length; `Equal`, `Is`, `Concat` and arithmetic lhs then rhs.
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
+//! - `Match` evaluates its scrutinee, then tests the arms' patterns in order and runs the body
+//!   of the first that matches, its bindings defined. So the set live at an arm's test is
+//!   what its body reads joined with what the next arm's test reads, its bindings killed.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
 //! - Assigning an element evaluates a field root's base, then the indexes from the root
@@ -187,6 +190,24 @@ impl Walk {
                 else_block,
             } => {
                 self.branches(then_block, Some(*bind), else_block.as_mut());
+                self.expr(scrutinee);
+            }
+            ExprKind::Match {
+                scrutinee, arms, ..
+            } => {
+                let after = self.live.clone();
+                // The set live at the next arm's test; no test follows the last arm's.
+                let mut next = vec![false; after.len()];
+                for arm in arms.iter_mut().rev() {
+                    self.live.clone_from(&after);
+                    self.block(&mut arm.body);
+                    self.join(&next);
+                    for bind in &arm.bindings {
+                        self.live[bind.0] = false;
+                    }
+                    next.clone_from(&self.live);
+                }
+                self.live = next;
                 self.expr(scrutinee);
             }
             ExprKind::Loop(body) => self.looped(body),

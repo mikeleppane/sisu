@@ -15,6 +15,8 @@ pub(super) struct EnumInfo {
     pub(super) name: ast::Ident,
     /// The first variant of each name, in declaration order.
     pub(super) variants: Vec<VariantInfo>,
+    /// Each variant's index in `variants`, by name.
+    pub(super) index: FxHashMap<Symbol, usize>,
     /// The first method of each name that no variant takes, and every broken one.
     pub(super) methods: FxHashMap<Symbol, Declared<tir::FuncId>>,
 }
@@ -29,7 +31,7 @@ pub(super) struct VariantInfo {
 
 /// The name milestone 8's prelude takes, which no item, variant or binding may take, and what
 /// it is there.
-fn reserved_name(name: &str) -> Option<BuiltIn> {
+pub(super) fn reserved_name(name: &str) -> Option<BuiltIn> {
     match name {
         "Option" | "Result" => Some(BuiltIn::Type),
         "Some" | "Ok" | "Err" => Some(BuiltIn::Constructor),
@@ -101,7 +103,9 @@ impl Checker<'_> {
                 .map(|field| self.resolve(&field.ty))
                 .collect();
             if self.first_definition(&mut first, Definition::Variant, Some(owner), name) {
-                self.enums[id.0].variants.push(VariantInfo {
+                let info = &mut self.enums[id.0];
+                info.index.insert(name.name, info.variants.len());
+                info.variants.push(VariantInfo {
                     name: name.clone(),
                     fields,
                     labels: payload
@@ -139,11 +143,7 @@ impl Checker<'_> {
     ) -> Checked {
         let info = &self.enums[id.0];
         let enum_name = info.name.name.as_str();
-        let Some(variant) = info
-            .variants
-            .iter()
-            .position(|v| v.name.name == member.name)
-        else {
+        let Some(&variant) = info.index.get(&member.name) else {
             match info.methods.get(&member.name) {
                 Some(Declared::Known(_)) => self.report(DiagnosticKind::MemberKind {
                     name: member.name.to_string(),

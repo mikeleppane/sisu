@@ -1,0 +1,16 @@
+class Point {
+    x: i64
+}
+
+enum Item {
+    Wrapped(Point)
+    Num(i64)
+}
+
+fn main() {
+    let i = Item.Num(1)
+    match i {
+        Wrapped(Num(n)) => print(n)
+        _ => print(0)
+    }
+}

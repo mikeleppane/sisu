@@ -1,0 +1,8 @@
+error[E0119]: `Num` needs its payload: `Num(...)`
+ --> E0119-pattern-bare.sisu:9:9
+  |
+9 |         Num => print(1)
+  |         ^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0119

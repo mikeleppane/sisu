@@ -1,8 +1,10 @@
-error[E0051]: `while let` needs an optional; this is `i64`
+error[E0051]: `while let` needs an enum or an optional; this is `i64`
  --> E0051-while.sisu:3:19
   |
 3 |     while let x = n {
   |                   ^
+  |
+  = help: compare with `==`
 
 sisuc: 1 error
 sisuc: for more on a code, run `sisuc --explain <code>`: E0051

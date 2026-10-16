@@ -1,0 +1,11 @@
+enum Shape {
+    Rect(w: i64, h: i64)
+}
+
+fn area(s: Shape) -> i64 {
+    match s {
+        Rect(w: x, h: y) => x * y
+    }
+}
+
+fn main() {}

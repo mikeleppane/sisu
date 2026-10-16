@@ -1,0 +1,8 @@
+error[E0118]: `Expr` has no variant `Mul`
+ --> E0118-pattern.sisu:9:9
+  |
+9 |         Mul(a, b) => print(1)
+  |         ^^^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0118

@@ -23,7 +23,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0012](E0012.md) | error | `;` at the end of a statement |
 | [E0013](E0013.md) | error | `var` instead of `let mut` |
 | [E0014](E0014.md) | error | optional of an optional |
-| [E0015](E0015.md) | error | field or variant list on one line |
+| [E0015](E0015.md) | error | field, variant or arm list on one line |
 | [E0016](E0016.md) | error | `let` in front of a field |
 | [E0017](E0017.md) | error | method without `self` |
 | [E0018](E0018.md) | error | `mut self` on a method |
@@ -59,7 +59,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0048](E0048.md) | error | `??` on a value that is not optional |
 | [E0049](E0049.md) | error | `?.` on a value that is not optional |
 | [E0050](E0050.md) | error | `None` without a type |
-| [E0051](E0051.md) | error | `if let` or `while let` on a value that is not optional |
+| [E0051](E0051.md) | error | `if let` or `while let` on a value that is not an enum or optional |
 | [E0052](E0052.md) | error | call of a function that does not exist |
 | [E0053](E0053.md) | error | call with the wrong number of arguments |
 | [E0054](E0054.md) | error | conversion to the type the value already has |
@@ -130,6 +130,14 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0119](E0119.md) | error | variant built the wrong way |
 | [E0120](E0120.md) | error | variant or method used as the other |
 | [E0121](E0121.md) | error | field access on an enum |
+| [E0122](E0122.md) | error | an idiom of another language in an enum or `match` |
+| [E0123](E0123.md) | error | a pattern written another language's way |
+| [E0124](E0124.md) | error | `match` on a type it cannot take |
+| [E0125](E0125.md) | error | upper-case name where no enum is expected |
+| [E0126](E0126.md) | error | constant in a pattern |
+| [E0127](E0127.md) | error | only a name here |
+| [E0128](E0128.md) | error | wrong number of sub-patterns |
+| [E0129](E0129.md) | error | name bound twice in one pattern |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

@@ -1,0 +1,14 @@
+error[E0123]: write `Rect(w, h)`
+ --> E0123-braces.sisu:7:14
+  |
+7 |         Rect { w, h } => w * h
+  |              ^^^^^^^^
+  |
+help: write `Rect(w, h)`
+  |
+7 -         Rect { w, h } => w * h
+7 +         Rect(w, h) => w * h
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0123
