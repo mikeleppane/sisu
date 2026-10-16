@@ -81,8 +81,8 @@ pub(super) fn borrowed_local(base: &Expr) -> Option<LocalId> {
     }
 }
 
-/// The local that `index` loads without retaining it, as the base of an `Index` whose index is
-/// `index`: a local base, while the index passes `leaves_locals`.
+/// The local that `Codegen::index` loads without retaining it: a local `base`, while the
+/// parameter `index` passes `leaves_locals`.
 pub(super) fn borrowed_index_base(base: &Expr, index: &Expr) -> Option<LocalId> {
     borrowed_local(base).filter(|_| leaves_locals(index))
 }

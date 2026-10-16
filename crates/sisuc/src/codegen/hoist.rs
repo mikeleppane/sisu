@@ -92,7 +92,7 @@ impl Walk {
         }
     }
 
-    /// Walks `e`: a read of a local bars it, unless codegen borrows it there.
+    /// Walks `e`: a read of a local bars it, unless it is an `Index` base or a `Len` operand that codegen borrows.
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::Int(_)
