@@ -1358,7 +1358,12 @@ impl<'a> Parser<'a> {
         ) {
             self.stmt()?
         } else {
-            let kind = self.expr_or_assign()?;
+            // `primary` reports a `_` body without the `let _ =` fix, which no arm accepts.
+            let kind = if self.at(&TokenKind::Underscore) {
+                StmtKind::Expr(self.expr()?)
+            } else {
+                self.expr_or_assign()?
+            };
             Stmt {
                 kind,
                 span: start.to(self.last_span()),
@@ -3215,6 +3220,16 @@ mod tests {
                 "{src}"
             );
         }
+    }
+
+    /// `_` is no value, and `let _ =` is no arm body, so the error has no fix.
+    #[test]
+    fn underscore_arm_body_has_no_fix() {
+        let src = "fn main() {\n    match e {\n        A => _ = f()\n    }\n}";
+        let d = parse_diagnostic(src);
+        assert_eq!(d.code(), Code::UnderscoreValue);
+        assert_eq!(line_col(src, d.span().start()), (3, 14));
+        assert_eq!(fix_edits(&d), None);
     }
 
     #[test]
