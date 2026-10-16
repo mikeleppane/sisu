@@ -13,7 +13,7 @@ sections=200
 
 cargo build --release --locked -p sisuc -p sisu-runtime
 rm -rf "$out"
-mkdir -p "$out"/{fib,sieve,binary_trees,large,build_binary_trees,build_large}
+mkdir -p "$out"/{fib,sieve,binary_trees,quicksort,nbody,mandelbrot,fannkuch_redux,large,build_hello,build_binary_trees,build_large}
 
 fail() {
     echo "codspeed-prep: $*" >&2
@@ -32,27 +32,62 @@ reduce() {
 reduce fib 's/fib(40)/fib(27)/'
 reduce sieve 's/sieve(50_000_000)/sieve(1_000_000)/'
 reduce binary_trees 's/max_depth = 18/max_depth = 10/'
+reduce quicksort 's/let n = 10_000_000/let n = 100_000/'
+reduce nbody 's/let steps = 5_000_000/let steps = 100_000/'
+reduce mandelbrot 's/let n = 4000/let n = 400/'
+reduce fannkuch_redux 's/fannkuch(10)/fannkuch(9)/'
 
-# step0 returns its argument; stepi adds 1 through an array, a class and an
-# optional chain, then calls step(i-1). main prints step(N-1)(0) = N-1. Not fi:
-# f64 is a built-in type.
+# step0 returns its argument. stepi adds 1 through an array, a class and an
+# optional chain, and 0 through constants, an enum, f64 methods, a string built
+# with += and format specs, while let, u8 and char; then it calls step(i-1).
+# main prints step(N-1)(0) = N-1. Not fi: f64 is a built-in type.
 {
     echo 'fn step0(x: i64) -> i64 { x }'
     for ((i = 1; i < sections; i++)); do
         cat <<SISU
 
+const K$i = $i
+const HALF$i = 0.5
+
+enum Shape$i {
+    Dot
+    Circle(f64)
+    Rect(w: f64, h: f64)
+
+    fn is_dot(self) -> bool { self == Shape$i.Dot }
+}
+
 class C$i {
     v: i64
+    label: string
 
     fn get(self) -> i64 { self.v }
 }
 
+fn below$i(k: i64) -> i64? {
+    if k > 0 { k - 1 } else { None }
+}
+
 fn step$i(x: i64) -> i64 {
-    let xs = [x, $i, 1]
+    let xs = [x, K$i, 1]
     let mut sum = 0
     for v in xs { sum += v }
-    let c: C$i? = C$i(v: sum - x - xs[1])
-    step$((i - 1))(x + (c?.get() ?? 0))
+    let r = f64(K$i) * HALF$i
+    let area = (r * r * f64.pi).sqrt().max(0.0)
+    let shapes = [Shape$i.Circle(area), Shape$i.Rect(w: r, h: 2.0), Shape$i.Dot]
+    let mut text = "s$i"
+    text += "{area:>10.3}|{K$i:<4}|"
+    let mut k: i64? = 2
+    let mut spins = 0
+    while let n = k {
+        spins += 1
+        k = below$i(n)
+    }
+    let b = u8(spins) ?? 0
+    let first = text.chars()[0]
+    let zero = if shapes[2].is_dot() && first == 's' { i64(b) - spins } else { 1 }
+    let c: C$i? = C$i(v: sum - x - xs[1], label: text)
+    step$((i - 1))(x + (c?.get() ?? 0) + zero)
 }
 SISU
     done
@@ -96,6 +131,10 @@ expected() {
         fib) echo 196418 ;;
         sieve) echo 78498 ;;
         binary_trees) printf '%s\n' 4095 1024 31744 256 32512 64 32704 16 32752 2047 ;;
+        quicksort) echo 5315747952549993 ;;
+        nbody) printf '%s\n' -0.169075164 -0.169079859 ;;
+        mandelbrot) echo 63528 ;;
+        fannkuch_redux) printf '%s\n' 8629 'Pfannkuchen(9) = 30' ;;
         *) return 1 ;;
     esac
 }
