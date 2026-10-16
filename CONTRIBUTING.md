@@ -12,7 +12,8 @@ people and agents alike. This page is the route through them.
    reviewers check and no linter can.
 4. Use the words in [GLOSSARY.md](GLOSSARY.md), and read the decisions in
    [docs/adr](docs/adr) that touch your change.
-5. Finish with `make check` passing, as CI requires. Then run
+5. Finish with `make check` passing, as CI requires, and `make miri` too
+   when you change `crates/runtime`. Then run
    `make verify` on your diff, as [AGENTS.md](AGENTS.md) shows, and cover
    or explain each uncovered region and kill or explain each surviving
    mutant.

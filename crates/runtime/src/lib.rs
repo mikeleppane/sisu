@@ -260,13 +260,23 @@ pub extern "C" fn sisu_flush_stdout() {
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sisu_panic(msg: *const u8, len: usize) -> ! {
-    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
-    // `from_raw_parts` requires for a `u8` slice.
-    let bytes = unsafe { std::slice::from_raw_parts(msg, len) };
-    exit_with_panic(format_args!(
-        "sisu: panic at {}",
-        String::from_utf8_lossy(bytes)
-    ))
+    // SAFETY: the caller upholds the `# Safety` contract above, which is `raw_text`'s.
+    let msg = unsafe { raw_text(msg, len) };
+    exit_with_panic(format_args!("sisu: panic at {msg}"))
+}
+
+/// The `len` bytes at `msg` as text, each ill-formed sequence replaced by `U+FFFD`, for a
+/// panic line. The panic functions exit, so their tests run in a child process, out of Miri's
+/// reach; this function is what Miri checks of their reads.
+///
+/// # Safety
+///
+/// `msg` and `len` meet the contract of [`sisu_panic`].
+#[expect(unsafe_code, reason = "reads the raw pointer generated code passed")]
+unsafe fn raw_text<'a>(msg: *const u8, len: usize) -> std::borrow::Cow<'a, str> {
+    // SAFETY: the caller upholds the contract above, which is exactly what `from_raw_parts`
+    // requires for a `u8` slice.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(msg, len) })
 }
 
 /// Prints `sisu: panic at <at>: <msg>` to standard error and exits with code 101. Generated
@@ -287,19 +297,10 @@ pub unsafe extern "C" fn sisu_panic_message(
     msg: *const u8,
     msg_len: usize,
 ) -> ! {
-    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
-    // `from_raw_parts` requires for each `u8` slice.
-    let (at, msg) = unsafe {
-        (
-            std::slice::from_raw_parts(at, at_len),
-            std::slice::from_raw_parts(msg, msg_len),
-        )
-    };
-    exit_with_panic(format_args!(
-        "sisu: panic at {}: {}",
-        String::from_utf8_lossy(at),
-        String::from_utf8_lossy(msg)
-    ))
+    // SAFETY: the caller upholds the `# Safety` contract above, which is `raw_text`'s for
+    // each pair.
+    let (at, msg) = unsafe { (raw_text(at, at_len), raw_text(msg, msg_len)) };
+    exit_with_panic(format_args!("sisu: panic at {at}: {msg}"))
 }
 
 /// Prints `sisu: panic at <msg>: index <index> out of bounds for length <length>` to
@@ -320,12 +321,10 @@ pub unsafe extern "C" fn sisu_panic_bounds(
     index: i64,
     length: i64,
 ) -> ! {
-    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
-    // `from_raw_parts` requires for a `u8` slice.
-    let bytes = unsafe { std::slice::from_raw_parts(msg, len) };
+    // SAFETY: the caller upholds the `# Safety` contract above, which is `raw_text`'s.
+    let msg = unsafe { raw_text(msg, len) };
     exit_with_panic(format_args!(
-        "sisu: panic at {}: index {index} out of bounds for length {length}",
-        String::from_utf8_lossy(bytes)
+        "sisu: panic at {msg}: index {index} out of bounds for length {length}"
     ))
 }
 
@@ -502,10 +501,10 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_eprint_bool,
-        sisu_eprint_f64, sisu_eprint_int, sisu_flush_stdout, sisu_free, sisu_panic_bounds,
-        sisu_print_bool, sisu_print_f64, sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
-        sisu_realloc,
+        BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, raw_text, signal, sisu_alloc,
+        sisu_eprint_bool, sisu_eprint_f64, sisu_eprint_int, sisu_flush_stdout, sisu_free,
+        sisu_panic_bounds, sisu_print_bool, sisu_print_f64, sisu_print_int, sisu_rc_check_exit,
+        sisu_rc_fault, sisu_realloc, with_stdout,
     };
     use crate::text::{sisu_eprint_char, sisu_eprint_str};
     use std::os::fd::AsRawFd;
@@ -649,6 +648,7 @@ mod tests {
     /// Each `sisu_eprint_*` writes its text and a newline to standard error, a zero byte
     /// included.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn eprint_writes_each_type_and_a_newline() {
         let exe = std::env::current_exe().expect("test binary path");
         let out = Command::new(exe)
@@ -660,7 +660,47 @@ mod tests {
         assert_eq!(out.stderr, "-42\n-0.5\ntrue\nä\na\0b\n\n".as_bytes());
     }
 
+    /// `sisu_print_str` and `sisu_eprint_str` read their `len` bytes, a zero byte included, for
+    /// a nonempty and an empty string. The test runs in process, so Miri checks that neither
+    /// reads past `len`, which the child tests above do out of its reach. The buffered stdout
+    /// bytes are checked here; the stderr bytes only by `eprint_writes_each_type_and_a_newline`.
+    #[expect(unsafe_code, reason = "the test calls unsafe extern functions")]
     #[test]
+    fn str_output_reads_len_bytes() {
+        let text = b"a\0b";
+        // SAFETY: each slice's pointer is non-null and readable for its length.
+        unsafe {
+            crate::text::sisu_print_str(text.as_ptr(), text.len());
+            crate::text::sisu_print_str([].as_ptr(), 0);
+            sisu_eprint_str(text.as_ptr(), text.len());
+            sisu_eprint_str([].as_ptr(), 0);
+        }
+        // A terminal gets each line at once; otherwise both lines wait in the buffer.
+        with_stdout(|out| {
+            let line_buffered = out.sink.as_ref().is_some_and(|sink| sink.line_buffered);
+            assert!(
+                line_buffered || out.buffer.ends_with(b"a\0b\n\n"),
+                "{:?}",
+                out.buffer
+            );
+        });
+    }
+
+    /// `raw_text` reads exactly `len` bytes, for a nonempty and an empty message, and
+    /// replaces an ill-formed byte. Under Miri this checks the panic functions' reads.
+    #[expect(unsafe_code, reason = "the test calls an unsafe function")]
+    #[test]
+    fn raw_text_reads_len_bytes() {
+        let msg = b"f.sisu:3:7\xFF";
+        // SAFETY: each slice's pointer is non-null and readable for its length.
+        let (text, empty) =
+            unsafe { (raw_text(msg.as_ptr(), msg.len()), raw_text([].as_ptr(), 0)) };
+        assert_eq!(text, "f.sisu:3:7\u{FFFD}");
+        assert_eq!(empty, "");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn panic_bounds_exits_101_when_stderr_fails() {
         let exe = std::env::current_exe().expect("test binary path");
         let full = std::fs::OpenOptions::new()
@@ -703,38 +743,45 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn alloc_aborts_on_zero_size() {
         assert_child_aborts("zero");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn alloc_aborts_on_invalid_alignment() {
         assert_child_aborts("invalid_align");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn alloc_aborts_when_layout_overflows() {
         assert_child_aborts("overflow");
     }
 
     /// A compiler bug that breaks the string invariant stops the program.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn utf8_aborts_on_invalid_bytes() {
         assert_child_aborts("utf8_bytes");
     }
 
     /// So does a `[char]` holding a value that is no scalar value.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn utf8_aborts_on_invalid_scalar() {
         assert_child_aborts("utf8_scalar");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn realloc_aborts_on_zero_size() {
         assert_child_aborts("realloc_zero");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn realloc_aborts_when_layout_overflows() {
         assert_child_aborts("realloc_overflow");
     }
@@ -865,6 +912,7 @@ mod tests {
 
     /// `sisu_print_char` writes the character as UTF-8, then a newline.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn print_char_writes_utf8() {
         let out = run_rc_child("print_char");
         assert!(out.status.success(), "child exited with {:?}", out.status);
@@ -874,6 +922,7 @@ mod tests {
     /// `sisu_print_str` writes the bytes as they are, zero bytes included, then a newline; a
     /// string longer than the buffer still comes out in order, before the lines after it.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn print_str_writes_bytes_in_order() {
         let out = run_rc_child("print_str");
         assert!(out.status.success(), "child exited with {:?}", out.status);
@@ -912,6 +961,7 @@ mod tests {
     /// A standard output that is open but cannot be duplicated (EMFILE) is a failed write,
     /// not a closed standard output.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn print_panics_when_standard_output_cannot_be_duplicated() {
         assert_rc_exit(
             "dup_fails",
@@ -923,6 +973,7 @@ mod tests {
     /// A fault whose stdout flush fails still reports itself and exits 102, never 101 or a
     /// signal, whether stdout is full or a pipe with no reader.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn rc_fault_reports_when_the_stdout_flush_fails() {
         for case in ["fault_full_stdout", "fault_closed_stdout_pipe"] {
             assert_rc_exit(
@@ -935,6 +986,7 @@ mod tests {
 
     /// An `rc_fault` ends the program, so the lines printed before it must come out first.
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn rc_fault_flushes_buffered_output() {
         let out = run_rc_child("print_then_fault");
         assert_eq!(out.status.code(), Some(102), "{:?}", out.status);
@@ -945,11 +997,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn check_exit_passes_when_balanced() {
         assert_rc_exit("balanced", Some(0), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn check_exit_reports_live_objects() {
         assert_rc_exit(
             "leak",
@@ -959,6 +1013,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "spawns a child process, which Miri cannot")]
     fn rc_fault_exits_102() {
         assert_rc_exit(
             "fault1",

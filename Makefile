@@ -7,7 +7,7 @@ SECS =
 BENCH =
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build test bless lint deny check coverage mutants verify fuzz bench callgrind
+.PHONY: help setup build test bless lint deny miri check coverage mutants verify fuzz bench callgrind
 
 help: ## List the targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z]+:.*## / { printf "  %-10s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -37,7 +37,10 @@ lint: ## The hooks CI runs: fmt, clippy, typos, shellcheck and the rest
 deny: ## Audit the dependencies: advisories, licenses, sources
 	cargo deny check
 
-check: lint test deny ## What CI requires: lint, test and deny
+miri: ## Run the runtime's unit tests under Miri (nightly), which stops at undefined behaviour
+	cargo +nightly miri test -p sisu-runtime
+
+check: lint test deny ## Lint, test and deny; CI also runs make miri
 
 coverage: ## Coverage of the changes since BASE
 	scripts/coverage.sh "$(BASE)"
