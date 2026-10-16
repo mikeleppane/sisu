@@ -700,13 +700,14 @@ pub(crate) enum DiagnosticKind {
     CannotMatch { ty: String, at: Span },
     /// The upper-case name `name`, at `at`, in a pattern where no enum is expected.
     NotVariantHere { name: String, at: Span },
-    /// The constant `name`, at `at`, written as a pattern. `guard` is a name and the guard that
-    /// compares it with the constant, `n if n == LIMIT`, which the help shows: in a `match` arm,
-    /// and not for a range bound, where `n == LIMIT` would change what the range means.
+    /// The constant `name`, at `at`, written as a pattern. `guard` is the guard the help shows:
+    /// a name and the guard that compares it with the constant, `n if n == LIMIT`, or in words
+    /// in an arm with `|`; only in a `match` arm, and not for a range bound, where `n == LIMIT`
+    /// would change what the range means.
     ConstantInPattern {
         name: String,
         at: Span,
-        guard: Option<String>,
+        guard: Option<GuardHelp>,
     },
     /// The pattern at `at`, neither a name nor `_`, at a position of type `ty`, which takes only
     /// those.
@@ -724,7 +725,7 @@ pub(crate) enum DiagnosticKind {
         name: String,
         at: Span,
         first: Span,
-        guard: Option<TwiceGuard>,
+        guard: Option<GuardHelp>,
     },
     /// The pattern at `at`, `found` as written (`Shape.Circle`, `None`), at a position of type
     /// `want`.
@@ -1057,11 +1058,13 @@ pub(crate) enum ForeignRange {
     Ellipsis { start: String, end: Option<String> },
 }
 
-/// The guard `BoundTwice`'s help suggests.
-pub(crate) enum TwiceGuard {
-    /// The arm's pattern with the second binding renamed, and the guard that compares the two.
+/// The guard the help of `BoundTwice` or `ConstantInPattern` suggests.
+pub(crate) enum GuardHelp {
+    /// Written out: for `BoundTwice` the arm's pattern with the second binding renamed and the
+    /// guard that compares the two, for `ConstantInPattern` a name and the guard.
     Rewritten(String),
-    /// In words: the arm holds an `|`, whose other alternatives would not bind a renamed name.
+    /// In words: the arm holds an `|`, whose other alternatives would not bind the name the
+    /// guard reads.
     InWords,
 }
 
@@ -2733,7 +2736,12 @@ impl From<DiagnosticKind> for Diagnostic {
                     format!("`{name}` is a constant; a pattern cannot compare with it"),
                 );
                 match guard {
-                    Some(guard) => d.with_help(format!("use a guard: `{guard}`")),
+                    Some(GuardHelp::Rewritten(guard)) => {
+                        d.with_help(format!("use a guard: `{guard}`"))
+                    }
+                    Some(GuardHelp::InWords) => d.with_help(format!(
+                        "use a guard: bind a name and compare it with `{name}`"
+                    )),
                     None => d,
                 }
             }
@@ -2765,10 +2773,10 @@ impl From<DiagnosticKind> for Diagnostic {
                     Diagnostic::coded(code, at, format!("`{name}` is bound twice in this pattern"))
                         .with_secondary(first, "first bound here");
                 match guard {
-                    Some(TwiceGuard::Rewritten(guard)) => {
+                    Some(GuardHelp::Rewritten(guard)) => {
                         d.with_help(format!("use a guard: `{guard}`"))
                     }
-                    Some(TwiceGuard::InWords) => d.with_help(format!(
+                    Some(GuardHelp::InWords) => d.with_help(format!(
                         "use a guard: bind a second name and compare it with `{name}`"
                     )),
                     None => d,

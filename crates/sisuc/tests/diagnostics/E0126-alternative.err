@@ -4,7 +4,7 @@ error[E0126]: `LIMIT` is a constant; a pattern cannot compare with it
 11 |         Num(LIMIT) | Add(_, _) => print(n)
    |             ^^^^^
    |
-   = help: use a guard: `n2 if n2 == LIMIT`
+   = help: use a guard: bind a name and compare it with `LIMIT`
 
 sisuc: 1 error
 sisuc: for more on a code, run `sisuc --explain <code>`: E0126

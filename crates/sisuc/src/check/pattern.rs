@@ -11,7 +11,7 @@ use super::expr::Branch;
 use super::{Checked, CheckedBlock, Checker, Poisoned, type_of};
 use crate::ast;
 use crate::diagnostic::{
-    BadRange, Definition, DiagnosticKind, Span, TwiceGuard, Unwrap, suggestion,
+    BadRange, Definition, DiagnosticKind, GuardHelp, Span, Unwrap, suggestion,
 };
 use crate::symbol::Symbol;
 use crate::tir::{self, Type};
@@ -509,9 +509,14 @@ impl Checker<'_> {
             if self.constants.contains_key(&name.name) {
                 let candidates =
                     iter::once("n".to_string()).chain((2..).map(|n: u32| format!("n{n}")));
-                let guard = self
-                    .guard_help(bound, candidates)
-                    .map(|(fresh, own)| format!("{fresh} if {fresh} == {text}{own}"));
+                // Bound in one alternative of an `|`, the name would be missing from the others.
+                let guard = if bound.arm.is_some_and(|arm| has_or(&arm.pattern)) {
+                    Some(GuardHelp::InWords)
+                } else {
+                    self.guard_help(bound, candidates).map(|(fresh, own)| {
+                        GuardHelp::Rewritten(format!("{fresh} if {fresh} == {text}{own}"))
+                    })
+                };
                 self.report(DiagnosticKind::ConstantInPattern {
                     name: text.to_string(),
                     at: name.span,
@@ -928,13 +933,13 @@ impl Checker<'_> {
                 .chain((2..).map(|n: u32| format!("{written}{n}")));
             // Renamed in one alternative of an `|`, the name would be missing from the others.
             let guard = if bound.arm.is_some_and(|arm| has_or(&arm.pattern)) {
-                Some(TwiceGuard::InWords)
+                Some(GuardHelp::InWords)
             } else {
                 self.guard_help(bound, candidates).map(|(fresh, own)| {
                     let pattern = &self.source[bound.top.range()];
                     let start = name.span.start() - bound.top.start();
                     let end = name.span.end() - bound.top.start();
-                    TwiceGuard::Rewritten(format!(
+                    GuardHelp::Rewritten(format!(
                         "{}{fresh}{} if {written} == {fresh}{own}",
                         &pattern[..start],
                         &pattern[end..]
