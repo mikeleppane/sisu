@@ -3,6 +3,7 @@
 mod arith;
 mod array;
 mod enums;
+mod hoist;
 mod io;
 mod matching;
 mod math;
@@ -101,15 +102,7 @@ pub(crate) fn compile<'ctx>(
     // Declared only with the checks, so that a plain build's module stays as it was.
     let rc_fault =
         rc_checks.then(|| declare_noreturn(&module, "sisu_rc_fault", &[context.i32_type().into()]));
-    // Two TBAA types under one root: an access tagged with one never touches memory that an
-    // access tagged with the other does.
-    let root = context.metadata_node(&[context.metadata_string("sisu").into()]);
-    let tbaa_tag = |name: &str| {
-        let offset = i64_type.const_zero().into();
-        let ty =
-            context.metadata_node(&[context.metadata_string(name).into(), root.into(), offset]);
-        context.metadata_node(&[ty.into(), ty.into(), offset])
-    };
+    let tbaa_root = context.metadata_node(&[context.metadata_string("sisu").into()]);
 
     let mut codegen = Codegen {
         context,
@@ -125,8 +118,9 @@ pub(crate) fn compile<'ctx>(
         rc_retain,
         rc_fault,
         tbaa_kind: context.get_kind_id("tbaa"),
-        header_tag: tbaa_tag("count and length"),
-        element_tag: tbaa_tag("array element"),
+        header_tag: tbaa_tag(context, tbaa_root, "count and length"),
+        element_tag: tbaa_tag(context, tbaa_root, "array element"),
+        tbaa_root,
         program,
         helpers: RefCell::new(FxHashMap::default()),
         pending: RefCell::new(Vec::new()),
@@ -141,6 +135,7 @@ pub(crate) fn compile<'ctx>(
         types: Vec::new(),
         live: Vec::new(),
         loops: Vec::new(),
+        unique_locals: Vec::new(),
     };
     codegen.lay_out_types();
     // Every class gets its helpers, used or not, as in milestone 2.
@@ -160,6 +155,19 @@ pub(crate) fn compile<'ctx>(
     codegen.c_main();
     codegen.define_helpers();
     codegen.module
+}
+
+/// The tag of a TBAA type `name` under `root`. Every type sits directly under the root, so LLVM
+/// assumes that an access tagged with one never touches memory that an access tagged with
+/// another does; codegen must keep that true.
+fn tbaa_tag<'ctx>(
+    context: &'ctx Context,
+    root: MetadataValue<'ctx>,
+    name: &str,
+) -> MetadataValue<'ctx> {
+    let offset = context.i64_type().const_zero().into();
+    let ty = context.metadata_node(&[context.metadata_string(name).into(), root.into(), offset]);
+    context.metadata_node(&[ty.into(), ty.into(), offset])
 }
 
 /// Declares the runtime function `name`, which takes `params` and never returns.
@@ -291,6 +299,8 @@ struct ClassLayout<'ctx> {
     ty: StructType<'ctx>,
     /// `element[i]` is the struct element of declared field `i`; element 0 is the count.
     element: Box<[u32]>,
+    /// `field_tag[i]` is the TBAA tag of declared field `i`, named `<class>.<field>`.
+    field_tag: Box<[MetadataValue<'ctx>]>,
 }
 
 struct Codegen<'ctx, 'src> {
@@ -321,6 +331,13 @@ struct Codegen<'ctx, 'src> {
     /// new object's count, carry no tag and may alias anything.
     header_tag: MetadataValue<'ctx>,
     element_tag: MetadataValue<'ctx>,
+    /// The root of every TBAA type. Each class field has its own type, `ClassLayout::field_tag`:
+    /// a field read and a field assignment tag their load and store with it, so that LLVM knows
+    /// a store to one field leaves the other fields, and every count, length and element, as
+    /// they were. That holds because nothing touches a field's bytes with another tag: other
+    /// accesses to a field, such as a new object's stores, a drop's loads or an element write
+    /// through a field, carry no tag.
+    tbaa_root: MetadataValue<'ctx>,
     program: &'src Program,
     /// The helpers declared so far, by kind and counted type; see `rc::helper`.
     helpers: RefCell<FxHashMap<(Helper, Type), FunctionValue<'ctx>>>,
@@ -346,6 +363,9 @@ struct Codegen<'ctx, 'src> {
     /// The counted locals in scope, newest last: each holds a reference to release.
     live: Vec<LocalId>,
     loops: Vec<LoopFrame<'ctx>>,
+    /// The current function's locals, indexed by `LocalId`: whether an enclosing loop made the
+    /// local unique before it started, so that its root-level writes skip `unique`.
+    unique_locals: Vec<bool>,
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
@@ -400,9 +420,23 @@ impl<'ctx> Codegen<'ctx, '_> {
             .iter()
             .map(|class| self.class_body(class))
             .collect();
-        for (ty, (body, element)) in types.into_iter().zip(layouts) {
+        for ((ty, (body, element)), class) in
+            types.into_iter().zip(layouts).zip(&self.program.classes)
+        {
             ty.set_body(&body, false);
-            self.classes.push(ClassLayout { ty, element });
+            let field_tag = class
+                .fields
+                .iter()
+                .map(|field| {
+                    let name = format!("{}.{}", class.name, field.name);
+                    tbaa_tag(self.context, self.tbaa_root, &name)
+                })
+                .collect();
+            self.classes.push(ClassLayout {
+                ty,
+                element,
+                field_tag,
+            });
         }
     }
 
@@ -452,6 +486,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("the checker should only emit a field index that the class has")
     }
 
+    /// The TBAA tag of field `index` of a class `ty`.
+    fn field_tag(&self, ty: &Type, index: usize) -> MetadataValue<'ctx> {
+        let Type::Class(id) = ty else {
+            unreachable!("the checker should only allow field access on a class-typed value")
+        };
+        self.classes[id.0].field_tag[index]
+    }
+
     /// Field `index` of the object `base`, whose type is `ty`. A local base is borrowed: the
     /// local keeps the object alive, so codegen skips its retain and release.
     fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
@@ -463,10 +505,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let llvm_ty = self.llvm_type(ty).expect(
             "the checker should give every class field a value type, never `unit` or `never`",
         );
-        let value = self
-            .builder
-            .build_load(llvm_ty, field, "load")
-            .expect(POSITIONED);
+        let value = self.load_tagged(llvm_ty, field, "load", self.field_tag(&base.ty, index));
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
         if !borrowed {
@@ -479,9 +518,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// it was borrowed: a local is loaded without a retain, and the caller then skips the
     /// release; any other expression is evaluated as usual.
     pub(super) fn borrow_or_expr(&mut self, base: &Expr) -> (Option<BasicValueEnum<'ctx>>, bool) {
-        match base.kind {
-            ExprKind::Local(local) => (self.load_local(local), true),
-            _ => (self.expr(base), false),
+        match array::borrowed_local(base) {
+            Some(local) => (self.load_local(local), true),
+            None => (self.expr(base), false),
         }
     }
 
@@ -612,6 +651,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             })
             .collect();
         self.types = f.locals.iter().map(|local| local.ty.clone()).collect();
+        self.unique_locals = vec![false; f.locals.len()];
         // The parameters own their arguments: they are the bottom of the live-locals stack.
         self.live = Vec::new();
         for (p, v) in f.params.iter().zip(function.get_param_iter()) {
@@ -766,8 +806,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             } => {
                 // Left to right: the base, then the value, then the store, then the release
                 // of the old value, then of the base, which keeps the object alive until then.
-                let object = self
-                    .expr(base)
+                // A local base is borrowed instead when the value cannot replace or move it:
+                // the local keeps the object alive.
+                let (object, borrowed) = if array::leaves_locals(value) {
+                    self.borrow_or_expr(base)
+                } else {
+                    (self.expr(base), false)
+                };
+                let object = object
                     .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
                     .into_pointer_value();
                 let ty = &value.ty;
@@ -778,9 +824,11 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let old = ty
                     .is_counted(&self.program.enums)
                     .then(|| self.load(value.get_type(), field));
-                self.store(field, value);
+                self.store_tagged(field, value, self.field_tag(&base.ty, *index));
                 self.discard(old, ty);
-                self.release(object.into(), &base.ty);
+                if !borrowed {
+                    self.release(object.into(), &base.ty);
+                }
             }
             Stmt::Assign {
                 place: place @ Place::Index { .. },
@@ -1092,7 +1140,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder.build_store(ptr, value).expect(POSITIONED);
     }
 
-    /// `load`, tagged with `tag`, which is `header_tag` or `element_tag`.
+    /// `load`, tagged with `tag`: `header_tag`, `element_tag` or a field's tag.
     fn load_tagged(
         &self,
         ty: BasicTypeEnum<'ctx>,
@@ -1109,7 +1157,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         value
     }
 
-    /// `store`, tagged with `tag`, which is `header_tag` or `element_tag`.
+    /// `store`, tagged with `tag`: `header_tag`, `element_tag` or a field's tag.
     fn store_tagged(
         &self,
         ptr: PointerValue<'ctx>,
@@ -1123,7 +1171,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// `loop`: the body block runs until a `Break` branches to the end block, where codegen
-    /// continues; a body that falls through branches back to its start.
+    /// continues; a body that falls through branches back to its start. First, the arrays that
+    /// `hoist::unique_roots` finds are made unique, unless an enclosing loop did so: the body's
+    /// writes to them then skip `unique` at the root, until the loop ends.
     fn loop_expr(&mut self, body: &Block) {
         let function = self.current_function();
         let frame = LoopFrame {
@@ -1132,11 +1182,22 @@ impl<'ctx> Codegen<'ctx, '_> {
             depth: self.live.len(),
         };
         let (start, end) = (frame.body, frame.end);
+        let hoisted: Vec<_> = hoist::unique_roots(body)
+            .into_iter()
+            .filter(|local| !self.unique_locals[local.0])
+            .collect();
+        for &local in &hoisted {
+            self.unique(self.variable_slot(local), &self.types[local.0]);
+            self.unique_locals[local.0] = true;
+        }
         self.branch_to(start);
         self.builder.position_at_end(start);
         self.loops.push(frame);
         let value = self.block(body, None);
         self.loops.pop();
+        for local in hoisted {
+            self.unique_locals[local.0] = false;
+        }
         if !self.terminated() {
             self.discard(value, &body.ty);
             self.branch_to(start);

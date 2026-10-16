@@ -9,7 +9,8 @@ with no per-language tuning.
 
 fib and sieve ran at commit 9cbd44e and binary_trees at 7c8d29e (the change
 between them is the runtime's live count), on 2026-10-12. hello ran at
-commit 4690caa and quicksort at 3dbda29, on 2026-10-15. All ran on an Intel Core i9-14900K under
+commit 4690caa and quicksort at 3dbda29, on 2026-10-15; mandelbrot and
+fannkuch_redux at d8a9603, and nbody at 10bb08f, on 2026-10-16. All ran on an Intel Core i9-14900K under
 Linux 7.0. Each figure is the median of 5 runs, pinned to one CPU. Each table
 runs from fastest to slowest wall time, with Sisu in bold.
 
@@ -68,6 +69,39 @@ runs from fastest to slowest wall time, with Sisu in bold.
 | Java | 0.64 | 0.63 | 117.6 | - | 0.196 |
 | Python | 12.66 | 12.65 | 393.7 | - | - |
 
+### nbody
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Rust | 0.12 | 0.12 | 1.9 | 358 | 0.094 |
+| C | 0.14 | 0.14 | 1.7 | 14 | 0.067 |
+| **Sisu** | **0.14** | **0.14** | **1.4** | **357** | **0.067** |
+| Java | 0.20 | 0.19 | 43.8 | - | 0.226 |
+| Go | 0.23 | 0.23 | 1.8 | 1495 | 0.029 |
+| Python | 12.16 | 12.16 | 11.2 | - | - |
+
+### mandelbrot
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C | 0.58 | 0.58 | 1.7 | 14 | 0.053 |
+| **Sisu** | **0.58** | **0.58** | **1.4** | **353** | **0.042** |
+| Go | 0.59 | 0.59 | 1.8 | 1483 | 0.078 |
+| Rust | 0.59 | 0.58 | 1.9 | 329 | 0.059 |
+| Java | 0.60 | 0.60 | 40.6 | - | 0.202 |
+| Python | 17.15 | 17.15 | 11.1 | - | - |
+
+### fannkuch_redux
+
+| Language | Wall (s) | CPU (s) | Peak RSS (MiB) | Binary (KiB) | Build (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C | 0.11 | 0.11 | 1.7 | 14 | 0.065 |
+| Go | 0.12 | 0.12 | 1.8 | 1495 | 0.065 |
+| Rust | 0.12 | 0.12 | 1.9 | 331 | 0.098 |
+| **Sisu** | **0.13** | **0.13** | **1.7** | **357** | **0.061** |
+| Java | 0.17 | 0.16 | 42.9 | - | 0.210 |
+| Python | 2.76 | 2.76 | 11.1 | - | - |
+
 Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 1.99.0 with `-C opt-level=3`, Go 1.27.2, OpenJDK 25.0.4.1 (Temurin), Python
 3.14.5.
@@ -81,8 +115,9 @@ Toolchains: `sisuc -O2` (LLVM 22), Ubuntu clang 18.1.3 with `-O2`, rustc
 | [binary_trees](../bench/binary_trees) | The [binary-trees](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/binarytrees.html) program of the Benchmarks Game, depth 18 | Allocating and freeing many small objects |
 | [hello](../bench/hello) | Prints `Hello, World!` | The time from source to output: build and startup |
 | [quicksort](../bench/quicksort) | Sorts 10 000 000 pseudo-random integers with a textbook quicksort, then prints a checksum that depends on their order | Element writes, and in Sisu whether an array passed and returned is written in place |
-
-Sisu has floats since milestone 6, but no benchmark uses them yet.
+| [nbody](../bench/nbody) | The [n-body](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/nbody.html) program of the Benchmarks Game, 5 000 000 steps | `f64` arithmetic and `sqrt`, and field writes through shared objects |
+| [mandelbrot](../bench/mandelbrot) | Counts the points of a 4000 by 4000 grid that stay in the Mandelbrot set for 50 iterations, the test of the Benchmarks Game's [mandelbrot](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/mandelbrot.html) without its bitmap output | `f64` arithmetic in a tight loop |
+| [fannkuch_redux](../bench/fannkuch_redux) | The [fannkuch-redux](https://benchmarksgame-team.pages.debian.net/benchmarksgame/description/fannkuchredux.html) program of the Benchmarks Game, n = 10 | Reads and writes of small arrays, with short loops |
 
 ## What the numbers mean
 
@@ -93,9 +128,10 @@ Sisu has floats since milestone 6, but no benchmark uses them yet.
   they need their runtime installed. A Sisu binary links the runtime
   (`libsisu_runtime.a`, written in Rust) statically, which accounts for most of
   its size.
-- **Build** is the wall time to compile the one file and link it. The hello
-  and quicksort tables give the median of 5 builds, to the millisecond. The
-  older tables time one build, so Go's 1.88 s for fib is a cold build cache.
+- **Build** is the wall time to compile the one file and link it. The hello,
+  quicksort, nbody, mandelbrot and fannkuch_redux tables give the median of
+  5 builds, to the millisecond. The older tables time one build, so Go's
+  1.88 s for fib is a cold build cache.
 - Every process runs whole, so startup counts. Java pays for JVM startup and
   JIT warm-up, Python for interpreter startup.
 - `taskset` pins each run to one CPU. Go and the JVM therefore see a single
@@ -174,6 +210,24 @@ commit c75ef2d; "after" is 3dbda29, which adds the change described below.
 | After, count checks removed | 582 | 1.07 | 3.99 |
 | After, bounds checks removed | 586 | 1.08 | 3.57 |
 
+A later session, on a busy machine, measured loop hoisting (ADR 0021). Its ms
+do not compare with the rows above, so it has its own table and its own C
+baseline. Each binary ran 40 times in turn, pinned to CPU 2 with `taskset`.
+The mean and the median swung by 30% under the load, so the minimum is the
+figure to read; the instruction counts come from callgrind and do not vary.
+
+| Build | Min (ms) | Median (ms) | Mean (ms) | Times C (min) | Instructions (billions) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C, for comparison | 610 | 760 | 958 | 1.00 | |
+| Before loop hoisting (552dbac) | 690 | 870 | 1078 | 1.13 | 4.82 |
+| After loop hoisting (cf07f6d) | 640 | 790 | 988 | 1.05 | 4.04 |
+
+552dbac is main before loop hoisting, and cf07f6d is the commit that adds
+it. The timings were taken on the same changes before they were rebased
+onto 552dbac. The counts reproduce on the rebased branch: callgrind counts
+4,822,781,453 instructions at 552dbac and 4,043,218,655 at 92bec34, with
+the same checksum. 4.82 billion is also the "After" row above.
+
 The checks are the whole gap to C. The overflow checks cost no measurable
 time: without them the program ran fewer instructions but no faster.
 
@@ -194,10 +248,21 @@ time. Together they remove them: quicksort takes 622 ms instead of 688, and
 runs 25% fewer instructions. Marking `sisu_alloc`'s result `noalias` in place
 of the reorder removes none of them.
 
-Two costs remain. Removing the count checks that are left would take the
-time from 622 to 582 ms. That bounds what proving at compile time that an
-array has one holder, as Roc's Morphic analysis does, could gain here.
-Removing the bounds checks that are left would gain about as much.
+Two costs remained: the count checks, which removing by hand would have
+taken the time from 622 to 582 ms, and the bounds checks. A loop now makes
+its written arrays unique once before it starts (ADR 0021). The count check
+had made the array's pointer a phi in the loop (the helper may store a new
+block into the local), so LLVM could neither hoist the check nor the length
+load. With the check outside the loop, the quicksort benchmark runs 4.04
+billion instructions in all, not 4.82, and its fastest run takes 640 ms
+instead of 690 (C: 610 ms, in the same session). In the `-O2` IR of `quicksort`, one count check is
+left in each call, before the partition loop. The writes in the loop and the
+writes after it run without one.
+
+What remains are the bounds checks, which LLVM cannot remove: `lo` may be
+negative, so nothing shows `j` is below the length. Removing them by hand
+took the time from 622 to 586 ms before the change above. Proving a range
+fact about the loop is a roadmap entry.
 
 ## Where a hello build spends its time
 

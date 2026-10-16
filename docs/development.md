@@ -23,6 +23,8 @@ running the same checks as CI. Sisu builds and runs on x86-64 Linux.
   `scripts/coverage.sh`.
 - Valgrind. The end-to-end tests run each program under it to catch leaks
   and memory errors.
+- For `make miri`, a nightly toolchain with Miri:
+  `rustup toolchain install nightly --component miri --component rust-src`.
 
 LLVM 22 lives inside the repository. `scripts/install-llvm.sh` downloads the
 official release (1.9 GB) and keeps only what the build needs in `.llvm/22`
@@ -45,7 +47,8 @@ $ make build   # sisuc and the runtime library
 $ make test    # unit tests and end-to-end cases
 $ make lint    # fmt, clippy, expect messages, typos, file hygiene, shell and workflow lint, as in CI
 $ make deny    # advisories, licenses, sources
-$ make check   # lint, test and deny: what CI requires
+$ make miri    # the runtime's unit tests under Miri, which stops at undefined behaviour
+$ make check   # lint, test and deny; CI also runs make miri
 ```
 
 Each target is one line in the `Makefile`, a script in `scripts/` or a cargo
@@ -170,16 +173,20 @@ pull requests only). On `main` it reports totals only. It never turns a check
 red.
 
 CodSpeed measures Sisu against itself in simulation mode. The benchmarks are
-in `codspeed.yml`: the `fib`, `sieve` and `binary_trees` programs at reduced
-inputs, and the compiler on `bench/binary_trees` (`--check` and an `-O2`
-build) and on a generated 200-function input.
+in `codspeed.yml`: the `fib`, `sieve`, `binary_trees`, `quicksort`, `nbody`,
+`mandelbrot` and `fannkuch_redux` programs at reduced inputs, and the
+compiler on `bench/hello` (an `-O2` build), on `bench/binary_trees`
+(`--check` and an `-O2` build) and on a generated 200-section input that
+uses most of the language.
 `scripts/codspeed-prep.sh` builds them and checks every program's output
 first. The `CodSpeed` workflow runs on pushes to `main` and on pull requests
-that touch the code, the benchmarks or their tooling. It never turns a check
-red. Agents read results through the CodSpeed MCP tools and do not run
+that touch the code, the benchmarks or their tooling. It never turns a pull
+request's check red. On a push to `main`, a step that fails, such as a prep
+that no longer builds, fails the run, so the benchmarks cannot stop running
+unnoticed. Agents read results through the CodSpeed MCP tools and do not run
 CodSpeed locally. To compare a change before pushing, count the instructions
 of `target/release/sisuc --check target/codspeed/large/main.sisu` under
-callgrind, as `AGENTS.md` shows.
+callgrind, as `make callgrind` does.
 
 Set these once in the CodSpeed UI: "Informational Status Checks on Failure"
 on, PR comment mode "On Change", threshold 10%. Do not make the check

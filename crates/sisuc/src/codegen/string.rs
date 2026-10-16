@@ -146,7 +146,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let text = self
             .expr(value)
             .expect("the checker should only make an append whose value cannot exit");
-        let (slot, _) = self.element_slot(operands.slot, &operands.ty, &operands.indexes);
+        let (slot, _) = self.element_slot(&operands);
         self.release(self.load(ptr_type, slot), &Type::String);
         let result = self.concat(read.into_pointer_value(), text.into_pointer_value());
         self.store(slot, result.into());

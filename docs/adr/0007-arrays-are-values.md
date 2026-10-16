@@ -44,7 +44,9 @@ performance. Swift works the same way, without `inout`.
 - `let xs` stops every slot of the array, and of arrays nested in it, from
   being replaced; `let mut xs` allows element writes. Class objects an array holds
   stay shared and mutable: value semantics does not deep-copy them.
-- Every element write costs a load, a compare and a branch for the count.
+- Every element write costs a load, a compare and a branch for the count,
+  except in a loop that checks it once before it starts (ADR 0021).
 - A copy happens only where two holders exist and one of them writes, which
-  is where value semantics needs one.
+  is where value semantics needs one; a loop that could write makes that
+  copy before it starts (ADR 0021).
 - Records (roadmap milestone 10) are expected to follow the same rule.

@@ -119,7 +119,10 @@ largest alignment first, and fields of equal alignment in declared order, so
 less padding sits between them; `tir` and every diagnostic keep declared
 order. Codegen emits the helpers that
 manage them: `sisu_rc.retain`, and for each class `sisu_rc.release.<Class>`,
-`sisu_rc.drop.<Class>` and `sisu_rc.eq.<Class>`, which `==` calls.
+`sisu_rc.drop.<Class>` and `sisu_rc.eq.<Class>`, which `==` calls. A field
+read and a field assignment tag their load and store with a TBAA tag of that
+field's own, `<Class>.<field>`, so LLVM knows that writing one field changes
+no other field, and no count, length or element.
 
 An enum value has no heap block of its own. It is a tag and its variant's
 payload, held inline in `%sisu.<Enum>`, with a struct `%sisu.<Enum>.<Variant>`
@@ -143,11 +146,13 @@ undefined behaviour.
 An array is one counted heap block too: a header of two `i64`s, the count and
 the length, then the elements. Each array type gets the same helpers, such as
 `sisu_rc.release.[i64]`, plus `sisu_rc.unique.[i64]`, which copies the block
-before a write when another holder shares it. An index out of bounds calls
-`sisu_panic_bounds`. Codegen tags the loads and stores of an array's count and
-length, and every count update and check, with one TBAA tag, and those of an
-array element with another, so LLVM knows that writing an element changes
-none of them.
+before a write when another holder shares it. A loop makes the arrays it
+writes unique once, before it starts, when nothing in the loop shares them,
+so the writes inside it skip the count check (ADR 0021). An index out of
+bounds calls `sisu_panic_bounds`. Codegen tags the loads and stores of an
+array's count and length, and every count update and check, with one TBAA
+tag, and those of an array element with another, so LLVM knows that writing
+an element changes none of them.
 
 A string is one counted block with a header of three `i64`s: the count, the
 length and the capacity, then the UTF-8 bytes. A literal is a private global

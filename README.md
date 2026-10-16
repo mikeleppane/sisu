@@ -18,8 +18,8 @@ Types are checked at compile time and inferred for local variables. There is
 no null: a value that may be missing has an optional type such as `Tree?`, and
 the checker makes the program handle `None`.
 
-Sisu is a passion project at an early stage. It cannot read input yet, and any
-change may break programs that compiled before it. See [Status](#status).
+Sisu is a passion project at an early stage. Any change may break programs
+that compiled before it. See [Status](#status).
 
 ## What Sisu values
 

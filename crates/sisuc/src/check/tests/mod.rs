@@ -1785,7 +1785,7 @@ fn lowers_methods() {
             "class C {\n    mut n: i64\n    fn bump(self, by: i64) {\n        self.n += by\n    }\n}\nfn main() {\n    let c = C(n: 1)\n    c.bump(2)\n    print(c.n)\n}"
         ),
         "(class C (mut n i64))\n\
-         (fn C.bump ((self#0 C) (by#1 i64)) unit (block (block (let #2 self#0) (= (. #2 n) (+ (. #2 n) by#1)))))\n\
+         (fn C.bump ((self#0 C) (by#1 i64)) unit (block (block (= (. self#0 n) (+ (. self#0 n) by#1)))))\n\
          (fn main () unit (block (let c#0 (new C 1)) (call C.bump c#0 2) (print (. c#0 n))))"
     );
 }
@@ -1917,14 +1917,15 @@ fn spills_method_receiver() {
     );
 }
 
-/// `a.f op= e` reads its bound `a` as the assignment's base before `e` runs.
+/// `a.f op= e` binds `a` as the assignment's base before `e` runs. The parameter `a` itself is
+/// not bound first: `e` cannot change it.
 #[test]
 fn spills_compound_field_assignment_base() {
     assert_eq!(
         printed_g(
             "class Q {\n    mut k: i64\n}\nfn g(c: bool, q: Q) {\n    while true {\n        q.k += if c { break } else { 1 }\n    }\n}"
         ),
-        "(fn g ((c#0 bool) (q#1 Q)) unit (block (loop (block (if true (block (block (let #2 q#1) (block (let #3 #2) (let #4 (+ (. #2 k) (if c#0 (block (break)) (block 1)))) (= (. #3 k) #4)))) (block (break)))))))"
+        "(fn g ((c#0 bool) (q#1 Q)) unit (block (loop (block (if true (block (block (block (let #2 q#1) (let #3 (+ (. q#1 k) (if c#0 (block (break)) (block 1)))) (= (. #2 k) #3)))) (block (break)))))))"
     );
 }
 

@@ -83,8 +83,9 @@ These are adopted. Together they give Sisu a working imperative core.
 - `panic("why")`, which stops the program with a message, and the keyword
   `todo`, which does the same and warns at compile time; either may stand on
   the right of `??`, as in `name ?? panic("no name")`
-- copy-on-write arrays: `let b = a` shares until one of them is written, and a
-  counted local's last read moves it instead of copying
+- copy-on-write arrays: `let b = a` shares until one of them is written, or
+  until a loop that writes one of them starts (ADR 0021), and a counted
+  local's last read moves it instead of copying
 - `let _ = e` and `for _ in ...`, which drop a value without a name;
   shadowing in the same scope; `0x`, `0b` and `0o` integer literals; block
   expressions such as `let a = { ... }`; and top-level `const`
@@ -928,11 +929,14 @@ These do not make code nicer to write, so they wait:
   and assign it back. `inout` parameters stay out (ADR 0007).
 - Proving uniqueness at compile time. Roc's Morphic analysis follows each
   array through the whole program to prove that a write holds the only
-  reference, so the write needs no count check. On quicksort, removing by
-  hand the count checks that codegen still emits took the time from 622 to
-  582 ms, against C's 542
-  ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). That is the most
-  the analysis could gain there, for a whole-program pass.
+  reference, so the write needs no count check. A loop now makes its written
+  arrays unique once before it starts (ADR 0021), which took the quicksort
+  benchmark from 4.82 to 4.04 billion instructions and its fastest run from
+  690 to 640 ms, against C's 610
+  ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). One count check
+  is left in each call of `quicksort`, before the partition loop. The
+  analysis would remove that one and the checks of writes outside loops; no
+  benchmark has measured what that gains.
 - Removing bounds checks that LLVM keeps. On quicksort, removing by hand the
   bounds checks that codegen still emits took the time from 622 to 586 ms
   ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). `for j in lo..hi`

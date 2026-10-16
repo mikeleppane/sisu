@@ -9,7 +9,7 @@ use inkwell::{AddressSpace, IntPredicate};
 use super::rc::{Helper, counted_core, param};
 use super::{Codegen, POSITIONED, Slot};
 use crate::diagnostic::Span;
-use crate::tir::{Expr, ExprKind, Place, Type};
+use crate::tir::{Expr, ExprKind, LocalId, Place, Type};
 
 /// Where an array's elements sit in its block, from the target's data layout.
 pub(super) struct ArrayLayout<'ctx> {
@@ -34,6 +34,9 @@ pub(super) struct PlaceOperands<'p, 'ctx> {
     object: Option<(PointerValue<'ctx>, &'p Type)>,
     /// Each index with its value, from the root outwards.
     pub(super) indexes: Vec<(&'p Expr, IntValue<'ctx>)>,
+    /// Whether the root is a local that an enclosing loop made unique before it started, so
+    /// that a write skips `unique` at the root.
+    pub(super) unique_root: bool,
 }
 
 impl<'ctx> PlaceOperands<'_, 'ctx> {
@@ -53,11 +56,11 @@ fn element_of(ty: &Type) -> &Type {
     element
 }
 
-/// Whether evaluating `index` leaves every local as it was, so a local array read before it
-/// still holds the same block after it. A whitelist of node kinds that call nothing, bind
-/// nothing and move nothing: a node kind added later is excluded until it is listed here.
-fn leaves_locals(index: &Expr) -> bool {
-    match &index.kind {
+/// Whether evaluating `expr` leaves every local as it was, so a local read before it still
+/// holds the same block after it. A whitelist of node kinds that call nothing, bind nothing and
+/// move nothing: a node kind added later is excluded until it is listed here.
+pub(super) fn leaves_locals(expr: &Expr) -> bool {
+    match &expr.kind {
         ExprKind::Int(_) | ExprKind::Local(_) => true,
         ExprKind::Unary { operand, .. }
         | ExprKind::Convert(operand)
@@ -67,6 +70,21 @@ fn leaves_locals(index: &Expr) -> bool {
         ExprKind::Compare { operands, .. } => operands.iter().all(leaves_locals),
         _ => false,
     }
+}
+
+/// The local that a read of `base` loads without retaining it, as `borrow_or_expr` does: the
+/// local keeps the block alive, so codegen skips its retain and release.
+pub(super) fn borrowed_local(base: &Expr) -> Option<LocalId> {
+    match base.kind {
+        ExprKind::Local(local) => Some(local),
+        _ => None,
+    }
+}
+
+/// The local that `Codegen::index` loads without retaining it: a local `base`, while the
+/// parameter `index` passes `leaves_locals`.
+pub(super) fn borrowed_index_base(base: &Expr, index: &Expr) -> Option<LocalId> {
+    borrowed_local(base).filter(|_| leaves_locals(index))
 }
 
 impl<'ctx> Codegen<'ctx, '_> {
@@ -361,10 +379,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// as it was: the local then keeps the block alive, so codegen skips its retain and
     /// release.
     pub(super) fn index(&mut self, ty: &Type, base: &Expr, index: &Expr) -> BasicValueEnum<'ctx> {
-        let local = match base.kind {
-            ExprKind::Local(local) if leaves_locals(index) => Some(local),
-            _ => None,
-        };
+        let local = borrowed_index_base(base, index);
         let array = match local {
             Some(local) => self.load_local(local),
             None => self.expr(base),
@@ -510,14 +525,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             at.push((index, self.expr(index)?.into_int_value()));
         }
         let (slot, ty) = match root {
-            Place::Local(local) => {
-                let Some(Slot::Alloca(ptr, _)) = self.locals[local.0] else {
-                    unreachable!(
-                        "the checker should only let a variable be written, and every variable has an `alloca`"
-                    )
-                };
-                (ptr, self.types[local.0].clone())
-            }
+            Place::Local(local) => (self.variable_slot(*local), self.types[local.0].clone()),
             Place::Field { base, index } => {
                 let Type::Class(class) = base.ty else {
                     unreachable!("the checker should only make a field place on a class-typed base")
@@ -536,18 +544,29 @@ impl<'ctx> Codegen<'ctx, '_> {
             ty,
             object,
             indexes: at,
+            unique_root: matches!(root, Place::Local(local) if self.unique_locals[local.0]),
         })
     }
 
-    /// Walks `place`'s indexes from `root_slot` (bounds check, then `unique`, per level) and
-    /// returns the final slot and its type.
+    /// The `alloca` of the variable `local`.
+    pub(super) fn variable_slot(&self, local: LocalId) -> PointerValue<'ctx> {
+        let Some(Slot::Alloca(ptr, _)) = self.locals[local.0] else {
+            unreachable!(
+                "the checker should only let a variable be written, and every variable has an `alloca`"
+            )
+        };
+        ptr
+    }
+
+    /// Walks the indexes of `operands` from its root slot (bounds check, then `unique`, per
+    /// level) and returns the final slot and its type. A root that an enclosing loop made
+    /// unique skips `unique` at the root.
     pub(super) fn element_slot(
         &mut self,
-        root_slot: PointerValue<'ctx>,
-        root_ty: &Type,
-        indexes: &[(&Expr, IntValue<'ctx>)],
+        operands: &PlaceOperands<'_, 'ctx>,
     ) -> (PointerValue<'ctx>, Type) {
-        self.walk(root_slot, root_ty, indexes, true)
+        let unique_from = usize::from(operands.unique_root);
+        self.walk(operands.slot, &operands.ty, &operands.indexes, unique_from)
     }
 
     /// Walks `place`'s indexes as `element_slot` does, but makes nothing unique: the slot that
@@ -558,29 +577,32 @@ impl<'ctx> Codegen<'ctx, '_> {
         root_ty: &Type,
         indexes: &[(&Expr, IntValue<'ctx>)],
     ) -> PointerValue<'ctx> {
-        self.walk(root_slot, root_ty, indexes, false).0
+        self.walk(root_slot, root_ty, indexes, indexes.len()).0
     }
 
     /// The walk from `slot`, of type `ty`: at each level, load the array, check the index
-    /// against its length, make the array unique if `unique`, and take the element's address
-    /// as the next slot. Checking first means a level whose index is out of bounds copies
-    /// nothing; an outer level may already have copied.
+    /// against its length, make the array unique if the level is at or past `unique_from`, and
+    /// take the element's address as the next slot. Checking first means a level whose index
+    /// is out of bounds copies nothing; an outer level may already have copied. In a hoisted
+    /// write, the root level was made unique by the enclosing loop, so a level whose index is
+    /// out of bounds may also follow that copy. A read passes
+    /// `indexes.len()`, so it makes no level unique, even of a shared array.
     fn walk(
         &self,
         mut slot: PointerValue<'ctx>,
         mut ty: &Type,
         indexes: &[(&Expr, IntValue<'ctx>)],
-        unique: bool,
+        unique_from: usize,
     ) -> (PointerValue<'ctx>, Type) {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        for &(index, at) in indexes {
+        for (level, &(index, at)) in indexes.iter().enumerate() {
             let mut array = self
                 .builder
                 .build_load(ptr_type, slot, "array")
                 .expect(POSITIONED)
                 .into_pointer_value();
             self.check_bounds(array, at, index.span);
-            if unique {
+            if level >= unique_from {
                 array = self.unique(slot, ty);
             }
             ty = element_of(ty);
@@ -600,7 +622,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let Some(value) = self.expr(value) else {
             return;
         };
-        let (slot, ty) = self.element_slot(operands.slot, &operands.ty, &operands.indexes);
+        let (slot, ty) = self.element_slot(&operands);
         let old = ty
             .is_counted(&self.program.enums)
             .then(|| self.load_tagged(value.get_type(), slot, "old", self.element_tag));
@@ -721,7 +743,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         // count was above 1. Releasing it before the copy exists, not after, leaves the copy's
         // count and length as the last stores, so that LLVM can forward them past an inlined
         // `unique` instead of loading them again. With the TBAA tags, that drops the second
-        // count and bounds checks of a swap; see `partition_makes_its_array_unique_once`.
+        // count and bounds checks of a swap; see `a_barred_partition_makes_its_array_unique_once`.
         self.add_to_count(array, i64_type.const_int((-1_i64).cast_unsigned(), false));
         // The length fit once, so the new block needs no size check.
         let copy = self.alloc_array(element, len, None);
