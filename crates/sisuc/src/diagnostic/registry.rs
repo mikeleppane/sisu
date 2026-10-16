@@ -1187,7 +1187,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 let d = Diagnostic::coded(
                     code,
                     at,
-                    "`{` must be on the same line as `fn`, `class`, `enum`, `if`, `else`, `while` or `for`",
+                    "`{` must be on the same line as `fn`, `class`, `enum`, `if`, `else`, `match`, `while` or `for`",
                 );
                 match join {
                     Some(join) => d.with_fix(join_fix(

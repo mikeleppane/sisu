@@ -12,6 +12,20 @@ use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
 use crate::symbol::Symbol;
 use crate::tir::{self, ExprKind, Type};
 
+/// The name that `if let` and `while let` bind: a name, or `_`, which binds nothing.
+pub(super) fn binding_of(pattern: &ast::Pattern) -> ast::Ident {
+    match &pattern.kind {
+        ast::PatternKind::Name(name) => name.clone(),
+        ast::PatternKind::Wild => ast::Ident {
+            name: Symbol::intern("_"),
+            span: pattern.span,
+        },
+        ast::PatternKind::None | ast::PatternKind::Variant { .. } => {
+            panic!("enum patterns land in Task 7")
+        }
+    }
+}
+
 impl Checker<'_> {
     /// `never` once a statement is `never`, else the type of the last statement (`unit` when
     /// there is none). Warns "unreachable code" on the first statement after a `never` one.
@@ -138,9 +152,11 @@ impl Checker<'_> {
                 debug_assert!(
                     !matches!(
                         source.kind,
-                        ast::ExprKind::If { .. } | ast::ExprKind::IfLet { .. }
+                        ast::ExprKind::If { .. }
+                            | ast::ExprKind::IfLet { .. }
+                            | ast::ExprKind::Match { .. }
                     ),
-                    "the checker should lower an `if` to `If` and an `if let` to `IfSome`"
+                    "the checker should lower an `if` to `If`, an `if let` to `IfSome` and a `match` to `Match`"
                 );
                 if !matches!(checked.ty, Type::Unit | Type::Never) {
                     let ty = self.type_name(&checked.ty);
@@ -217,7 +233,12 @@ impl Checker<'_> {
                     },
                 )))
             }
-            StmtKind::WhileLet { name, value, body } => {
+            StmtKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                let name = &binding_of(pattern);
                 let header = LoopContext::Header(keyword_span(stmt.span, "while"));
                 let (scrutinee, bound, _) =
                     self.in_loop(header, |c| c.unwrapped(Unwrap::WhileLet, value));

@@ -162,9 +162,9 @@ pub(crate) enum StmtKind {
         cond: Expr,
         body: Block,
     },
-    /// `while let name = value { body }`.
+    /// `while let pattern = value { body }`.
     WhileLet {
-        name: Ident,
+        pattern: Pattern,
         value: Expr,
         body: Block,
     },
@@ -301,16 +301,55 @@ pub(crate) enum ExprKind {
         then_block: Block,
         else_block: Option<Block>,
     },
-    /// `if let name = value { then } else { else }`; `else if` and `else if let` fold into
+    /// `if let pattern = value { then } else { else }`; `else if` and `else if let` fold into
     /// `else_block` as for `If`.
     IfLet {
-        name: Ident,
+        pattern: Pattern,
         value: Box<Expr>,
         then_block: Block,
         else_block: Option<Block>,
     },
+    /// `match scrutinee { arms }`. `keyword` is the `match` token's span, which parentheses
+    /// around the expression do not widen.
+    Match {
+        keyword: Span,
+        scrutinee: Box<Expr>,
+        arms: Vec<Arm>,
+    },
     /// `{ ... }` where an expression belongs: its value is its last expression.
     Block(Block),
+}
+
+/// One line of a `match`: `pattern => body`. The parser wraps a body that is a statement
+/// (an assignment, `return`, `break` or `continue`) in a block holding it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Arm {
+    pub(crate) pattern: Pattern,
+    pub(crate) body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pattern {
+    pub(crate) kind: PatternKind,
+    pub(crate) span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PatternKind {
+    /// `_`.
+    Wild,
+    /// A bare name: a binding, or a variant of the enum expected there; the checker decides.
+    Name(Ident),
+    /// `None`.
+    None,
+    /// `Num(p, ...)`, `Expr.Num(p, ...)` or `Expr.Idle`. `parens` is the span of `(` through
+    /// `)`, so that `Idle()`, which has `fields: []`, differs from `Expr.Idle`, which has none.
+    Variant {
+        qualifier: Option<Ident>,
+        name: Ident,
+        fields: Vec<Pattern>,
+        parens: Option<Span>,
+    },
 }
 
 /// A part of an interpolation: a text piece, or an expression with the format spec it may have.
@@ -526,6 +565,43 @@ impl fmt::Display for Enum {
     }
 }
 
+impl fmt::Display for Arm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(arm {} {})", self.pattern, self.body)
+    }
+}
+
+impl fmt::Display for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            PatternKind::Wild => f.write_str("_"),
+            PatternKind::Name(name) => f.write_str(name.name.as_str()),
+            PatternKind::None => f.write_str("None"),
+            PatternKind::Variant {
+                qualifier,
+                name,
+                fields,
+                parens,
+            } => {
+                let path = match qualifier {
+                    Some(qualifier) => format!("{}.{}", qualifier.name, name.name),
+                    None => name.name.to_string(),
+                };
+                // Without parentheses, a qualified variant has no payload to show.
+                if parens.is_none() {
+                    return f.write_str(&path);
+                }
+                write!(f, "({path}")?;
+                if fields.is_empty() {
+                    f.write_str(" ()")?;
+                }
+                spaced(f, fields)?;
+                f.write_str(")")
+            }
+        }
+    }
+}
+
 impl fmt::Display for Arg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.label {
@@ -582,9 +658,11 @@ impl fmt::Display for Stmt {
                 write!(f, " {init})")
             }
             StmtKind::While { cond, body } => write!(f, "(while {cond} {body})"),
-            StmtKind::WhileLet { name, value, body } => {
-                write!(f, "(while-let {} {value} {body})", name.name)
-            }
+            StmtKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => write!(f, "(while-let {pattern} {value} {body})"),
             StmtKind::For { name, source, body } => match source {
                 ForSource::Array(e) => write!(f, "(for {} {e} {body})", name.name),
                 ForSource::Range { start, end } => {
@@ -682,15 +760,22 @@ impl fmt::Display for Expr {
                 f.write_str(")")
             }
             ExprKind::IfLet {
-                name,
+                pattern,
                 value,
                 then_block,
                 else_block,
             } => {
-                write!(f, "(if-let {} {value} {then_block}", name.name)?;
+                write!(f, "(if-let {pattern} {value} {then_block}")?;
                 if let Some(else_block) = else_block {
                     write!(f, " {else_block}")?;
                 }
+                f.write_str(")")
+            }
+            ExprKind::Match {
+                scrutinee, arms, ..
+            } => {
+                write!(f, "(match {scrutinee}")?;
+                spaced(f, arms)?;
                 f.write_str(")")
             }
             ExprKind::Block(block) => write!(f, "{block}"),

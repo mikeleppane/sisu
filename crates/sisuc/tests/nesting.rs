@@ -256,6 +256,41 @@ construct!(whiles, nested_while, 253);
 construct!(fors, nested_for, 253);
 construct!(array_types, array_type, 254);
 
+/// `match` nests through its patterns and its arm bodies. An assignment body sits in a block of
+/// its own, one level more, so `x = match …` nests half as far as `match … => match …`. These stop
+/// at `--emit ast`, before the checker.
+#[test]
+fn match_nests_to_the_limit() {
+    type Program = fn(usize) -> String;
+    let cases: [(&str, usize, Program); 3] = [
+        ("body", 254, |n| {
+            "match y { _ => ".repeat(n) + "1" + &" }".repeat(n)
+        }),
+        ("assignment", 127, |n| {
+            "x = ".to_string() + &"match y { _ => x = ".repeat(n) + "1" + &" }".repeat(n)
+        }),
+        ("pattern", 253, |n| {
+            format!("match y {{ {}_{} => 1 }}", "A(".repeat(n), ")".repeat(n))
+        }),
+    ];
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    for (name, limit, program) in cases {
+        for (n, code) in [(limit, Some(0)), (limit + 1, Some(1))] {
+            let file = format!("nesting_match_{name}.sisu");
+            let source = format!("fn main() {{\n    {}\n}}\n", program(n));
+            fs::write(dir.join(&file), source).expect("writes");
+            let out = sisuc(dir, &["--emit", "ast", &file]);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), code, "{name} {n}: {stderr}");
+            assert_eq!(
+                stderr.contains("error[E0071]: nesting is too deep"),
+                n > limit,
+                "{name} {n}: {stderr}"
+            );
+        }
+    }
+}
+
 /// The right side of a `**` is parsed as a `*`'s would be, one level in: the parser reports the
 /// `**` up to 253 parentheses deep, and the depth past that, which no other construct ends with.
 #[test]
@@ -312,6 +347,22 @@ fn a_hundred_thousand_levels_is_an_error_not_an_abort() {
         &format!(
             "fn main() {{\n    let x = 1\n    if x == 0 {{\n    }}{} else {{\n    }}\n}}\n",
             " else if x == 0 {\n    }".repeat(n)
+        ),
+    );
+    assert_too_deep(
+        "nesting_huge_pattern",
+        &format!(
+            "fn main() {{\n    match e {{\n        {}_{} => 1\n    }}\n}}\n",
+            "A(".repeat(n),
+            ")".repeat(n)
+        ),
+    );
+    assert_too_deep(
+        "nesting_huge_match",
+        &format!(
+            "fn main() {{\n    {}1{}\n}}\n",
+            "match e { _ => ".repeat(n),
+            " }".repeat(n)
         ),
     );
     assert_too_deep(

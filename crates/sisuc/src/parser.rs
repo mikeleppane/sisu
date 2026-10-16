@@ -3,9 +3,10 @@
 use std::ops::Range;
 
 use crate::ast::{
-    Align, Arg, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Enum, Expr, ExprKind,
-    FieldDecl, ForSource, FormatSpec, Function, Ident, Item, Member, Param, Part, PayloadField,
-    Program, Stmt, StmtKind, TypeExpr, TypeKind, UnaryOp, Variant,
+    Align, Arg, Arm, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Enum, Expr,
+    ExprKind, FieldDecl, ForSource, FormatSpec, Function, Ident, Item, Member, Param, Part,
+    Pattern, PatternKind, PayloadField, Program, Stmt, StmtKind, TypeExpr, TypeKind, UnaryOp,
+    Variant,
 };
 use crate::diagnostic::{
     self, BuiltIn, Diagnostic, DiagnosticKind, Join, LetField, Owner, PowerFix, SemicolonPlace,
@@ -1117,9 +1118,9 @@ impl<'a> Parser<'a> {
             TokenKind::Const => return Err(self.local_const()),
             TokenKind::While => {
                 self.bump();
-                if let Some((name, value)) = self.child(base, &mut reach, Self::let_binding)? {
+                if let Some((pattern, value)) = self.child(base, &mut reach, Self::let_binding)? {
                     StmtKind::WhileLet {
-                        name,
+                        pattern,
                         value,
                         body: self.child(base, &mut reach, Self::block)?,
                     }
@@ -1232,14 +1233,154 @@ impl<'a> Parser<'a> {
         self.tokens[self.pos - 1].span
     }
 
-    /// `let name = value`, after `if` or `while`; `None` when no `let` follows.
-    fn let_binding(&mut self) -> Result<Option<(Ident, Expr)>, Diagnostic> {
+    /// `let pattern = value`, after `if` or `while`; `None` when no `let` follows.
+    fn let_binding(&mut self) -> Result<Option<(Pattern, Expr)>, Diagnostic> {
         if self.eat(&TokenKind::Let).is_none() {
             return Ok(None);
         }
-        let name = self.ident("a binding name")?;
+        let base = self.depth;
+        let mut reach = base;
+        let pattern = self.child(base, &mut reach, Self::pattern)?;
         self.expect(&TokenKind::Eq)?;
-        Ok(Some((name, self.expr()?)))
+        let value = self.child(base, &mut reach, Self::expr)?;
+        self.depth = reach;
+        Ok(Some((pattern, value)))
+    }
+
+    /// A pattern: `_`, `None`, a name, `Num(p, ...)`, `Expr.Num(p, ...)` or `Expr.Idle`.
+    fn pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        self.descend()?;
+        let base = self.depth;
+        let mut reach = base;
+        let token = self.peek();
+        let (kind, span) = match token.kind {
+            TokenKind::Underscore => {
+                self.bump();
+                (PatternKind::Wild, token.span)
+            }
+            TokenKind::NoneKw => {
+                self.bump();
+                (PatternKind::None, token.span)
+            }
+            TokenKind::Ident(name) => {
+                let first = Ident {
+                    name,
+                    span: self.bump().span,
+                };
+                let (qualifier, name) = if self.eat(&TokenKind::Dot).is_some() {
+                    (Some(first), self.ident("a variant name")?)
+                } else {
+                    (None, first)
+                };
+                if self.at(&TokenKind::LParen) {
+                    let open = self.bump().span;
+                    let mut fields = Vec::new();
+                    while !self.at(&TokenKind::RParen) {
+                        fields.push(self.child(base, &mut reach, Self::pattern)?);
+                        if self.eat(&TokenKind::Comma).is_none() {
+                            break;
+                        }
+                    }
+                    let close = self.expect(&TokenKind::RParen)?.span;
+                    let span = token.span.to(close);
+                    let kind = PatternKind::Variant {
+                        qualifier,
+                        name,
+                        fields,
+                        parens: Some(open.to(close)),
+                    };
+                    (kind, span)
+                } else if qualifier.is_some() {
+                    let span = token.span.to(name.span);
+                    let kind = PatternKind::Variant {
+                        qualifier,
+                        name,
+                        fields: Vec::new(),
+                        parens: None,
+                    };
+                    (kind, span)
+                } else {
+                    (PatternKind::Name(name), token.span)
+                }
+            }
+            _ => return Err(self.expected("a pattern")),
+        };
+        self.depth = reach;
+        Ok(Pattern { kind, span })
+    }
+
+    /// `match scrutinee {`, then one arm per line, then `}`.
+    fn match_expr(&mut self) -> Result<Expr, Diagnostic> {
+        let keyword = self.bump().span;
+        let base = self.depth;
+        let mut reach = base;
+        let scrutinee = self.child(base, &mut reach, Self::expr)?;
+        self.expect(&TokenKind::LBrace)?;
+        self.skip_newlines();
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            arms.push(self.child(base, &mut reach, Self::arm)?);
+            if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
+                return Err(self.end_of_line());
+            }
+            self.skip_newlines();
+        }
+        let close = self.bump();
+        self.depth = reach;
+        Ok(Expr {
+            span: keyword.to(close.span),
+            kind: ExprKind::Match {
+                keyword,
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+        })
+    }
+
+    /// `pattern => body`.
+    fn arm(&mut self) -> Result<Arm, Diagnostic> {
+        let base = self.depth;
+        let mut reach = base;
+        let pattern = self.child(base, &mut reach, Self::pattern)?;
+        self.expect(&TokenKind::FatArrow)?;
+        let body = self.child(base, &mut reach, Self::arm_body)?;
+        self.depth = reach;
+        Ok(Arm { pattern, body })
+    }
+
+    /// An arm's body: an expression, or a statement that is not one (an assignment, `return`,
+    /// `break` or `continue`) in a block holding just it.
+    fn arm_body(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.peek().span;
+        let stmt = if matches!(
+            self.peek().kind,
+            TokenKind::Return | TokenKind::Break | TokenKind::Continue
+        ) {
+            self.stmt()?
+        } else {
+            let kind = self.expr_or_assign()?;
+            Stmt {
+                kind,
+                span: start.to(self.last_span()),
+            }
+        };
+        let span = stmt.span;
+        if let Stmt {
+            kind: StmtKind::Expr(e),
+            ..
+        } = stmt
+        {
+            return Ok(e);
+        }
+        // The block is one level above the statement it holds.
+        self.reach(self.depth + 1)?;
+        Ok(Expr {
+            kind: ExprKind::Block(Block {
+                stmts: vec![stmt],
+                span,
+            }),
+            span,
+        })
     }
 
     fn let_stmt(&mut self) -> Result<StmtKind, Diagnostic> {
@@ -1707,6 +1848,7 @@ impl<'a> Parser<'a> {
                 return self.array(token.span);
             }
             TokenKind::If => return self.if_expr(),
+            TokenKind::Match => return self.match_expr(),
             TokenKind::LBrace => {
                 let block = self.block()?;
                 return Ok(Expr {
@@ -1874,7 +2016,7 @@ impl<'a> Parser<'a> {
         let base = self.depth;
         let mut reach = base;
         let head = match self.child(base, &mut reach, Self::let_binding)? {
-            Some((name, value)) => Head::Let(name, value),
+            Some((pattern, value)) => Head::Let(pattern, value),
             None => Head::Cond(self.child(base, &mut reach, Self::expr)?),
         };
         let then_block = self.child(base, &mut reach, Self::block)?;
@@ -1907,8 +2049,8 @@ impl<'a> Parser<'a> {
                 then_block,
                 else_block,
             },
-            Head::Let(name, value) => ExprKind::IfLet {
-                name,
+            Head::Let(pattern, value) => ExprKind::IfLet {
+                pattern,
                 value: Box::new(value),
                 then_block,
                 else_block,
@@ -1941,10 +2083,10 @@ fn goes_through_safe_access(e: &Expr) -> bool {
     }
 }
 
-/// What follows `if`: a condition, or the `let name = value` of an `if let`.
+/// What follows `if`: a condition, or the `let pattern = value` of an `if let`.
 enum Head {
     Cond(Expr),
-    Let(Ident, Expr),
+    Let(Pattern, Expr),
 }
 
 #[cfg(test)]
@@ -2605,13 +2747,6 @@ mod tests {
             ("class C {\n    mut _: i64\n}", Code::UnderscoreName, 2, 9),
             ("fn f(_: i64) {}", Code::UnderscoreName, 1, 6),
             ("fn f(a: i64, _: i64) {}", Code::UnderscoreName, 1, 14),
-            ("fn main() {\n    if let _ = e {}\n}", Code::Expected, 2, 12),
-            (
-                "fn main() {\n    while let _ = e {}\n}",
-                Code::Expected,
-                2,
-                15,
-            ),
         ] {
             assert_eq!(parse_err(src), (code, line, col), "{src}");
         }
@@ -2977,12 +3112,119 @@ mod tests {
     }
 
     #[test]
-    fn let_pattern_needs_a_name() {
+    fn let_patterns() {
+        let rows = [
+            (
+                "if let Running(c) = s { c } else { 0 }",
+                "(if-let (Running c) s (block c) (block 0))",
+            ),
+            (
+                "while let Cons(h, t) = l { f(h) }",
+                "(while-let (Cons h t) l (block (call f h)))",
+            ),
+            ("if let _ = o {}", "(if-let _ o (block))"),
+            ("if let x = o {}", "(if-let x o (block))"),
+            (
+                "if let Expr.Num(n) = e {} else if let Expr.Idle = e {}",
+                "(if-let (Expr.Num n) e (block) (block (if-let Expr.Idle e (block))))",
+            ),
+        ];
+        for (src, expected) in rows {
+            assert_eq!(expr(src), expected, "{src}");
+        }
+    }
+
+    #[test]
+    fn match_forms() {
+        let rows = [
+            (
+                "match e {\n    Num(n) => n\n    Add(a, b) => a\n    Expr.Num(_) => 0\n    State.Idle => 1\n    _ => 2\n}",
+                "(match e (arm (Num n) n) (arm (Add a b) a) (arm (Expr.Num _) 0) \
+                 (arm State.Idle 1) (arm _ 2))",
+            ),
+            (
+                "let x = match e {\n    A => 1\n    _ => 2\n}",
+                "(let x (match e (arm A 1) (arm _ 2)))",
+            ),
+            (
+                "match s {\n    Running(c) => c.count += 1\n    Idle => x = 2\n    _ => {}\n}",
+                "(match s (arm (Running c) (block (+= (. c count) 1))) \
+                 (arm Idle (block (= x 2))) (arm _ (block)))",
+            ),
+            (
+                "match o {\n    A => return 0\n    B => return\n    C => break\n    _ => continue\n}",
+                "(match o (arm A (block (return 0))) (arm B (block (return))) \
+                 (arm C (block (break))) (arm _ (block (continue))))",
+            ),
+            (
+                "match e {\n    A => {\n        f(1)\n        2\n    }\n    _ => 3\n}",
+                "(match e (arm A (block (call f 1) 2)) (arm _ 3))",
+            ),
+            (
+                "match e {\n    Add(Num(n), x) => n\n    _ => 0\n}",
+                "(match e (arm (Add (Num n) x) n) (arm _ 0))",
+            ),
+            (
+                "match e {\n    Idle() => 1\n    Expr.Idle() => 2\n    Add(a, b,) => 3\n    None => 4\n}",
+                "(match e (arm (Idle ()) 1) (arm (Expr.Idle ()) 2) (arm (Add a b) 3) \
+                 (arm None 4))",
+            ),
+            (
+                "match a {\n    A => match b {\n        B => 1\n        _ => 2\n    }\n    _ => 3\n}",
+                "(match a (arm A (match b (arm B 1) (arm _ 2))) (arm _ 3))",
+            ),
+            (
+                "match f(x).y {\n    _ => 0\n}",
+                "(match (. (call f x) y) (arm _ 0))",
+            ),
+        ];
+        for (src, expected) in rows {
+            assert_eq!(expr(src), expected, "{src}");
+        }
+    }
+
+    /// A line that continues with `.` joins the body above it, as everywhere else (ADR 0001).
+    #[test]
+    fn match_newlines() {
+        assert_eq!(
+            expr("match e {\n    A => c\n        .count\n    _ => 0\n}"),
+            "(match e (arm A (. c count)) (arm _ 0))"
+        );
+    }
+
+    #[test]
+    fn match_syntax() {
+        let rows = [
+            // A `let` is no arm body.
+            ("match e {\n    A => let x = 1\n}", 2, 10),
+            // The arrow, the pattern and the variant name are each required.
+            ("match e {\n    A 1\n}", 2, 7),
+            ("match e {\n    => 1\n}", 2, 5),
+            ("match e {\n    E. => 1\n}", 2, 8),
+            // One arm per line.
+            ("match e {\n    A => 1 B => 2\n}", 2, 12),
+            // The braces, the parentheses of a pattern and the value of a `return` close.
+            ("match e => 1", 1, 13),
+            ("match e {\n    A(a b) => 1\n}", 2, 9),
+            ("match e {\n    A => return *\n}", 2, 17),
+        ];
+        for (src, line, col) in rows {
+            assert_eq!(
+                parse_err(&format!("fn main() {{\n    {src}\n}}")),
+                (Code::Expected, line + 1, col),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn let_pattern_needs_a_pattern() {
         let rows = [
             ("if let 1 = x {}", 20),
             ("while let 1 = x {}", 23),
             ("if let n x {}", 22),
             ("if let = n {}", 20),
+            ("if let x = * {}", 24),
         ];
         for (src, col) in rows {
             assert_eq!(expr_err(src), (Code::Expected, 1, col), "{src}");
@@ -3213,7 +3455,7 @@ mod tests {
     fn reserved_errors() {
         // One row per place that wants a name or an expression.
         for (src, line, col) in [
-            ("fn main() {\n    let match = 1\n}", 2, 9),
+            ("fn main() {\n    let type = 1\n}", 2, 9),
             ("class C {\n    record: i64\n}", 2, 5),
             ("fn main() {\n    print(echo)\n}", 2, 11),
             ("fn main() {\n    print(p.type)\n}", 2, 13),

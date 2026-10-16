@@ -450,6 +450,8 @@ fn single_term(e: &ast::Expr) -> bool {
         ExprKind::Is { .. } | ExprKind::Compare { .. } => false,
         ExprKind::Unary { operand, .. } => e.span.end() != operand.span.end(),
         ExprKind::Block(block) => e.span != block.span,
+        // The keyword starts it, unless parentheses do.
+        ExprKind::Match { keyword, .. } => e.span.start() != keyword.start(),
         ExprKind::If {
             then_block,
             else_block,
@@ -480,6 +482,27 @@ fn and(lhs: tir::Expr, rhs: tir::Expr, span: Span) -> tir::Expr {
 mod tests {
     use super::*;
     use crate::lexer::{TokenKind, lex};
+
+    /// Beside other code, a `match` needs its parentheses, and a parenthesized one has them.
+    #[test]
+    fn a_match_is_one_term_only_in_parentheses() {
+        let keyword = Span::new(1, 6);
+        let scrutinee = ast::Expr {
+            kind: ExprKind::Name(crate::symbol::Symbol::intern("x")),
+            span: Span::new(7, 8),
+        };
+        for (span, single) in [(Span::new(1, 20), false), (Span::new(0, 21), true)] {
+            let e = ast::Expr {
+                kind: ExprKind::Match {
+                    keyword,
+                    scrutinee: Box::new(scrutinee.clone()),
+                    arms: Vec::new(),
+                },
+                span,
+            };
+            assert_eq!(single_term(&e), single, "{span:?}");
+        }
+    }
 
     /// The name of a literal is Sisu that lexes back to the literal's text.
     #[test]

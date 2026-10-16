@@ -43,3 +43,12 @@ fn let_underscore_declares_no_name() {
         &[],
     );
 }
+
+#[test]
+fn if_let_and_while_let_take_underscore() {
+    clean("fn f(n: i64?) {\n    if let _ = n {}\n    while let _ = n {}\n}\nfn main() {}");
+    codes(
+        "fn main() {\n    if let _ = 5 {}\n}",
+        &[(Code::UnwrapNeedsOptional, (2, 16))],
+    );
+}

@@ -5,6 +5,7 @@ use std::ops::Range;
 
 use super::number;
 use super::prelude::PRELUDE;
+use super::stmt::binding_of;
 use super::{
     Binding, Checked, CheckedBlock, Checker, Declared, Poisoned, UNKNOWN, block_expr, block_type,
     built_in_type, optional_of, payload, tail, type_of, value_span, wrap, wrap_block,
@@ -159,18 +160,19 @@ impl Checker<'_> {
                 else_block,
             } => self.if_expr(e.span, cond, then_block, else_block.as_ref(), expected),
             ExprKind::IfLet {
-                name,
+                pattern,
                 value,
                 then_block,
                 else_block,
             } => self.if_let(
                 e.span,
-                name,
+                &binding_of(pattern),
                 value,
                 then_block,
                 else_block.as_ref(),
                 expected,
             ),
+            ExprKind::Match { .. } => panic!("match lands in Task 7"),
             ExprKind::Block(block) => self.block(block, expected).map(|block| {
                 let ty = block.ty.clone();
                 tir::Expr {
