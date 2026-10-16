@@ -29,13 +29,15 @@ env:
 
 # Informational: every step tolerates failure and each one runs only after its
 # predecessor succeeded, so a failure skips the rest (nothing is measured or
-# uploaded after a failed prep), leaves every check green and is named in the
-# summary. CodSpeed reads codspeed.yml; the app comments on the PR on change.
+# uploaded after a failed prep) and is named in the summary. On a pull request
+# every check stays green; on a push to main the summary step then fails the
+# job, so a benchmark that stops running shows on main. CodSpeed reads
+# codspeed.yml; the app comments on the PR on change.
 jobs:
   benchmarks:
     name: Benchmarks (informational)
     runs-on: ubuntu-24.04
-    continue-on-error: true
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
     permissions:
       contents: read
       id-token: write
@@ -65,10 +67,11 @@ jobs:
         with:
           mode: simulation
       - id: summary
-        continue-on-error: true
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         if: always()
         env:
           STEPS: ${{ toJSON(steps) }}
+          EVENT: ${{ github.event_name }}
         run: |
           failed=
           for id in checkout toolchain llvm prep bench; do
@@ -83,3 +86,7 @@ jobs:
             line="Benchmarks did not run: the $failed step failed."
           fi
           echo "$line" >>"$GITHUB_STEP_SUMMARY"
+          if [ -n "$failed" ] && [ "$EVENT" = push ]; then
+            echo "::error::$line"
+            exit 1
+          fi
