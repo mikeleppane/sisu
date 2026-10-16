@@ -1110,10 +1110,11 @@ impl<'a> Parser<'a> {
             if self.at(&TokenKind::Else) {
                 return Err(self.else_on_new_line(stmts.last()));
             }
-            stmts.push(self.child(base, &mut reach, Self::stmt)?);
+            let stmt = self.child(base, &mut reach, Self::stmt)?;
             if !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Newline) {
-                return Err(self.end_of_line());
+                return Err(self.statement_end(&stmt));
             }
+            stmts.push(stmt);
             self.skip_newlines();
         }
         let close = self.bump();
@@ -1433,23 +1434,37 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// C's `switch e {` at the next token, a name `switch`: the expression after it is parsed
-    /// ahead, and the parser backs out when no `{` follows it.
-    fn switch_idiom(&mut self) -> Option<Diagnostic> {
-        let at = self.peek().span;
-        let (pos, depth, specs) = (self.pos, self.depth, self.specs.len());
-        self.bump();
-        let switch = self.expr().is_ok() && self.at(&TokenKind::LBrace);
-        self.pos = pos;
-        self.depth = depth;
-        self.specs.truncate(specs);
-        switch.then(|| {
-            DiagnosticKind::MatchIdiom {
+    /// The error where more follows `stmt` on its line. A statement that ends in C's `switch`
+    /// gets its own error: a call `switch(e)` and then `{`, or a name `switch` and then an
+    /// expression and `{`. That expression is parsed only here, where the line fails anyway.
+    fn statement_end(&mut self, stmt: &Stmt) -> Diagnostic {
+        let error = self.end_of_line();
+        let (StmtKind::Expr(tail)
+        | StmtKind::Return(Some(tail))
+        | StmtKind::Let { init: tail, .. }
+        | StmtKind::Assign { value: tail, .. }
+        | StmtKind::CompoundAssign { value: tail, .. }) = &stmt.kind
+        else {
+            return error;
+        };
+        let switch = match &tail.kind {
+            ExprKind::Name(name) if name.as_str() == "switch" => {
+                let specs = self.specs.len();
+                let expr = self.expr().is_ok();
+                self.specs.truncate(specs);
+                expr.then_some(tail.span)
+            }
+            ExprKind::Call { callee, .. } if callee.name.as_str() == "switch" => Some(callee.span),
+            _ => None,
+        };
+        match switch {
+            Some(at) if self.at(&TokenKind::LBrace) => DiagnosticKind::MatchIdiom {
                 form: MatchIdiomForm::Switch,
                 at,
             }
-            .into()
-        })
+            .into(),
+            _ => error,
+        }
     }
 
     /// `case`, `default:` or `else =>` where an arm starts.
@@ -2014,11 +2029,6 @@ impl<'a> Parser<'a> {
                 ExprKind::NoneLit
             }
             TokenKind::Ident(name) => {
-                if &self.source[token.span.range()] == "switch"
-                    && let Some(error) = self.switch_idiom()
-                {
-                    return Err(error);
-                }
                 self.bump();
                 if let Some(error) = self.path_idiom(token.span) {
                     return Err(error);
@@ -3580,10 +3590,14 @@ mod tests {
             assert_eq!(fix_safe, safe, "{src}");
             assert_eq!(apply_fix(&src, &d), expected, "{src}");
         }
-        // A name `switch`, `case` or `default` is still a name where no idiom fits. A call
-        // `switch(x)` followed by `{` reads as C's `switch`.
+        // A name `switch`, `case` or `default` is still a name where no idiom fits. In a header,
+        // whose `{` belongs to the `if`, `switch` is an ordinary name or call.
         for src in [
             "fn main() {\n    let x = switch\n    let y = switch(1) + 1\n}",
+            "fn main() {\n    if switch - 1 > 0 {\n    }\n}",
+            "fn main() {\n    if switch[0] == 1 {\n    }\n}",
+            "fn main() {\n    if switch(1) {\n    }\n}",
+            "fn main() {\n    while switch(1) {\n    }\n}",
             "fn main() {\n    match e {\n        case => 1\n        default => 2\n    }\n}",
         ] {
             parse_ok(src);
@@ -3936,6 +3950,19 @@ mod tests {
                 .iter()
                 .all(|d| d.code() == Code::TodoForm)
         );
+    }
+
+    /// A call `switch(...)` is parsed once: a parser that tried C's `switch e {` first and
+    /// then parsed the call again would take time exponential in the nesting, and this test
+    /// would hang instead of failing.
+    #[test]
+    fn nested_switch_calls_parse_in_linear_time() {
+        const DEPTH: usize = 32;
+        parse_ok(&format!(
+            "fn main() {{\n    let x = {}1{}\n}}\n",
+            "switch(".repeat(DEPTH),
+            ")".repeat(DEPTH)
+        ));
     }
 
     /// Inside parentheses no line break ends `todo`, so it takes the message on the next line.

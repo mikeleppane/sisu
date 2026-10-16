@@ -43,6 +43,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(nested_joins_check_in_quadratic_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# A call `switch(...)` once was parsed twice, as C's `switch` and then as a call, so nested calls
+# were exponential and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(nested_switch_calls_parse_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # A harness that writes all of standard input before it reads the output would fill both pipes
 # and hang on these tests instead of failing them.
 [[profile.default.overrides]]

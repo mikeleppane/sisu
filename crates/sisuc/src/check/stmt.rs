@@ -631,6 +631,17 @@ impl Checker<'_> {
                 at: name.span,
             });
         }
+        self.insert_local(name, ty, kind, keyword)
+    }
+
+    /// `declare` without its checks of the name.
+    pub(super) fn insert_local(
+        &mut self,
+        name: &ast::Ident,
+        ty: Option<Type>,
+        kind: BindingKind,
+        keyword: Option<Span>,
+    ) -> tir::LocalId {
         let local = tir::LocalId(self.locals.len());
         self.locals.push(tir::Local {
             name: Some(name.name.to_string()),

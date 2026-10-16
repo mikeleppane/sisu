@@ -279,14 +279,15 @@ impl Checker<'_> {
                     }
                     return None;
                 };
-                let fields: Option<Vec<_>> = fields
+                // Every field is checked, so the names after a failed one are still bound.
+                let fields: Vec<_> = fields
                     .iter()
                     .zip(&types)
                     .map(|(field, ty)| self.pattern(field, ty.as_ref(), keyword, bound))
                     .collect();
                 Some(pattern(tir::PatternKind::Variant {
                     variant,
-                    fields: fields?,
+                    fields: fields.into_iter().collect::<Option<_>>()?,
                 }))
             }
         }
@@ -346,8 +347,12 @@ impl Checker<'_> {
                         suggestion: suggestion(text, variants),
                     }
                 } else {
-                    // Read as the binding the fix makes it, so the body does not cascade.
-                    self.bind(name, None, keyword, bound);
+                    // Read as the binding the fix makes it, so the body does not cascade. The
+                    // name is not checked as a binding's: this error is the one it gets.
+                    if bound.names.insert(name.name, name.span).is_none() {
+                        let kind = super::BindingKind::Unwrapped(keyword);
+                        bound.locals.push(self.insert_local(name, None, kind, None));
+                    }
                     DiagnosticKind::NotVariantHere {
                         name: text.to_string(),
                         at: name.span,

@@ -1,0 +1,18 @@
+error[E0054]: this value is already `i64`
+  --> E0054-match.sisu:8:15
+   |
+ 8 |       print(i64(match e {
+   |  _______________^
+ 9 | |         Num(n) => n
+10 | |         _ => 0
+11 | |     }) + 1)
+   | |_____^
+   |
+help: remove the conversion
+   |
+ 8 -     print(i64(match e {
+ 8 +     print((match e {
+   |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0054

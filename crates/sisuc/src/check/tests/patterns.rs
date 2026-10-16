@@ -136,8 +136,10 @@ fn type_of_v(src: &str) -> String {
 #[test]
 fn match_join() {
     // Each row: the arms' values, in order, and the type they join to.
-    let rows: [(&[&str], &str); 9] = [
+    let rows: [(&[&str], &str); 10] = [
         (&["1", "return 2", "3"], "i64"),
+        // A `never` arm sets no type for the arms after it: the `None` expects `i64?`.
+        (&["return 1", "1", "None"], "i64?"),
         (&["1", "b"], "u8"),
         (&["b", "1"], "u8"),
         (&["None", "1"], "i64?"),
@@ -161,12 +163,13 @@ fn match_join() {
         );
         assert_eq!(type_of_v(&src), want, "{values:?}");
     }
-    // A failed arm sets no type for the arms after it: the `1` still expects `u8`.
+    // A failed arm sets no type for the arms after it: `b`, checked after it, does, so the `1`
+    // expects `u8`.
     codes(
         &format!(
-            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => b\n        Add(_, _) => nope\n        _ => 1\n    }}\n}}"
+            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => nope\n        Add(_, _) => b\n        _ => 1\n    }}\n}}"
         ),
-        &[(Code::BindingNotFound, (16, 22))],
+        &[(Code::BindingNotFound, (15, 19))],
     );
     // Arms that all leave make a `never` `match`.
     clean(&format!(
@@ -205,6 +208,8 @@ fn pattern_names() {
         ("n", "Stopped => 1", Some(Code::NotVariantHere)),
         // The name still binds, so the body reports nothing more.
         ("n", "Count => Count + 1", Some(Code::NotVariantHere)),
+        // That binding is not reported again for taking an enum's name.
+        ("n", "State => 1", Some(Code::NotVariantHere)),
         ("n", "LIMIT => 1", Some(Code::ConstantInPattern)),
         ("n", "limit => 1", Some(Code::ConstantInPattern)),
         // A variant of the enum comes before the constant of its name.
@@ -247,6 +252,10 @@ fn pattern_errors() {
         ("e", "Mul(x, x) => 1", Code::UnknownVariant, 9),
         // A body fails on its own, after a pattern that checks.
         ("e", "Num(m) => nope", Code::BindingNotFound, 19),
+        // The fields after a failed one are checked too, so their names are bound.
+        ("e", "Add(Nmu, b) => b", Code::NotVariantHere, 13),
+        ("e", "Add(Num(x, y), m) => m", Code::Mismatch, 13),
+        ("e", "Add(None, y) => y", Code::Mismatch, 13),
     ];
     for (scrutinee, arm, code, col) in rows {
         codes(&arm_on_15(scrutinee, arm), &[(code, (15, col))]);
@@ -260,6 +269,11 @@ fn pattern_errors() {
         ("    while let Num(m) = 5 {}", Code::UnwrapNeedsOptional, 24),
         ("    if let m = p {}", Code::UnwrapNeedsOptional, 16),
         ("    while let Nmu(m) = e {}", Code::UnknownVariant, 15),
+        (
+            "    while let Add(Q, y) = e { print(y) }",
+            Code::NotVariantHere,
+            19,
+        ),
     ];
     for (stmt, code, col) in rows {
         codes(&in_fn(stmt), &[(code, (14, col))]);
@@ -278,37 +292,14 @@ fn pattern_errors() {
     );
 }
 
-/// The spans the pattern diagnostics point at, the secondary ones included.
+/// A pattern of another enum is reported from its qualifier on; the fixtures pin the other
+/// pattern spans.
 #[test]
 fn pattern_spans() {
-    diagnostic(
-        &arm_on_15("e", "Add(x, x) => 1"),
-        Code::BoundTwice,
-        (15, 16, "x"),
-        &[(15, 13)],
-    );
     diagnostic(
         &arm_on_15("e", "Shape.Circle(r) => 1"),
         Code::Mismatch,
         (15, 9, "Shape.Circle(r)"),
-        &[],
-    );
-    diagnostic(
-        &arm_on_15("e", "Add(x) => 1"),
-        Code::SubpatternCount,
-        (15, 9, "Add(x)"),
-        &[],
-    );
-    diagnostic(
-        &in_fn("    let _ = match p {}"),
-        Code::CannotMatch,
-        (14, 19, "p"),
-        &[],
-    );
-    diagnostic(
-        &in_fn("    if let m = 5 {}"),
-        Code::UnwrapNeedsOptional,
-        (14, 16, "5"),
         &[],
     );
 }
@@ -355,15 +346,26 @@ fn last_use_through_match() {
     let part =
         "(match (move s#0) (arm (Running c#2) (block (move c#2))) (arm Idle (block (move d#1))))";
     assert!(printed.contains(part), "{part} in {printed}");
-    // A local the body reads before a later arm's test is live in the earlier arm.
+    // A local a later arm reads is live in the arms before it and at the test: the scrutinee
+    // is not moved into the `match`.
     let src = format!(
-        "{DECLS}\nfn t(s: State, d: C) -> C {{\n    let k = match s {{\n        Running(c) => d\n        Idle => d\n    }}\n    print(d.count)\n    k\n}}"
+        "{DECLS}\nfn t(s: State) -> State {{\n    match s {{\n        Running(_) => State.Idle\n        Idle => s\n    }}\n}}"
     );
     let (program, ds) = crate::front_end::front_end(&src);
     assert!(ds.is_empty(), "{ds:?}");
     let printed = program.expect("the source should check clean").to_string();
-    let part = "(arm (Running c#2) (block d#1)) (arm Idle (block d#1))";
-    assert!(printed.contains(part), "{part} in {printed}");
+    for part in ["(match s#0 ", "(arm Idle (block (move s#0)))"] {
+        assert!(printed.contains(part), "{part} in {printed}");
+    }
+    // An arm's bindings are dead before its test, so the loop moves `l` into the `match` and
+    // `t` into `l`.
+    let src = "enum L {\n    Cons(i64, L)\n    Nil\n}\nfn main() {}\nfn t(l0: L) {\n    let mut l = l0\n    while let Cons(h, t) = l {\n        print(h)\n        l = t\n    }\n}";
+    let (program, ds) = crate::front_end::front_end(src);
+    assert!(ds.is_empty(), "{ds:?}");
+    let printed = program.expect("the source should check clean").to_string();
+    for part in ["(match (move l#1)", "(= l#1 (move t#3))"] {
+        assert!(printed.contains(part), "{part} in {printed}");
+    }
 }
 
 #[test]
