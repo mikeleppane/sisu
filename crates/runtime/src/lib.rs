@@ -260,13 +260,23 @@ pub extern "C" fn sisu_flush_stdout() {
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sisu_panic(msg: *const u8, len: usize) -> ! {
-    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
-    // `from_raw_parts` requires for a `u8` slice.
-    let bytes = unsafe { std::slice::from_raw_parts(msg, len) };
-    exit_with_panic(format_args!(
-        "sisu: panic at {}",
-        String::from_utf8_lossy(bytes)
-    ))
+    // SAFETY: the caller upholds the `# Safety` contract above, which is `raw_text`'s.
+    let msg = unsafe { raw_text(msg, len) };
+    exit_with_panic(format_args!("sisu: panic at {msg}"))
+}
+
+/// The `len` bytes at `msg` as text, each ill-formed sequence replaced by `U+FFFD`, for a
+/// panic line. The panic functions exit, so their tests run in a child process, out of Miri's
+/// reach; this function is what Miri checks of their reads.
+///
+/// # Safety
+///
+/// `msg` and `len` meet the contract of [`sisu_panic`].
+#[expect(unsafe_code, reason = "reads the raw pointer generated code passed")]
+unsafe fn raw_text<'a>(msg: *const u8, len: usize) -> std::borrow::Cow<'a, str> {
+    // SAFETY: the caller upholds the contract above, which is exactly what `from_raw_parts`
+    // requires for a `u8` slice.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(msg, len) })
 }
 
 /// Prints `sisu: panic at <at>: <msg>` to standard error and exits with code 101. Generated
@@ -287,19 +297,10 @@ pub unsafe extern "C" fn sisu_panic_message(
     msg: *const u8,
     msg_len: usize,
 ) -> ! {
-    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
-    // `from_raw_parts` requires for each `u8` slice.
-    let (at, msg) = unsafe {
-        (
-            std::slice::from_raw_parts(at, at_len),
-            std::slice::from_raw_parts(msg, msg_len),
-        )
-    };
-    exit_with_panic(format_args!(
-        "sisu: panic at {}: {}",
-        String::from_utf8_lossy(at),
-        String::from_utf8_lossy(msg)
-    ))
+    // SAFETY: the caller upholds the `# Safety` contract above, which is `raw_text`'s for
+    // each pair.
+    let (at, msg) = unsafe { (raw_text(at, at_len), raw_text(msg, msg_len)) };
+    exit_with_panic(format_args!("sisu: panic at {at}: {msg}"))
 }
 
 /// Prints `sisu: panic at <msg>: index <index> out of bounds for length <length>` to
@@ -320,12 +321,10 @@ pub unsafe extern "C" fn sisu_panic_bounds(
     index: i64,
     length: i64,
 ) -> ! {
-    // SAFETY: the caller upholds the `# Safety` contract above, which is exactly what
-    // `from_raw_parts` requires for a `u8` slice.
-    let bytes = unsafe { std::slice::from_raw_parts(msg, len) };
+    // SAFETY: the caller upholds the `# Safety` contract above, which is `raw_text`'s.
+    let msg = unsafe { raw_text(msg, len) };
     exit_with_panic(format_args!(
-        "sisu: panic at {}: index {index} out of bounds for length {length}",
-        String::from_utf8_lossy(bytes)
+        "sisu: panic at {msg}: index {index} out of bounds for length {length}"
     ))
 }
 
@@ -502,10 +501,10 @@ pub extern "C" fn sisu_rc_fault(kind: u32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, signal, sisu_alloc, sisu_eprint_bool,
-        sisu_eprint_f64, sisu_eprint_int, sisu_flush_stdout, sisu_free, sisu_panic_bounds,
-        sisu_print_bool, sisu_print_f64, sisu_print_int, sisu_rc_check_exit, sisu_rc_fault,
-        sisu_realloc, with_stdout,
+        BUFFER_CAPACITY, RESERVED, SIGPIPE, Sink, Stdout, raw_text, signal, sisu_alloc,
+        sisu_eprint_bool, sisu_eprint_f64, sisu_eprint_int, sisu_flush_stdout, sisu_free,
+        sisu_panic_bounds, sisu_print_bool, sisu_print_f64, sisu_print_int, sisu_rc_check_exit,
+        sisu_rc_fault, sisu_realloc, with_stdout,
     };
     use crate::text::{sisu_eprint_char, sisu_eprint_str};
     use std::os::fd::AsRawFd;
@@ -685,6 +684,19 @@ mod tests {
                 out.buffer
             );
         });
+    }
+
+    /// `raw_text` reads exactly `len` bytes, for a nonempty and an empty message, and
+    /// replaces an ill-formed byte. Under Miri this checks the panic functions' reads.
+    #[expect(unsafe_code, reason = "the test calls an unsafe function")]
+    #[test]
+    fn raw_text_reads_len_bytes() {
+        let msg = b"f.sisu:3:7\xFF";
+        // SAFETY: each slice's pointer is non-null and readable for its length.
+        let (text, empty) =
+            unsafe { (raw_text(msg.as_ptr(), msg.len()), raw_text([].as_ptr(), 0)) };
+        assert_eq!(text, "f.sisu:3:7\u{FFFD}");
+        assert_eq!(empty, "");
     }
 
     #[test]
