@@ -71,7 +71,9 @@ _Avoid_: list, vector (a growable collection, milestone 11)
 **Copy-on-write**:
 How arrays and strings behave as values without copying eagerly: holders
 share one block, and a write (to an array element, or `+=` on a string)
-copies the block first when another holder exists.
+copies the block first when another holder exists. A loop that writes an array
+it never shares checks the count once, before it starts, and copies there if
+needed.
 _Avoid_: lazy copy
 
 **Last use**:
