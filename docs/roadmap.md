@@ -39,8 +39,15 @@ These are adopted. Together they give Sisu a working imperative core.
   labeled fields (`Rect(w: i64, h: i64)`) or unlabeled ones (`Num(i64)`);
   `Expr.Num(2)` builds a value, an enum has methods and compares with `==`,
   and a recursive enum such as `Add(Expr, Expr)` works with no annotation,
-  its recursive fields stored behind counted boxes; enum values never change,
-  and nothing takes one apart yet, since `match` is not in
+  its recursive fields stored behind counted boxes; enum values never change
+- `match` on an enum, `i64`, `u8`, `bool`, `char` or `string`, as an
+  expression or a statement, with one arm per line; a pattern is a variant,
+  bare or through its enum (`Num(n)`, `Expr.Num(n)`), whose sub-patterns
+  nest, or a name that binds, or `_`, and on a type that is not an enum an
+  arm takes only a name or `_`; a `match` that misses a value does not
+  compile and names one it misses, such as `Mul(_, _)`, and an arm that no
+  value reaches warns (`W0006`); `if let` and `while let` take the same
+  patterns on an enum
 - `f64`, written `2.5`, `1e-3` or `3.0e8`, with IEEE 754 arithmetic and
   comparisons (`nan` is not equal to itself, and `-0.0` equals `0.0`);
   `i64(x)`, an `i64?` that is `None` unless `x` is a whole number in range,
