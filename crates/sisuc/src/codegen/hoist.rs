@@ -403,14 +403,21 @@ pub(super) mod tests {
 
     #[test]
     fn unique_roots_of_each_loop() {
-        let wrong: Vec<_> = CASES
+        let found: Vec<_> = CASES
             .iter()
-            .filter_map(|(name, src, expected)| {
-                let found = loops(src);
-                (found != *expected).then(|| format!("{name}: {found:?}, expected {expected:?}"))
+            .map(|(name, src, _)| (*name, loops(src)))
+            .collect();
+        let expected: Vec<_> = CASES
+            .iter()
+            .map(|(name, _, expected)| {
+                let names = expected
+                    .iter()
+                    .map(|roots| roots.iter().map(ToString::to_string).collect())
+                    .collect();
+                (*name, names)
             })
             .collect();
-        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert_eq!(found, expected);
         // The `moved` row bars `a` through the `Move` that `return a` became.
         let (_, moved, _) = CASES
             .iter()

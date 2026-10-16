@@ -1488,8 +1488,9 @@ fn a_loop_makes_its_written_arrays_unique_before_it_starts() {
         ("outer_barred", OUTER_BARRED_INNER_HOISTS, &[0, 1, 0]),
         ("append", APPEND, &[1, 0]),
     ];
-    let mut wrong = Vec::new();
-    for (name, src, counts) in cases {
+    let mut found = Vec::new();
+    let mut irs = Vec::new();
+    for (name, src, _) in cases {
         let context = Context::create();
         let module = compiled(&context, &format!("{src}\nfn main() {{}}"));
         let ir = module.print_to_string().to_string();
@@ -1501,9 +1502,12 @@ fn a_loop_makes_its_written_arrays_unique_before_it_starts() {
             }
             *pieces.last_mut().unwrap() += line.matches("call ptr @\"sisu_rc.unique.").count();
         }
-        if pieces != counts {
-            wrong.push(format!("{name}: {pieces:?}, expected {counts:?}\n{f}"));
-        }
+        irs.push(format!("{name}:\n{f}"));
+        found.push((name, pieces));
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|&(name, _, counts)| (name, counts.to_vec()))
+        .collect();
+    assert_eq!(found, expected, "{}", irs.join("\n"));
 }
