@@ -341,14 +341,27 @@ impl Walk {
         }
     }
 
+    // Outside an arm nothing is recorded, so the whole-set changes below copy or fill instead
+    // of setting each local.
+
     /// Makes `other` the live set.
     fn assign(&mut self, other: &[bool]) {
+        if self.undoing == 0 {
+            self.live.copy_from_slice(other);
+            return;
+        }
         for (local, &live) in other.iter().enumerate() {
             self.set(local, live);
         }
     }
 
     fn join(&mut self, other: &[bool]) {
+        if self.undoing == 0 {
+            for (live, other) in self.live.iter_mut().zip(other) {
+                *live |= *other;
+            }
+            return;
+        }
         for (local, &live) in other.iter().enumerate() {
             if live {
                 self.set(local, true);
@@ -357,6 +370,10 @@ impl Walk {
     }
 
     fn clear(&mut self) {
+        if self.undoing == 0 {
+            self.live.fill(false);
+            return;
+        }
         for local in 0..self.live.len() {
             self.set(local, false);
         }
