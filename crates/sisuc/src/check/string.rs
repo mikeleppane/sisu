@@ -497,6 +497,7 @@ mod tests {
                     keyword,
                     scrutinee: Box::new(scrutinee.clone()),
                     arms: Vec::new(),
+                    close: span,
                 },
                 span,
             };

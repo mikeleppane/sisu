@@ -65,13 +65,14 @@ fn empty_block() -> tir::Block {
 }
 
 impl Checker<'_> {
-    /// `match scrutinee { arms }`, whose keyword is at `keyword`. Each arm is checked in a scope
+    /// `match scrutinee { arms }`, whose keyword is at `keyword` and `}` at `close`. Each arm is checked in a scope
     /// that holds its bindings, and the arms join as an `if`'s branches do (`join`). When every
     /// pattern checked, the arms are checked for coverage and reachability.
     pub(super) fn match_expr(
         &mut self,
         span: Span,
         keyword: Span,
+        close: Span,
         scrutinee: &ast::Expr,
         arms: &[ast::Arm],
         expected: Option<&Type>,
@@ -126,7 +127,7 @@ impl Checker<'_> {
                 .collect();
             if let Some(rows) = rows {
                 let report = exhaust::check(&self.lowered_enums, ty, &rows);
-                self.report_coverage(span, keyword, arms, report);
+                self.report_coverage(keyword, close, arms, report);
             }
         }
         let arms: Option<Vec<_>> = patterns
@@ -155,50 +156,61 @@ impl Checker<'_> {
         }
     }
 
-    /// Reports what `report` found on the `arms` of the `match` at `span`, whose keyword is at
-    /// `keyword`.
-    fn report_coverage(&mut self, span: Span, keyword: Span, arms: &[ast::Arm], report: Report) {
+    /// Reports what `report` found on the `arms` of the `match` whose keyword is at `keyword`
+    /// and `}` at `close`.
+    fn report_coverage(&mut self, keyword: Span, close: Span, arms: &[ast::Arm], report: Report) {
+        let source = self.source;
+        let line_start = |at: usize| source[..at].rfind('\n').map_or(0, |n| n + 1);
         let mut unreachable = report.unreachable.into_iter().peekable();
         for arm in arms {
             let Some(found) = unreachable.next_if(|u| u.at == arm.pattern.span) else {
                 continue;
             };
             // The first arm is always reached, and arms are separated by line breaks, so this
-            // arm starts its line and the line break before it is its own.
-            let start = self.source[..found.at.start()].rfind('\n').unwrap_or(0);
+            // arm starts its line. The fix takes the whole line, a comment after the body too,
+            // unless the `match`'s `}` ends it: then from the line break before the arm through
+            // the body, so the `}` stays.
+            let end = arm.body.span.end();
+            let line_end = source[end..].find('\n').map_or(source.len(), |n| end + n);
+            let remove = if close.start() < line_end {
+                Span::new(line_start(found.at.start()) - 1, end)
+            } else {
+                Span::new(
+                    line_start(found.at.start()),
+                    (line_end + 1).min(source.len()),
+                )
+            };
             self.report(DiagnosticKind::UnreachableArm {
                 at: found.at,
                 covered_by: found.covered_by,
-                remove: Span::new(start, arm.body.span.end()),
+                remove,
             });
         }
         let Some(missing) = report.missing else {
             return;
         };
-        let source = self.source;
-        let line_start = |at: usize| source[..at].rfind('\n').map_or(0, |n| n + 1);
         // What comes before `at` on its line, when that is only whitespace.
         let blank = |at: usize| Some(&source[line_start(at)..at]).filter(|s| s.trim().is_empty());
         let line = &source[line_start(keyword.start())..keyword.start()];
         let match_indent = &line[..line.len() - line.trim_start().len()];
-        // Parentheses around the `match` widen `span`, but its `}` is the last one in it.
-        let close = span.start()
-            + source[span.range()]
-                .rfind('}')
-                .expect("a `match` should end in `}`");
+        let close = close.start();
         let indent = match arms.first().and_then(|arm| blank(arm.pattern.span.start())) {
             Some(indent) => indent.to_string(),
             None => format!("{match_indent}    "),
         };
-        let (insert, close) = match blank(close) {
-            Some(_) => (line_start(close), None),
-            None => (close, Some(match_indent.to_string())),
+        // A `}` on a line of its own keeps it; one after the last arm moves to a new line, and
+        // the fix replaces the space before it.
+        let (insert, close) = if blank(close).is_some() {
+            (Span::new(line_start(close), line_start(close)), None)
+        } else {
+            let start = arms.last().map_or(close, |arm| arm.body.span.end());
+            (Span::new(start, close), Some(match_indent.to_string()))
         };
         self.report(DiagnosticKind::NonExhaustive {
             missing: missing.pattern,
             partly: missing.partly,
             at: keyword,
-            insert: Span::new(insert, insert),
+            insert,
             indent,
             close,
         });

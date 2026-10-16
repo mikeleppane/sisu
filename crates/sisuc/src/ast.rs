@@ -310,11 +310,12 @@ pub(crate) enum ExprKind {
         else_block: Option<Block>,
     },
     /// `match scrutinee { arms }`. `keyword` is the `match` token's span, which parentheses
-    /// around the expression do not widen.
+    /// around the expression do not widen, and `close` its `}`'s.
     Match {
         keyword: Span,
         scrutinee: Box<Expr>,
         arms: Vec<Arm>,
+        close: Span,
     },
     /// `{ ... }` where an expression belongs: its value is its last expression.
     Block(Block),

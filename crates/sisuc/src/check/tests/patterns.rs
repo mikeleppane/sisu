@@ -523,6 +523,11 @@ fn match_coverage() {
         };
         codes(&match_on(scrutinee, arms), &expected);
     }
+    // A column of an enum with no variant goes to the default, as a `_`.
+    codes(
+        "enum E {}\nenum Bit {\n    X\n    Y\n}\nenum F { G(E, Bit) }\nfn t(f: F) -> i64 {\n    match f {\n        G(_, X) => 1\n    }\n}\nfn main() {}",
+        &[(Code::EmptyEnum, (1, 6)), (Code::NonExhaustive, (8, 5))],
+    );
 }
 
 /// The note names the first arm that has the missing value's variant at the top, and the fix
@@ -553,12 +558,23 @@ fn non_exhaustive_note_and_fix() {
     let src =
         format!("{COVER}\nfn t(ab: AB) -> i64 {{\n    let v = match ab {{ A => 1 }}\n    v\n}}");
     let d = diagnostic(&src, Code::NonExhaustive, (12, 13, "match"), &[]);
+    // The fix starts at the last arm's end, so no space trails it.
     assert_eq!(
         fixes(&src, &d),
         [(
             false,
-            vec![(12, 31, "", "\n        _ => todo\n    ".to_string())]
+            vec![(12, 30, " ", "\n        _ => todo\n    ".to_string())]
         )]
+    );
+    applied(&src, &d);
+    // The `match`'s own `}` places the fix, not a `}` in a comment after it.
+    let src = format!(
+        "{COVER}\nfn t(ab: AB) -> i64 {{\n    let v = (match ab {{\n        A => 1\n    }} // }}\n    )\n    v\n}}"
+    );
+    let d = diagnostic(&src, Code::NonExhaustive, (12, 14, "match"), &[]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(false, vec![(14, 1, "", "        _ => todo\n".to_string())])]
     );
     applied(&src, &d);
 }
@@ -567,13 +583,32 @@ fn non_exhaustive_note_and_fix() {
 fn unreachable_arms() {
     let src = match_on("e", &["_ => 0", "Num(n) => n"]);
     let d = diagnostic(&src, Code::UnreachableArm, (14, 9, "Num(n)"), &[(13, 9)]);
-    // The fix takes the line break before the arm through its body.
+    // The fix takes the arm's whole line.
+    assert_eq!(
+        fixes(&src, &d),
+        [(false, vec![(14, 1, "        Num(n) => n\n", String::new())])]
+    );
+    applied(&src, &d);
+    // A comment after the arm goes with it.
+    let src = match_on("ab", &["A => 1", "B => 2", "A => 3 // why"]);
+    let d = diagnostic(&src, Code::UnreachableArm, (15, 9, "A"), &[(13, 9)]);
     assert_eq!(
         fixes(&src, &d),
         [(
             false,
-            vec![(13, 15, "\n        Num(n) => n", String::new())]
+            vec![(15, 1, "        A => 3 // why\n", String::new())]
         )]
+    );
+    applied(&src, &d);
+    // With the `match`'s `}` on the arm's line, the fix takes the line break before the arm
+    // through its body, and the `}` stays.
+    let src = format!(
+        "{COVER}\nfn t(ab: AB) -> i64 {{\n    match ab {{\n        A => 1\n        B => 2\n        A => 3 }}\n}}"
+    );
+    let d = diagnostic(&src, Code::UnreachableArm, (15, 9, "A"), &[(13, 9)]);
+    assert_eq!(
+        fixes(&src, &d),
+        [(false, vec![(14, 15, "\n        A => 3", String::new())])]
     );
     applied(&src, &d);
     diagnostic(
@@ -615,16 +650,8 @@ fn unreachable_arms() {
     );
     // Each arm is covered by the arm of its own variant, not by the first arm.
     let src = match_on("ab", &["A => 0", "A => 1", "B => 2", "B => 3"]);
-    let (_, ds) = checked(&src);
-    let found: Vec<_> = ds
-        .iter()
-        .map(|d| {
-            let secondary: Vec<_> = d.secondary().iter().map(|(s, _)| at(&src, *s)).collect();
-            (d.code(), at(&src, d.span()), secondary)
-        })
-        .collect();
     assert_eq!(
-        found,
+        found(&src),
         [
             (Code::UnreachableArm, (14, 9), vec![(13, 9)]),
             (Code::UnreachableArm, (16, 9), vec![(15, 9)]),
@@ -650,6 +677,30 @@ fn many_arms_check_in_linear_time() {
     clean(&format!(
         "enum E {{\n{variants}}}\nfn f(e: E) -> i64 {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
     ));
+}
+
+/// A payload of 32,768 fields gives a matrix 32,768 columns deep, which the solver must not meet
+/// with as deep a recursion.
+#[test]
+fn wide_payload_checks_without_deep_recursion() {
+    const FIELDS: usize = 32_768;
+    let arm = wide_arm(FIELDS, |f| if f == FIELDS - 1 { "X" } else { "_" });
+    clean(&wide(FIELDS, &[arm]));
+}
+
+/// The keep-alive override for this test is in `.config/nextest.toml`: a witness copied at each
+/// of its 200,000 columns is quadratic and hangs instead of failing.
+#[test]
+fn wide_witness_builds_in_linear_time() {
+    const FIELDS: usize = 200_000;
+    let fields = vec!["Bit"; FIELDS].join(", ");
+    let arm = wide_arm(FIELDS, |_| "X");
+    codes(
+        &format!(
+            "enum Bit {{\n    X\n    Y\n}}\nenum Wide {{ V({fields}) }}\nfn t(w: Wide) -> i64 {{\n    match w {{\n        {arm}\n    }}\n}}\nfn main() {{}}"
+        ),
+        &[(Code::NonExhaustive, (7, 5))],
+    );
 }
 
 /// `enum Wide { V(Bit, ...) }` with `fields` fields, and a `match` on `w` whose `arms` start on
@@ -680,26 +731,18 @@ fn one_named_field_per_arm_checks_in_linear_time() {
         .map(|i| wide_arm(40, |f| if f == i { "X" } else { "_" }))
         .collect();
     clean(&wide(40, &arms));
-    // Memoization alone saves the rows above, whose leftovers are alike. Below a first `_`,
-    // arms that each need two fields, every first field before every second, meet 2^32
-    // distinct matrices unless the cut stops at the `_`.
-    let arms: Vec<_> = std::iter::once("_ => 1".to_string())
+    // Memoization alone saves the rows above, whose leftovers are alike. Below a first
+    // `V(_, ...)`, arms that each need two fields, every first field before every second, meet
+    // 2^32 distinct matrices unless the cut stops at that arm inside the `V` bucket.
+    let arms: Vec<_> = std::iter::once(wide_arm(64, |_| "_"))
         .chain((0..32).map(|i| wide_arm(64, |f| if f == i || f == 32 + i { "X" } else { "_" })))
         .collect();
     let src = wide(64, &arms);
-    let (_, ds) = checked(&src);
-    let found: Vec<_> = ds
-        .iter()
-        .map(|d| {
-            let secondary: Vec<_> = d.secondary().iter().map(|(s, _)| at(&src, *s)).collect();
-            (d.code(), at(&src, d.span()), secondary)
-        })
-        .collect();
     // Every arm after the `_`, the last `_ => 0` too, is the `_`'s.
     let expected: Vec<_> = (1..=arms.len())
         .map(|k| (Code::UnreachableArm, (8 + k, 9), vec![(8, 9)]))
         .collect();
-    assert_eq!(found, expected);
+    assert_eq!(found(&src), expected);
 }
 
 /// The keep-alive override for this test is in `.config/nextest.toml`: without memoization,
@@ -718,16 +761,11 @@ fn repeated_matrices_check_in_linear_time() {
         })
         .collect();
     let src = wide(40, &arms);
-    let (_, ds) = checked(&src);
-    let found: Vec<_> = ds
-        .iter()
-        .map(|d| (d.code(), at(&src, d.span()), d.secondary().len()))
-        .collect();
     // The arms start on line 8; every arm after the first two is covered by both of them.
     let expected: Vec<_> = (2..arms.len())
-        .map(|k| (Code::UnreachableArm, (8 + k, 9), 0))
+        .map(|k| (Code::UnreachableArm, (8 + k, 9), vec![]))
         .collect();
-    assert_eq!(found, expected);
+    assert_eq!(found(&src), expected);
 }
 
 #[test]

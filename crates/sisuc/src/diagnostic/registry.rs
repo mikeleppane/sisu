@@ -717,8 +717,9 @@ pub(crate) enum DiagnosticKind {
     },
     /// The `match` whose keyword is at `at`, which does not cover `missing`. `partly` is the
     /// first arm with `missing`'s variant at the top: its span, its pattern and its payload.
-    /// The fix inserts a `_ =>` arm at `insert`, indented by `indent`; `close` is the
-    /// indentation of the `}` it moves to a line of its own, when it shares a line.
+    /// The fix writes a `_ =>` arm, indented by `indent`, in place of `insert`: an empty span,
+    /// or the space between the last arm and a `}` on its line. `close` is the indentation of
+    /// that `}`, which the fix moves to a line of its own.
     NonExhaustive {
         missing: String,
         partly: Option<(Span, String, String)>,
@@ -728,8 +729,8 @@ pub(crate) enum DiagnosticKind {
         close: Option<String>,
     },
     /// The arm whose pattern is at `at`, which no value reaches; `covered_by` is the arm that
-    /// takes all its values, when one does. `remove` runs from the line break before the arm
-    /// through its body.
+    /// takes all its values, when one does. `remove` is the arm's line, or, when the
+    /// `match`'s `}` ends that line, from the line break before the arm through its body.
     UnreachableArm {
         at: Span,
         covered_by: Option<Span>,

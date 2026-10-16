@@ -57,6 +57,20 @@ fn codes(src: &str, expected: &[(Code, (usize, usize))]) {
     );
 }
 
+/// A diagnostic's code, its primary position and its secondary positions.
+type Found = (Code, (usize, usize), Vec<(usize, usize)>);
+
+/// Each diagnostic of `src`, in order.
+fn found(src: &str) -> Vec<Found> {
+    let (_, ds) = checked(src);
+    ds.iter()
+        .map(|d| {
+            let secondary = d.secondary().iter().map(|(s, _)| at(src, *s)).collect();
+            (d.code(), at(src, d.span()), secondary)
+        })
+        .collect()
+}
+
 /// Exactly one diagnostic, of `code`, whose primary span is `pos` = (line, col, text) and whose
 /// secondary spans start at `secondary`.
 fn diagnostic(

@@ -77,7 +77,7 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
         .map(|&pat| solver.push(pat, col, EMPTY))
         .collect();
     stacks.push(solver.push(WILD, col, EMPTY));
-    let result = solver.solve(&stacks);
+    let result = solver.solve(stacks.into());
     let unreachable = rows
         .iter()
         .zip(&result.reach)
@@ -93,8 +93,8 @@ pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report 
             })
         })
         .collect();
-    let missing = result.witness.as_ref().map(|witness| {
-        let top = witness[0];
+    let missing = result.witness.map(|witness| {
+        let top = solver.nodes[witness].pat;
         // With a value missing, no arm is a wildcard: one would match every value.
         let partly = solver.variant(top).and_then(|(missing, _)| {
             rows.iter()
@@ -188,8 +188,47 @@ impl Reach {
 /// What a matrix's leaves say, by the matrix's own row indices.
 struct Solved {
     reach: Vec<Reach>,
-    /// A value that only the last row, the sentinel, matches: one pattern per column.
-    witness: Option<Vec<PatId>>,
+    /// A value that only the last row, the sentinel, matches: a stack of one pattern per
+    /// column, shared with the matrices that found it.
+    witness: Option<StackId>,
+}
+
+/// A matrix that specializing a column makes: the bucket of the variant `order`, or the
+/// default, which stands for the variant `order` when a row names another and for `_` when none
+/// does.
+struct Child {
+    order: usize,
+    bucket: bool,
+    /// The parent's rows in it, in order.
+    members: Vec<usize>,
+}
+
+/// A matrix being solved: its first column split into `children`, of which the first `next`
+/// are solved.
+struct Frame {
+    rows: Box<[StackId]>,
+    col: Col,
+    children: Vec<Child>,
+    next: usize,
+    /// What the solved children say of each row.
+    reach: Vec<Option<Reach>>,
+    /// The witness first in constructor order so far: its child's order, the child, and the
+    /// child's witness.
+    best: Option<(usize, usize, StackId)>,
+}
+
+impl Frame {
+    /// Takes in what the child `next` found, and moves on to the next child.
+    fn feed(&mut self, solved: &Solved) {
+        let child = &self.children[self.next];
+        merge(&mut self.reach, &child.members, solved);
+        if let Some(witness) = solved.witness
+            && self.best.is_none_or(|(order, ..)| child.order < order)
+        {
+            self.best = Some((child.order, self.next, witness));
+        }
+        self.next += 1;
+    }
 }
 
 struct Solver<'a> {
@@ -281,130 +320,180 @@ impl Solver<'_> {
         printed.join(", ")
     }
 
-    /// The matrix of `rows`, whose last row has only wildcards, solved or looked up.
-    fn solve(&mut self, rows: &[StackId]) -> Rc<Solved> {
-        if let Some(solved) = self.memo.get(rows) {
-            return Rc::clone(solved);
+    /// Field `k` of `pat`, a variant pattern or `_`.
+    fn field(&self, pat: PatId, k: usize) -> PatId {
+        match &self.pats[pat] {
+            Pat::Wild => WILD,
+            Pat::Variant { fields, .. } => fields[k],
         }
-        let solved = Rc::new(self.split(rows));
-        self.memo.insert(rows.into(), Rc::clone(&solved));
-        solved
     }
 
-    /// Solves the matrix of `rows` by specializing its first column.
-    fn split(&mut self, rows: &[StackId]) -> Solved {
-        let first = self.nodes[rows[0]];
+    /// The matrix of `rows`, whose last row has only wildcards, solved. A matrix in progress
+    /// waits on a stack of frames, not on the Rust stack, so a payload thousands of fields wide
+    /// does not overflow it.
+    fn solve(&mut self, rows: Box<[StackId]>) -> Rc<Solved> {
+        let mut frames = Vec::new();
+        let mut done = self.start(rows, &mut frames);
+        loop {
+            if let Some(solved) = done.take() {
+                let Some(top) = frames.last_mut() else {
+                    return solved;
+                };
+                top.feed(&solved);
+            }
+            let top = frames.last().expect("a frame should wait for its children");
+            if top.next == top.children.len() {
+                let frame = frames.pop().expect("a frame should wait for its children");
+                done = Some(self.finish(frame));
+            } else {
+                let rows = self.child_rows(top);
+                done = self.start(rows, &mut frames);
+            }
+        }
+    }
+
+    /// The matrix of `rows` solved, when the cut or the memo solves it at once; otherwise
+    /// `None`, with a frame for it pushed onto `frames`.
+    fn start(&mut self, rows: Box<[StackId]>, frames: &mut Vec<Frame>) -> Option<Rc<Solved>> {
         // The all-wildcard row cut: the first row takes every value the matrix stands for.
-        if first.wild {
+        if self.nodes[rows[0]].wild {
             let mut reach = vec![Reach::Taken(0); rows.len()];
             reach[0] = Reach::Reached;
-            let witness = (rows.len() == 1).then(|| self.wildcards(rows[0]));
-            return Solved { reach, witness };
+            // Alone, the first row is the sentinel, already a `_` for each column.
+            let witness = (rows.len() == 1).then_some(rows[0]);
+            return Some(Rc::new(Solved { reach, witness }));
         }
-        let heads: Vec<_> = rows.iter().map(|&row| self.nodes[row]).collect();
-        let mut named: Vec<_> = heads
-            .iter()
-            .filter_map(|head| self.variant(head.pat).map(|(v, _)| v))
-            .collect();
-        named.sort_unstable();
-        named.dedup();
-        let bucket: FxHashMap<_, _> = named.iter().enumerate().map(|(b, &v)| (v, b)).collect();
-        let mut buckets = vec![Vec::new(); named.len()];
-        let mut default = Vec::new();
-        for (i, head) in heads.iter().enumerate() {
-            if let Some((v, _)) = self.variant(head.pat) {
-                buckets[bucket[&v]].push(i);
+        if let Some(solved) = self.memo.get(&rows) {
+            return Some(Rc::clone(solved));
+        }
+        frames.push(self.frame(rows));
+        None
+    }
+
+    /// The frame that specializes the first column of `rows`: one bucket per variant a row
+    /// names, in the order the rows name them, then the default when a variant is left.
+    fn frame(&self, rows: Box<[StackId]>) -> Frame {
+        let col = self.nodes[rows[0]].col;
+        let mut bucket = FxHashMap::default();
+        let mut children: Vec<Child> = Vec::new();
+        let mut wild = Vec::new();
+        for (i, &row) in rows.iter().enumerate() {
+            if let Some((variant, _)) = self.variant(self.nodes[row].pat) {
+                let b = *bucket.entry(variant).or_insert_with(|| {
+                    // A bucket also holds every wildcard row above its first row.
+                    children.push(Child {
+                        order: variant,
+                        bucket: true,
+                        members: wild.clone(),
+                    });
+                    children.len() - 1
+                });
+                children[b].members.push(i);
             } else {
                 // shortcut: a wildcard row joins every bucket, so n named variants above n
                 // wildcard rows cost n²; share the wildcard rows between buckets if a real
                 // program hits it.
-                for rows in &mut buckets {
-                    rows.push(i);
+                for child in &mut children {
+                    child.members.push(i);
                 }
-                default.push(i);
+                wild.push(i);
             }
         }
-        // Every row lands in a bucket or the default, so each gets a `Reach`.
-        let mut reach = vec![None; rows.len()];
-        // The witness found first in variant order, with the variant it was found under.
-        let mut witness: Option<(usize, Vec<PatId>)> = None;
-        let variants = first.col.map_or(0, |e| self.enums[e].variants.len());
-        for (&variant, members) in named.iter().zip(&buckets) {
-            let enum_id = first.col.expect("a variant pattern should sit at an enum");
-            let enums = self.enums;
-            let payload = &enums[enum_id].variants[variant].fields;
-            let child: Vec<_> = members
-                .iter()
-                .map(|&i| {
-                    let head = heads[i];
-                    let fields = self.variant(head.pat).map(|(_, f)| f.to_vec());
-                    payload
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .fold(head.tail, |tail, (k, field)| {
-                            let pat = fields.as_ref().map_or(WILD, |f| f[k]);
-                            self.push(pat, column(&field.ty), tail)
-                        })
-                })
-                .collect();
-            let solved = self.solve(&child);
-            merge(&mut reach, members, &solved);
-            // The buckets go in variant order, so the first witness is the first in order.
-            if let Some(found) = &solved.witness
-                && witness.is_none()
-            {
-                let (fields, rest) = found.split_at(payload.len());
-                let head = self.pat(Pat::Variant {
-                    enum_id,
-                    variant,
-                    fields: fields.into(),
-                });
-                witness = Some((variant, [&[head], rest].concat()));
-            }
+        let variants = col.map_or(0, |e| self.enums[e].variants.len());
+        if children.is_empty() || children.len() < variants {
+            let order = (0..children.len())
+                .find(|v| !bucket.contains_key(v))
+                .unwrap_or(children.len());
+            children.push(Child {
+                order,
+                bucket: false,
+                members: wild,
+            });
         }
-        if named.len() < variants || first.col.is_none() {
-            let child: Vec<_> = default.iter().map(|&i| heads[i].tail).collect();
-            let solved = self.solve(&child);
-            merge(&mut reach, &default, &solved);
-            // The default stands for the first variant no row names; with none named, for `_`.
-            let unnamed = (0..named.len())
-                .find(|&v| named[v] != v)
-                .unwrap_or(named.len());
-            if let Some(found) = &solved.witness
-                && witness.as_ref().is_none_or(|(at, _)| unnamed < *at)
-            {
-                let head = match first.col {
-                    Some(enum_id) if !named.is_empty() => {
-                        let count = self.enums[enum_id].variants[unnamed].fields.len();
-                        self.pat(Pat::Variant {
-                            enum_id,
-                            variant: unnamed,
-                            fields: vec![WILD; count].into(),
-                        })
-                    }
-                    _ => WILD,
-                };
-                witness = Some((unnamed, [&[head], &found[..]].concat()));
-            }
-        }
-        Solved {
-            reach: reach
-                .into_iter()
-                .map(|reach| reach.expect("every row should land in a child matrix"))
-                .collect(),
-            witness: witness.map(|(_, witness)| witness),
+        Frame {
+            reach: vec![None; rows.len()],
+            rows,
+            col,
+            children,
+            next: 0,
+            best: None,
         }
     }
 
-    /// One `_` for each column of `stack`.
-    fn wildcards(&self, mut stack: StackId) -> Vec<PatId> {
-        let mut wildcards = Vec::new();
-        while stack != EMPTY {
-            wildcards.push(WILD);
-            stack = self.nodes[stack].tail;
+    /// The rows of the child `next` of `frame`: a bucket's rows with the variant's fields in
+    /// place of their first column, the default's without it.
+    fn child_rows(&mut self, frame: &Frame) -> Box<[StackId]> {
+        let child = &frame.children[frame.next];
+        let heads: Vec<_> = child
+            .members
+            .iter()
+            .map(|&i| self.nodes[frame.rows[i]])
+            .collect();
+        if !child.bucket {
+            return heads.into_iter().map(|head| head.tail).collect();
         }
-        wildcards
+        let enums = self.enums;
+        let enum_id = frame.col.expect("a variant pattern should sit at an enum");
+        let payload = &enums[enum_id].variants[child.order].fields;
+        heads
+            .into_iter()
+            .map(|head| {
+                payload
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .fold(head.tail, |tail, (k, field)| {
+                        let pat = self.field(head.pat, k);
+                        self.push(pat, column(&field.ty), tail)
+                    })
+            })
+            .collect()
+    }
+
+    /// What `frame`, all of whose children are solved, says; also kept for its rows.
+    fn finish(&mut self, frame: Frame) -> Rc<Solved> {
+        let witness = frame.best.map(|(order, child, witness)| {
+            let head = match frame.col {
+                // A bucket's witness starts with the variant's fields: they become its payload.
+                Some(enum_id) if frame.children[child].bucket => {
+                    let count = self.enums[enum_id].variants[order].fields.len();
+                    let mut fields = Vec::with_capacity(count);
+                    let mut rest = witness;
+                    for _ in 0..count {
+                        let node = self.nodes[rest];
+                        fields.push(node.pat);
+                        rest = node.tail;
+                    }
+                    let head = self.pat(Pat::Variant {
+                        enum_id,
+                        variant: order,
+                        fields: fields.into(),
+                    });
+                    return self.push(head, frame.col, rest);
+                }
+                // The default stands for a variant when a row names another.
+                Some(enum_id) if frame.children.len() > 1 => {
+                    let count = self.enums[enum_id].variants[order].fields.len();
+                    self.pat(Pat::Variant {
+                        enum_id,
+                        variant: order,
+                        fields: vec![WILD; count].into(),
+                    })
+                }
+                _ => WILD,
+            };
+            self.push(head, frame.col, witness)
+        });
+        let solved = Rc::new(Solved {
+            reach: frame
+                .reach
+                .into_iter()
+                .map(|reach| reach.expect("every row should land in a child matrix"))
+                .collect(),
+            witness,
+        });
+        self.memo.insert(frame.rows, Rc::clone(&solved));
+        solved
     }
 }
 

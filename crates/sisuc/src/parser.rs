@@ -1527,6 +1527,7 @@ impl<'a> Parser<'a> {
                 keyword,
                 scrutinee: Box::new(scrutinee),
                 arms,
+                close: close.span,
             },
         })
     }

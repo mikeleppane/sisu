@@ -67,6 +67,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(repeated_matrices_check_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# A witness copied at each of its columns is quadratic in them, so this test hangs instead of
+# failing.
+[[profile.default.overrides]]
+filter = 'test(wide_witness_builds_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # A harness that writes all of standard input before it reads the output would fill both pipes
 # and hang on these tests instead of failing them.
 [[profile.default.overrides]]
