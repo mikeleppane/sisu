@@ -38,4 +38,17 @@ fn main() {
         }
         print(describe(s))  // done finished, then idle, then idle
     }
+    // A guard block reassigns `s` while `c` is bound, before the arm commits and retains `c`.
+    let mut t = State.Running(Counter(count: 10))
+    match t {
+        Running(c) if {
+            t = State.Idle
+            true
+        } => {
+            c.count += 1
+            print(c.count)                         // 11
+        }
+        _ => print("other")
+    }
+    print(describe(t))                             // idle
 }

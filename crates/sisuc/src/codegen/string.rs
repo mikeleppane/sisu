@@ -71,9 +71,16 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.load_string_field(string, LEN)
     }
 
-    /// `Str`: a private global `{ i64 1, i64 len, i64 len, [len x i8] }` for this literal node,
-    /// retained. The global holds a reference of its own, so its count never reaches 0.
+    /// `Str`: `string_global` for this literal node, retained.
     pub(super) fn string_lit(&self, text: &str) -> PointerValue<'ctx> {
+        let string = self.string_global(text);
+        self.retain(string.into(), &Type::String);
+        string
+    }
+
+    /// A private global `{ i64 1, i64 len, i64 len, [len x i8] }` holding `text`, borrowed. The
+    /// global holds a reference of its own, so its count never reaches 0.
+    pub(super) fn string_global(&self, text: &str) -> PointerValue<'ctx> {
         let layout = self.string_layout();
         let i64_type = self.context.i64_type();
         let len = i64_type.const_int(
@@ -95,9 +102,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         global.set_constant(false);
         global.set_alignment(layout.align);
         global.set_linkage(Linkage::Private);
-        let string = global.as_pointer_value();
-        self.retain(string.into(), &Type::String);
-        string
+        global.as_pointer_value()
     }
 
     /// The address of byte `offset` of `string`, which is at most its capacity.

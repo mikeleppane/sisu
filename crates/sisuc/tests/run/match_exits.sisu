@@ -1,8 +1,9 @@
 // `return`, `break` and `continue` from arm bodies while string and class bindings are live, from
 // `if let` and `while let` bodies, and a scrutinee that itself returns early. An exit releases
 // the bindings it leaves and never the scrutinee's temporary, which the commit released; an exit
-// in the scrutinee releases nothing of the `match`. Strings are built at run time, so Valgrind
-// and `--rc-checks` see every binding and temporary released exactly once.
+// in the scrutinee releases nothing of the `match`. A guard that returns releases the temporary
+// and no binding, since none is retained before the commit. Strings are built at run time, so
+// Valgrind and `--rc-checks` see every binding and temporary released exactly once.
 class Counter {
     count: i64
 }
@@ -101,6 +102,41 @@ fn length(j: Job) -> i64 {
     }
 }
 
+// A guard that returns while `name` and `c` are bound but not yet retained: the return releases
+// the scrutinee's temporary and no binding.
+fn guard_returns(j: Job, stop: bool) -> i64 {
+    match j {
+        Named(name, c) if {
+            if stop {
+                return -2
+            }
+            name.len() > 0
+        } => c.count
+        _ => 0
+    }
+}
+
+// A guard that returns its own binding, which the caller prints after this function returns.
+fn guard_gives(j: Job) -> string {
+    match j {
+        Named(name, _) if (if name.len() > 3 { return name } else { true }) => "short"
+        _ => "none"
+    }
+}
+
+fn both(a: string, n: i64) -> i64 {
+    a.len() + n
+}
+
+// The first argument is held while the second, a `match`, runs its guard; a guard that returns
+// releases it.
+fn spill(j: Job, stop: bool) -> i64 {
+    both("left" + "", match j {
+        Named(_, c) if (if stop { return -3 } else { true }) => c.count
+        _ => 0
+    })
+}
+
 fn words(a: string, b: string, c: string) -> Words {
     Words.Word(a + "", Words.Word(b + "", Words.Word(c + "", Words.End)))
 }
@@ -121,4 +157,10 @@ fn main() {
     print(nested(Job.Empty, true))                                    // 0
     print(length(job("seven", 1)))                                    // 5
     print(length(Job.Empty))                                          // 0
+    print(guard_returns(job("five", 5), true))                        // -2
+    print(guard_returns(job("five", 5), false))                       // 5
+    print(guard_gives(job("long", 1)))                                // long
+    print(guard_gives(job("abc", 1)))                                 // short
+    print(spill(job("x", 2), true))                                   // -3
+    print(spill(job("x", 2), false))                                  // 6
 }

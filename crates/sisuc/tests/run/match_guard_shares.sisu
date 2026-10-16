@@ -1,0 +1,18 @@
+// A guard block's `b = a` shares `a`'s array, so the loop must not make `a` unique before it
+// starts and write it in place: each `a[0] = i` copies, and `b` keeps the value before the write.
+fn main() {
+    let mut a = [0, 0]
+    let mut b = [9]
+    for i in 1..4 {
+        match i {
+            _ if {
+                b = a
+                true
+            } => {}
+            _ => {}
+        }
+        a[0] = i
+    }
+    print(b[0])    // 2
+    print(a[0])    // 3
+}
