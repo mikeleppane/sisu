@@ -922,8 +922,9 @@ These do not make code nicer to write, so they wait:
 - Proving uniqueness at compile time. Roc's Morphic analysis follows each
   array through the whole program to prove that a write holds the only
   reference, so the write needs no count check. A loop now makes its written
-  arrays unique once before it starts (ADR 0021), which took quicksort from
-  4.82 to 4.04 billion instructions and from 690 to 640 ms, against C's 610
+  arrays unique once before it starts (ADR 0021), which took the quicksort
+  benchmark from 4.82 to 4.04 billion instructions and its fastest run from
+  690 to 640 ms, against C's 610
   ([Benchmarks](benchmarks.md#quicksort-on-an-array-value)). One count check
   is left in each call of `quicksort`, before the partition loop. The
   analysis would remove that one and the checks of writes outside loops; no

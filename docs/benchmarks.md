@@ -173,17 +173,21 @@ commit c75ef2d; "after" is 3dbda29, which adds the change described below.
 | After | 622 | 1.15 | 4.82 |
 | After, count checks removed | 582 | 1.07 | 3.99 |
 | After, bounds checks removed | 586 | 1.08 | 3.57 |
-| After, `unique` before the loop (d970043) | 690 | 1.13 | 4.82 |
-| After, `unique` before the loop (c980444) | 640 | 1.05 | 4.04 |
 
-The last two rows come from a later session on a busy machine, so the ms
-differ from the rows above; read them against each other and against C in
-that session (610 ms), not against the older rows. They give the minimum of
-40 runs timed in turn, each pinned to CPU 2 with `taskset`: the mean and the
-median swung by 30% under the load (median 870 ms for d970043, 790 ms for
-c980444, 760 ms for C). The instruction counts come from callgrind and do not
-vary. d970043 is the last commit before the change described below, and the
-same code as the "After" row.
+A later session, on a busy machine, measured loop hoisting (ADR 0021). Its ms
+do not compare with the rows above, so it has its own table and its own C
+baseline. Each binary ran 40 times in turn, pinned to CPU 2 with `taskset`.
+The mean and the median swung by 30% under the load, so the minimum is the
+figure to read; the instruction counts come from callgrind and do not vary.
+
+| Build | Min (ms) | Median (ms) | Mean (ms) | Times C (min) | Instructions (billions) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C, for comparison | 610 | 760 | 958 | 1.00 | |
+| Before loop hoisting (d970043) | 690 | 870 | 1078 | 1.13 | 4.82 |
+| After loop hoisting (c980444) | 640 | 790 | 988 | 1.05 | 4.04 |
+
+d970043 is the last commit before loop hoisting, and the same code as the
+"After" row above.
 
 The checks are the whole gap to C. The overflow checks cost no measurable
 time: without them the program ran fewer instructions but no faster.
@@ -210,9 +214,9 @@ taken the time from 622 to 582 ms, and the bounds checks. A loop now makes
 its written arrays unique once before it starts (ADR 0021). The count check
 had made the array's pointer a phi in the loop (the helper may store a new
 block into the local), so LLVM could neither hoist the check nor the length
-load. With the check outside the loop, the partition loop runs 4.04 billion
-instructions in all, not 4.82, and takes 640 ms instead of 690 (C: 610 ms,
-in the same session). In the `-O2` IR of `quicksort`, one count check is
+load. With the check outside the loop, the quicksort benchmark runs 4.04
+billion instructions in all, not 4.82, and its fastest run takes 640 ms
+instead of 690 (C: 610 ms, in the same session). In the `-O2` IR of `quicksort`, one count check is
 left in each call, before the partition loop. The writes in the loop and the
 writes after it run without one.
 
