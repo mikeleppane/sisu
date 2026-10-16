@@ -101,15 +101,7 @@ pub(crate) fn compile<'ctx>(
     // Declared only with the checks, so that a plain build's module stays as it was.
     let rc_fault =
         rc_checks.then(|| declare_noreturn(&module, "sisu_rc_fault", &[context.i32_type().into()]));
-    // Two TBAA types under one root: an access tagged with one never touches memory that an
-    // access tagged with the other does.
-    let root = context.metadata_node(&[context.metadata_string("sisu").into()]);
-    let tbaa_tag = |name: &str| {
-        let offset = i64_type.const_zero().into();
-        let ty =
-            context.metadata_node(&[context.metadata_string(name).into(), root.into(), offset]);
-        context.metadata_node(&[ty.into(), ty.into(), offset])
-    };
+    let tbaa_root = context.metadata_node(&[context.metadata_string("sisu").into()]);
 
     let mut codegen = Codegen {
         context,
@@ -125,8 +117,9 @@ pub(crate) fn compile<'ctx>(
         rc_retain,
         rc_fault,
         tbaa_kind: context.get_kind_id("tbaa"),
-        header_tag: tbaa_tag("count and length"),
-        element_tag: tbaa_tag("array element"),
+        header_tag: tbaa_tag(context, tbaa_root, "count and length"),
+        element_tag: tbaa_tag(context, tbaa_root, "array element"),
+        tbaa_root,
         program,
         helpers: RefCell::new(FxHashMap::default()),
         pending: RefCell::new(Vec::new()),
@@ -161,6 +154,19 @@ pub(crate) fn compile<'ctx>(
     codegen.c_main();
     codegen.define_helpers();
     codegen.module
+}
+
+/// The tag of a TBAA type `name` under `root`. Every type sits directly under the root, so LLVM
+/// assumes that an access tagged with one never touches memory that an access tagged with
+/// another does; codegen must keep that true.
+fn tbaa_tag<'ctx>(
+    context: &'ctx Context,
+    root: MetadataValue<'ctx>,
+    name: &str,
+) -> MetadataValue<'ctx> {
+    let offset = context.i64_type().const_zero().into();
+    let ty = context.metadata_node(&[context.metadata_string(name).into(), root.into(), offset]);
+    context.metadata_node(&[ty.into(), ty.into(), offset])
 }
 
 /// Declares the runtime function `name`, which takes `params` and never returns.
@@ -292,6 +298,8 @@ struct ClassLayout<'ctx> {
     ty: StructType<'ctx>,
     /// `element[i]` is the struct element of declared field `i`; element 0 is the count.
     element: Box<[u32]>,
+    /// `field_tag[i]` is the TBAA tag of declared field `i`, named `<class>.<field>`.
+    field_tag: Box<[MetadataValue<'ctx>]>,
 }
 
 struct Codegen<'ctx, 'src> {
@@ -322,6 +330,13 @@ struct Codegen<'ctx, 'src> {
     /// new object's count, carry no tag and may alias anything.
     header_tag: MetadataValue<'ctx>,
     element_tag: MetadataValue<'ctx>,
+    /// The root of every TBAA type. Each class field has its own type, `ClassLayout::field_tag`:
+    /// a field read and a field assignment tag their load and store with it, so that LLVM knows
+    /// a store to one field leaves the other fields, and every count, length and element, as
+    /// they were. That holds because nothing touches a field's bytes with another tag: other
+    /// accesses to a field, such as a new object's stores, a drop's loads or an element write
+    /// through a field, carry no tag.
+    tbaa_root: MetadataValue<'ctx>,
     program: &'src Program,
     /// The helpers declared so far, by kind and counted type; see `rc::helper`.
     helpers: RefCell<FxHashMap<(Helper, Type), FunctionValue<'ctx>>>,
@@ -404,9 +419,23 @@ impl<'ctx> Codegen<'ctx, '_> {
             .iter()
             .map(|class| self.class_body(class))
             .collect();
-        for (ty, (body, element)) in types.into_iter().zip(layouts) {
+        for ((ty, (body, element)), class) in
+            types.into_iter().zip(layouts).zip(&self.program.classes)
+        {
             ty.set_body(&body, false);
-            self.classes.push(ClassLayout { ty, element });
+            let field_tag = class
+                .fields
+                .iter()
+                .map(|field| {
+                    let name = format!("{}.{}", class.name, field.name);
+                    tbaa_tag(self.context, self.tbaa_root, &name)
+                })
+                .collect();
+            self.classes.push(ClassLayout {
+                ty,
+                element,
+                field_tag,
+            });
         }
     }
 
@@ -456,6 +485,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("the checker should only emit a field index that the class has")
     }
 
+    /// The TBAA tag of field `index` of a class `ty`.
+    fn field_tag(&self, ty: &Type, index: usize) -> MetadataValue<'ctx> {
+        let Type::Class(id) = ty else {
+            unreachable!("the checker should only allow field access on a class-typed value")
+        };
+        self.classes[id.0].field_tag[index]
+    }
+
     /// Field `index` of the object `base`, whose type is `ty`. A local base is borrowed: the
     /// local keeps the object alive, so codegen skips its retain and release.
     fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
@@ -467,10 +504,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let llvm_ty = self.llvm_type(ty).expect(
             "the checker should give every class field a value type, never `unit` or `never`",
         );
-        let value = self
-            .builder
-            .build_load(llvm_ty, field, "load")
-            .expect(POSITIONED);
+        let value = self.load_tagged(llvm_ty, field, "load", self.field_tag(&base.ty, index));
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
         if !borrowed {
@@ -789,7 +823,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let old = ty
                     .is_counted(&self.program.enums)
                     .then(|| self.load(value.get_type(), field));
-                self.store(field, value);
+                self.store_tagged(field, value, self.field_tag(&base.ty, *index));
                 self.discard(old, ty);
                 if !borrowed {
                     self.release(object.into(), &base.ty);
@@ -1100,7 +1134,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder.build_store(ptr, value).expect(POSITIONED);
     }
 
-    /// `load`, tagged with `tag`, which is `header_tag` or `element_tag`.
+    /// `load`, tagged with `tag`: `header_tag`, `element_tag` or a field's tag.
     fn load_tagged(
         &self,
         ty: BasicTypeEnum<'ctx>,
@@ -1117,7 +1151,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         value
     }
 
-    /// `store`, tagged with `tag`, which is `header_tag` or `element_tag`.
+    /// `store`, tagged with `tag`: `header_tag`, `element_tag` or a field's tag.
     fn store_tagged(
         &self,
         ptr: PointerValue<'ctx>,

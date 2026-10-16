@@ -1106,6 +1106,65 @@ fn field_assignment_to_a_local_skips_base_count() {
     }
 }
 
+/// The name of the TBAA type that the instruction `line` is tagged with, from the metadata in
+/// `ir`: `!tbaa !t`, then `!t = !{!ty, !ty, i64 0}`, then `!ty = !{!"<name>", ...}`.
+fn tbaa_name<'a>(ir: &'a str, line: &str) -> &'a str {
+    let node = |id: &str| {
+        let head = format!("{id} = !{{");
+        ir.lines()
+            .find_map(|l| l.strip_prefix(&head))
+            .unwrap_or_else(|| panic!("no {id} in\n{ir}"))
+    };
+    let (_, tag) = line
+        .split_once("!tbaa ")
+        .unwrap_or_else(|| panic!("no tag on {line}"));
+    let (ty, _) = node(tag)
+        .split_once(", ")
+        .unwrap_or_else(|| panic!("no type in tag {tag}"));
+    let name = node(ty)
+        .strip_prefix("!\"")
+        .unwrap_or_else(|| panic!("no name in {ty}"));
+    name.split_once('"')
+        .unwrap_or_else(|| panic!("no name in {ty}"))
+        .0
+}
+
+/// A field read's load and a field assignment's store carry the tag of their own class and
+/// field, so a store to one field leaves LLVM free to keep another in a register.
+#[test]
+fn field_accesses_carry_their_fields_tbaa_tag() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "class P {\n    mut x: f64\n    mut y: f64\n}\nclass Q {\n    x: f64\n}\n\
+         fn f(p: P, q: Q) {\n    p.x = p.y\n    p.y = q.x\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "define internal void @sisu.f(ptr");
+    let accesses: Vec<_> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains(" double"))
+        .map(|l| {
+            (
+                l.split(' ').find(|w| *w == "load" || *w == "store"),
+                tbaa_name(&ir, l),
+            )
+        })
+        .collect();
+    assert_eq!(
+        accesses,
+        [
+            (Some("load"), "P.y"),
+            (Some("store"), "P.x"),
+            (Some("load"), "Q.x"),
+            (Some("store"), "P.y"),
+        ],
+        "{body}"
+    );
+}
+
 /// `words()` of a string that is not a local releases it, once the words are copied out; of a
 /// local it leaves the string to its owner.
 #[test]
