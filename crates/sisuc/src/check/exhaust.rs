@@ -291,17 +291,6 @@ enum Reach {
     Several(Rc<[usize]>),
 }
 
-impl Reach {
-    /// The rows that took the values; none when a leaf reached the row.
-    fn takers(&self) -> &[usize] {
-        match self {
-            Reach::Reached => &[],
-            Reach::Taken(by) => std::slice::from_ref(by),
-            Reach::Several(by) => by,
-        }
-    }
-}
-
 /// What the leaves under one row say so far: whether one reached it, and else the rows that
 /// took its values, repeats and all, so adding a leaf's costs its own takers only.
 #[derive(Default)]
@@ -316,13 +305,16 @@ impl Takers {
         if self.reached {
             return;
         }
-        if let Reach::Reached = found {
-            self.reached = true;
-            self.rows = Vec::new();
-        } else {
-            self.rows
-                .extend(found.takers().iter().map(|&row| rename(row)));
-        }
+        let takers = match found {
+            Reach::Reached => {
+                self.reached = true;
+                self.rows = Vec::new();
+                return;
+            }
+            Reach::Taken(by) => std::slice::from_ref(by),
+            Reach::Several(by) => by,
+        };
+        self.rows.extend(takers.iter().map(|&row| rename(row)));
     }
 
     /// What every leaf added says, once at least one was.
