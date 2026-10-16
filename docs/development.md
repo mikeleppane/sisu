@@ -24,7 +24,7 @@ running the same checks as CI. Sisu builds and runs on x86-64 Linux.
 - Valgrind. The end-to-end tests run each program under it to catch leaks
   and memory errors.
 - For `make miri`, a nightly toolchain with Miri:
-  `rustup toolchain install nightly --component miri`.
+  `rustup toolchain install nightly --component miri --component rust-src`.
 
 LLVM 22 lives inside the repository. `scripts/install-llvm.sh` downloads the
 official release (1.9 GB) and keeps only what the build needs in `.llvm/22`
@@ -48,7 +48,7 @@ $ make test    # unit tests and end-to-end cases
 $ make lint    # fmt, clippy, expect messages, typos, file hygiene, shell and workflow lint, as in CI
 $ make deny    # advisories, licenses, sources
 $ make miri    # the runtime's unit tests under Miri, which stops at undefined behaviour
-$ make check   # lint, test and deny: what CI requires, with make miri
+$ make check   # lint, test and deny; CI also runs make miri
 ```
 
 Each target is one line in the `Makefile`, a script in `scripts/` or a cargo

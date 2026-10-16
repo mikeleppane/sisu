@@ -40,7 +40,7 @@ deny: ## Audit the dependencies: advisories, licenses, sources
 miri: ## Run the runtime's unit tests under Miri (nightly), which stops at undefined behaviour
 	cargo +nightly miri test -p sisu-runtime
 
-check: lint test deny ## What CI requires: lint, test and deny
+check: lint test deny ## Lint, test and deny; CI also runs make miri
 
 coverage: ## Coverage of the changes since BASE
 	scripts/coverage.sh "$(BASE)"

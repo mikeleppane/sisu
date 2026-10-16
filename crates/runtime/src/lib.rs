@@ -661,9 +661,10 @@ mod tests {
         assert_eq!(out.stderr, "-42\n-0.5\ntrue\nä\na\0b\n\n".as_bytes());
     }
 
-    /// `sisu_print_str` and `sisu_eprint_str` read exactly `len` bytes, a zero byte included,
-    /// for a nonempty and an empty string. The test runs in process, so Miri checks the reads
-    /// that the child tests above make out of its reach.
+    /// `sisu_print_str` and `sisu_eprint_str` read their `len` bytes, a zero byte included, for
+    /// a nonempty and an empty string. The test runs in process, so Miri checks that neither
+    /// reads past `len`, which the child tests above do out of its reach. The buffered stdout
+    /// bytes are checked here; the stderr bytes only by `eprint_writes_each_type_and_a_newline`.
     #[expect(unsafe_code, reason = "the test calls unsafe extern functions")]
     #[test]
     fn str_output_reads_len_bytes() {
