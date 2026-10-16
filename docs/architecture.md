@@ -23,7 +23,8 @@ runs it on a thread with a 64 MiB stack. It reads at most 1 GiB of source,
 so every span offset fits in a `u32`; a larger file is a tool error. The
 fuzzer calls the library too:
 `fuzz.rs` runs the `--check` path on raw bytes and asserts that every
-diagnostic span and fix edit is well formed. The `--emit` and `--check` flags stop
+diagnostic span and fix edit is well formed, and that every safe fix, applied
+alone, deletes no comment and removes its diagnostic and no other. The `--emit` and `--check` flags stop
 the pipeline early, as [Developing Sisu](development.md#look-inside-the-compiler)
 lists. `--format json` switches the diagnostics to JSON Lines, and
 `--explain <code>` prints the explanation of a code and runs no stage.
@@ -190,7 +191,9 @@ diagnostic as one JSON line, and `diagnostic/suggest.rs` finds the closest
 name for a did-you-mean fix. `report.rs` writes diagnostics and tool errors
 as text or JSON, counts them and ends with the summary. Before it writes one,
 `front_end::sound_fixes` drops any fix whose result would lex or parse worse
-than the input, so no stage has to guard its own fixes. The explanations in
+than the input, and makes unsafe any safe fix whose edits cover a comment or
+another lexer error, text no rule sees, so no stage has to guard its own
+fixes. The explanations in
 [`docs/diagnostics`](diagnostics/README.md) are what `--explain` prints.
 
 ## Updating the diagram
