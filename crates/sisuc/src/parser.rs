@@ -3465,6 +3465,20 @@ mod tests {
                 main("    match (e) {\n        A => 1\n    }"),
             ),
             (
+                main("    return switch e {\n        A => 1\n    }"),
+                Code::MatchIdiom,
+                (2, 12, "switch"),
+                false,
+                main("    return match e {\n        A => 1\n    }"),
+            ),
+            (
+                main("    x = switch(e) {\n        A => 1\n    }"),
+                Code::MatchIdiom,
+                (2, 9, "switch"),
+                false,
+                main("    x = match(e) {\n        A => 1\n    }"),
+            ),
+            (
                 arm("case A => 1"),
                 Code::MatchIdiom,
                 (3, 9, "case"),
@@ -3601,6 +3615,16 @@ mod tests {
             "fn main() {\n    match e {\n        case => 1\n        default => 2\n    }\n}",
         ] {
             parse_ok(src);
+        }
+        // A statement that fails some other way gets that error: another name or call before
+        // the `{`, or no `{` after the expression.
+        for src in [
+            "fn main() {\n    let x = swap e {\n    }\n}",
+            "fn main() {\n    swap(e) {\n    }\n}",
+            "fn main() {\n    let x = switch e 1\n}",
+            "fn main() {\n    switch(e) 1\n}",
+        ] {
+            assert_eq!(parse_diagnostic(src).code(), Code::Expected, "{src}");
         }
     }
 

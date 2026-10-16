@@ -171,6 +171,20 @@ fn match_join() {
         ),
         &[(Code::BindingNotFound, (15, 19))],
     );
+    // A failed arm after one of a known type keeps that type for the arms after it.
+    codes(
+        &format!(
+            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => b\n        Add(_, _) => nope\n        _ => 1\n    }}\n}}"
+        ),
+        &[(Code::BindingNotFound, (16, 22))],
+    );
+    // The first arm of a known type anchors the rest, not a later one: the `None` expects `u8?`.
+    codes(
+        &format!(
+            "{DECLS}\nfn t(e: Expr, b: u8) {{\n    let _ = match e {{\n        Num(_) => b\n        Add(_, _) => print(1)\n        _ => None\n    }}\n}}"
+        ),
+        &[(Code::NoValue, (16, 22))],
+    );
     // Arms that all leave make a `never` `match`.
     clean(&format!(
         "{DECLS}\nfn t(e: Expr) -> i64 {{\n    match e {{\n        Num(_) => return 1\n        _ => return 2\n    }}\n}}"
@@ -278,6 +292,14 @@ fn pattern_errors() {
     for (stmt, code, col) in rows {
         codes(&in_fn(stmt), &[(code, (14, col))]);
     }
+    // A name bound twice that is no variant is reported each time, as no variant only.
+    codes(
+        &arm_on_15("e", "Add(Q, Q) => 1"),
+        &[
+            (Code::NotVariantHere, (15, 13)),
+            (Code::NotVariantHere, (15, 16)),
+        ],
+    );
     // A payload of an unknown type matches any sub-pattern, and binds its names as errors.
     codes(
         &format!(
