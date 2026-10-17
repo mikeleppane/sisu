@@ -17,8 +17,11 @@ was `None`" (`Some(None)`) stay apart.
   `if let y = x` binds `y: i64?`.
 - **`?.` flattens one layer, as it does today.** `a?.b` where `b: i64?` gives
   `i64?`, not `i64??`. A chain such as `a?.b?.c` stays one optional.
-- **Printing tells every state apart.** Every state of a nested optional
-  prints differently; stage 6 fixes the exact text.
+- **Printing tells every state apart.** A `T?` holding `x` prints `x`'s
+  text, except when `x` is itself an optional holding `None` at its innermost
+  layer; then it prints `Some(` + `x`'s text + `)`. `None` prints `None` at
+  every depth. So an `i64??` prints `None`, `Some(None)` or `5`, and an
+  `i64???` prints `None`, `Some(None)`, `Some(Some(None))` or `5`.
 - **Niches keep the layout small.** An `Option`-shaped enum, with one
   payload-free variant and one variant with a single field, stores its empty
   variant in a bit pattern its payload can never hold. A program cannot see
@@ -53,7 +56,8 @@ was `None`" (`Some(None)`) stay apart.
 - A program from milestones 2 to 7 never wrote `T??`, since the checker
   rejected it, so none changes meaning. The roadmap's note that milestone 8
   must keep `T?` of an optional as the same optional is dropped.
-- An optional class reference stays a null pointer, in an array too, so
-  existing layouts do not change.
+- An optional class reference stays a null pointer, in an array too, so the
+  layout of an optional reference does not change. `char?`, `bool?` and an
+  optional enum shrink to their niche: `char?` takes 4 bytes instead of 8.
 - `i64?`, `u8?` and `f64?` still carry a flag, so they take more bytes than
   their payload.
