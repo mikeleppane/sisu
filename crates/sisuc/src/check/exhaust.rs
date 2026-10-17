@@ -582,9 +582,9 @@ impl Solver<'_> {
         let mut renamed: Vec<Option<Vec<(usize, usize)>>> = vec![None; top + 1];
         renamed[top] = Some((0..rows).map(|row| (row, row)).collect());
         for id in (0..=top).rev() {
-            let Some(names) = renamed[id].take() else {
-                continue;
-            };
+            let names = renamed[id]
+                .take()
+                .expect("a taken matrix should lie below the top, so a parent named its rows");
             let Taken { here, below } = &self.taken[id];
             let join = |(first, last): &mut (usize, usize), (lo, hi): (usize, usize)| {
                 *first = (*first).min(lo);

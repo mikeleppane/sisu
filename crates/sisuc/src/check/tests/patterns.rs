@@ -1361,6 +1361,12 @@ fn cut_takes_unexpanded_alternatives() {
         found(&src),
         [(Code::UnreachableArm, (line + 2, 14), vec![(line + 1, 9)])]
     );
+    // The top matrix is a cut: the whole arm below the wildcard arm is its first row's.
+    let (src, line) = typed("", "bool", &["_ => 0", "true | false => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 9), vec![(line + 1, 9)])]
+    );
     // The `|` the cut takes sits in a field, and in an alternative: `R` is the first arm's where
     // the cut is and the second's elsewhere.
     let k =
