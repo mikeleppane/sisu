@@ -3,11 +3,13 @@
 Reference counting leaks a cycle (ADR 0005). A field declared
 `weak mut parent: Node?` breaks one: it does not keep its object alive, and
 reading it gives `None` once the object has been dropped. `weak` is allowed
-only on a `mut` field (ADR 0011) whose type is an optional class, `C?`. A weak field
-reads like any optional, with `?.`, `??` and `if let`, so it adds no syntax
-for reading and no way to crash. We chose this over a cycle collector so that
-objects are still freed at a known point with no runtime beyond an allocator,
-as ADR 0005 requires. Swift's `weak` works the same way.
+only on a `mut` field (ADR 0011) whose type is an optional whose payload type
+conforms to `AnyObject`: `C?` for a class `C`, `T?` for a type parameter
+`T: AnyObject`, and `(any I)?` for a class-only interface `I` (milestone 8).
+A weak field reads like any optional, with `?.`, `??` and `if let`, so it adds
+no syntax for reading and no way to crash. We chose this over a cycle
+collector so that objects are still freed at a known point with no runtime
+beyond an allocator, as ADR 0005 requires. Swift's `weak` works the same way.
 
 The strong and weak counts share the one 8-byte header word that every object
 already has: the strong count in the low 32 bits, the weak count in the high
@@ -41,6 +43,8 @@ is 0 too.
   points at can keep the drop code it has today.
 - Arrays are values and cannot be weakly referenced, so their header is
   unchanged.
+- A weak `any` value is two words: the weak object pointer and the method
+  table.
 - A lint warns about the cycle shapes it can see: two classes whose fields
   point at each other, and a class with both a `[C]` and a `C?` field of its
   own type. A doubly linked list looks like a binary tree to a lint, so a
