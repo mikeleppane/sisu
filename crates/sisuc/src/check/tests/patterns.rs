@@ -752,6 +752,72 @@ fn many_arms_check_in_linear_time() {
     assert_eq!(codes, vec![Code::UnreachableArm; TAKERS]);
 }
 
+/// The keep-alive override for this test is in `.config/nextest.toml`: finding the arm that
+/// covers each unreachable alternative by solving again the arms above it is quadratic. So is
+/// copying every alternative's takers into each matrix above it, which a payload 20,000 fields
+/// deep with an `|` in each makes 20,000 matrices deep, or recording the alternatives of a row
+/// that each of 8,000 arms' buckets cuts, 8,000 of them, once per bucket. This test then hangs
+/// instead of failing. The duplicate whole arms took their covering arm from the one solve
+/// before, and guard that it stays so.
+#[test]
+fn many_unreachable_rows_check_in_linear_time() {
+    const VARIANTS: usize = 20_000;
+    const FIELDS: usize = 20_000;
+    const CUTS: usize = 8_000;
+    let variants = (0..CUTS)
+        .map(|i| format!("    V{i}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let arms = (0..CUTS)
+        .map(|i| format!("        Q(V{i}, _) => 0\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let fields = vec!["F"; CUTS].join(", ");
+    let pattern = vec!["A | B"; CUTS].join(", ");
+    clean(&format!(
+        "enum E {{\n{variants}    Extra\n}}\nenum F {{\n    A\n    B\n}}\nenum W {{ X({fields}) }}\nenum P {{ Q(E, W) }}\nfn f(p: P) -> i64 {{\n    match p {{\n{arms}        Q(_, X({pattern})) => 1\n    }}\n}}\nfn main() {{}}"
+    ));
+    let fields = vec!["bool"; FIELDS].join(", ");
+    let pattern = vec!["true | false"; FIELDS].join(", ");
+    let (src, line) = typed(
+        &format!("enum F {{ V({fields}) }}\n"),
+        "F",
+        &[&format!("V({pattern}) => 0"), &format!("V({pattern}) => 1")],
+    );
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 9), vec![(line + 1, 9)])]
+    );
+    let variants = (0..VARIANTS)
+        .map(|i| format!("    V{i}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    for arm in ["V{i} => 0\n        V{i} => 1", "V{i} | V{i} => 0"] {
+        let arms = (0..VARIANTS)
+            .map(|i| format!("        {}\n", arm.replace("{i}", &i.to_string())))
+            .collect::<Vec<_>>()
+            .concat();
+        let src = format!(
+            "enum E {{\n{variants}}}\nfn f(e: E) -> i64 {{\n    match e {{\n{arms}    }}\n}}\nfn main() {{}}"
+        );
+        let found = diags(&src);
+        assert_eq!(found.len(), VARIANTS, "{arm}");
+        // A second arm is covered by its variant's first arm; a second alternative by no arm,
+        // since its own arm's first alternative takes it.
+        let twins = arm.contains("=> 1");
+        for d in &found {
+            assert_eq!(d.code(), Code::UnreachableArm, "{arm}");
+            let covering: Vec<_> = d.secondary().iter().map(|(s, _)| &src[s.range()]).collect();
+            let expected = if twins {
+                vec![&src[d.span().range()]]
+            } else {
+                vec![]
+            };
+            assert_eq!(covering, expected, "{arm}");
+        }
+    }
+}
+
 /// The keep-alive override for this test is in `.config/nextest.toml`: an arm whose last-use walk
 /// copies or joins the set of every local in the function makes the walk quadratic in the arms,
 /// since each arm adds a local, and this test hangs instead of failing.
@@ -1262,6 +1328,61 @@ fn reachability() {
         [(false, vec![(line + 2, 10, " | B", String::new())])]
     );
     clean(&applied(&src, &d));
+}
+
+#[test]
+fn cut_takes_unexpanded_alternatives() {
+    let vbb = "enum P { V(bool, bool) }\n";
+    // Where the first arm has only wildcards left, it takes the `|` below it unexpanded: `true` is
+    // the first arm's there and the second's where the `|` is expanded, so no one arm covers it.
+    let (src, line) = typed(
+        vbb,
+        "P",
+        &[
+            "V(true, _) => 0",
+            "V(false, true) => 1",
+            "V(_, true | false) => 2",
+        ],
+    );
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 3, 14), vec![])]
+    );
+    // An arm takes `false` both unexpanded and expanded, as two rows of its own `|`.
+    let (src, line) = typed(
+        vbb,
+        "P",
+        &[
+            "V(true, _) | V(false, false) => 0",
+            "V(_, false | true) => 1",
+        ],
+    );
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 14), vec![(line + 1, 9)])]
+    );
+    // The top matrix is a cut: the whole arm below the wildcard arm is its first row's.
+    let (src, line) = typed("", "bool", &["_ => 0", "true | false => 1"]);
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 9), vec![(line + 1, 9)])]
+    );
+    // The `|` the cut takes sits in a field, and in an alternative: `R` is the first arm's where
+    // the cut is and the second's elsewhere.
+    let k =
+        "enum C {\n    R\n    S\n    T\n}\nenum P {\n    W(C)\n    Z\n}\nenum K { K(bool, P) }\n";
+    for third in ["K(_, W(R | S)) => 2", "K(_, W(R | S) | Z) => 2"] {
+        let (src, line) = typed(
+            k,
+            "K",
+            &["K(true, _) => 0", "K(false, W(R)) => 1", third, "_ => 3"],
+        );
+        assert_eq!(
+            found(&src),
+            [(Code::UnreachableArm, (line + 3, 16), vec![])],
+            "{third}"
+        );
+    }
 }
 
 #[test]
