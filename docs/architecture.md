@@ -91,7 +91,9 @@ always matches. It reports
 every error
 in one run: an expression that already failed gets the poison type, so one
 mistake produces one diagnostic. A program with no errors comes out as the
-typed tree, `tir`, which is all that codegen reads.
+typed tree, `tir`, which is all that codegen reads. A type in `tir` is a
+4-byte `Type` handle into one table (`types.rs`), as a name is a `Symbol`;
+its `kind()` gives the structure, and equal structures get the same handle.
 
 **Last use** (`last_use.rs`). Walks each function in `tir` backward and turns
 every read of a counted local that is its last use into a move. A move hands

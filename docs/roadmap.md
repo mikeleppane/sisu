@@ -628,11 +628,12 @@ Each is small once its milestone's main feature exists:
   `i8` with 2. One rule covers every `Option`-shaped enum; `char?` gets no
   special case before it, since milestone 7's enums take no niche. `i64?` and
   `u8?` have no spare value and keep `{ i1, T }`. A `None` sentinel never
-  reaches the runtime: printing decodes it first. Interned types:
-  `tir::Type` becomes a 4-byte handle into one table, as `Symbol` is for
-  names, so copying, comparing and hashing a type cost an integer operation.
-  Monomorphization multiplies the types the checker builds, so `Type` becomes
-  a handle before generics, and generic types are designed on it once.
+  reaches the runtime: printing decodes it first. Interned types (done in
+  milestone 8 stage 1): `tir::Type` is a 4-byte handle into one table, as
+  `Symbol` is for names, so copying, comparing and hashing a type cost an
+  integer operation. Monomorphization multiplies the types the checker
+  builds, so `Type` became a handle before generics, and generic types are
+  designed on it once.
 - Milestone 9: `for` over any iterator. Milestone 3's `for` lowers to a loop
   over an array or a range. An iterator `for` lowers to a loop that calls
   `next()` until it returns `None`, before the last-use pass runs, so a
