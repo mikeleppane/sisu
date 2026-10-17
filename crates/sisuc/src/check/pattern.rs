@@ -11,8 +11,9 @@ use super::expr::Branch;
 use super::{Checked, CheckedBlock, Checker, Poisoned, type_of};
 use crate::ast;
 use crate::diagnostic::{
-    BadRange, Definition, DiagnosticKind, GuardHelp, MismatchSource, Span, Unwrap, suggestion,
+    BadRange, Definition, DiagnosticKind, GuardHelp, MismatchSource, Unwrap, suggestion,
 };
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::tir::{self, Type, TypeKind};
 

@@ -4,7 +4,8 @@ use std::ops::Range;
 
 use annotate_snippets::{AnnotationKind, Level, Patch, Renderer, Snippet};
 
-use super::{Diagnostic, Edit, Fix, LineIndex, Severity, Span};
+use super::{Diagnostic, Edit, Fix, Severity};
+use crate::source::{LineIndex, Span};
 
 /// The lines of `source` that `spans` cover, as the renderer needs them: the byte range, and the
 /// number of its first line. The renderer rebuilds a map of every line it is handed, so it gets
@@ -29,8 +30,10 @@ fn window(
     // window with a line before it matches, and folding hides that line. This is
     // `newline_count` in annotate-snippets 0.12.16 `render.rs`; recheck it on a version bump.
     let first = first.saturating_sub(1).max(1);
-    let from = lines.0[first - 1];
-    let to = lines.0.get(last).copied().unwrap_or(source.len());
+    let from = lines
+        .line_start(first)
+        .expect("a span's first rendered line should be in the index");
+    let to = lines.line_start(last + 1).unwrap_or(source.len());
     (from..to, first)
 }
 
@@ -112,9 +115,8 @@ impl Diagnostic {
 mod tests {
     use annotate_snippets::{AnnotationKind, Level, Patch, Renderer, Snippet};
 
-    use crate::diagnostic::{
-        Code, Diagnostic, DiagnosticKind, Edit, Fix, Immutable, LineIndex, Severity, Span,
-    };
+    use crate::diagnostic::{Code, Diagnostic, DiagnosticKind, Edit, Fix, Immutable, Severity};
+    use crate::source::{LineIndex, Span};
 
     const ASSIGN: &str = "fn main() {\n    let n = 0\n    n = 1\n}\n";
 

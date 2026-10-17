@@ -4,8 +4,9 @@
 use std::ffi::OsStr;
 use std::io::Write;
 
-use crate::diagnostic::{Code, Diagnostic, LineIndex, Severity, json};
+use crate::diagnostic::{Code, Diagnostic, Severity, json};
 use crate::front_end;
+use crate::source::LineIndex;
 
 /// How the reporter writes.
 pub(crate) enum Format {
@@ -106,7 +107,8 @@ pub(crate) fn use_color(stderr_is_terminal: bool, no_color: Option<&OsStr>) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{DiagnosticKind, Immutable, Span};
+    use crate::diagnostic::{DiagnosticKind, Immutable};
+    use crate::source::Span;
 
     const SOURCE: &str = "fn main() {\n    let n = 0\n    n = 1\n    let mut m = 0\n}\n";
 

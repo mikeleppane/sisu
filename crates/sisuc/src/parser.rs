@@ -10,9 +10,10 @@ use crate::ast::{
 };
 use crate::diagnostic::{
     self, BuiltIn, Diagnostic, DiagnosticKind, ForeignPattern, ForeignRange, Join, LetField,
-    MatchIdiomForm, Owner, PowerFix, SemicolonPlace, Span,
+    MatchIdiomForm, Owner, PowerFix, SemicolonPlace,
 };
 use crate::lexer::{Lexed, MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
+use crate::source::Span;
 use crate::symbol::Symbol;
 
 /// What the parser makes of a lexed source.
@@ -2590,9 +2591,10 @@ enum Head {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::Code;
     use crate::diagnostic::explanations::{apply_fix, fix_edits};
-    use crate::diagnostic::{Code, line_col};
     use crate::lexer::lex;
+    use crate::source::line_col;
 
     fn program(src: &str) -> String {
         parse_ok(src).to_string()

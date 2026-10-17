@@ -7,7 +7,8 @@ use rustc_hash::FxHashMap;
 
 use super::{Checked, Checker, Declared, Poisoned, built_in_type, type_of};
 use crate::ast::{self, ExprKind};
-use crate::diagnostic::{Diagnostic, DiagnosticKind, Panic, Span, TypedLiteral};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Panic, TypedLiteral};
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::tir::{self, BinaryOp, CompareOp, Type, UnaryOp};
 

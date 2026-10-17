@@ -3,7 +3,8 @@
 use super::expr::{literal_type, local, operator};
 use super::{BindingKind, Checked, Checker, Declared, Poisoned, UNKNOWN, block_expr, type_of};
 use crate::ast;
-use crate::diagnostic::{DiagnosticKind, Immutable, Span};
+use crate::diagnostic::{DiagnosticKind, Immutable};
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::tir::{self, ExprKind, Type, TypeKind};
 

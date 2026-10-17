@@ -9,7 +9,8 @@ use super::{
     Binding, BindingKind, CheckedBlock, Checker, LoopContext, Poisoned, block_expr, tail, type_of,
 };
 use crate::ast::{self, StmtKind};
-use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
+use crate::diagnostic::{DiagnosticKind, Unwrap};
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::tir::{self, ExprKind, Type, TypeKind};
 

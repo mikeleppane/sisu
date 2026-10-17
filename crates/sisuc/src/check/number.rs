@@ -6,7 +6,8 @@ use std::f64::consts;
 use super::expr::{no_member, postfix, typed};
 use super::{Checked, Checker, Declared, Poisoned, UNKNOWN, built_in_type};
 use crate::ast;
-use crate::diagnostic::{Definition, DiagnosticKind, MathFix, NanFix, Span};
+use crate::diagnostic::{Definition, DiagnosticKind, MathFix, NanFix};
+use crate::source::Span;
 use crate::tir::{self, MathOp, Type, TypeKind};
 
 /// The receivers of a method.

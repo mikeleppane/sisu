@@ -12,8 +12,9 @@ use super::{
 };
 use crate::ast::{self, CompareOp, ExprKind, UnaryOp};
 use crate::diagnostic::{
-    Definition, Diagnostic, DiagnosticKind, Literal, Span, Suggestion, Unwrap, alias, suggestion,
+    Definition, Diagnostic, DiagnosticKind, Literal, Suggestion, Unwrap, alias, suggestion,
 };
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::tir::{self, Type, TypeKind};
 

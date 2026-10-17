@@ -6,7 +6,8 @@ use super::array::pair;
 use super::expr::typed;
 use super::{Checked, Checker, Poisoned, payload, type_of};
 use crate::ast;
-use crate::diagnostic::{DiagnosticKind, MismatchFix, Span};
+use crate::diagnostic::{DiagnosticKind, MismatchFix};
+use crate::source::Span;
 use crate::tir::{self, Stream, Type, TypeKind};
 
 /// The prelude's names.

@@ -33,7 +33,7 @@ use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 
 use self::enums::EnumLayout;
 use self::rc::{Helper, counted_core};
-use crate::diagnostic::{LineIndex, Span};
+use crate::source::{LineIndex, Span};
 use crate::tir::{
     Block, Class, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt,
     Stream, Type, TypeKind, UnaryOp,

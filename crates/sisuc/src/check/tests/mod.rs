@@ -1,8 +1,8 @@
 use super::*;
 use crate::diagnostic::explanations::apply;
-use crate::diagnostic::line_col;
 use crate::diagnostic::{Code, Fix};
 use crate::parser::parse_ok;
+use crate::source::line_col;
 
 mod arrays;
 mod chars;
@@ -1175,12 +1175,7 @@ fn empty_file_has_no_main() {
     // The empty span at offset 0 renders without a panic.
     assert!(
         ds[0]
-            .render(
-                "empty.sisu",
-                "",
-                &crate::diagnostic::LineIndex::new(""),
-                false
-            )
+            .render("empty.sisu", "", &crate::source::LineIndex::new(""), false)
             .contains(Code::NoMain.as_str())
     );
 }

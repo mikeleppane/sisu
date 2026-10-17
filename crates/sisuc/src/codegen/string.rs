@@ -14,7 +14,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, param};
 use super::{Codegen, POSITIONED, add_nounwind_memory, zeroext};
-use crate::diagnostic::Span;
+use crate::source::Span;
 use crate::tir::{Align, CompareOp, Expr, Format, Pad, Place, Stream, Type};
 
 /// A string block's header, from the target's data layout. A block with capacity `cap` is

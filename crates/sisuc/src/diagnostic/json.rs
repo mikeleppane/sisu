@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::{Code, Diagnostic, Edit, Fix, LineIndex, Severity, Span};
+use super::{Code, Diagnostic, Edit, Fix, Severity};
+use crate::source::{LineIndex, Span};
 
 /// Bumped on any breaking change to the objects.
 const VERSION: u32 = 1;
@@ -174,8 +175,9 @@ fn to_line(value: &impl Serialize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{DiagnosticKind, Span};
+    use crate::diagnostic::DiagnosticKind;
     use crate::front_end::front_end;
+    use crate::source::Span;
 
     #[test]
     fn json_offsets_are_bytes() {

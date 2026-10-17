@@ -28,7 +28,7 @@ use std::rc::Rc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::diagnostic::Span;
+use crate::source::Span;
 use crate::tir::{self, Type, TypeKind};
 
 /// One arm's pattern: a row of the matrix.

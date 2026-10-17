@@ -11,6 +11,7 @@ mod lexer;
 mod link;
 mod parser;
 mod report;
+mod source;
 mod symbol;
 mod tir;
 mod types;
@@ -205,7 +206,7 @@ fn explain(reporter: &mut Report, code: &str) -> ExitCode {
 /// Reads the bytes of `input`, at most `MAX_SOURCE` of them, or reports why it cannot.
 fn read_bytes(reporter: &mut Report, input: &Path) -> Option<Vec<u8>> {
     let read = fs::File::open(input)
-        .and_then(|file| read_at_most(&file, file.metadata()?.len(), front_end::MAX_SOURCE));
+        .and_then(|file| read_at_most(&file, file.metadata()?.len(), source::MAX_SOURCE));
     let path = input.to_string_lossy();
     match read {
         Ok(Some(bytes)) => return Some(bytes),

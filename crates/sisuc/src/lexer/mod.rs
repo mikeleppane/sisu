@@ -6,7 +6,8 @@ use std::fmt::Write;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-use crate::diagnostic::{Code, Diagnostic, DiagnosticKind, Join, LineIndex, Span};
+use crate::diagnostic::{Code, Diagnostic, DiagnosticKind, Join};
+use crate::source::{LineIndex, Span};
 use crate::symbol::Symbol;
 use literal::End;
 pub(crate) use literal::Float;
@@ -998,8 +999,9 @@ fn unexpected(c: char, at: usize) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::Code;
     use crate::diagnostic::explanations::{apply_fix, fix_edits};
-    use crate::diagnostic::{Code, LineIndex, Span, line_col};
+    use crate::source::{LineIndex, Span, line_col};
 
     /// The tokens of `src`, which lexes without a diagnostic.
     fn tokens(src: &str) -> Vec<Token> {

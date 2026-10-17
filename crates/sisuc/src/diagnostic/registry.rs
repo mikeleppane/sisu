@@ -1,6 +1,7 @@
 //! The registry: every diagnostic code, and the message, labels, help and fixes of each.
 
-use super::{Diagnostic, Edit, Fix, Severity, Span, Suggestion};
+use super::{Diagnostic, Edit, Fix, Severity, Suggestion};
+use crate::source::Span;
 
 /// The code table: each code's variant and number. A number is never reused or changed.
 /// A row may name extra `DiagnosticKind` variants after `|` that share its code.
@@ -1285,7 +1286,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "integer literal is too large for `i64`")
             }
             DiagnosticKind::FloatNeedsDigits { at, fix } => {
-                let side = if fix.start > at.start { "after" } else { "before" };
+                let side = if fix.start() > at.start() { "after" } else { "before" };
                 Diagnostic::coded(code, at, "a float needs digits on both sides of `.`").with_fix(
                     Fix {
                         message: format!("write a `0` {side} the `.`"),
