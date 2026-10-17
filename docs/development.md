@@ -399,9 +399,11 @@ number in its series, `E` for errors and `W` for warnings.
    row to the README table. The `codes!` table `include_str!`s the file, so
    the crate does not build without it.
 2. In `crates/sisuc/src/diagnostic/registry.rs`, add a row to the `codes!`
-   table, which is where the number is chosen. Add a `DiagnosticKind` variant
-   and its arms in `DiagnosticKind::code` and `From<DiagnosticKind> for
-   Diagnostic`, with the message, labels, help and fixes. A fix is safe
+   table, which is where the number is chosen. `codes!` generates
+   `DiagnosticKind::code`; a variant that reports an existing code joins that
+   code's row, as `Mismatch | PatternMismatch` does. Add a `DiagnosticKind`
+   variant and its arm in `From<DiagnosticKind> for Diagnostic`, with the
+   message, labels, help and fixes. A fix is safe
    only when applying it always removes the diagnostic and leaves source that
    lexes and parses; every other fix is an unsafe fix. An idiom fix is safe
    only if the edited source also checks cleanly. When in doubt, it is unsafe.

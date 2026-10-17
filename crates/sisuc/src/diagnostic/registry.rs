@@ -3,8 +3,9 @@
 use super::{Diagnostic, Edit, Fix, Severity, Span, Suggestion};
 
 /// The code table: each code's variant and number. A number is never reused or changed.
+/// A row may name extra `DiagnosticKind` variants after `|` that share its code.
 macro_rules! codes {
-    ($($variant:ident = $code:literal,)*) => {
+    ($($variant:ident $(| $alias:ident)* = $code:literal,)*) => {
         /// A diagnostic code.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[expect(
@@ -31,6 +32,15 @@ macro_rules! codes {
                     $(Code::$variant => include_str!(
                         concat!("../../../../docs/diagnostics/", $code, ".md")
                     ),)*
+                }
+            }
+        }
+
+        impl DiagnosticKind {
+            /// The code of the row that names the variant.
+            pub(crate) fn code(&self) -> Code {
+                match self {
+                    $(DiagnosticKind::$variant { .. } $(| DiagnosticKind::$alias { .. })* => Code::$variant,)*
                 }
             }
         }
@@ -73,7 +83,7 @@ codes! {
     MainSignature = "E0029",
     UnknownType = "E0030",
     BodyHasNoValue = "E0031",
-    Mismatch = "E0032",
+    Mismatch | PatternMismatch = "E0032",
     BindingNotFound = "E0033",
     DefinedTwice = "E0034",
     ForNeedsArray = "E0035",
@@ -1149,162 +1159,6 @@ pub(crate) enum Immutable {
         declared: Span,
     },
 }
-
-impl DiagnosticKind {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per diagnostic code, so the table reads in one place"
-    )]
-    pub(crate) fn code(&self) -> Code {
-        match self {
-            DiagnosticKind::AssignToImmutable { .. } => Code::AssignToImmutable,
-            DiagnosticKind::UnreachableCode { .. } => Code::UnreachableCode,
-            DiagnosticKind::NeverReassigned { .. } => Code::NeverReassigned,
-            DiagnosticKind::LeadingBinaryMinus { .. } => Code::LeadingBinaryMinus,
-            DiagnosticKind::UnclosedBracket { .. } => Code::UnclosedBracket,
-            DiagnosticKind::BraceOnNewLine { .. } => Code::BraceOnNewLine,
-            DiagnosticKind::BracketOnNewLine { .. } => Code::BracketOnNewLine,
-            DiagnosticKind::ElseOnNewLine { .. } => Code::ElseOnNewLine,
-            DiagnosticKind::UnexpectedClosingBracket { .. } => Code::UnexpectedClosingBracket,
-            DiagnosticKind::DigitSeparator { .. } => Code::DigitSeparator,
-            DiagnosticKind::IntegerTooLarge { .. } => Code::IntegerTooLarge,
-            DiagnosticKind::BasePrefixUpperCase { .. } => Code::BasePrefixUpperCase,
-            DiagnosticKind::FloatNeedsDigits { .. } => Code::FloatNeedsDigits,
-            DiagnosticKind::ExponentNeedsDigits { .. } => Code::ExponentNeedsDigits,
-            DiagnosticKind::FloatOutOfRange { .. } => Code::FloatOutOfRange,
-            DiagnosticKind::BasePrefixWithoutDigits { .. } => Code::BasePrefixWithoutDigits,
-            DiagnosticKind::DigitOutsideBase { .. } => Code::DigitOutsideBase,
-            DiagnosticKind::UnexpectedCharacter { .. } => Code::UnexpectedCharacter,
-            DiagnosticKind::Expected { .. } => Code::Expected,
-            DiagnosticKind::Semicolon { .. } => Code::Semicolon,
-            DiagnosticKind::Var { .. } => Code::Var,
-            DiagnosticKind::OptionalNests { .. } => Code::OptionalNests,
-            DiagnosticKind::FieldComma { .. } => Code::FieldComma,
-            DiagnosticKind::FieldLet { .. } => Code::FieldLet,
-            DiagnosticKind::MethodNeedsSelf { .. } => Code::MethodNeedsSelf,
-            DiagnosticKind::MutSelf { .. } => Code::MutSelf,
-            DiagnosticKind::MutParameter { .. } => Code::MutParameter,
-            DiagnosticKind::SelfNotFirst { .. } => Code::SelfNotFirst,
-            DiagnosticKind::AssignToExpression { .. } => Code::AssignToExpression,
-            DiagnosticKind::AssignThroughSafeAccess { .. } => Code::AssignThroughSafeAccess,
-            DiagnosticKind::RangeOutsideFor { .. } => Code::RangeOutsideFor,
-            DiagnosticKind::EqualityChain { .. } => Code::EqualityChain,
-            DiagnosticKind::ComparisonDirection { .. } => Code::ComparisonDirection,
-            DiagnosticKind::BuiltInName { .. } => Code::BuiltInName,
-            DiagnosticKind::NeverConstructed { .. } => Code::NeverConstructed,
-            DiagnosticKind::NoMain => Code::NoMain,
-            DiagnosticKind::MainSignature { .. } => Code::MainSignature,
-            DiagnosticKind::UnknownType { .. } => Code::UnknownType,
-            DiagnosticKind::BodyHasNoValue { .. } => Code::BodyHasNoValue,
-            DiagnosticKind::Mismatch { .. } | DiagnosticKind::PatternMismatch { .. } => {
-                Code::Mismatch
-            }
-            DiagnosticKind::BindingNotFound { .. } => Code::BindingNotFound,
-            DiagnosticKind::DefinedTwice { .. } => Code::DefinedTwice,
-            DiagnosticKind::ForNeedsArray { .. } => Code::ForNeedsArray,
-            DiagnosticKind::ReturnNeedsValue { .. } => Code::ReturnNeedsValue,
-            DiagnosticKind::UnexpectedReturnValue { .. } => Code::UnexpectedReturnValue,
-            DiagnosticKind::JumpOutsideLoop { .. } => Code::JumpOutsideLoop,
-            DiagnosticKind::AlreadyDeclared { .. } => Code::AlreadyDeclared,
-            DiagnosticKind::IntegerDoesNotFit { .. } => Code::IntegerDoesNotFit,
-            DiagnosticKind::NotExactlyF64 { .. } => Code::NotExactlyF64,
-            DiagnosticKind::SelfOutsideMethod { .. } => Code::SelfOutsideMethod,
-            DiagnosticKind::NegatedU8 { .. } => Code::NegatedU8,
-            DiagnosticKind::NoValue { .. } => Code::NoValue,
-            DiagnosticKind::NeverNone { .. } => Code::NeverNone,
-            DiagnosticKind::IsTestsNone { .. } => Code::IsTestsNone,
-            DiagnosticKind::IsNeedsObjects { .. } => Code::IsNeedsObjects,
-            DiagnosticKind::CannotCompare { .. } => Code::CannotCompare,
-            DiagnosticKind::CoalesceNotOptional { .. } => Code::CoalesceNotOptional,
-            DiagnosticKind::SafeAccessNotOptional { .. } => Code::SafeAccessNotOptional,
-            DiagnosticKind::CannotInfer { .. } => Code::CannotInfer,
-            DiagnosticKind::UnwrapNeedsOptional { .. } => Code::UnwrapNeedsOptional,
-            DiagnosticKind::FunctionNotFound { .. } => Code::FunctionNotFound,
-            DiagnosticKind::ArgumentCount { .. } => Code::ArgumentCount,
-            DiagnosticKind::AlreadyConverted { .. } => Code::AlreadyConverted,
-            DiagnosticKind::LabeledArgument { .. } => Code::LabeledArgument,
-            DiagnosticKind::MissingField { .. } => Code::MissingField,
-            DiagnosticKind::MethodNotField { .. } => Code::MethodNotField,
-            DiagnosticKind::FieldNotMethod { .. } => Code::FieldNotMethod,
-            DiagnosticKind::PrintArgument { .. } => Code::PrintArgument,
-            DiagnosticKind::PrintArray { .. } => Code::PrintArray,
-            DiagnosticKind::PrintNever { .. } => Code::PrintNever,
-            DiagnosticKind::MayBeNone { .. } => Code::MayBeNone,
-            DiagnosticKind::NoMember { .. } => Code::NoMember,
-            DiagnosticKind::TooManyArguments { .. } => Code::TooManyArguments,
-            DiagnosticKind::ArgumentNeedsLabel { .. } => Code::ArgumentNeedsLabel,
-            DiagnosticKind::FieldOutOfOrder { .. } => Code::FieldOutOfOrder,
-            DiagnosticKind::SameObject { .. } => Code::SameObject,
-            DiagnosticKind::CannotIndex { .. } => Code::CannotIndex,
-            DiagnosticKind::SumNeedsNumbers { .. } => Code::SumNeedsNumbers,
-            DiagnosticKind::MethodAsFunction { .. } => Code::MethodAsFunction,
-            DiagnosticKind::NestingTooDeep { .. } => Code::NestingTooDeep,
-            DiagnosticKind::InvalidUtf8 { .. } => Code::InvalidUtf8,
-            DiagnosticKind::AssignToSelf { .. } => Code::AssignToSelf,
-            DiagnosticKind::AssignToFunction { .. } => Code::AssignToFunction,
-            DiagnosticKind::MutOnUnderscore { .. } => Code::MutOnUnderscore,
-            DiagnosticKind::UnderscoreValue { .. } => Code::UnderscoreValue,
-            DiagnosticKind::UnderscoreName { .. } => Code::UnderscoreName,
-            DiagnosticKind::BlockAsStatement { .. } => Code::BlockAsStatement,
-            DiagnosticKind::JumpInLoopHeader { .. } => Code::JumpInLoopHeader,
-            DiagnosticKind::ReservedWord { .. } => Code::ReservedWord,
-            DiagnosticKind::ConstInFunction { .. } => Code::ConstInFunction,
-            DiagnosticKind::ConstantType { .. } => Code::ConstantType,
-            DiagnosticKind::ConstantNotKnown { .. } => Code::ConstantNotKnown,
-            DiagnosticKind::ConstantOrder { .. } => Code::ConstantOrder,
-            DiagnosticKind::ConstantPanics { .. } => Code::ConstantPanics,
-            DiagnosticKind::UnknownEscape { .. } => Code::UnknownEscape,
-            DiagnosticKind::MalformedUnicodeEscape { .. } => Code::MalformedUnicodeEscape,
-            DiagnosticKind::NotScalarValue { .. } => Code::NotScalarValue,
-            DiagnosticKind::NotOneCodePoint { .. } => Code::NotOneCodePoint,
-            DiagnosticKind::LiteralNotClosed { .. } => Code::LiteralNotClosed,
-            DiagnosticKind::ArithmeticOnChar { .. } => Code::ArithmeticOnChar,
-            DiagnosticKind::BraceInString { .. } => Code::BraceInString,
-            DiagnosticKind::EmptyInterpolation { .. } => Code::EmptyInterpolation,
-            DiagnosticKind::CommentInInterpolation { .. } => Code::CommentInInterpolation,
-            DiagnosticKind::CannotInterpolate { .. } => Code::CannotInterpolate,
-            DiagnosticKind::TodoLeft { .. } => Code::TodoLeft,
-            DiagnosticKind::TodoForm { .. } => Code::TodoForm,
-            DiagnosticKind::ConversionInConstant { .. } => Code::ConversionInConstant,
-            DiagnosticKind::UnusedValue { .. } => Code::UnusedValue,
-            DiagnosticKind::TypeAsValue { .. } => Code::TypeAsValue,
-            DiagnosticKind::MathIdiom { .. } => Code::MathIdiom,
-            DiagnosticKind::PowerOperator { .. } => Code::PowerOperator,
-            DiagnosticKind::MalformedFormatSpec { .. } => Code::MalformedFormatSpec,
-            DiagnosticKind::UnsupportedFormatSpec { .. } => Code::UnsupportedFormatSpec,
-            DiagnosticKind::FormatSpecLimit { .. } => Code::FormatSpecLimit,
-            DiagnosticKind::PrecisionNeedsF64 { .. } => Code::PrecisionNeedsF64,
-            DiagnosticKind::VariantAfterMethod { .. } => Code::VariantAfterMethod,
-            DiagnosticKind::VariantCase { .. } => Code::VariantCase,
-            DiagnosticKind::MixedLabels { .. } => Code::MixedLabels,
-            DiagnosticKind::EmptyEnum { .. } => Code::EmptyEnum,
-            DiagnosticKind::EnumNamedLocal { .. } => Code::EnumNamedLocal,
-            DiagnosticKind::BareVariant { .. } => Code::BareVariant,
-            DiagnosticKind::UnknownVariant { .. } => Code::UnknownVariant,
-            DiagnosticKind::VariantForm { .. } => Code::VariantForm,
-            DiagnosticKind::MemberKind { .. } => Code::MemberKind,
-            DiagnosticKind::EnumField { .. } => Code::EnumField,
-            DiagnosticKind::MatchIdiom { .. } => Code::MatchIdiom,
-            DiagnosticKind::PatternForm { .. } => Code::PatternForm,
-            DiagnosticKind::CannotMatch { .. } => Code::CannotMatch,
-            DiagnosticKind::NotVariantHere { .. } => Code::NotVariantHere,
-            DiagnosticKind::ConstantInPattern { .. } => Code::ConstantInPattern,
-            DiagnosticKind::OnlyNamePosition { .. } => Code::OnlyNamePosition,
-            DiagnosticKind::SubpatternCount { .. } => Code::SubpatternCount,
-            DiagnosticKind::BoundTwice { .. } => Code::BoundTwice,
-            DiagnosticKind::NanComparison { .. } => Code::NanComparison,
-            DiagnosticKind::NonExhaustive { .. } => Code::NonExhaustive,
-            DiagnosticKind::UnreachableArm { .. } => Code::UnreachableArm,
-            DiagnosticKind::AlwaysMatches { .. } => Code::AlwaysMatches,
-            DiagnosticKind::ForeignRange { .. } => Code::ForeignRange,
-            DiagnosticKind::ArmSplit { .. } => Code::ArmSplit,
-            DiagnosticKind::InterpolatedPattern { .. } => Code::InterpolatedPattern,
-            DiagnosticKind::BadRange { .. } => Code::BadRange,
-            DiagnosticKind::AlternativeBindings { .. } => Code::AlternativeBindings,
-        }
-    }
-}
-
 impl From<DiagnosticKind> for Diagnostic {
     #[expect(
         clippy::too_many_lines,
