@@ -1768,6 +1768,27 @@ mod tests {
     }
 
     #[test]
+    fn payload_free_types_print_their_names() {
+        let printed = [
+            Type::I64,
+            Type::U8,
+            Type::F64,
+            Type::BOOL,
+            Type::CHAR,
+            Type::STRING,
+            Type::UNIT,
+            Type::NEVER,
+        ]
+        .map(|ty| ty.to_string());
+        assert_eq!(
+            printed,
+            [
+                "i64", "u8", "f64", "bool", "char", "string", "unit", "never"
+            ]
+        );
+    }
+
+    #[test]
     fn prints_an_enum_type_by_its_id() {
         let ty = Type::optional(Type::intern(TypeKind::Enum(EnumId(2))));
         assert_eq!(ty.to_string(), "enum#2?");
