@@ -49,7 +49,7 @@ The user or the caller's plan may change an effort or add a reviewer.
 Launch the reviewers together.
 
 - **Sol:** `sol-review <effort> RUN/brief.md RUN/sol.md <repository root>`, through Bash with `run_in_background` and the sandbox off: codex needs the network and writes under `~/.codex`. The completion notification ends the wait; do not poll. When it exits 1, show the user the error it prints and ask how to go on. Do not put another model in Sol's place without asking.
-- **Opus:** the Agent tool with `subagent_type: opus-high`, and the prompt `Read RUN/brief.md and follow it. Your final reply is the report.` with `RUN` written out. Pass no `model` or `effort`. Save its reply to `RUN/opus.md`.
+- **Opus:** the Agent tool with `subagent_type: opus-high`, and the prompt `Read RUN/brief.md and follow it. Write your report to RUN/opus.md; your final reply is that report.` with `RUN` written out. Pass no `model` or `effort`.
 
 ### 4. Rule on each finding
 
@@ -76,8 +76,9 @@ it.
 When you fixed a blocking finding, review again. Write `RUN/brief-2.md`
 from the same template, with the findings, your rulings and the fixes
 under "Focus", and send it to the reviewers that found the blocking
-findings. Allow at most two fix rounds. After the second round, rule on
-what is left and defer it.
+findings; their reports go to `RUN/sol-2.md` and `RUN/opus-2.md`. Allow
+at most two fix rounds. After the second round, rule on what is left and
+defer it.
 
 ### 6. Report
 
