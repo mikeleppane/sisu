@@ -440,6 +440,11 @@ mod tests {
             .map(|sig| sig.ident.to_string())
             .collect();
         let rows: BTreeSet<String> = RUNTIME.iter().map(|row| row.name.to_owned()).collect();
+        assert_eq!(
+            rows.len(),
+            RUNTIME.len(),
+            "RUNTIME has a duplicated row: `row()` would return only the first",
+        );
         assert!(
             exports == rows,
             "exports with no row: {:?}; rows with no export: {:?}",

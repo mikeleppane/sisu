@@ -525,8 +525,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// With the RC checks, calls `sisu_rc_fault(kind)`, which never returns, when the count of
-    /// `object` is below 1: `RC_FAULT_RETAIN` for a retain or a fill's sharing, `RC_FAULT_RELEASE` for a release or `unique`.
-    /// Continues in a fresh block.
+    /// `object` is below 1: `RC_FAULT_RETAIN` for a retain or a fill's sharing,
+    /// `RC_FAULT_RELEASE` for a release or `unique`. Continues in a fresh block.
     pub(super) fn check_count(&self, object: PointerValue<'ctx>, kind: u64) {
         let Some(fault) = self.rc_fault else {
             return;
