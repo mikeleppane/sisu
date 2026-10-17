@@ -448,8 +448,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// The runtime function `name`: the module's declaration if it has one, and otherwise the
-    /// declaration `abi::row(name)` describes, added now. So a module declares only the runtime
-    /// functions it calls.
+    /// declaration `abi::row(name)` describes, added now. `compile` still declares some
+    /// functions up front, whether or not the program calls them.
     pub(super) fn runtime(&self, name: &str) -> FunctionValue<'ctx> {
         self.module
             .get_function(name)
