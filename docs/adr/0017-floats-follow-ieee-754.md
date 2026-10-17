@@ -17,8 +17,8 @@ Two rules follow from IEEE 754 and are worth stating.
 - **`==` on a composite holding an `f64` has no same-object shortcut.** It
   compares every element. An array or enum that holds NaN is therefore not
   equal to itself, even when both sides are the same value. Until milestone 8
-  stage 5 gives classes identity ([ADR 0022](0022-classes-compare-by-identity.md)),
-  a class compares field by field, so a class holding NaN is not equal to
+  stage 5 removes the structural `==` on classes
+  ([ADR 0022](0022-classes-compare-by-identity.md)), a class compares field by field, so a class holding NaN is not equal to
   itself either.
 
 ## Considered options

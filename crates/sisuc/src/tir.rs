@@ -1752,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn types_print_as_before() {
+    fn types_print_their_source_names() {
         let class = Type::intern(TypeKind::Class(ClassId(3)));
         let nested = Type::optional(Type::array(Type::array(Type::optional(Type::I64))));
         for (ty, text) in [

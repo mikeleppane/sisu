@@ -7,7 +7,7 @@ use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, counted_core, param};
-use super::{Codegen, POSITIONED, Slot};
+use super::{Codegen, POSITIONED, Slot, class_of};
 use crate::diagnostic::Span;
 use crate::tir::{Expr, ExprKind, LocalId, Place, Type, TypeKind};
 
@@ -527,9 +527,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (slot, ty) = match root {
             Place::Local(local) => (self.variable_slot(*local), self.types[local.0]),
             Place::Field { base, index } => {
-                let TypeKind::Class(class) = base.ty.kind() else {
-                    unreachable!("the checker should only make a field place on a class-typed base")
-                };
+                let class = class_of(base.ty);
                 let (object, _) =
                     object.expect("a field root's base should have been evaluated above");
                 (
