@@ -81,6 +81,10 @@ Each new or changed diagnostic must earn its place:
 - The primary span covers the offending code.
 - It offers a fix only when the fix is obvious and simple.
 - One mistake gives one diagnostic, not a cascade.
+- The trigger fits the message. Try inputs at the edge of the trigger,
+  for example the same line after a complete construct instead of an
+  incomplete one. Each input the trigger matches makes the message true;
+  an input where the message would be false is a finding.
 
 Report the opposite too: a likely mistake that the target leaves with a
 vague or generic error, or with none.
