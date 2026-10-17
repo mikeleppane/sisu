@@ -127,6 +127,8 @@ pub unsafe extern "C" fn sisu_write_char(c: u32, out: *mut u8) -> usize {
 /// and returns the new length. `align` 0 puts the text on the left, 1 on the right and 2 in the
 /// centre, with the odd space on the right. Text of `width` code points or more is left as it
 /// is. Interpolation calls this for a part with a width, after writing the part at `text`.
+/// Codegen names the alignments `PAD_LEFT`, `PAD_RIGHT` and `PAD_CENTER` in
+/// `crates/sisuc/src/codegen/abi.rs`.
 ///
 /// # Safety
 ///

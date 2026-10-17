@@ -11,6 +11,7 @@ use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use rustc_hash::FxHashSet;
 
+use super::abi::{RC_FAULT_RELEASE, RC_FAULT_RETAIN};
 use super::{Codegen, POSITIONED};
 use crate::tir::{Program, Type, TypeKind};
 
@@ -104,7 +105,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Defining a body can declare more helpers, so this runs until none is left to define.
     pub(super) fn define_helpers(&self) {
         let (object, done) = self.helper_entry(self.rc_retain);
-        self.check_count(object, 0);
+        self.check_count(object, RC_FAULT_RETAIN);
         self.add_to_count(object, self.context.i64_type().const_int(1, false));
         self.branch_to(done);
         loop {
@@ -511,7 +512,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .context
             .i64_type()
             .const_int((-1_i64).cast_unsigned(), false);
-        self.check_count(object, 1);
+        self.check_count(object, RC_FAULT_RELEASE);
         let count = self.add_to_count(object, minus_one);
         let zero = self.int_compare(
             IntPredicate::EQ,
@@ -524,8 +525,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// With the RC checks, calls `sisu_rc_fault(kind)`, which never returns, when the count of
-    /// `object` is below 1: kind 0 for a retain or a fill's sharing, 1 for a release or `unique`.
-    /// Continues in a fresh block.
+    /// `object` is below 1: `RC_FAULT_RETAIN` for a retain or a fill's sharing,
+    /// `RC_FAULT_RELEASE` for a release or `unique`. Continues in a fresh block.
     pub(super) fn check_count(&self, object: PointerValue<'ctx>, kind: u64) {
         let Some(fault) = self.rc_fault else {
             return;

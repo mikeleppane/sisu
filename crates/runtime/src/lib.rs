@@ -476,7 +476,8 @@ pub extern "C" fn sisu_rc_check_exit() {
 }
 
 /// Reports a reference-count fault and exits with code 102. Kind 0 is a retain of an
-/// object whose count is 0, kind 1 a release of one.
+/// object whose count is 0, kind 1 a release of one. Codegen names the kinds `RC_FAULT_RETAIN`
+/// and `RC_FAULT_RELEASE` in `crates/sisuc/src/codegen/abi.rs`.
 #[expect(
     unsafe_code,
     reason = "generated code calls this function by its unmangled symbol name"
