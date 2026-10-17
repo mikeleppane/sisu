@@ -271,6 +271,14 @@ fn add_nounwind_memory(module: &Module<'_>, function: FunctionValue<'_>, memory:
     );
 }
 
+/// The class of a field access's base, whose type is `ty`.
+fn class_of(ty: Type) -> ClassId {
+    let TypeKind::Class(id) = ty.kind() else {
+        unreachable!("the checker should only allow field access on a class-typed value")
+    };
+    id
+}
+
 fn zeroext(context: &Context) -> Attribute {
     context.create_enum_attribute(Attribute::get_named_enum_kind_id("zeroext"), 0)
 }
@@ -475,22 +483,21 @@ impl<'ctx> Codegen<'ctx, '_> {
         )
     }
 
-    /// A pointer to field `index` of `object`, whose type is `ty`.
-    fn field_ptr(&self, ty: Type, object: PointerValue<'ctx>, index: usize) -> PointerValue<'ctx> {
-        let TypeKind::Class(id) = ty.kind() else {
-            unreachable!("the checker should only allow field access on a class-typed value")
-        };
+    /// A pointer to field `index` of `object`, an object of class `id`.
+    fn field_ptr(
+        &self,
+        id: ClassId,
+        object: PointerValue<'ctx>,
+        index: usize,
+    ) -> PointerValue<'ctx> {
         let layout = &self.classes[id.0];
         self.builder
             .build_struct_gep(layout.ty, object, layout.element[index], "field")
             .expect("the checker should only emit a field index that the class has")
     }
 
-    /// The TBAA tag of field `index` of a class `ty`.
-    fn field_tag(&self, ty: Type, index: usize) -> MetadataValue<'ctx> {
-        let TypeKind::Class(id) = ty.kind() else {
-            unreachable!("the checker should only allow field access on a class-typed value")
-        };
+    /// The TBAA tag of field `index` of class `id`.
+    fn field_tag(&self, id: ClassId, index: usize) -> MetadataValue<'ctx> {
         self.classes[id.0].field_tag[index]
     }
 
@@ -501,11 +508,12 @@ impl<'ctx> Codegen<'ctx, '_> {
         let object = object
             .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
             .into_pointer_value();
-        let field = self.field_ptr(base.ty, object, index);
+        let class = class_of(base.ty);
+        let field = self.field_ptr(class, object, index);
         let llvm_ty = self.llvm_type(ty).expect(
             "the checker should give every class field a value type, never `unit` or `never`",
         );
-        let value = self.load_tagged(llvm_ty, field, "load", self.field_tag(base.ty, index));
+        let value = self.load_tagged(llvm_ty, field, "load", self.field_tag(class, index));
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
         if !borrowed {
@@ -604,9 +612,8 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
             .into_pointer_value();
         self.store(object, i64_type.const_int(1, false).into());
-        let ty = Type::intern(TypeKind::Class(class));
         for (index, arg) in args.into_iter().enumerate() {
-            let field = self.field_ptr(ty, object, index);
+            let field = self.field_ptr(class, object, index);
             self.store(field, arg);
         }
         object
@@ -820,11 +827,12 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let Some(value) = self.expr(value) else {
                     return;
                 };
-                let field = self.field_ptr(base.ty, object, *index);
+                let class = class_of(base.ty);
+                let field = self.field_ptr(class, object, *index);
                 let old = ty
                     .is_counted(&self.program.enums)
                     .then(|| self.load(value.get_type(), field));
-                self.store_tagged(field, value, self.field_tag(base.ty, *index));
+                self.store_tagged(field, value, self.field_tag(class, *index));
                 self.discard(old, ty);
                 if !borrowed {
                     self.release(object.into(), base.ty);

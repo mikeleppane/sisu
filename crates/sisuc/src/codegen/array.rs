@@ -533,7 +533,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let (object, _) =
                     object.expect("a field root's base should have been evaluated above");
                 (
-                    self.field_ptr(base.ty, object, *index),
+                    self.field_ptr(class, object, *index),
                     self.program.classes[class.0].fields[*index].ty,
                 )
             }

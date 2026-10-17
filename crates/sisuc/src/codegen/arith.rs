@@ -208,13 +208,14 @@ impl<'ctx> Codegen<'ctx, '_> {
         let ExprKind::Convert(operand) = &e.kind else {
             unreachable!("`convert` should be called on a `Convert` node");
         };
-        if e.ty == Type::optional(Type::I64) {
+        let kind = e.ty.kind();
+        if kind == TypeKind::Optional(Type::I64) {
             let x = self.float(operand);
             let (fits, n) = self.float_to_int(x);
             return self.pair(e.ty, fits, n.into());
         }
         let value = self.value(operand);
-        let (fits, payload) = match e.ty.kind() {
+        let (fits, payload) = match kind {
             TypeKind::F64 => {
                 return self
                     .builder

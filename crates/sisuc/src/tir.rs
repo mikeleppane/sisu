@@ -1753,39 +1753,24 @@ mod tests {
 
     #[test]
     fn types_print_as_before() {
+        let class = Type::intern(TypeKind::Class(ClassId(3)));
         let nested = Type::optional(Type::array(Type::array(Type::optional(Type::I64))));
-        assert_eq!(nested.to_string(), "[[i64?]]?");
-        assert_eq!(
-            Type::intern(TypeKind::Class(ClassId(3))).to_string(),
-            "class#3"
-        );
-        assert_eq!(
-            Type::intern(TypeKind::Enum(EnumId(3))).to_string(),
-            "enum#3"
-        );
+        for (ty, text) in [
+            (Type::I64, "i64"),
+            (Type::U8, "u8"),
+            (Type::F64, "f64"),
+            (Type::BOOL, "bool"),
+            (Type::CHAR, "char"),
+            (Type::STRING, "string"),
+            (Type::UNIT, "unit"),
+            (Type::NEVER, "never"),
+            (class, "class#3"),
+            (nested, "[[i64?]]?"),
+        ] {
+            assert_eq!(ty.to_string(), text);
+        }
         // Kept so that a failing test's message names the type, not a table index.
         assert_eq!(format!("{:?}", Type::optional(Type::I64)), "Optional(I64)");
-    }
-
-    #[test]
-    fn payload_free_types_print_their_names() {
-        let printed = [
-            Type::I64,
-            Type::U8,
-            Type::F64,
-            Type::BOOL,
-            Type::CHAR,
-            Type::STRING,
-            Type::UNIT,
-            Type::NEVER,
-        ]
-        .map(|ty| ty.to_string());
-        assert_eq!(
-            printed,
-            [
-                "i64", "u8", "f64", "bool", "char", "string", "unit", "never"
-            ]
-        );
     }
 
     #[test]

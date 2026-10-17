@@ -175,7 +175,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 "the checker should give every class field a value type, never `unit` or `never`",
             );
             self.builder
-                .build_load(llvm_ty, self.field_ptr(ty, object, index), "field")
+                .build_load(llvm_ty, self.field_ptr(id, object, index), "field")
                 .expect(POSITIONED)
         };
         for (index, field) in fields.iter().enumerate() {
@@ -257,7 +257,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             );
             let load = |object| {
                 self.builder
-                    .build_load(llvm_ty, self.field_ptr(ty, object, index), "field")
+                    .build_load(llvm_ty, self.field_ptr(id, object, index), "field")
                     .expect(POSITIONED)
             };
             let next = block("next");
@@ -270,7 +270,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         let load = |object| {
             self.builder
-                .build_load(ptr_type, self.field_ptr(ty, object, index), "chain")
+                .build_load(ptr_type, self.field_ptr(id, object, index), "chain")
                 .expect(POSITIONED)
                 .into_pointer_value()
         };
