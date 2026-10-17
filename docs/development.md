@@ -198,8 +198,10 @@ The fuzz target, `fuzz/fuzz_targets/front_end.rs`, feeds arbitrary bytes to
 `sisuc --check`. It renders the report as text and as JSON, and asserts that
 every span and every fix edit is well formed. It also applies each safe fix
 alone and checks the result: the fix deletes no comment, removes its
-diagnostic, and keeps every diagnostic of another code. A panic, a stack overflow, a
-timeout or running out of memory is a failure. The target lives in `fuzz/`,
+diagnostic, and keeps every diagnostic of another code. An input that checks
+clean is printed as a typed tree and compiled, without and with `--rc-checks`,
+and LLVM must verify both modules; nothing is optimized or linked. A panic, a
+stack overflow, a timeout or running out of memory is a failure. The target lives in `fuzz/`,
 its own Cargo workspace, and runs under cargo-fuzz without a sanitizer.
 Install cargo-fuzz once:
 

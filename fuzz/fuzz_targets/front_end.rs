@@ -1,4 +1,5 @@
-//! Fuzzes `sisuc --check` and its text and JSON reports with arbitrary bytes.
+//! Fuzzes `sisuc --check` and its text and JSON reports with arbitrary bytes, and compiles each
+//! input that checks clean.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 

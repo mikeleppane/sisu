@@ -1,7 +1,7 @@
 //! The entry point of the front-end fuzz target: `sisuc --check` on one input, with checks that
 //! every span it reports is well formed and every safe fix it shows keeps its promise. An input
-//! that checks clean is also printed as TIR and compiled to LLVM IR, which LLVM must verify. The
-//! bug signal is a panic.
+//! that checks clean is also printed as a typed tree and compiled to LLVM IR, which LLVM must
+//! verify. The bug signal is a panic.
 
 use inkwell::context::Context;
 use inkwell::module::Module;
@@ -36,7 +36,7 @@ pub fn front_end(data: &[u8]) -> String {
     String::from_utf8(out).expect("the reports should be UTF-8, as the source they quote is")
 }
 
-/// Prints `program` as TIR, then compiles it, without and with `--rc-checks`, and asserts that
+/// Prints `program` as a typed tree, then compiles it, without and with `--rc-checks`, and asserts that
 /// LLVM verifies each module. No pass runs and nothing links: `-O2` changes only the pipeline,
 /// not the module codegen makes.
 fn assert_compiles(program: &Program, source: &str) {

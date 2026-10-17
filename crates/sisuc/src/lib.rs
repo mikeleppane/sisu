@@ -366,7 +366,7 @@ pub(crate) struct Checked {
     /// the replacement text `decode` returns.
     pub(crate) source: String,
     pub(crate) diagnostics: Vec<Diagnostic>,
-    /// The program, when no diagnostic is an error: `--check` passes when there is one.
+    /// The program, unless a diagnostic is an error. `--check` passes when it is `Some`.
     pub(crate) program: Option<Program>,
 }
 
