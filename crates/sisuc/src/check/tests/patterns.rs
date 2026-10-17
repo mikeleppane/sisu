@@ -753,14 +753,30 @@ fn many_arms_check_in_linear_time() {
 }
 
 /// The keep-alive override for this test is in `.config/nextest.toml`: finding the arm that
-/// covers each unreachable arm or alternative by solving again the arms above it is quadratic,
-/// and so is copying every alternative's takers into each matrix above it, which a payload
-/// 20,000 fields deep with an `|` in each makes 20,000 matrices deep; this test hangs instead of
-/// failing.
+/// covers each unreachable alternative by solving again the arms above it is quadratic. So is
+/// copying every alternative's takers into each matrix above it, which a payload 20,000 fields
+/// deep with an `|` in each makes 20,000 matrices deep, or recording the alternatives of a row
+/// that each of 8,000 arms' buckets cuts, 8,000 of them, once per bucket. This test then hangs
+/// instead of failing. The duplicate whole arms took their covering arm from the one solve
+/// before, and guard that it stays so.
 #[test]
 fn many_unreachable_rows_check_in_linear_time() {
     const VARIANTS: usize = 20_000;
     const FIELDS: usize = 20_000;
+    const CUTS: usize = 8_000;
+    let variants = (0..CUTS)
+        .map(|i| format!("    V{i}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let arms = (0..CUTS)
+        .map(|i| format!("        Q(V{i}, _) => 0\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let fields = vec!["F"; CUTS].join(", ");
+    let pattern = vec!["A | B"; CUTS].join(", ");
+    clean(&format!(
+        "enum E {{\n{variants}    Extra\n}}\nenum F {{\n    A\n    B\n}}\nenum W {{ X({fields}) }}\nenum P {{ Q(E, W) }}\nfn f(p: P) -> i64 {{\n    match p {{\n{arms}        Q(_, X({pattern})) => 1\n    }}\n}}\nfn main() {{}}"
+    ));
     let fields = vec!["bool"; FIELDS].join(", ");
     let pattern = vec!["true | false"; FIELDS].join(", ");
     let (src, line) = typed(
@@ -1345,6 +1361,22 @@ fn cut_takes_unexpanded_alternatives() {
         found(&src),
         [(Code::UnreachableArm, (line + 2, 14), vec![(line + 1, 9)])]
     );
+    // The `|` the cut takes sits in a field, and in an alternative: `R` is the first arm's where
+    // the cut is and the second's elsewhere.
+    let k =
+        "enum C {\n    R\n    S\n    T\n}\nenum P {\n    W(C)\n    Z\n}\nenum K { K(bool, P) }\n";
+    for third in ["K(_, W(R | S)) => 2", "K(_, W(R | S) | Z) => 2"] {
+        let (src, line) = typed(
+            k,
+            "K",
+            &["K(true, _) => 0", "K(false, W(R)) => 1", third, "_ => 3"],
+        );
+        assert_eq!(
+            found(&src),
+            [(Code::UnreachableArm, (line + 3, 16), vec![])],
+            "{third}"
+        );
+    }
 }
 
 #[test]
