@@ -5,9 +5,9 @@
 /// - `front_end::decode`'s shown text, the valid prefix and one U+FFFD: at most
 ///   `MAX_SOURCE + 3` bytes;
 /// - a fix applied to the source: `front_end::sound_fixes` applies each fix alone and lexes the
-///   result again. Only `diagnostic::registry` builds fixes. One writes either at most 11 bytes of its
-///   own text (`char(i64(` and `))` around an operand; `let _ = ` is 8; a typed literal is at
-///   most `: char` and a 3-byte literal, in place of a call of at least 5 bytes), or one name
+///   result again. Only `diagnostic::registry` builds fixes. One writes either at most 11 bytes
+///   of its own text (`char(i64(` and `))` around an operand; `let _ = ` is 8; a typed literal
+///   is at most `: char` and a 3-byte literal, in place of a call of at least 5 bytes), or one name
 ///   and at most 4 bytes: a declared field (`{field}: `), a similar name, or the array method a
 ///   call names (`(` and `{close}.{name}(`). That name is a built-in one or also stands
 ///   elsewhere in the source, in its declaration or in the call the fix rewrites, so a fix
@@ -182,7 +182,7 @@ mod tests {
         // The end sits on the line before the empty one that the index counts.
         assert_eq!(index.render_line("a\nb\n", 4), 2);
         assert_eq!(index.render_line("a\nb\n", 2), 2);
-        assert_eq!(index.render_line("a\nb", 3), 2);
+        assert_eq!(LineIndex::new("a\nb").render_line("a\nb", 3), 2);
         assert_eq!(LineIndex::new("").render_line("", 0), 1);
     }
 

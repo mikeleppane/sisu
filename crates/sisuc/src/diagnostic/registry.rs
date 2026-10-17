@@ -41,7 +41,10 @@ macro_rules! codes {
             /// The code of the row that names the variant.
             pub(crate) fn code(&self) -> Code {
                 match self {
-                    $(DiagnosticKind::$variant { .. } $(| DiagnosticKind::$alias { .. })* => Code::$variant,)*
+                    $(
+                        DiagnosticKind::$variant { .. } $(| DiagnosticKind::$alias { .. })*
+                            => Code::$variant,
+                    )*
                 }
             }
         }

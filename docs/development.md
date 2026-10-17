@@ -403,9 +403,9 @@ number in its series, `E` for errors and `W` for warnings.
    `DiagnosticKind::code`; a variant that reports an existing code joins that
    code's row, as `Mismatch | PatternMismatch` does. Add a `DiagnosticKind`
    variant and its arm in `From<DiagnosticKind> for Diagnostic`, with the
-   message, labels, help and fixes. A fix is safe
-   only when applying it always removes the diagnostic and leaves source that
-   lexes and parses; every other fix is an unsafe fix. An idiom fix is safe
+   message, labels, help and fixes. A fix is safe only when applying it always
+   removes the diagnostic and leaves source that lexes and parses; every other
+   fix is an unsafe fix. An idiom fix is safe
    only if the edited source also checks cleanly. When in doubt, it is unsafe.
    A rule need not look for comments or stray characters inside the text its
    fix deletes: `front_end::sound_fixes` makes that fix unsafe for it.

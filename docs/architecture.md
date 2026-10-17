@@ -212,8 +212,8 @@ zero. Both exit with code 102.
 as two `u32` offsets; `MAX_SOURCE`, 1 GiB, is the longest source that keeps
 them in range. `LineIndex` turns a byte offset into a line and column for
 people with a binary search. Every stage imports these: the lexer and parser
-make spans, the checker and codegen carry them, and the diagnostics and the
-report show them.
+make spans, the checker carries them, codegen turns them into debug-info
+lines, and the diagnostics and the report show them.
 
 **Diagnostics** (`diagnostic/`, `report.rs`). The lexer, parser and checker
 report problems as diagnostics. `diagnostic/registry.rs` holds the code table
