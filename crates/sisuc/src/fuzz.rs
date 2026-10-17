@@ -56,6 +56,15 @@ fn assert_verified(module: &Module<'_>, rc_checks: bool) {
     if let Err(e) = module.verify() {
         panic!("LLVM rejects the module (rc_checks: {rc_checks}):\n{e}");
     }
+    #[cfg(test)]
+    VERIFIED.with(|n| n.set(n.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many modules `assert_verified` has passed on this thread, so a test can see that
+    /// `front_end` compiles a clean input.
+    static VERIFIED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Asserts that every span of `diagnostics` (primary, secondary and each fix's edits) is a range
@@ -204,7 +213,7 @@ mod tests {
 
     use inkwell::context::Context;
 
-    use super::{assert_safe_fixes, assert_spans, assert_verified, front_end};
+    use super::{VERIFIED, assert_safe_fixes, assert_spans, assert_verified, front_end};
     use crate::diagnostic::{Code, Diagnostic};
     use crate::source::Span;
 
@@ -346,6 +355,19 @@ mod tests {
                 fixed(&[(span(1, 3), ""), (span(0, 1), "")]),
             ],
         );
+    }
+
+    /// How many modules `front_end` verifies for `source`, run on this thread.
+    fn verified(source: &str) -> usize {
+        let before = VERIFIED.with(std::cell::Cell::get);
+        front_end(source.as_bytes());
+        VERIFIED.with(std::cell::Cell::get) - before
+    }
+
+    #[test]
+    fn compiles_a_clean_input_with_and_without_rc_checks() {
+        assert_eq!(verified("fn main() {\n    print(1)\n}\n"), 2);
+        assert_eq!(verified("fn main() {\n    print(x)\n}\n"), 0);
     }
 
     #[test]
