@@ -806,6 +806,27 @@ fn print_in_a_loop_keeps_no_bounds_check_at_o2() {
     assert!(!after.contains("call void @sisu_panic_bounds("), "{after}");
 }
 
+/// A `for ..=` loop steps its counter only while it is below the end, so the step needs no
+/// overflow check, and `-O2` folds a loop over constant bounds as it does over `..`.
+#[test]
+fn inclusive_for_folds_at_o2() {
+    let source = "fn main() {\n    let n = 10\n    let mut total = 0\n\
+                  for i in 0..=n {\n        total += i\n    }\n    print(total)\n}\n";
+    let out = run_on("inclusive_for_folds", source, &["-O2", "--emit", "ir"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (_, after) = stdout
+        .split_once("\n; after default<O2>\n")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert!(after.contains("@sisu_print_int(i64 55)"), "{after}");
+    assert!(!after.contains("with.overflow"), "{after}");
+}
+
 /// The JSON summary line of a run with no diagnostics.
 const CLEAN_SUMMARY: &str =
     r#"{"version":1,"kind":"summary","errors":0,"warnings":0,"explanations":{}}"#;

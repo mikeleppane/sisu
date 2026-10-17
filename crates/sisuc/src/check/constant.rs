@@ -396,6 +396,11 @@ fn evaluate(
                 BinaryOp::Mul => l.checked_mul(r),
                 BinaryOp::Div => l.checked_div(r),
                 BinaryOp::Rem => l.checked_rem(r),
+                BinaryOp::AddUnchecked => {
+                    unreachable!(
+                        "the checker should step only a for loop's counter, never a constant"
+                    )
+                }
                 BinaryOp::And | BinaryOp::Or => {
                     unreachable!("`&&` and `||` should take the arms above")
                 }
@@ -447,6 +452,7 @@ fn float_binary(op: BinaryOp, l: f64, r: f64) -> f64 {
         BinaryOp::Div => l / r,
         // The remainder has the sign of `l`, as LLVM's `frem` and C's `fmod`.
         BinaryOp::Rem => l % r,
+        BinaryOp::AddUnchecked => unreachable!("the checker should step only `i64` counters"),
         BinaryOp::And | BinaryOp::Or => {
             unreachable!("`&&` and `||` should take the `bool` arms of `evaluate`")
         }

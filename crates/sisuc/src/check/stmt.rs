@@ -356,8 +356,10 @@ impl Checker<'_> {
             item,
         } = header;
         let at = |local_id| local(local_id, Type::I64, span);
+        // The step runs only while the counter is below `limit`, or not yet at it over `..=`,
+        // so it cannot overflow and needs no check, which would keep `-O2` from folding a loop.
         let next = ExprKind::Binary {
-            op: tir::BinaryOp::Add,
+            op: tir::BinaryOp::AddUnchecked,
             lhs: Box::new(at(counter)),
             rhs: Box::new(expr(ExprKind::Int(1), Type::I64)),
         };

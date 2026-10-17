@@ -7,7 +7,7 @@ fn lowers_for_over_array() {
     contains(
         "fn f(xs: [i64]) { for x in xs { print(x) } }\nfn main() {}",
         &[
-            "(block (let #1 xs#0) (let #2 (len #1)) (let mut #3 0) (loop (block (if (< #3 #2) (block (let x#4 (index #1 #3)) (= #3 (+ #3 1)) (block (print x#4))) (block (break))))))",
+            "(block (let #1 xs#0) (let #2 (len #1)) (let mut #3 0) (loop (block (if (< #3 #2) (block (let x#4 (index #1 #3)) (= #3 (+unchecked #3 1)) (block (print x#4))) (block (break))))))",
         ],
     );
 }
@@ -17,7 +17,7 @@ fn lowers_for_over_range() {
     contains(
         "fn f(n: i64) { for i in 0..n { print(i) } }\nfn main() {}",
         &[
-            "(block (let mut #1 0) (let #2 n#0) (loop (block (if (< #1 #2) (block (let i#3 #1) (= #1 (+ #1 1)) (block (print i#3))) (block (break))))))",
+            "(block (let mut #1 0) (let #2 n#0) (loop (block (if (< #1 #2) (block (let i#3 #1) (= #1 (+unchecked #1 1)) (block (print i#3))) (block (break))))))",
         ],
     );
 }
@@ -171,7 +171,7 @@ fn for_inclusive_lowers() {
     contains(
         "fn f(s: i64, e: i64) { for i in s..=e { print(i) } }\nfn main() {}",
         &[
-            "(block (let mut #2 s#0) (let #3 e#1) (let mut #4 (<= #2 #3)) (loop (block (if #4 (block (let i#5 #2) (= #4 (!= #2 #3)) (if #4 (block (= #2 (+ #2 1)))) (block (print i#5))) (block (break))))))",
+            "(block (let mut #2 s#0) (let #3 e#1) (let mut #4 (<= #2 #3)) (loop (block (if #4 (block (let i#5 #2) (= #4 (!= #2 #3)) (if #4 (block (= #2 (+unchecked #2 1)))) (block (print i#5))) (block (break))))))",
         ],
     );
 }
