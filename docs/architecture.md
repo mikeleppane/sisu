@@ -116,8 +116,9 @@ and `todo` lower to, calls `sisu_panic_message` with its location and
 message, then ends the block with `unreachable`. A `Math` node becomes an LLVM
 intrinsic, except `hypot`, which calls `hypot` from `libm`.
 
-`codegen/abi.rs` declares every runtime function from one table of names, types and
-attributes, which a unit test checks against the runtime's own signatures.
+`codegen/abi.rs` declares every runtime function from one table, `RUNTIME`,
+of names, types and attributes. A unit test reads the runtime's source and
+fails when an export has no row, or a row's types differ from its signature.
 
 Objects live on the heap, with a reference count in front of their fields
 ([ADR 0005](adr/0005-reference-counting.md)). Codegen lays the fields out
