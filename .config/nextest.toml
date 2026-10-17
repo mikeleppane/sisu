@@ -55,6 +55,12 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 filter = 'test(many_arms_check_in_linear_time)'
 slow-timeout = { period = "10s", terminate-after = 3 }
 
+# Each unreachable alternative once solved the arms above it again to find its covering arm, so
+# many of them were quadratic and this test hangs instead of failing.
+[[profile.default.overrides]]
+filter = 'test(many_unreachable_rows_check_in_linear_time)'
+slow-timeout = { period = "10s", terminate-after = 3 }
+
 # Each arm once copied and joined the set of every local in the function, so last use was
 # quadratic in the arms and this test hangs instead of failing.
 [[profile.default.overrides]]
