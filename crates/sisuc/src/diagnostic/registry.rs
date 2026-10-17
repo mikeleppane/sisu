@@ -331,15 +331,14 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A value of type `got`, at `at`, where one of the types `want` is expected; `fix` is the
-    /// rewrite that would fit. `other` is the span and label of the place the expectation came
-    /// from: the `string` operand of the `+` that expects a `string` of it, or the earlier
-    /// alternative that binds a name to the type wanted. `conversion` is whether the value is a conversion
-    /// that can fail, whose optional stands where its payload is expected.
+    /// rewrite that would fit. `source` is the place the expectation came from, if the report
+    /// points at it. `conversion` is whether the value is a conversion that can fail, whose
+    /// optional stands where its payload is expected.
     Mismatch {
         want: Vec<String>,
         got: String,
         at: Span,
-        other: Option<(Span, String)>,
+        source: Option<MismatchSource>,
         fix: Option<MismatchFix>,
         conversion: bool,
     },
@@ -948,6 +947,14 @@ pub(crate) struct Conversion {
     pub(crate) to: &'static str,
     pub(crate) through: Option<&'static str>,
     pub(crate) operand: Span,
+}
+
+/// Where a mismatch's expected type came from.
+pub(crate) enum MismatchSource {
+    /// The `string` operand of a `+` that expects a `string` of the other.
+    Concat(Span),
+    /// The earlier alternative's binding of `name`, at `at`, which gave it the type wanted.
+    Binding { name: String, at: Span },
 }
 
 /// A rewrite that would give a mismatched value the type expected.
@@ -1691,7 +1698,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 want,
                 got,
                 at,
-                other,
+                source,
                 fix,
                 conversion,
             } => {
@@ -1705,8 +1712,14 @@ impl From<DiagnosticKind> for Diagnostic {
                 };
                 let mut d =
                     Diagnostic::coded(code, at, format!("expected {want}, found `{got}`"));
-                if let Some((other, label)) = other {
-                    d = d.with_secondary(other, label);
+                match source {
+                    Some(MismatchSource::Concat(operand)) => {
+                        d = d.with_secondary(operand, "`+` joins this `string`");
+                    }
+                    Some(MismatchSource::Binding { name, at }) => {
+                        d = d.with_secondary(at, format!("`{name}` is {want} here"));
+                    }
+                    None => {}
                 }
                 if conversion {
                     d = d.with_help(

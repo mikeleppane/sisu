@@ -1,7 +1,15 @@
 enum E {
     V(i64)
     W(string)
+    Y(string)
+    U(i64)
     Z
+}
+
+enum O {
+    P(E)
+    Q(E, E)
+    R(i64)
 }
 
 fn main() {
@@ -10,5 +18,10 @@ fn main() {
         V(x) | W(x) => 1
         Z => 2
     }
-    print(r)
+    let o = O.R(1)
+    let s = match o {
+        R(x) | P(W(x) | Y(x)) => 1
+        _ => 2
+    }
+    print(r + s)
 }

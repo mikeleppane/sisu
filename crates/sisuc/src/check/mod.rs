@@ -820,7 +820,7 @@ impl Checker<'_> {
             want: vec![self.type_name(want)],
             got: self.type_name(got),
             at: span,
-            other: None,
+            source: None,
             fix: to
                 .zip(source.filter(|e| {
                     !matches!(

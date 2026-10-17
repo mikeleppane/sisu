@@ -225,8 +225,9 @@ pattern can bind names to the parts it matches.
 _Avoid_: matcher, case
 
 **Alternative**:
-One of the patterns of an arm, separated by `|`: `Red | Amber => ...`. The arm
-matches when any alternative does, and every alternative binds the same names.
+One of the patterns joined by `|`, at the top of a pattern or inside one:
+`Red | Amber => ...`. The pattern matches when any alternative does, and every
+alternative binds the same names.
 
 **Guard**:
 An `if` condition after an arm's pattern. The arm runs only when the pattern
