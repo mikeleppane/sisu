@@ -1,14 +1,20 @@
 //! The entry point of the front-end fuzz target: `sisuc --check` on one input, with checks that
-//! every span it reports is well formed and every safe fix it shows keeps its promise. The bug
-//! signal is a panic.
+//! every span it reports is well formed and every safe fix it shows keeps its promise. An input
+//! that checks clean is also printed as TIR and compiled to LLVM IR, which LLVM must verify. The
+//! bug signal is a panic.
 
+use inkwell::context::Context;
+
+use crate::codegen;
 use crate::diagnostic::{Code, Diagnostic, Edit, Fix};
 use crate::report::{Format, Reporter};
 use crate::source::Span;
+use crate::tir::Program;
 
 /// Runs `sisuc --check` on `data` as the file `input.sisu`, reports it as colored text and then
 /// as JSON, and asserts that every span of every diagnostic is well formed and that every safe
-/// fix shown is safe. Returns the text report followed by the JSON report.
+/// fix shown is safe. When the input checks clean, asserts that it compiles too. Returns the
+/// text report followed by the JSON report.
 ///
 /// The caller runs it on a thread with a stack of `STACK_SIZE`, as `main` runs `cli`: the
 /// deepest program the parser accepts overflows a smaller stack.
@@ -23,7 +29,27 @@ pub fn front_end(data: &[u8]) -> String {
     assert_spans(&checked.source, &checked.diagnostics);
     let shown = crate::front_end::sound_fixes(&checked.source, &checked.diagnostics);
     assert_safe_fixes(&checked.source, &shown);
+    if let Some(program) = &checked.program {
+        assert_compiles(program, &checked.source);
+    }
     String::from_utf8(out).expect("the reports should be UTF-8, as the source they quote is")
+}
+
+/// Prints `program` as TIR, then compiles it, without and with `--rc-checks`, and asserts that
+/// LLVM verifies each module. No pass runs and nothing links: `-O2` changes only the pipeline,
+/// not the module codegen makes.
+fn assert_compiles(program: &Program, source: &str) {
+    // The printer's only check is that it does not panic.
+    drop(program.to_string());
+    let machine = codegen::target_machine(false)
+        .expect("LLVM should have a target machine for the host sisuc runs on");
+    for rc_checks in [false, true] {
+        let context = Context::create();
+        let module = codegen::compile(&context, program, "input.sisu", source, &machine, rc_checks);
+        if let Err(e) = module.verify() {
+            panic!("LLVM rejects the module (rc_checks: {rc_checks}):\n{e}");
+        }
+    }
 }
 
 /// Asserts that every span of `diagnostics` (primary, secondary and each fix's edits) is a range
