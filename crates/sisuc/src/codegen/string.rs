@@ -6,14 +6,15 @@
 
 use inkwell::attributes::AttributeLoc;
 use inkwell::module::Linkage;
-use inkwell::types::{BasicMetadataTypeEnum, StructType};
+use inkwell::types::StructType;
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 
+use super::abi::{PAD_CENTER, PAD_LEFT, PAD_RIGHT};
 use super::rc::{Helper, param};
-use super::{Codegen, POSITIONED, add_nounwind_memory, zeroext};
+use super::{Codegen, POSITIONED, zeroext};
 use crate::source::Span;
 use crate::tir::{Align, CompareOp, Expr, Format, Pad, Place, Stream, Type};
 
@@ -161,13 +162,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `sisu_realloc(ptr, old_size, align, new_size) -> ptr` from the runtime, declared on
     /// first use, so that a module without `+` stays as it was.
     fn realloc(&self) -> FunctionValue<'ctx> {
-        self.module.get_function("sisu_realloc").unwrap_or_else(|| {
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let i64_type = self.context.i64_type().into();
-            let params = [ptr_type.into(), i64_type, i64_type, i64_type];
-            let fn_type = ptr_type.fn_type(&params, false);
-            self.module.add_function("sisu_realloc", fn_type, None)
-        })
+        self.runtime("sisu_realloc")
     }
 
     /// `lhs + rhs`, which takes both owned references and returns an owned one. When
@@ -393,9 +388,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             let written = match format.and_then(|format| format.pad) {
                 Some(Pad { align, width }) => {
                     let align = match align {
-                        Align::Left => 0,
-                        Align::Right => 1,
-                        Align::Center => 2,
+                        Align::Left => PAD_LEFT,
+                        Align::Right => PAD_RIGHT,
+                        Align::Center => PAD_CENTER,
                     };
                     let args = [
                         at.into(),
@@ -459,7 +454,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     pub(super) fn word_count(&mut self, base: &Expr) -> IntValue<'ctx> {
         let (string, borrowed) = self.borrow_pointer(base);
         let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
-        let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01);
+        let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()]);
         if !borrowed {
             self.release(string.into(), base.ty);
         }
@@ -473,7 +468,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (string, borrowed) = self.borrow_pointer(base);
         let i64_type = self.context.i64_type();
         let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
-        let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01);
+        let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()]);
         let array = self.alloc_array(Type::STRING, count, None);
         // `count_loop` gives its body only the index, so the offset where the last word ended,
         // and the start of the word just found, live in slots.
@@ -487,7 +482,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.load(i64_type.into(), from).into(),
                 start.into(),
             ];
-            let end = self.call_word_function("sisu_word_next", &args, 0b11);
+            let end = self.call_word_function("sisu_word_next", &args);
             let first = self.load(i64_type.into(), start).into_int_value();
             let word_len = self
                 .builder
@@ -505,34 +500,15 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// A call of the runtime's `name`, which returns an `i64`: `sisu_words_count(bytes, len)`
-    /// or `sisu_word_next(bytes, len, from, start)`. Declared on first use, `nounwind`, with the
-    /// `memory` attribute value `memory`: the first only reads the memory behind its arguments,
-    /// and the second also writes `start`.
+    /// or `sisu_word_next(bytes, len, from, start)`. Declared on first use; the first only reads
+    /// the memory behind its arguments, and the second also writes `start`.
     fn call_word_function(
         &self,
         name: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
-        memory: u64,
     ) -> IntValue<'ctx> {
-        let function = self.module.get_function(name).unwrap_or_else(|| {
-            let (ptr_type, i64_type) = (
-                self.context.ptr_type(AddressSpace::default()).into(),
-                self.context.i64_type().into(),
-            );
-            // `sisu_words_count` takes the first two of these, `sisu_word_next` all four.
-            let params: [BasicMetadataTypeEnum; 4] = [ptr_type, i64_type, i64_type, ptr_type];
-            let function = self.module.add_function(
-                name,
-                self.context
-                    .i64_type()
-                    .fn_type(&params[..args.len()], false),
-                None,
-            );
-            add_nounwind_memory(&self.module, function, memory);
-            function
-        });
         self.builder
-            .build_call(function, args, "word")
+            .build_call(self.runtime(name), args, "word")
             .expect(POSITIONED)
             .try_as_basic_value()
             .basic()
@@ -567,14 +543,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// A call of the runtime's `name(text, n) -> i64`, which sizes the `n` units at `text`;
     /// declared on first use, so that a module without these nodes stays as it was.
     fn utf8_size(&self, name: &str, text: PointerValue<'ctx>, n: IntValue<'ctx>) -> IntValue<'ctx> {
-        let i64_type = self.context.i64_type();
-        let function = self.module.get_function(name).unwrap_or_else(|| {
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let fn_type = i64_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-            self.module.add_function(name, fn_type, None)
-        });
         self.builder
-            .build_call(function, &[text.into(), n.into()], "size")
+            .build_call(self.runtime(name), &[text.into(), n.into()], "size")
             .expect(POSITIONED)
             .try_as_basic_value()
             .basic()
@@ -591,17 +561,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         n: IntValue<'ctx>,
         out: PointerValue<'ctx>,
     ) {
-        let function = self.module.get_function(name).unwrap_or_else(|| {
-            let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let params = [
-                ptr_type.into(),
-                self.context.i64_type().into(),
-                ptr_type.into(),
-            ];
-            let fn_type = self.context.void_type().fn_type(&params, false);
-            self.module.add_function(name, fn_type, None)
-        });
-        self.call(function, &[text.into(), n.into(), out.into()]);
+        self.call(self.runtime(name), &[text.into(), n.into(), out.into()]);
     }
 
     /// A call of the runtime's `name(args) -> len`, such as `sisu_write_int(value, out)`, which
@@ -616,16 +576,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .then_some(i)
             })
         };
-        let function = self.module.get_function(name).unwrap_or_else(|| {
-            let params: Vec<BasicMetadataTypeEnum> =
-                args.iter().map(|arg| arg.get_type().into()).collect();
-            let fn_type = self.context.i64_type().fn_type(&params, false);
-            let function = self.module.add_function(name, fn_type, None);
-            for i in narrow() {
-                function.add_attribute(AttributeLoc::Param(i), zeroext(self.context));
-            }
-            function
-        });
+        let function = self.runtime(name);
         let values: Vec<BasicMetadataValueEnum> = args.iter().map(|&arg| arg.into()).collect();
         let call = self
             .builder

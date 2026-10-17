@@ -179,20 +179,6 @@ fn declare_printers<'ctx>(module: &Module<'ctx>, prefix: &str) -> Printers<'ctx>
     }
 }
 
-/// Marks `function` `nounwind` with the `memory` effects `memory`, encoded as `abi::Attrs`
-/// describes.
-fn add_nounwind_memory(module: &Module<'_>, function: FunctionValue<'_>, memory: u64) {
-    let context = module.get_context();
-    function.add_attribute(
-        AttributeLoc::Function,
-        context.create_enum_attribute(Attribute::get_named_enum_kind_id("nounwind"), 0),
-    );
-    function.add_attribute(
-        AttributeLoc::Function,
-        context.create_enum_attribute(Attribute::get_named_enum_kind_id("memory"), memory),
-    );
-}
-
 /// The class of a field access's base, whose type is `ty`.
 fn class_of(ty: Type) -> ClassId {
     let TypeKind::Class(id) = ty.kind() else {
@@ -461,6 +447,15 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED)
     }
 
+    /// The runtime function `name`: the module's declaration if it has one, and otherwise the
+    /// declaration `abi::row(name)` describes, added now. So a module declares only the runtime
+    /// functions it calls.
+    pub(super) fn runtime(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(name)
+            .unwrap_or_else(|| abi::declare(&self.module, abi::row(name)))
+    }
+
     fn call(&self, function: FunctionValue<'ctx>, args: &[BasicMetadataValueEnum<'ctx>]) {
         self.builder
             .build_call(function, args, "")
@@ -637,13 +632,10 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder
             .build_call(sisu_main, &passed, "")
             .expect(POSITIONED);
-        let void = self.context.void_type().fn_type(&[], false);
         // `print` buffers; this delivers what is left, or panics if standard output fails.
-        let flush = self.module.add_function("sisu_flush_stdout", void, None);
-        self.call(flush, &[]);
+        self.call(self.runtime("sisu_flush_stdout"), &[]);
         if self.rc_fault.is_some() {
-            let check_exit = self.module.add_function("sisu_rc_check_exit", void, None);
-            self.call(check_exit, &[]);
+            self.call(self.runtime("sisu_rc_check_exit"), &[]);
         }
         self.builder
             .build_return(Some(&i32_type.const_zero()))

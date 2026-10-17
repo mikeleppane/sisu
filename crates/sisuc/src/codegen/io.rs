@@ -2,10 +2,9 @@
 //! `sisu_read_line`, and `main`'s `args`, through `sisu_args_len` and `sisu_arg`.
 
 use inkwell::AddressSpace;
-use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 
-use super::{Codegen, POSITIONED, add_nounwind_memory};
+use super::{Codegen, POSITIONED};
 use crate::tir::Type;
 
 impl<'ctx> Codegen<'ctx, '_> {
@@ -13,26 +12,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// and has no `memory` attribute: each call overwrites the line an earlier call returned,
     /// which generated code can reach, so no encoding of its effects is sound.
     fn read_line_function(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("sisu_read_line")
-            .unwrap_or_else(|| {
-                let ptr_type = self.context.ptr_type(AddressSpace::default());
-                let function = self.module.add_function(
-                    "sisu_read_line",
-                    ptr_type.fn_type(&[ptr_type.into()], false),
-                    None,
-                );
-                self.add_nounwind(function);
-                function
-            })
-    }
-
-    fn add_nounwind(&self, function: FunctionValue<'ctx>) {
-        function.add_attribute(
-            AttributeLoc::Function,
-            self.context
-                .create_enum_attribute(Attribute::get_named_enum_kind_id("nounwind"), 0),
-        );
+        self.runtime("sisu_read_line")
     }
 
     /// `ReadLine`: the next line of standard input as a new string, copied at once, before
@@ -86,19 +66,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         strings: PointerValue<'ctx>,
     ) -> PointerValue<'ctx> {
         let i64_type = self.context.i64_type();
-        let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let args_len = self.module.add_function(
-            "sisu_args_len",
-            i64_type.fn_type(&[self.context.i32_type().into()], false),
-            None,
-        );
-        add_nounwind_memory(&self.module, args_len, 0);
-        let arg = self.module.add_function(
-            "sisu_arg",
-            ptr_type.fn_type(&[ptr_type.into(), i64_type.into(), ptr_type.into()], false),
-            None,
-        );
-        self.add_nounwind(arg);
+        let args_len = self.runtime("sisu_args_len");
+        let arg = self.runtime("sisu_arg");
         let len = self
             .builder
             .build_call(args_len, &[count.into()], "args.len")

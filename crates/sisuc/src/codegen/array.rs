@@ -6,6 +6,7 @@ use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
+use super::abi::{RC_FAULT_RELEASE, RC_FAULT_RETAIN};
 use super::rc::{Helper, counted_core, param};
 use super::{Codegen, POSITIONED, Slot, class_of};
 use crate::source::Span;
@@ -364,7 +365,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .build_conditional_branch(null, done, shared)
             .expect(POSITIONED);
         self.builder.position_at_end(shared);
-        self.check_count(object, 0);
+        self.check_count(object, RC_FAULT_RETAIN);
         let extra = self
             .builder
             .build_int_sub(count, i64_type.const_int(1, false), "extra")
@@ -725,7 +726,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect(POSITIONED)
             .into_pointer_value();
         // A dead block, count below 1, would otherwise pass for a shared one and be copied.
-        self.check_count(array, 1);
+        self.check_count(array, RC_FAULT_RELEASE);
         let count = self
             .load_tagged(i64_type.into(), array, "count", self.header_tag)
             .into_int_value();
