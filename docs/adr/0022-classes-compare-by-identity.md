@@ -29,9 +29,10 @@ count and whether to follow a reference.
   cost also hides: `a == b` reads as one cheap test and may walk a whole
   graph.
 - **Identity `==` (Java, C#, Kotlin, Python)**: `==` on a plain class compares
-  identity, unless the class overrides it. Nothing can hang, but in Sisu `==`
-  and `is` would then mean the same, and two ways to write one test break "one
-  obvious way".
+  identity by default. C#, Kotlin and Python let a class define its own `==`
+  (`operator ==`, `equals`, `__eq__`), while Java's `==` always compares
+  references. Nothing can hang, but in Sisu `==` and `is` would then mean the
+  same, and two ways to write one test break "one obvious way".
 - **No `==` unless the class conforms to `Eq` by hand (Swift)**: Swift gives a
   class no `==` until it conforms to `Equatable`, and spells identity `===`.
   Sisu follows Swift: a class has `==` only when it conforms to `Eq` by hand,

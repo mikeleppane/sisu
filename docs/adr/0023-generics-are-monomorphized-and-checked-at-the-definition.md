@@ -54,12 +54,10 @@ Four more rules go with them.
   error about code the caller did not write. Sisu checks the definition
   against its bounds, as Rust and Swift do, so an error points at the call
   or at the definition, never into an instantiation.
-- **Boxing generic values (Java, Kotlin)**:
-  one compiled copy serves every type, so code is smaller. But a value of
-  type `T` goes through a table or a box, and a generic function is slower
-  than its hand-written copy. ADR 0006 ranks performance below readability,
-  but this cost would fall on every generic collection, and monomorphization
-  leaves a program no slower than one written by hand for each type.
+- **Erasure (Java, Kotlin)**: one compiled copy serves every type, so code
+  is smaller. But on the JVM, erasure boxes primitive values (an `int`
+  becomes an `Integer`) and calls through the object, which monomorphization
+  avoids.
 - **Associated types only (Rust's `Iterator`, Swift's protocols)**: one
   answer per conforming type, as for `Source.Item`. It cannot say that
   `Celsius` converts to two types. **Type parameters only (Java's
@@ -70,8 +68,8 @@ Four more rules go with them.
 ## Consequences
 
 - A program's compiled size and compile time grow with the number of
-  instantiations it reaches. Milestone 11's build caching is complicated by
-  it: a generic function's copy is emitted in the module that uses it.
+  instantiations it reaches. Separate compilation (milestone 11) must decide
+  where an instantiation lives.
 - A recursion that would instantiate infinitely many copies, such as
   `fn f<T>(x: T) { f([x]) }`, is an error naming the cycle, found by the
   checker before codegen.

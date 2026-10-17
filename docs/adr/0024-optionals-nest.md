@@ -17,10 +17,8 @@ was `None`" (`Some(None)`) stay apart.
   `if let y = x` binds `y: i64?`.
 - **`?.` flattens one layer, as it does today.** `a?.b` where `b: i64?` gives
   `i64?`, not `i64??`. A chain such as `a?.b?.c` stays one optional.
-- **Printing tells every state apart.** A `T?` holding `x` prints `x`'s text,
-  except when `T` is itself an optional: then it prints `Some(` and `x`'s text
-  and `)`. `None` prints `None` at every depth. So an `i64??` prints `None`,
-  `Some(None)` or `5`.
+- **Printing tells every state apart.** Every state of a nested optional
+  prints differently; stage 6 fixes the exact text.
 - **Niches keep the layout small.** An `Option`-shaped enum, with one
   payload-free variant and one variant with a single field, stores its empty
   variant in a bit pattern its payload can never hold. A program cannot see

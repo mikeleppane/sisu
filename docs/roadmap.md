@@ -539,9 +539,9 @@ settle before work starts.
 | Milestone 5: standard streams and arguments | 4 | The word-count tool |
 | Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof printed text, so it landed after 4 |
 | Milestone 7: enums and `match` | Done | 8, 12 |
-| Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), generated conformances on request (10), the standard library (11) |
+| Milestone 8: generics and interfaces | 4, 7 | 12, iterator methods (9), generated conformances on request (10), the standard library (11) |
 | Milestone 12: `Result` and `?` | 7, 8 | File I/O, the standard library (11), concurrency |
-| `weak` fields (ADR 0008) | Decision: the cycle part of equality and hashing | Closures that capture their owner |
+| `weak` fields (ADR 0008) | None | Closures that capture their owner |
 | Milestone 9: closures and function types | `weak` fields. Decisions: closure syntax, weak captures, argument labels | Iterator methods (9), concurrency |
 | Milestone 9: lazy iterator methods | 8, closures | The standard library (11) |
 | Milestone 10: named arguments, default parameters | Decision: argument labels | Records (10) |
@@ -559,8 +559,8 @@ once the decisions it needs are settled:
 - **Decisions**: every entry in "Open decisions" is design work with no
   code. Settle the shared ones first, because several tracks build on each:
   what is left of argument labels (records and named arguments), names and
-  namespaces for modules, closure syntax for closures, values with fields
-  for records, and the cycle part of equality and hashing.
+  namespaces for modules, closure syntax for closures, and values with fields
+  for records.
 - **Closures**: `weak` fields, then closures and function types from
   milestone 9. A function type names concrete types, such as
   `(i64) -> bool`, so closures need no generics.
@@ -603,9 +603,9 @@ Each is small once its milestone's main feature exists:
 
 - Milestone 8: type aliases, `type Index = Map<string, [i64]>`. An alias is
   another name for the same type, so it adds no type safety; for a distinct
-  type, use a newtype (milestone 10). Also `dbg(x)`, which prints `x` with its file
-  and line on standard error and returns `x`, so it can wrap any expression
-  while debugging. It needs the `Display`-like interface.
+  type, use a newtype (milestone 10). Also `dbg(x)`, which prints `x` with its
+  file and line on standard error and returns `x`, so it can wrap any
+  expression while debugging. It needs the `Display`-like interface.
 - Milestone 8: `Eq` and `Ord` interfaces in the prelude; milestone 11:
   `Hash`, with `Map` and `Set`. `Map` keys need `Hash`, and `sort` needs
   `Ord`. `Hash` has the shape
@@ -622,17 +622,17 @@ Each is small once its milestone's main feature exists:
 - Milestone 8: two data-oriented changes, ordered around generics (agreed
   2026-10-14, revised 2026-10-16). Interned types now come first in
   milestone 8, before generics, so that generic types are built on the
-  handle from the start; niches arrive with `Option<T>` in stage 3. Niches: `Option<T>` stores `None` as a value `T` can never
-  hold, so `char?` becomes an `i32` with `0x110000` for `None` (8 bytes to
-  4) and `bool?` an `i8` with 2. One rule covers every `Option`-shaped
-  enum; `char?` gets no special case before it, since milestone 7's enums
-  take no niche. `i64?` and `u8?` have no spare value and keep `{ i1, T }`.
-  A `None` sentinel never reaches the runtime: printing decodes it first.
-  Interned types: `tir::Type` becomes a 4-byte handle into one
-  table, as `Symbol` is for names, so copying, comparing and hashing a type
-  cost an integer operation. Monomorphization multiplies the types the
-  checker builds, so `Type` becomes a handle before generics, and generic
-  types are designed on it once.
+  handle from the start; niches arrive with `Option<T>` in stage 3.
+  `Option<T>` stores `None` as a value `T` can never hold, so `char?`
+  becomes an `i32` with `0x110000` for `None` (8 bytes to 4) and `bool?` an
+  `i8` with 2. One rule covers every `Option`-shaped enum; `char?` gets no
+  special case before it, since milestone 7's enums take no niche. `i64?` and
+  `u8?` have no spare value and keep `{ i1, T }`. A `None` sentinel never
+  reaches the runtime: printing decodes it first. Interned types:
+  `tir::Type` becomes a 4-byte handle into one table, as `Symbol` is for
+  names, so copying, comparing and hashing a type cost an integer operation.
+  Monomorphization multiplies the types the checker builds, so `Type` becomes
+  a handle before generics, and generic types are designed on it once.
 - Milestone 9: `for` over any iterator. Milestone 3's `for` lowers to a loop
   over an array or a range. An iterator `for` lowers to a loop that calls
   `next()` until it returns `None`, before the last-use pass runs, so a

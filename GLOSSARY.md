@@ -55,6 +55,7 @@ _Avoid_: trap, crash, abort
 **Prelude**:
 The names visible in every file without an import. Most are declared in Sisu,
 in the prelude file the compiler builds into every program.
+The Sisu prelude file arrives in milestone 8.
 
 **RC check**:
 A check that a program built with `sisuc --rc-checks` makes on its reference
@@ -68,6 +69,7 @@ on stderr and exits with code 102.
 A growable sequence of values of one type, written `[T]`, stored side by side
 in one block. An array is a value: binding it, passing it or storing it
 behaves as a copy.
+Growth methods arrive in milestone 10.
 _Avoid_: list, vector
 
 **Copy-on-write**:
@@ -247,6 +249,7 @@ _Avoid_: total, complete
 **Optional**:
 A value of type `T?`, short for `Option<T>`, holding either a `T` or `None`.
 Optionals nest: `i64??` is `Option<Option<i64>>`.
+Nesting arrives in milestone 8.
 _Avoid_: nullable, maybe
 
 **`None`**:
@@ -256,6 +259,7 @@ _Avoid_: nil, null
 **Unwrap**:
 Getting the value out of one layer of an optional when it holds one, with
 `if let`, `while let`, `?.` or `??`. Unwrapping an `i64??` gives an `i64?`.
+Nesting arrives in milestone 8.
 
 **Niche**:
 A bit pattern that a type's values never use, in which an `Option`-shaped
@@ -263,6 +267,8 @@ enum stores its empty variant with no separate flag: null for a reference,
 `0x110000` for a `char`.
 
 ## Generics and interfaces
+
+Milestone 8 adds these.
 
 **Type parameter**:
 A name for a type that a generic function, class, enum, interface or alias
