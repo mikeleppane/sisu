@@ -1,0 +1,10 @@
+error[E0032]: expected `i64`, found `string`
+  --> E0032-alternative-type.sisu:10:18
+   |
+10 |         V(x) | W(x) => 1
+   |           -      ^
+   |           |
+   |           `x` is `i64` here
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

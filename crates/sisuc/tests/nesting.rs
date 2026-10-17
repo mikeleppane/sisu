@@ -312,7 +312,7 @@ fn match_nests_to_the_limit() {
 
 /// An alternation is the parent of its alternatives, one level more than a pattern without one:
 /// `R.A(<inner> | _)` nests half as far as `R.A(<inner>)` (`match_patterns`). It stops at
-/// `--emit ast`, before the checker, which does not take alternatives yet.
+/// `--emit ast`, so the test isolates parsing.
 #[test]
 fn alternatives_nest_a_level_more() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));

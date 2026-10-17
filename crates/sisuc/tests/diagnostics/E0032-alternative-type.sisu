@@ -1,0 +1,14 @@
+enum E {
+    V(i64)
+    W(string)
+    Z
+}
+
+fn main() {
+    let e = E.V(1)
+    let r = match e {
+        V(x) | W(x) => 1
+        Z => 2
+    }
+    print(r)
+}

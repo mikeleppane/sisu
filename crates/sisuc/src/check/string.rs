@@ -159,7 +159,7 @@ impl Checker<'_> {
             want: vec![self.type_name(&Type::String)],
             got: self.type_name(got),
             at: e.span,
-            other: Some(other),
+            other: Some((other, "`+` joins this `string`".to_string())),
             fix: unsafe_fix.then(|| MismatchFix::Interpolate {
                 lhs: operand(lhs),
                 rhs: operand(rhs),

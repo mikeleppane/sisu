@@ -36,7 +36,7 @@ struct Bound<'a> {
 /// The names the first alternative of an `|` binds, and the first name a later alternative
 /// binds that it does not.
 struct Alternatives {
-    first: FxHashMap<Symbol, tir::LocalId>,
+    first: FxHashMap<Symbol, (Span, tir::LocalId)>,
     extra: Option<Symbol>,
 }
 
@@ -738,10 +738,7 @@ impl Checker<'_> {
             })
             .collect();
         bound.alternatives.push(Alternatives {
-            first: named
-                .iter()
-                .map(|&(name, (_, local))| (name, local))
-                .collect(),
+            first: named.iter().copied().collect(),
             extra: None,
         });
         let mut checked = vec![first];
@@ -959,17 +956,18 @@ impl Checker<'_> {
         // bound either way, so no alternative is reported as lacking it.
         let mut agrees = true;
         let local = if let Some(alternatives) = bound.alternatives.last_mut() {
-            if let Some(&local) = alternatives.first.get(&name.name) {
+            if let Some(&(first, local)) = alternatives.first.get(&name.name) {
                 let want = self.lookup(name.name).and_then(|b| b.ty.clone());
                 if let (Some(want), Some(got)) = (want, &ty)
                     && want != *got
                 {
                     let (want, got) = (self.type_name(&want), self.type_name(got));
+                    let label = format!("`{}` is `{want}` here", name.name);
                     self.report(DiagnosticKind::Mismatch {
                         want: vec![want],
                         got,
                         at: name.span,
-                        other: None,
+                        other: Some((first, label)),
                         fix: None,
                         conversion: false,
                     });

@@ -1308,8 +1308,7 @@ standard library. The milestones after 12 then follow from it.
   closure in a guard must be inside parentheses or an argument list,
   `Num(n) if xs.any(x => x > n) => ...`. An arm body may itself be a closure,
   and `=>` groups to the right: `F(n) => x => x + n`. Still to decide in
-  milestone 9: the closure forms beyond these, and what the newline rule
-  (ADR 0001) does after `=>` at the end of a line.
+  milestone 9: the closure forms beyond these.
 - **Weak captures.** Decide before closures. A closure stored in a field of
   the object it captures is a cycle that a `weak` field cannot break
   (ADR 0008). Decide how a closure captures one name weakly, as Swift's

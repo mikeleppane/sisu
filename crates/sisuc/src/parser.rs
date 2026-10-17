@@ -1749,16 +1749,6 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         let mut arms = Vec::new();
         while !self.at(&TokenKind::RBrace) {
-            // An arm above that is complete has nothing for this line to join.
-            if !arms.is_empty()
-                && matches!(
-                    self.peek().kind,
-                    TokenKind::Pipe | TokenKind::FatArrow | TokenKind::If
-                )
-            {
-                let at = self.peek().span;
-                return Err(DiagnosticKind::ArmSplit { at, join: None }.into());
-            }
             arms.push(self.child(base, &mut reach, Self::arm)?);
             if self.at(&TokenKind::Comma) {
                 return Err(self.member_comma(diagnostic::Member::Arm));
@@ -4152,16 +4142,22 @@ mod tests {
                 Some((true, arm("A => 1"))),
             ),
             (arm("A // note\n        => 1"), Code::ArmSplit, (4, 9), None),
-            // A later arm that starts so has no arm above to join: the arm above is complete.
+            // An arm above that is complete has nothing to continue: the line reads as an arm.
             (
                 main("match e {\n        A => 1\n        | B => 2\n    }"),
-                Code::ArmSplit,
+                Code::Expected,
                 (4, 9),
                 None,
             ),
             (
                 main("match e {\n        A => 1\n        => 2\n    }"),
-                Code::ArmSplit,
+                Code::Expected,
+                (4, 9),
+                None,
+            ),
+            (
+                main("match e {\n        1 => 1\n        if n > 0 => 1\n    }"),
+                Code::Expected,
                 (4, 9),
                 None,
             ),

@@ -331,14 +331,15 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A value of type `got`, at `at`, where one of the types `want` is expected; `fix` is the
-    /// rewrite that would fit. `other` is the `string` operand of the `+` that expects a
-    /// `string` of it, if that is what does. `conversion` is whether the value is a conversion
+    /// rewrite that would fit. `other` is the span and label of the place the expectation came
+    /// from: the `string` operand of the `+` that expects a `string` of it, or the earlier
+    /// alternative that binds a name to the type wanted. `conversion` is whether the value is a conversion
     /// that can fail, whose optional stands where its payload is expected.
     Mismatch {
         want: Vec<String>,
         got: String,
         at: Span,
-        other: Option<Span>,
+        other: Option<(Span, String)>,
         fix: Option<MismatchFix>,
         conversion: bool,
     },
@@ -769,7 +770,7 @@ pub(crate) enum DiagnosticKind {
     /// A line of an arm list, from `at`, its first token, that starts with `|`, `=>` or a
     /// guard's `if`, and so continues the arm above. `join` is the space from the end of the
     /// line above to `at`, which the fix replaces with one space; `None` when a comment lies in
-    /// it, or when the arm above is complete.
+    /// it.
     ArmSplit { at: Span, join: Option<Span> },
     /// The interpolation at `at` in a string pattern.
     InterpolatedPattern { at: Span },
@@ -1704,8 +1705,8 @@ impl From<DiagnosticKind> for Diagnostic {
                 };
                 let mut d =
                     Diagnostic::coded(code, at, format!("expected {want}, found `{got}`"));
-                if let Some(other) = other {
-                    d = d.with_secondary(other, "`+` joins this `string`");
+                if let Some((other, label)) = other {
+                    d = d.with_secondary(other, label);
                 }
                 if conversion {
                     d = d.with_help(
