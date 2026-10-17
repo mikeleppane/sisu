@@ -4,7 +4,7 @@ use super::expr::{fits, literal_type, no_member, none_literal, path, rank, typed
 use super::{Checked, Checker, Poisoned, UNKNOWN, optional_of, payload, type_of, wrap};
 use crate::ast;
 use crate::diagnostic::{Definition, Diagnostic, DiagnosticKind, Literal, Span};
-use crate::tir::{self, Type};
+use crate::tir::{self, Type, TypeKind};
 
 impl Checker<'_> {
     /// `[a, b, ...]`. With an expected `[E]` or `[E]?`, each element is checked against `E`.
@@ -13,19 +13,18 @@ impl Checker<'_> {
         &mut self,
         span: Span,
         elements: &[ast::Expr],
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> Checked {
         if let Some(element) = expected_element(expected) {
-            let element = element.clone();
             let (checked, mismatched): (Vec<_>, Vec<_>) = elements
                 .iter()
-                .map(|e| self.operand(e, Some(&element)))
+                .map(|e| self.operand(e, Some(element)))
                 .unzip();
             return self.array(span, element, checked, mismatched.contains(&true));
         }
         if elements.is_empty() {
             let (d, mismatch) = match expected {
-                Some(ty) if *ty == UNKNOWN => return Err(Poisoned::error()),
+                Some(ty) if ty == UNKNOWN => return Err(Poisoned::error()),
                 Some(ty) => (
                     DiagnosticKind::Mismatch {
                         want: vec![self.type_name(ty)],
@@ -48,7 +47,7 @@ impl Checker<'_> {
             self.report(d);
             return Err(Poisoned { ty: None, mismatch });
         }
-        self.joined(span, elements, expected == Some(&UNKNOWN))
+        self.joined(span, elements, expected == Some(UNKNOWN))
     }
 
     /// The elements of a literal with no expected array type, joined in three waves by `rank`:
@@ -67,7 +66,7 @@ impl Checker<'_> {
         let literal = literal_type(slots.iter().flatten().next().and_then(type_of));
         for (slot, e) in slots.iter_mut().zip(elements) {
             if rank(e) == 1 {
-                *slot = Some(self.value(e, Some(&literal)));
+                *slot = Some(self.value(e, Some(literal)));
             }
         }
         let mut failed = slots.iter().flatten().any(|c| type_of(c).is_none());
@@ -77,7 +76,7 @@ impl Checker<'_> {
                 let Some(ty) = slot.as_ref().and_then(type_of) else {
                     continue;
                 };
-                match &joined {
+                match joined {
                     Some(t) if fits(t, ty) => {}
                     Some(t) if !fits(ty, t) => {
                         let d = self.mismatch(e.span, Some(e), t, ty);
@@ -85,22 +84,22 @@ impl Checker<'_> {
                         failed = true;
                         break;
                     }
-                    _ => joined = Some(ty.clone()),
+                    _ => joined = Some(ty),
                 }
             }
         }
         let Some(joined) = joined.filter(|_| !failed) else {
             for (i, e) in elements.iter().filter(|e| rank(e) == 2).enumerate() {
-                let expected = (i > 0 || failed || quiet).then_some(&UNKNOWN);
+                let expected = (i > 0 || failed || quiet).then_some(UNKNOWN);
                 // Only its own diagnostics matter.
                 let _ = self.value(e, expected);
             }
             return Err(Poisoned::error());
         };
-        let want = optional_of(joined.clone());
+        let want = optional_of(joined);
         for (slot, e) in slots.iter_mut().zip(elements) {
             if rank(e) == 2 {
-                *slot = Some(self.value(e, Some(&want)));
+                *slot = Some(self.value(e, Some(want)));
             }
         }
         let element = if elements.iter().any(none_literal) {
@@ -116,7 +115,7 @@ impl Checker<'_> {
             .into_iter()
             .map(|slot| {
                 match slot.expect("the three waves should check every element, one rank each") {
-                    Ok(e) if e.ty != element => Ok(wrap(e, &element)),
+                    Ok(e) if e.ty != element => Ok(wrap(e, element)),
                     checked => checked,
                 }
             })
@@ -133,7 +132,7 @@ impl Checker<'_> {
         checked: Vec<Checked>,
         mismatched: bool,
     ) -> Checked {
-        let ty = Type::Array(Box::new(element));
+        let ty = Type::array(element);
         match checked.into_iter().collect::<Result<Vec<_>, _>>() {
             Ok(elements) => Ok(self.spilled(span, ty, elements, tir::ExprKind::ArrayLit)),
             _ => Err(Poisoned::of((!mismatched).then_some(ty))),
@@ -149,17 +148,17 @@ impl Checker<'_> {
         span: Span,
         value: &ast::Expr,
         len: &ast::Expr,
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> Checked {
-        let element = expected_element(expected).cloned();
+        let element = expected_element(expected);
         // Without an element type, a `None` or `[]` cannot be inferred, unless `expected` is
         // `UNKNOWN`.
-        let hint = element.as_ref().or(expected.filter(|ty| **ty == UNKNOWN));
+        let hint = element.or(expected.filter(|&ty| ty == UNKNOWN));
         // `operand`, split so the class rule runs between the check and the wrap.
         let checked = self.value(value, hint);
         let class = type_of(&checked)
             .map(payload)
-            .filter(|ty| matches!(ty, Type::Class(_)) && !none_literal(value))
+            .filter(|ty| matches!(ty.kind(), TypeKind::Class(_)) && !none_literal(value))
             .map(|ty| self.type_name(ty));
         if let Some(class) = &class {
             self.report(DiagnosticKind::SameObject {
@@ -167,13 +166,13 @@ impl Checker<'_> {
                 at: value.span,
             });
         }
-        let (checked, mismatched) = match &element {
+        let (checked, mismatched) = match element {
             Some(element) => self.against(value, checked, Some(element)),
             None => (checked, false),
         };
-        let (len, len_mismatched) = self.operand(len, Some(&Type::I64));
+        let (len, len_mismatched) = self.operand(len, Some(Type::I64));
         let failed = mismatched || class.is_some() || len_mismatched;
-        let ty = type_of(&checked).map(|ty| Type::Array(Box::new(ty.clone())));
+        let ty = type_of(&checked).map(Type::array);
         match (checked, len, ty) {
             (Ok(value), Ok(len), Some(ty)) if !failed => {
                 Ok(self.spilled(span, ty, vec![value, len], |operands| {
@@ -191,7 +190,7 @@ impl Checker<'_> {
         let element = self.element(base, type_of(&checked));
         // The index is not part of an assignment target's chain; `expr` restores the flag.
         self.in_target = false;
-        let (index, mismatched) = self.operand(index, Some(&Type::I64));
+        let (index, mismatched) = self.operand(index, Some(Type::I64));
         match (checked, index, element) {
             (Ok(base), Ok(index), Some(element)) => {
                 Ok(self.spilled(span, element, vec![base, index], |operands| {
@@ -205,11 +204,14 @@ impl Checker<'_> {
 
     /// The element type of `base`, which is indexed and has type `ty` (`None` is `Error`). An
     /// optional array, or a value that is no array, is reported and gives `Error`.
-    pub(super) fn element(&mut self, base: &ast::Expr, ty: Option<&Type>) -> Option<Type> {
-        let d = match ty? {
-            Type::Array(element) => return Some((**element).clone()),
-            Type::Optional(payload) if matches!(**payload, Type::Array(_)) => optional_array(base),
-            ty => DiagnosticKind::CannotIndex {
+    pub(super) fn element(&mut self, base: &ast::Expr, ty: Option<Type>) -> Option<Type> {
+        let ty = ty?;
+        let d = match ty.kind() {
+            TypeKind::Array(element) => return Some(element),
+            TypeKind::Optional(payload) if matches!(payload.kind(), TypeKind::Array(_)) => {
+                optional_array(base)
+            }
+            _ => DiagnosticKind::CannotIndex {
                 ty: self.type_name(ty),
                 at: base.span,
             }
@@ -226,11 +228,11 @@ impl Checker<'_> {
         &mut self,
         span: Span,
         receiver: Checked,
-        ty: &Type,
+        ty: Type,
         method: &ast::Ident,
         args: &[ast::Arg],
     ) -> Checked {
-        let Type::Array(element) = ty else {
+        let TypeKind::Array(element) = ty.kind() else {
             unreachable!("`method_call` should pass an array type to `array_method`");
         };
         let name = method.name.as_str();
@@ -261,7 +263,7 @@ impl Checker<'_> {
                 let kind = receiver.ok().map(|r| tir::ExprKind::Len(Box::new(r)));
                 typed(span, Type::I64, false, kind)
             }
-            "sum" if !matches!(**element, Type::I64 | Type::F64) => {
+            "sum" if !matches!(element, Type::I64 | Type::F64) => {
                 let d = DiagnosticKind::SumNeedsNumbers {
                     ty: self.type_name(ty),
                     at: method.span,
@@ -270,7 +272,7 @@ impl Checker<'_> {
             }
             "sum" => {
                 let kind = receiver.ok().map(|r| tir::ExprKind::Sum(Box::new(r)));
-                typed(span, (**element).clone(), false, kind)
+                typed(span, element, false, kind)
             }
             _ => {
                 let labeled = self.labels(args);
@@ -278,14 +280,14 @@ impl Checker<'_> {
                 match (receiver, value) {
                     (Ok(base), Ok(value)) if !labeled => {
                         Ok(
-                            self.spilled(span, Type::Bool, vec![base, value], |operands| {
+                            self.spilled(span, Type::BOOL, vec![base, value], |operands| {
                                 let (base, value) = pair(operands);
                                 tir::ExprKind::Contains { base, value }
                             }),
                         )
                     }
                     _ => Err(Poisoned::of(
-                        (!labeled && !mismatched).then_some(Type::Bool),
+                        (!labeled && !mismatched).then_some(Type::BOOL),
                     )),
                 }
             }
@@ -312,9 +314,9 @@ pub(super) fn optional_array(base: &ast::Expr) -> Diagnostic {
 }
 
 /// `E`, when `expected` is `[E]` or `[E]?`.
-fn expected_element(expected: Option<&Type>) -> Option<&Type> {
-    match expected.map(payload) {
-        Some(Type::Array(element)) => Some(element),
+fn expected_element(expected: Option<Type>) -> Option<Type> {
+    match expected.map(payload).map(Type::kind) {
+        Some(TypeKind::Array(element)) => Some(element),
         _ => None,
     }
 }

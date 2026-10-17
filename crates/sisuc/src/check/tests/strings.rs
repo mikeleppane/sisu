@@ -485,7 +485,7 @@ fn safe_words() {
     assert!(program.to_string().contains("(words "), "{program}");
     assert_eq!(
         program.functions[0].locals.last().expect("a local").ty,
-        Type::Optional(Box::new(Type::Array(Box::new(Type::String))))
+        Type::optional(Type::array(Type::STRING))
     );
 }
 

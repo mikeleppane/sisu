@@ -6,6 +6,7 @@ use std::fmt;
 use crate::diagnostic::Span;
 
 pub(crate) use crate::ast::{Align, CompareOp, UnaryOp};
+pub(crate) use crate::types::{Type, TypeKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct LocalId(pub(crate) usize);
@@ -18,24 +19,6 @@ pub(crate) struct ClassId(pub(crate) usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct EnumId(pub(crate) usize);
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Type {
-    I64,
-    U8,
-    F64,
-    Bool,
-    Char,
-    String,
-    Unit,
-    Never,
-    Class(ClassId),
-    Enum(EnumId),
-    /// `[T]`.
-    Array(Box<Type>),
-    /// Holds `I64`, `U8`, `F64`, `Bool`, `Char`, `String`, `Class`, `Enum` or `Array`.
-    Optional(Box<Type>),
-}
 
 /// `==` and `!=` are `ExprKind::Equal`, comparisons are `ExprKind::Compare`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -459,21 +442,21 @@ pub(crate) enum PatternKind {
 impl Type {
     /// Whether a value of this type is an owned reference, or an enum with counted parts,
     /// which codegen counts. `enums` are the program's.
-    pub(crate) fn is_counted(&self, enums: &[Enum]) -> bool {
-        match self {
-            Type::String | Type::Class(_) | Type::Array(_) => true,
-            Type::Enum(id) => enums[id.0].counted,
-            Type::Optional(payload) => payload.is_counted(enums),
+    pub(crate) fn is_counted(self, enums: &[Enum]) -> bool {
+        match self.kind() {
+            TypeKind::String | TypeKind::Class(_) | TypeKind::Array(_) => true,
+            TypeKind::Enum(id) => enums[id.0].counted,
+            TypeKind::Optional(payload) => payload.is_counted(enums),
             _ => false,
         }
     }
 
     /// The enum a payload field of this type holds inline unless boxed: `F`'s for `F` or `F?`.
     /// These are the edges of the holds-inline graph.
-    pub(crate) fn inline_enum(&self) -> Option<EnumId> {
-        match self {
-            Type::Enum(id) => Some(*id),
-            Type::Optional(payload) => payload.inline_enum(),
+    pub(crate) fn inline_enum(self) -> Option<EnumId> {
+        match self.kind() {
+            TypeKind::Enum(id) => Some(id),
+            TypeKind::Optional(payload) => payload.inline_enum(),
             _ => None,
         }
     }
@@ -590,20 +573,20 @@ impl Place {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Type::I64 => "i64",
-            Type::U8 => "u8",
-            Type::F64 => "f64",
-            Type::Bool => "bool",
-            Type::Char => "char",
-            Type::String => "string",
-            Type::Unit => "unit",
-            Type::Never => "never",
+        f.write_str(match self.kind() {
+            TypeKind::I64 => "i64",
+            TypeKind::U8 => "u8",
+            TypeKind::F64 => "f64",
+            TypeKind::Bool => "bool",
+            TypeKind::Char => "char",
+            TypeKind::String => "string",
+            TypeKind::Unit => "unit",
+            TypeKind::Never => "never",
             // A class's name lives in the program: `Program::type_name` prints it.
-            Type::Class(id) => return write!(f, "class#{}", id.0),
-            Type::Enum(id) => return write!(f, "enum#{}", id.0),
-            Type::Array(element) => return write!(f, "[{element}]"),
-            Type::Optional(payload) => return write!(f, "{payload}?"),
+            TypeKind::Class(id) => return write!(f, "class#{}", id.0),
+            TypeKind::Enum(id) => return write!(f, "enum#{}", id.0),
+            TypeKind::Array(element) => return write!(f, "[{element}]"),
+            TypeKind::Optional(payload) => return write!(f, "{payload}?"),
         })
     }
 }
@@ -770,7 +753,7 @@ impl Printer<'_> {
                 self.expr(f, scrutinee)?;
                 for arm in arms {
                     f.write_str(" (arm ")?;
-                    self.pattern(f, &arm.pattern, &scrutinee.ty)?;
+                    self.pattern(f, &arm.pattern, scrutinee.ty)?;
                     if let Some(guard) = &arm.guard {
                         f.write_str(" ")?;
                         self.unary(f, "if", guard)?;
@@ -796,12 +779,12 @@ impl Printer<'_> {
 
     /// `_`, a local, a payload-free variant's name, `(Name field ...)`, a literal, `lo..=hi`, or
     /// `(| alternative ...)`, at a position of type `ty`.
-    fn pattern(&self, f: &mut fmt::Formatter<'_>, pattern: &Pattern, ty: &Type) -> fmt::Result {
+    fn pattern(&self, f: &mut fmt::Formatter<'_>, pattern: &Pattern, ty: Type) -> fmt::Result {
         match &pattern.kind {
             PatternKind::Wild => f.write_str("_"),
             PatternKind::Bind(local) => self.local(f, *local),
             PatternKind::Variant { variant, fields } => {
-                let Type::Enum(id) = ty else {
+                let TypeKind::Enum(id) = ty.kind() else {
                     panic!(
                         "the checker should only emit a variant pattern at an enum position, not `{ty}`"
                     )
@@ -813,14 +796,14 @@ impl Printer<'_> {
                 write!(f, "({}", variant.name)?;
                 for (field, payload) in fields.iter().zip(&variant.fields) {
                     f.write_str(" ")?;
-                    self.pattern(f, field, &payload.ty)?;
+                    self.pattern(f, field, payload.ty)?;
                 }
                 f.write_str(")")
             }
             PatternKind::Bool(value) => write!(f, "{value}"),
             PatternKind::Range { lo, hi } => {
                 let value = |f: &mut fmt::Formatter<'_>, v: i64| match ty {
-                    Type::Char => {
+                    Type::CHAR => {
                         let c = u32::try_from(v).ok().and_then(char::from_u32);
                         write!(f, "{:?}", c.unwrap_or(char::REPLACEMENT_CHARACTER))
                     }
@@ -891,7 +874,7 @@ impl Printer<'_> {
 
     /// `(. base name)`.
     fn field(&self, f: &mut fmt::Formatter<'_>, base: &Expr, index: usize) -> fmt::Result {
-        let Type::Class(class) = base.ty else {
+        let TypeKind::Class(class) = base.ty.kind() else {
             panic!(
                 "the checker should only emit a field access on a class-typed base, not `{}`",
                 base.ty
@@ -971,20 +954,21 @@ impl Program {
     /// The field drop follows in a loop: the last, in declaration order, whose type is
     /// `class` or `class?`.
     pub(crate) fn chain_field(&self, class: ClassId) -> Option<usize> {
-        let own = Type::Class(class);
+        let own = Type::intern(TypeKind::Class(class));
         self.classes[class.0].fields.iter().rposition(|field| {
-            field.ty == own || matches!(&field.ty, Type::Optional(payload) if **payload == own)
+            field.ty == own
+                || matches!(field.ty.kind(), TypeKind::Optional(payload) if payload == own)
         })
     }
 
     /// A type as `--emit tir` prints it: a class or an enum by its name.
-    pub(crate) fn type_name(&self, ty: &Type) -> String {
-        match ty {
-            Type::Class(id) => self.classes[id.0].name.clone(),
-            Type::Enum(id) => self.enums[id.0].name.clone(),
-            Type::Array(element) => format!("[{}]", self.type_name(element)),
-            Type::Optional(payload) => format!("{}?", self.type_name(payload)),
-            ty => ty.to_string(),
+    pub(crate) fn type_name(&self, ty: Type) -> String {
+        match ty.kind() {
+            TypeKind::Class(id) => self.classes[id.0].name.clone(),
+            TypeKind::Enum(id) => self.enums[id.0].name.clone(),
+            TypeKind::Array(element) => format!("[{}]", self.type_name(element)),
+            TypeKind::Optional(payload) => format!("{}?", self.type_name(payload)),
+            _ => ty.to_string(),
         }
     }
 }
@@ -997,7 +981,7 @@ impl fmt::Display for Program {
             write!(f, "{separator}(class {}", class.name)?;
             for field in &class.fields {
                 let keyword = if field.mutable { "mut " } else { "" };
-                let ty = self.type_name(&field.ty);
+                let ty = self.type_name(field.ty);
                 write!(f, " ({keyword}{} {ty})", field.name)?;
             }
             f.write_str(")")?;
@@ -1012,7 +996,7 @@ impl fmt::Display for Program {
                 }
                 write!(f, " ({}", variant.name)?;
                 for field in &variant.fields {
-                    let ty = self.type_name(&field.ty);
+                    let ty = self.type_name(field.ty);
                     if field.boxed {
                         write!(f, " (box {ty})")?;
                     } else {
@@ -1038,9 +1022,9 @@ impl fmt::Display for Program {
                 }
                 f.write_str("(")?;
                 printer.local(f, *param)?;
-                write!(f, " {})", self.type_name(&function.locals[param.0].ty))?;
+                write!(f, " {})", self.type_name(function.locals[param.0].ty))?;
             }
-            write!(f, ") {} ", self.type_name(&function.ret))?;
+            write!(f, ") {} ", self.type_name(function.ret))?;
             printer.block(f, &function.body)?;
             f.write_str(")")?;
         }
@@ -1067,7 +1051,7 @@ mod tests {
                 stream: Stream::Stdout,
                 operand: Box::new(operand),
             },
-            Type::Unit,
+            Type::UNIT,
         )
     }
 
@@ -1083,7 +1067,7 @@ mod tests {
         Block {
             stmts,
             value: None,
-            ty: Type::Unit,
+            ty: Type::UNIT,
         }
     }
 
@@ -1095,14 +1079,14 @@ mod tests {
                 lhs: Box::new(local(1)),
                 rhs: Box::new(int(2)),
             },
-            Type::Bool,
+            Type::BOOL,
         );
         let chain = expr(
             ExprKind::Compare {
                 operands: vec![int(1), local(0), int(9)],
                 ops: vec![CompareOp::Lt, CompareOp::Le],
             },
-            Type::Bool,
+            Type::BOOL,
         );
         let print = print_of(chain);
         let if_stmt = expr(
@@ -1111,20 +1095,20 @@ mod tests {
                 then_block: block(vec![Stmt::Expr(print)]),
                 else_block: None,
             },
-            Type::Unit,
+            Type::UNIT,
         );
-        let brk = expr(ExprKind::Break, Type::Never);
+        let brk = expr(ExprKind::Break, Type::NEVER);
         let inner_if = expr(
             ExprKind::If {
-                cond: Box::new(expr(ExprKind::Bool(true), Type::Bool)),
+                cond: Box::new(expr(ExprKind::Bool(true), Type::BOOL)),
                 then_block: block(vec![Stmt::Expr(brk)]),
                 else_block: Some(block(vec![])),
             },
-            Type::Unit,
+            Type::UNIT,
         );
         let looped = expr(
             ExprKind::Loop(block(vec![Stmt::Expr(inner_if)])),
-            Type::Unit,
+            Type::UNIT,
         );
         (if_stmt, looped)
     }
@@ -1171,7 +1155,7 @@ mod tests {
             Type::I64,
         );
         let (if_stmt, looped) = if_and_loop();
-        let ret = expr(ExprKind::Return(Some(Box::new(local(1)))), Type::Never);
+        let ret = expr(ExprKind::Return(Some(Box::new(local(1)))), Type::NEVER);
         let program = Program {
             classes: vec![],
             enums: vec![],
@@ -1199,7 +1183,7 @@ mod tests {
                         Stmt::Expr(ret),
                     ],
                     value: None,
-                    ty: Type::Never,
+                    ty: Type::NEVER,
                 },
             }],
         };
@@ -1212,7 +1196,7 @@ mod tests {
     /// `match s { Running(c) => c  Idle => 0  _ => 1 }` over `enum State { Idle  Running(i64) }`.
     #[test]
     fn prints_match() {
-        let state = Type::Enum(EnumId(0));
+        let state = Type::intern(TypeKind::Enum(EnumId(0)));
         let pattern = |kind| Pattern {
             kind,
             span: Span::new(0, 0),
@@ -1248,7 +1232,7 @@ mod tests {
         ];
         let matched = expr(
             ExprKind::Match {
-                scrutinee: Box::new(expr(ExprKind::Local(LocalId(0)), state.clone())),
+                scrutinee: Box::new(expr(ExprKind::Local(LocalId(0)), state)),
                 temp: LocalId(2),
                 arms,
             },
@@ -1279,7 +1263,7 @@ mod tests {
                 params: vec![LocalId(0)],
                 ret: Type::I64,
                 locals: vec![
-                    param("s", state.clone()),
+                    param("s", state),
                     param("c", Type::I64),
                     Local {
                         name: None,
@@ -1308,7 +1292,7 @@ mod tests {
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },
-            Type::Bool,
+            Type::BOOL,
         )
     }
 
@@ -1327,16 +1311,16 @@ mod tests {
         let first = Function {
             name: "first".into(),
             params: vec![],
-            ret: Type::Unit,
+            ret: Type::UNIT,
             locals: vec![],
-            body: block(vec![Stmt::Expr(expr(ExprKind::Return(None), Type::Never))]),
+            body: block(vec![Stmt::Expr(expr(ExprKind::Return(None), Type::NEVER))]),
         };
         let call = expr(
             ExprKind::Call {
                 func: FuncId(0),
                 args: vec![],
             },
-            Type::Unit,
+            Type::UNIT,
         );
         let a_eq_3 = expr(
             ExprKind::Equal {
@@ -1344,26 +1328,26 @@ mod tests {
                 lhs: Box::new(local(0)),
                 rhs: Box::new(int(3)),
             },
-            Type::Bool,
+            Type::BOOL,
         );
         let a_lt_4 = expr(
             ExprKind::Compare {
                 operands: vec![local(0), int(4)],
                 ops: vec![CompareOp::Lt],
             },
-            Type::Bool,
+            Type::BOOL,
         );
-        let ok = expr(ExprKind::Local(LocalId(1)), Type::Bool);
+        let ok = expr(ExprKind::Local(LocalId(1)), Type::BOOL);
         let value = binary(BinaryOp::And, ok, binary(BinaryOp::And, a_eq_3, a_lt_4));
         let second = Function {
             name: "second".into(),
             params: vec![LocalId(0), LocalId(1)],
-            ret: Type::Bool,
-            locals: vec![param("a", Type::I64), param("ok", Type::Bool)],
+            ret: Type::BOOL,
+            locals: vec![param("a", Type::I64), param("ok", Type::BOOL)],
             body: Block {
                 stmts: vec![Stmt::Expr(call)],
                 value: Some(Box::new(value)),
-                ty: Type::Bool,
+                ty: Type::BOOL,
             },
         };
         let program = Program {
@@ -1403,7 +1387,7 @@ mod tests {
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
-                ret: Type::Unit,
+                ret: Type::UNIT,
                 locals: vec![],
                 body: block(
                     [1.0, 1e16, f64::NAN]
@@ -1422,12 +1406,12 @@ mod tests {
     #[test]
     fn prints_char_literals_and_conversions() {
         // fn f(c: char) { print('ä'); print(i64(c)); print(char(228)) }
-        let char_lit = expr(ExprKind::Char('ä'), Type::Char);
+        let char_lit = expr(ExprKind::Char('ä'), Type::CHAR);
         let to_i64 = expr(
-            ExprKind::Convert(Box::new(expr(ExprKind::Local(LocalId(0)), Type::Char))),
+            ExprKind::Convert(Box::new(expr(ExprKind::Local(LocalId(0)), Type::CHAR))),
             Type::I64,
         );
-        let to_char = expr(ExprKind::Convert(Box::new(int(228))), Type::Char);
+        let to_char = expr(ExprKind::Convert(Box::new(int(228))), Type::CHAR);
         let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
@@ -1435,8 +1419,8 @@ mod tests {
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
-                ret: Type::Unit,
-                locals: vec![param("c", Type::Char)],
+                ret: Type::UNIT,
+                locals: vec![param("c", Type::CHAR)],
                 body: block(vec![print(char_lit), print(to_i64), print(to_char)]),
             }],
         };
@@ -1454,7 +1438,7 @@ mod tests {
                 stream: Stream::Stderr,
                 operand: Box::new(int(1)),
             },
-            Type::Unit,
+            Type::UNIT,
         );
         let program = Program {
             classes: vec![],
@@ -1462,7 +1446,7 @@ mod tests {
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
-                ret: Type::Unit,
+                ret: Type::UNIT,
                 locals: vec![],
                 body: block(vec![Stmt::Expr(eprint)]),
             }],
@@ -1473,14 +1457,14 @@ mod tests {
     #[test]
     fn prints_read_line() {
         // fn f() { read_line() }
-        let read_line = expr(ExprKind::ReadLine, Type::Optional(Box::new(Type::String)));
+        let read_line = expr(ExprKind::ReadLine, Type::optional(Type::STRING));
         let program = Program {
             classes: vec![],
             enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
-                ret: Type::Unit,
+                ret: Type::UNIT,
                 locals: vec![],
                 body: block(vec![Stmt::Expr(read_line)]),
             }],
@@ -1491,16 +1475,16 @@ mod tests {
     #[test]
     fn prints_words() {
         // fn f(s: string) { s.words() }
-        let s = Box::new(expr(ExprKind::Local(LocalId(0)), Type::String));
-        let words = expr(ExprKind::Words(s), Type::Array(Box::new(Type::String)));
+        let s = Box::new(expr(ExprKind::Local(LocalId(0)), Type::STRING));
+        let words = expr(ExprKind::Words(s), Type::array(Type::STRING));
         let program = Program {
             classes: vec![],
             enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
-                ret: Type::Unit,
-                locals: vec![param("s", Type::String)],
+                ret: Type::UNIT,
+                locals: vec![param("s", Type::STRING)],
                 body: block(vec![Stmt::Expr(words)]),
             }],
         };
@@ -1513,21 +1497,21 @@ mod tests {
     #[test]
     fn prints_strings() {
         // fn f(s: string) { print("a\"\n" + s) }
-        let lit = expr(ExprKind::Str("a\"\n".into()), Type::String);
-        let s = expr(ExprKind::Local(LocalId(0)), Type::String);
+        let lit = expr(ExprKind::Str("a\"\n".into()), Type::STRING);
+        let s = expr(ExprKind::Local(LocalId(0)), Type::STRING);
         let concat = ExprKind::Concat {
             lhs: Box::new(lit),
             rhs: Box::new(s),
         };
-        let print = print_of(expr(concat, Type::String));
+        let print = print_of(expr(concat, Type::STRING));
         let program = Program {
             classes: vec![],
             enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
-                ret: Type::Unit,
-                locals: vec![param("s", Type::String)],
+                ret: Type::UNIT,
+                locals: vec![param("s", Type::STRING)],
                 body: block(vec![Stmt::Expr(print)]),
             }],
         };
@@ -1541,8 +1525,8 @@ mod tests {
     fn prints_interpolation() {
         // fn f(s: string, n: i64) { print("a{s}{n}") }
         let parts = vec![
-            expr(ExprKind::Str("a".into()), Type::String),
-            expr(ExprKind::Local(LocalId(0)), Type::String),
+            expr(ExprKind::Str("a".into()), Type::STRING),
+            expr(ExprKind::Local(LocalId(0)), Type::STRING),
             expr(ExprKind::Local(LocalId(1)), Type::I64),
         ];
         let interp = expr(
@@ -1550,7 +1534,7 @@ mod tests {
                 parts,
                 formats: vec![],
             },
-            Type::String,
+            Type::STRING,
         );
         let print = print_of(interp);
         let program = Program {
@@ -1559,8 +1543,8 @@ mod tests {
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0), LocalId(1)],
-                ret: Type::Unit,
-                locals: vec![param("s", Type::String), param("n", Type::I64)],
+                ret: Type::UNIT,
+                locals: vec![param("s", Type::STRING), param("n", Type::I64)],
                 body: block(vec![Stmt::Expr(print)]),
             }],
         };
@@ -1576,7 +1560,7 @@ mod tests {
         // the last precision.
         let n = || expr(ExprKind::Local(LocalId(0)), Type::I64);
         let parts = vec![
-            expr(ExprKind::Str("a".into()), Type::String),
+            expr(ExprKind::Str("a".into()), Type::STRING),
             n(),
             expr(ExprKind::Local(LocalId(1)), Type::F64),
             n(),
@@ -1599,7 +1583,7 @@ mod tests {
                 precision: Some(0),
             },
         ];
-        let interp = expr(ExprKind::Interpolate { parts, formats }, Type::String);
+        let interp = expr(ExprKind::Interpolate { parts, formats }, Type::STRING);
         let print = print_of(interp);
         let program = Program {
             classes: vec![],
@@ -1607,7 +1591,7 @@ mod tests {
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0), LocalId(1)],
-                ret: Type::Unit,
+                ret: Type::UNIT,
                 locals: vec![param("n", Type::I64), param("x", Type::F64)],
                 body: block(vec![Stmt::Expr(print)]),
             }],
@@ -1621,14 +1605,9 @@ mod tests {
     #[test]
     fn prints_chars_bytes_and_string_from_chars() {
         // fn f(s: string) { let cs = s.chars(); print(s.bytes().len()); print(string(cs)) }
-        let s = || Box::new(expr(ExprKind::Local(LocalId(0)), Type::String));
-        let chars = || {
-            Box::new(expr(
-                ExprKind::Local(LocalId(1)),
-                Type::Array(Box::new(Type::Char)),
-            ))
-        };
-        let bytes = expr(ExprKind::Bytes(s()), Type::Array(Box::new(Type::U8)));
+        let s = || Box::new(expr(ExprKind::Local(LocalId(0)), Type::STRING));
+        let chars = || Box::new(expr(ExprKind::Local(LocalId(1)), Type::array(Type::CHAR)));
+        let bytes = expr(ExprKind::Bytes(s()), Type::array(Type::U8));
         let print = |arg| Stmt::Expr(print_of(arg));
         let program = Program {
             classes: vec![],
@@ -1636,18 +1615,18 @@ mod tests {
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![LocalId(0)],
-                ret: Type::Unit,
+                ret: Type::UNIT,
                 locals: vec![
-                    param("s", Type::String),
-                    param("cs", Type::Array(Box::new(Type::Char))),
+                    param("s", Type::STRING),
+                    param("cs", Type::array(Type::CHAR)),
                 ],
                 body: block(vec![
                     Stmt::Let {
                         local: LocalId(1),
-                        init: expr(ExprKind::Chars(s()), Type::Array(Box::new(Type::Char))),
+                        init: expr(ExprKind::Chars(s()), Type::array(Type::CHAR)),
                     },
                     print(expr(ExprKind::Len(Box::new(bytes)), Type::I64)),
-                    print(expr(ExprKind::FromChars(chars()), Type::String)),
+                    print(expr(ExprKind::FromChars(chars()), Type::STRING)),
                 ]),
             }],
         };
@@ -1660,17 +1639,17 @@ mod tests {
     #[test]
     fn prints_appends() {
         // fn f() { let mut names = ["a"]; names[0] += "x" }
-        let strings = Type::Array(Box::new(Type::String));
+        let strings = Type::array(Type::STRING);
         let names = expr(
-            ExprKind::ArrayLit(vec![expr(ExprKind::Str("a".into()), Type::String)]),
-            strings.clone(),
+            ExprKind::ArrayLit(vec![expr(ExprKind::Str("a".into()), Type::STRING)]),
+            strings,
         );
         let append = Stmt::Append {
             place: Place::Index {
                 base: Box::new(Place::Local(LocalId(0))),
                 index: int(0),
             },
-            value: expr(ExprKind::Str("x".into()), Type::String),
+            value: expr(ExprKind::Str("x".into()), Type::STRING),
         };
         let program = Program {
             classes: vec![],
@@ -1678,7 +1657,7 @@ mod tests {
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
-                ret: Type::Unit,
+                ret: Type::UNIT,
                 locals: vec![Local {
                     name: Some("names".into()),
                     ty: strings,
@@ -1702,15 +1681,15 @@ mod tests {
     #[test]
     fn prints_panic() {
         // fn f() { panic("x") }
-        let message = expr(ExprKind::Str("x".into()), Type::String);
-        let panic = expr(ExprKind::Panic(Box::new(message)), Type::Never);
+        let message = expr(ExprKind::Str("x".into()), Type::STRING);
+        let panic = expr(ExprKind::Panic(Box::new(message)), Type::NEVER);
         let program = Program {
             classes: vec![],
             enums: vec![],
             functions: vec![Function {
                 name: "f".into(),
                 params: vec![],
-                ret: Type::Unit,
+                ret: Type::UNIT,
                 locals: vec![],
                 body: block(vec![Stmt::Expr(panic)]),
             }],
@@ -1738,7 +1717,7 @@ mod tests {
             name: name.into(),
             fields,
         };
-        let optional = |id: usize| Type::Optional(Box::new(Type::Class(ClassId(id))));
+        let optional = |id: usize| Type::optional(Type::intern(TypeKind::Class(ClassId(id))));
         let program = Program {
             classes: vec![
                 class(
@@ -1758,7 +1737,7 @@ mod tests {
                     vec![
                         field("next", optional(2)),
                         field("value", Type::I64),
-                        field("tag", Type::Class(ClassId(3))),
+                        field("tag", Type::intern(TypeKind::Class(ClassId(3)))),
                     ],
                 ),
                 class("Tag", vec![]),
@@ -1773,8 +1752,24 @@ mod tests {
     }
 
     #[test]
+    fn types_print_as_before() {
+        let nested = Type::optional(Type::array(Type::array(Type::optional(Type::I64))));
+        assert_eq!(nested.to_string(), "[[i64?]]?");
+        assert_eq!(
+            Type::intern(TypeKind::Class(ClassId(3))).to_string(),
+            "class#3"
+        );
+        assert_eq!(
+            Type::intern(TypeKind::Enum(EnumId(3))).to_string(),
+            "enum#3"
+        );
+        // Kept so that a failing test's message names the type, not a table index.
+        assert_eq!(format!("{:?}", Type::optional(Type::I64)), "Optional(I64)");
+    }
+
+    #[test]
     fn prints_an_enum_type_by_its_id() {
-        let ty = Type::Optional(Box::new(Type::Enum(EnumId(2))));
+        let ty = Type::optional(Type::intern(TypeKind::Enum(EnumId(2))));
         assert_eq!(ty.to_string(), "enum#2?");
     }
 
@@ -1786,43 +1781,38 @@ mod tests {
         let (_, looped) = if_and_loop();
         assert!(block_expr(vec![], Some(looped)).exits());
         // A `continue` in a `let` initializer, and a `return` in an argument of a call.
-        let cont = expr(ExprKind::Continue, Type::Never);
+        let cont = expr(ExprKind::Continue, Type::NEVER);
         let let_cont = Stmt::Let {
             local: LocalId(0),
             init: block_expr(vec![Stmt::Expr(cont)], None),
         };
         assert!(block_expr(vec![let_cont], Some(int(1))).exits());
-        let ret = expr(ExprKind::Return(None), Type::Never);
+        let ret = expr(ExprKind::Return(None), Type::NEVER);
         let call = ExprKind::Call {
             func: FuncId(0),
             args: vec![int(1), ret],
         };
-        assert!(expr(call, Type::Unit).exits());
+        assert!(expr(call, Type::UNIT).exits());
         // A `return` in an argument of a variant.
         let variant = ExprKind::Variant {
             id: EnumId(0),
             variant: 0,
-            args: vec![int(1), expr(ExprKind::Return(None), Type::Never)],
+            args: vec![int(1), expr(ExprKind::Return(None), Type::NEVER)],
         };
-        assert!(expr(variant, Type::Enum(EnumId(0))).exits());
+        assert!(expr(variant, Type::intern(TypeKind::Enum(EnumId(0)))).exits());
         // A `return` in an operand of `is`.
         let is = ExprKind::Is {
             lhs: Box::new(local(0)),
-            rhs: Box::new(expr(ExprKind::Return(None), Type::Never)),
+            rhs: Box::new(expr(ExprKind::Return(None), Type::NEVER)),
         };
-        assert!(expr(is, Type::Bool).exits());
+        assert!(expr(is, Type::BOOL).exits());
         // A panic ends the process: only a `return` in its message exits.
-        let panic = |message| expr(ExprKind::Panic(Box::new(message)), Type::Never);
-        assert!(!panic(expr(ExprKind::Str("x".into()), Type::String)).exits());
-        assert!(panic(expr(ExprKind::Return(None), Type::Never)).exits());
+        let panic = |message| expr(ExprKind::Panic(Box::new(message)), Type::NEVER);
+        assert!(!panic(expr(ExprKind::Str("x".into()), Type::STRING)).exits());
+        assert!(panic(expr(ExprKind::Return(None), Type::NEVER)).exits());
         // A `return` in the string that `words()` splits.
-        let words = |base| {
-            expr(
-                ExprKind::Words(Box::new(base)),
-                Type::Array(Box::new(Type::String)),
-            )
-        };
-        assert!(words(expr(ExprKind::Return(None), Type::Never)).exits());
+        let words = |base| expr(ExprKind::Words(Box::new(base)), Type::array(Type::STRING));
+        assert!(words(expr(ExprKind::Return(None), Type::NEVER)).exits());
         assert!(!words(local(0)).exits());
         // An `if`, a comparison chain and a print with no jump in them.
         assert!(!if_stmt.exits());

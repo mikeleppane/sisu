@@ -12,7 +12,7 @@ use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use rustc_hash::FxHashSet;
 
 use super::{Codegen, POSITIONED};
-use crate::tir::{Program, Type};
+use crate::tir::{Program, Type, TypeKind};
 
 /// A kind of helper that a counted type has.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,10 +33,10 @@ pub(super) enum Helper {
 /// The type whose helpers a pointer-shaped `ty` uses: a `string`, a class or an array, with any
 /// `?` removed. `None` for every other type, an enum and its optional included: those are not
 /// pointers, and a `None` of theirs is not `null`.
-pub(super) fn counted_core(ty: &Type) -> Option<&Type> {
-    match ty {
-        Type::String | Type::Class(_) | Type::Array(_) => Some(ty),
-        Type::Optional(payload) => counted_core(payload),
+pub(super) fn counted_core(ty: Type) -> Option<Type> {
+    match ty.kind() {
+        TypeKind::String | TypeKind::Class(_) | TypeKind::Array(_) => Some(ty),
+        TypeKind::Optional(payload) => counted_core(payload),
         _ => None,
     }
 }
@@ -45,8 +45,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Declares `sisu_rc.<retain|release|drop|eq|unique|walk|drain|eq_component>.<name>` on first
     /// use and queues its body; `name` is a class's or an enum's name, `string`, or
     /// `[<element name>]` for an array (`[Node?]`, `[[i64]]`).
-    pub(super) fn helper(&self, kind: Helper, ty: &Type) -> FunctionValue<'ctx> {
-        let key = (kind, ty.clone());
+    pub(super) fn helper(&self, kind: Helper, ty: Type) -> FunctionValue<'ctx> {
+        let key = (kind, ty);
         if let Some(function) = self.helpers.borrow().get(&key) {
             return *function;
         }
@@ -88,7 +88,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             fn_type,
             Some(Linkage::Internal),
         );
-        self.helpers.borrow_mut().insert(key.clone(), function);
+        self.helpers.borrow_mut().insert(key, function);
         self.pending.borrow_mut().push(key);
         function
     }
@@ -112,17 +112,17 @@ impl<'ctx> Codegen<'ctx, '_> {
             let Some((kind, ty)) = next else {
                 break;
             };
-            let function = self.helpers.borrow()[&(kind, ty.clone())];
-            match (kind, &ty) {
-                (_, Type::Enum(id)) => self.define_enum_helper(kind, *id, function),
-                (Helper::Release, _) => self.define_release(function, &ty),
+            let function = self.helpers.borrow()[&(kind, ty)];
+            match (kind, ty.kind()) {
+                (_, TypeKind::Enum(id)) => self.define_enum_helper(kind, id, function),
+                (Helper::Release, _) => self.define_release(function, ty),
                 (Helper::Retain, _) => {
                     unreachable!("only an enum type should be queued for a `retain` helper")
                 }
-                (_, Type::Array(element)) => self.define_array_helper(kind, element, function),
-                (_, Type::String) => self.define_string_helper(kind, function),
-                (Helper::Drop, _) => self.define_drop(function, &ty),
-                (Helper::Eq, _) => self.define_eq(function, &ty),
+                (_, TypeKind::Array(element)) => self.define_array_helper(kind, element, function),
+                (_, TypeKind::String) => self.define_string_helper(kind, function),
+                (Helper::Drop, _) => self.define_drop(function, ty),
+                (Helper::Eq, _) => self.define_eq(function, ty),
                 (Helper::Unique, _) => {
                     unreachable!("only an array type should be queued for a `unique` helper")
                 }
@@ -134,7 +134,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// `@sisu_rc.release.<C>`: subtracts 1 from the count, and at 0 drops the object or array.
-    fn define_release(&self, function: FunctionValue<'ctx>, ty: &Type) {
+    fn define_release(&self, function: FunctionValue<'ctx>, ty: Type) {
         let (object, done) = self.helper_entry(function);
         let drop_block = self.context.append_basic_block(function, "drop");
         self.decrement(object, drop_block, done);
@@ -145,14 +145,14 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `@sisu_rc.drop.<C>`: releases each counted field but the chain field, frees the
     /// object, then drops the chain's next object in a loop when its count reaches 0.
-    fn define_drop(&self, drop: FunctionValue<'ctx>, ty: &Type) {
-        let Type::Class(id) = ty else {
+    fn define_drop(&self, drop: FunctionValue<'ctx>, ty: Type) {
+        let TypeKind::Class(id) = ty.kind() else {
             unreachable!("only a class type should reach the class helper bodies")
         };
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         let entry = self.context.append_basic_block(drop, "entry");
         self.builder.position_at_end(entry);
-        let chain = self.program.chain_field(*id);
+        let chain = self.program.chain_field(id);
         // With a chain field, the body is a loop over the chain's objects, in one frame.
         let looped = chain.map(|_| {
             let body = self.context.append_basic_block(drop, "loop");
@@ -171,7 +171,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         );
         let fields = &self.program.classes[id.0].fields;
         let load_field = |index: usize| {
-            let llvm_ty = self.llvm_type(&fields[index].ty).expect(
+            let llvm_ty = self.llvm_type(fields[index].ty).expect(
                 "the checker should give every class field a value type, never `unit` or `never`",
             );
             self.builder
@@ -180,12 +180,12 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         for (index, field) in fields.iter().enumerate() {
             if field.ty.is_counted(&self.program.enums) && chain != Some(index) {
-                self.release(load_field(index), &field.ty);
+                self.release(load_field(index), field.ty);
             }
         }
         // Loaded before the free, which ends the object.
         let next = chain.map(|index| load_field(index).into_pointer_value());
-        let (size, align) = self.class_layout(*id);
+        let (size, align) = self.class_layout(id);
         let i64_type = self.context.i64_type();
         self.call(
             self.free,
@@ -217,8 +217,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// recurse on the chain field: it compares the other fields of the pair, then steps both
     /// objects to the objects their chain fields hold and repeats the checks of `eq_entry`, in
     /// one frame.
-    fn define_eq(&self, function: FunctionValue<'ctx>, ty: &Type) {
-        let Type::Class(id) = ty else {
+    fn define_eq(&self, function: FunctionValue<'ctx>, ty: Type) {
+        let TypeKind::Class(id) = ty.kind() else {
             unreachable!("only a class type should reach the class helper bodies")
         };
         let ptr_type = self.context.ptr_type(AddressSpace::default());
@@ -230,7 +230,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_conditional_branch(cond, then, other)
                 .expect(POSITIONED);
         };
-        let chain = self.program.chain_field(*id);
+        let chain = self.program.chain_field(id);
         // With a chain field, the body is a loop over the pairs of the two chains.
         let looped = chain.map(|_| {
             let (entered, body) = (self.current_block(), block("loop"));
@@ -252,7 +252,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             if chain == Some(index) {
                 continue;
             }
-            let llvm_ty = self.llvm_type(&field.ty).expect(
+            let llvm_ty = self.llvm_type(field.ty).expect(
                 "the checker should give every class field a value type, never `unit` or `never`",
             );
             let load = |object| {
@@ -261,7 +261,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .expect(POSITIONED)
             };
             let next = block("next");
-            branch(self.equal(&field.ty, load(a), load(b)), next, unequal);
+            branch(self.equal(field.ty, load(a), load(b)), next, unequal);
             self.builder.position_at_end(next);
         }
         let (Some(index), Some((body, pa, pb))) = (chain, looped) else {
@@ -386,23 +386,25 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// as an optional's payload, an array's element, or a field of a class or a payload field
     /// of an enum it reaches, boxed or inline. Fields close cycles through classes and boxes,
     /// so a class or enum met again counts as reflexive until a path from it finds an `f64`.
-    pub(super) fn reflexive(&self, ty: &Type) -> bool {
-        fn reaches_no_f64(program: &Program, ty: &Type, seen: &mut FxHashSet<Type>) -> bool {
-            match ty {
-                Type::F64 => false,
-                Type::Optional(inner) | Type::Array(inner) => reaches_no_f64(program, inner, seen),
+    pub(super) fn reflexive(&self, ty: Type) -> bool {
+        fn reaches_no_f64(program: &Program, ty: Type, seen: &mut FxHashSet<Type>) -> bool {
+            match ty.kind() {
+                TypeKind::F64 => false,
+                TypeKind::Optional(inner) | TypeKind::Array(inner) => {
+                    reaches_no_f64(program, inner, seen)
+                }
                 // A class or enum already seen is being checked further up, or was found
                 // reflexive.
-                Type::Class(_) | Type::Enum(_) if !seen.insert(ty.clone()) => true,
-                Type::Class(id) => program.classes[id.0]
+                TypeKind::Class(_) | TypeKind::Enum(_) if !seen.insert(ty) => true,
+                TypeKind::Class(id) => program.classes[id.0]
                     .fields
                     .iter()
-                    .all(|field| reaches_no_f64(program, &field.ty, seen)),
-                Type::Enum(id) => program.enums[id.0]
+                    .all(|field| reaches_no_f64(program, field.ty, seen)),
+                TypeKind::Enum(id) => program.enums[id.0]
                     .variants
                     .iter()
                     .flat_map(|variant| &variant.fields)
-                    .all(|field| reaches_no_f64(program, &field.ty, seen)),
+                    .all(|field| reaches_no_f64(program, field.ty, seen)),
                 _ => true,
             }
         }
@@ -412,19 +414,19 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Whether `lhs` and `rhs`, of type `ty`, are equal: `==` without releasing them.
     pub(super) fn equal(
         &self,
-        ty: &Type,
+        ty: Type,
         lhs: BasicValueEnum<'ctx>,
         rhs: BasicValueEnum<'ctx>,
     ) -> IntValue<'ctx> {
         if let Some(core) = counted_core(ty) {
             return self.call_eq(core, lhs, rhs);
         }
-        let payload = match ty {
-            Type::Enum(_) => {
+        let payload = match ty.kind() {
+            TypeKind::Enum(_) => {
                 let (a, b) = (self.enum_slot(lhs), self.enum_slot(rhs));
                 return self.call_eq(ty, a.into(), b.into());
             }
-            Type::Optional(payload) => payload,
+            TypeKind::Optional(payload) => payload,
             _ => return self.scalar_equal(lhs, rhs),
         };
         let part = |pair: BasicValueEnum<'ctx>, index| {
@@ -434,7 +436,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         let (fa, fb) = (part(lhs, 0).into_int_value(), part(rhs, 0).into_int_value());
         let flags = self.int_compare(IntPredicate::EQ, fa, fb);
-        if let Type::Enum(_) = **payload {
+        if let TypeKind::Enum(_) = payload.kind() {
             // Equal flags decide, unless both are set: a `None`'s payload is never read.
             let function = self.current_function();
             let both = self.builder.build_and(fa, fb, "both").expect(POSITIONED);
@@ -473,7 +475,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// A call of the `eq` helper of `ty` on `a` and `b`.
     fn call_eq(
         &self,
-        ty: &Type,
+        ty: Type,
         a: BasicValueEnum<'ctx>,
         b: BasicValueEnum<'ctx>,
     ) -> IntValue<'ctx> {
@@ -591,7 +593,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// Makes the array in `slot`, of array type `ty`, the only holder of its block:
     /// `@sisu_rc.unique.[T]` copies the block into `slot` when another holder shares it.
     /// Returns the block `slot` then holds.
-    pub(super) fn unique(&self, slot: PointerValue<'ctx>, ty: &Type) -> PointerValue<'ctx> {
+    pub(super) fn unique(&self, slot: PointerValue<'ctx>, ty: Type) -> PointerValue<'ctx> {
         self.builder
             .build_call(self.helper(Helper::Unique, ty), &[slot.into()], "unique")
             .expect(POSITIONED)
@@ -602,19 +604,19 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// Adds 1 to the count of each reference `value` holds when `ty` is counted.
-    pub(super) fn retain(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
+    pub(super) fn retain(&self, value: BasicValueEnum<'ctx>, ty: Type) {
         self.retain_or_release(Helper::Retain, value, ty);
     }
 
     /// Releases each reference `value` holds when `ty` is counted.
-    pub(super) fn release(&self, value: BasicValueEnum<'ctx>, ty: &Type) {
+    pub(super) fn release(&self, value: BasicValueEnum<'ctx>, ty: Type) {
         self.retain_or_release(Helper::Release, value, ty);
     }
 
     /// `retain` or `release`, as `kind` says. A string, object or array is the pointer itself,
     /// `null` for `None`; an enum goes to its helper by address; an enum optional's payload is
     /// counted only when its flag is set.
-    fn retain_or_release(&self, kind: Helper, value: BasicValueEnum<'ctx>, ty: &Type) {
+    fn retain_or_release(&self, kind: Helper, value: BasicValueEnum<'ctx>, ty: Type) {
         if let Some(core) = counted_core(ty) {
             let function = match kind {
                 Helper::Retain => self.rc_retain,
@@ -626,9 +628,9 @@ impl<'ctx> Codegen<'ctx, '_> {
         if !ty.is_counted(&self.program.enums) {
             return;
         }
-        match ty {
-            Type::Enum(_) => self.call(self.helper(kind, ty), &[self.enum_slot(value).into()]),
-            Type::Optional(payload) => {
+        match ty.kind() {
+            TypeKind::Enum(_) => self.call(self.helper(kind, ty), &[self.enum_slot(value).into()]),
+            TypeKind::Optional(payload) => {
                 let pair = value.into_struct_value();
                 let part = |index, name| {
                     self.builder

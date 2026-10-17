@@ -14,7 +14,7 @@ use crate::diagnostic::{
     BadRange, Definition, DiagnosticKind, GuardHelp, MismatchSource, Span, Unwrap, suggestion,
 };
 use crate::symbol::Symbol;
-use crate::tir::{self, Type};
+use crate::tir::{self, Type, TypeKind};
 
 /// The names one pattern binds, at `top`, as its check goes; `arm` is the `match` arm it
 /// starts, if any.
@@ -62,10 +62,15 @@ pub(super) enum LetPattern {
 }
 
 /// Whether `ty` is one `match` takes.
-fn matchable(ty: &Type) -> bool {
+fn matchable(ty: Type) -> bool {
     matches!(
-        ty,
-        Type::Enum(_) | Type::I64 | Type::U8 | Type::Bool | Type::Char | Type::String
+        ty.kind(),
+        TypeKind::Enum(_)
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::Bool
+            | TypeKind::Char
+            | TypeKind::String
     )
 }
 
@@ -82,7 +87,7 @@ fn empty_block() -> tir::Block {
     tir::Block {
         stmts: Vec::new(),
         value: None,
-        ty: Type::Unit,
+        ty: Type::UNIT,
     }
 }
 
@@ -97,12 +102,12 @@ impl Checker<'_> {
         close: Span,
         scrutinee: &ast::Expr,
         arms: &[ast::Arm],
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> Checked {
         let checked = self.value(scrutinee, None);
-        let mut position = type_of(&checked).cloned();
-        let cannot = position.take_if(|ty| !matchable(ty));
-        if let Some(ty) = &cannot {
+        let mut position = type_of(&checked);
+        let cannot = position.take_if(|&mut ty| !matchable(ty));
+        if let Some(ty) = cannot {
             let ty = self.type_name(ty);
             self.report(DiagnosticKind::CannotMatch {
                 ty,
@@ -122,11 +127,11 @@ impl Checker<'_> {
         let (blocks, ty) = self.join(&sources, expected, |c, i, expected| {
             let arm = &arms[i];
             c.scopes.push(FxHashMap::default());
-            patterns[i] = c.pattern_in_scope(&arm.pattern, position.as_ref(), "match", Some(arm));
+            patterns[i] = c.pattern_in_scope(&arm.pattern, position, "match", Some(arm));
             guards[i] = arm
                 .guard
                 .as_ref()
-                .map(|guard| c.expect(guard, Some(&Type::Bool)));
+                .map(|guard| c.expect(guard, Some(Type::BOOL)));
             if let ast::ExprKind::Block(block) = &arm.body.kind {
                 return c.scoped_block(block, expected);
             }
@@ -134,20 +139,20 @@ impl Checker<'_> {
             c.pop_scope();
             value.map(|value| tir::Block {
                 stmts: Vec::new(),
-                ty: value.ty.clone(),
+                ty: value.ty,
                 value: Some(Box::new(value)),
             })
         });
         // A scrutinee `match` cannot take fails the `match`, as a failed condition fails an `if`.
         // With no arms, only a scrutinee of a known type makes it `never`.
         let ty = match ty {
-            Ok(Type::Never) if mismatched && !arms.is_empty() => Err(Poisoned::typed(Type::Never)),
+            Ok(Type::NEVER) if mismatched && !arms.is_empty() => Err(Poisoned::typed(Type::NEVER)),
             Ok(_) if mismatched || (arms.is_empty() && position.is_none()) => {
                 Err(Poisoned::error())
             }
             ty => ty,
         };
-        if let Some(ty) = &position {
+        if let Some(ty) = position {
             let rows: Option<Vec<_>> = patterns
                 .iter()
                 .zip(arms)
@@ -184,7 +189,7 @@ impl Checker<'_> {
         match (checked, arms, ty) {
             (Ok(scrutinee), Some(arms), Ok(ty)) => Ok(tir::Expr {
                 kind: tir::ExprKind::Match {
-                    temp: self.fresh(scrutinee.ty.clone()),
+                    temp: self.fresh(scrutinee.ty),
                     scrutinee: Box::new(scrutinee),
                     arms,
                 },
@@ -280,7 +285,7 @@ impl Checker<'_> {
         value: &ast::Expr,
     ) -> (Checked, LetValue, bool) {
         let checked = self.value(value, None);
-        let ty = type_of(&checked).cloned();
+        let ty = type_of(&checked);
         let name = match &pattern.kind {
             ast::PatternKind::Name(name) => Some(name.clone()),
             ast::PatternKind::Wild => Some(ast::Ident {
@@ -293,21 +298,25 @@ impl Checker<'_> {
             | ast::PatternKind::Range { .. }
             | ast::PatternKind::Or(_) => None,
         };
-        match (ty, name) {
-            (Some(Type::Optional(payload)), Some(name)) => {
-                let bound = Some(*payload);
+        match (ty.map(|ty| (ty, ty.kind())), name) {
+            (Some((_, TypeKind::Optional(payload))), Some(name)) => {
+                let bound = Some(payload);
                 (checked, LetValue::Unwrap { name, bound }, false)
             }
             // `pattern_in_scope` reports any other pattern on an optional.
-            (ty @ (Some(Type::Optional(_) | Type::Enum(_)) | None), _) => {
+            (Some((_, TypeKind::Optional(_) | TypeKind::Enum(_))) | None, _) => {
                 (checked, LetValue::Match { ty }, false)
             }
-            (Some(ty), _) => {
+            (Some((ty, kind)), _) => {
                 let compare = matches!(
-                    ty,
-                    Type::I64 | Type::U8 | Type::Bool | Type::String | Type::Char
+                    kind,
+                    TypeKind::I64
+                        | TypeKind::U8
+                        | TypeKind::Bool
+                        | TypeKind::String
+                        | TypeKind::Char
                 );
-                let found = self.type_name(&ty);
+                let found = self.type_name(ty);
                 self.report(DiagnosticKind::UnwrapNeedsOptional {
                     keyword,
                     found,
@@ -326,7 +335,7 @@ impl Checker<'_> {
         value: LetValue,
         pattern: &ast::Pattern,
         block: &ast::Block,
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> (LetPattern, CheckedBlock) {
         match value {
             LetValue::Unwrap { name, bound } => {
@@ -336,9 +345,11 @@ impl Checker<'_> {
             }
             LetValue::Match { ty } => {
                 self.scopes.push(FxHashMap::default());
-                let pattern = self.pattern_in_scope(pattern, ty.as_ref(), keyword.word(), None);
+                let pattern = self.pattern_in_scope(pattern, ty, keyword.word(), None);
                 // An optional takes only a name or `_`, which unwraps it: only an enum gets here.
-                if let (Some(ty @ Type::Enum(_)), Some((pattern, _))) = (&ty, &pattern) {
+                if let (Some(ty), Some((pattern, _))) = (ty, &pattern)
+                    && let TypeKind::Enum(_) = ty.kind()
+                {
                     let rows = [Row {
                         pattern,
                         guarded: false,
@@ -367,7 +378,7 @@ impl Checker<'_> {
     fn pattern_in_scope(
         &mut self,
         pattern: &ast::Pattern,
-        ty: Option<&Type>,
+        ty: Option<Type>,
         keyword: &'static str,
         arm: Option<&ast::Arm>,
     ) -> Option<(tir::Pattern, Vec<tir::LocalId>)> {
@@ -388,7 +399,7 @@ impl Checker<'_> {
     fn pattern(
         &mut self,
         p: &ast::Pattern,
-        ty: Option<&Type>,
+        ty: Option<Type>,
         keyword: &'static str,
         bound: &mut Bound<'_>,
     ) -> Option<tir::Pattern> {
@@ -463,7 +474,7 @@ impl Checker<'_> {
                 let fields: Vec<_> = fields
                     .iter()
                     .zip(&types)
-                    .map(|(field, ty)| self.pattern(field, ty.as_ref(), keyword, bound))
+                    .map(|(field, &ty)| self.pattern(field, ty, keyword, bound))
                     .collect();
                 Some(pattern(tir::PatternKind::Variant {
                     variant,
@@ -478,13 +489,13 @@ impl Checker<'_> {
     fn name_pattern(
         &mut self,
         name: &ast::Ident,
-        ty: &Type,
+        ty: Type,
         keyword: &'static str,
         bound: &mut Bound<'_>,
     ) -> Option<tir::PatternKind> {
         let text = name.name.as_str();
-        let enum_id = match ty {
-            Type::Enum(id) => Some(id.0),
+        let enum_id = match ty.kind() {
+            TypeKind::Enum(id) => Some(id.0),
             _ => None,
         };
         if let Some(id) = enum_id
@@ -556,7 +567,7 @@ impl Checker<'_> {
                 return None;
             }
         }
-        self.bind(name, Some(ty.clone()), keyword, bound)
+        self.bind(name, Some(ty), keyword, bound)
             .map(tir::PatternKind::Bind)
     }
 
@@ -566,7 +577,7 @@ impl Checker<'_> {
         &mut self,
         literal: &ast::Literal,
         at: Span,
-        ty: &Type,
+        ty: Type,
     ) -> Option<tir::PatternKind> {
         match (literal, ty) {
             (
@@ -583,15 +594,15 @@ impl Checker<'_> {
                     hi: value,
                 })
             }
-            (&ast::Literal::Char(c), Type::Char) => {
+            (&ast::Literal::Char(c), Type::CHAR) => {
                 let value = i64::from(u32::from(c));
                 Some(tir::PatternKind::Range {
                     lo: value,
                     hi: value,
                 })
             }
-            (&ast::Literal::Bool(value), Type::Bool) => Some(tir::PatternKind::Bool(value)),
-            (ast::Literal::Str(text), Type::String) => Some(tir::PatternKind::Str(text.clone())),
+            (&ast::Literal::Bool(value), Type::BOOL) => Some(tir::PatternKind::Bool(value)),
+            (ast::Literal::Str(text), Type::STRING) => Some(tir::PatternKind::Str(text.clone())),
             _ => {
                 self.pattern_mismatch(ty, at);
                 None
@@ -606,9 +617,9 @@ impl Checker<'_> {
         value: i64,
         text: Span,
         negative: Option<Span>,
-        ty: &Type,
+        ty: Type,
     ) -> Option<i64> {
-        if *ty == Type::U8 {
+        if ty == Type::U8 {
             if let Some(minus) = negative {
                 self.report(DiagnosticKind::NegatedU8 { at: minus.to(text) });
                 return None;
@@ -633,7 +644,7 @@ impl Checker<'_> {
         start: &ast::Bound,
         end: &ast::Bound,
         inclusive: bool,
-        ty: &Type,
+        ty: Type,
     ) -> Option<tir::PatternKind> {
         for bound in [start, end] {
             if let ast::Bound::Name(name) = bound {
@@ -660,7 +671,7 @@ impl Checker<'_> {
         let text = |literal: &ast::Literal| {
             matches!(literal, ast::Literal::Str(_) | ast::Literal::Bool(_))
         };
-        if !matches!(ty, Type::I64 | Type::U8 | Type::Char) || text(lo) || text(hi) {
+        if !matches!(ty, Type::I64 | Type::U8 | Type::CHAR) || text(lo) || text(hi) {
             self.report(DiagnosticKind::BadRange {
                 form: BadRange::Type,
                 at,
@@ -686,7 +697,7 @@ impl Checker<'_> {
                 let hi = self.int_value(hi, hi_text, hi_negative, ty);
                 (lo?, hi?)
             }
-            (&ast::Literal::Char(lo), &ast::Literal::Char(hi), Type::Char) => {
+            (&ast::Literal::Char(lo), &ast::Literal::Char(hi), Type::CHAR) => {
                 (i64::from(u32::from(lo)), i64::from(u32::from(hi)))
             }
             _ => {
@@ -707,7 +718,7 @@ impl Checker<'_> {
     }
 
     /// "expected a pattern for `ty`", for the pattern at `at` as written.
-    fn pattern_mismatch(&mut self, ty: &Type, at: Span) {
+    fn pattern_mismatch(&mut self, ty: Type, at: Span) {
         let want = self.type_name(ty);
         self.report(DiagnosticKind::PatternMismatch {
             want,
@@ -723,7 +734,7 @@ impl Checker<'_> {
     fn alternatives(
         &mut self,
         alternatives: &[ast::Pattern],
-        ty: &Type,
+        ty: Type,
         keyword: &'static str,
         bound: &mut Bound<'_>,
     ) -> Option<tir::PatternKind> {
@@ -835,7 +846,7 @@ impl Checker<'_> {
     fn variant_pattern(
         &mut self,
         span: Span,
-        ty: &Type,
+        ty: Type,
         qualifier: Option<&ast::Ident>,
         name: &ast::Ident,
         fields: &[ast::Pattern],
@@ -850,8 +861,8 @@ impl Checker<'_> {
             })?),
             None => None,
         };
-        let id = match ty {
-            Type::Enum(id) if named.as_ref().is_none_or(|named| named == ty) => id.0,
+        let id = match ty.kind() {
+            TypeKind::Enum(id) if named.is_none_or(|named| named == ty) => id.0,
             _ => {
                 let want = self.type_name(ty);
                 self.report(DiagnosticKind::PatternMismatch {
@@ -906,7 +917,7 @@ impl Checker<'_> {
     }
 
     /// "a `ty` position takes only a name or `_`", at `at`.
-    fn only_names(&mut self, ty: &Type, at: Span) {
+    fn only_names(&mut self, ty: Type, at: Span) {
         let ty = self.type_name(ty);
         self.report(DiagnosticKind::OnlyNamePosition { ty, at });
     }
@@ -960,11 +971,11 @@ impl Checker<'_> {
         let mut agrees = true;
         let local = if let Some(alternatives) = bound.alternatives.last_mut() {
             if let Some(&local) = alternatives.first.get(&name.name) {
-                let earlier = self.lookup(name.name).map(|b| (b.ty.clone(), b.span));
-                if let (Some((Some(want), earlier)), Some(got)) = (earlier, &ty)
-                    && want != *got
+                let earlier = self.lookup(name.name).map(|b| (b.ty, b.span));
+                if let (Some((Some(want), earlier)), Some(got)) = (earlier, ty)
+                    && want != got
                 {
-                    let (want, got) = (self.type_name(&want), self.type_name(got));
+                    let (want, got) = (self.type_name(want), self.type_name(got));
                     self.report(DiagnosticKind::Mismatch {
                         want: vec![want],
                         got,
@@ -1032,7 +1043,7 @@ impl Checker<'_> {
             span,
         };
         tir::ExprKind::Match {
-            temp: self.fresh(scrutinee.ty.clone()),
+            temp: self.fresh(scrutinee.ty),
             scrutinee: Box::new(scrutinee),
             arms: vec![
                 tir::Arm {

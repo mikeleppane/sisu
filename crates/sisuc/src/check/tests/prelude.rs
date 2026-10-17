@@ -18,7 +18,7 @@ fn panic_lowers() {
         .value
         .as_ref()
         .expect("`panic(\"x\")` should be the body's value");
-    assert_eq!(panic.ty, Type::Never);
+    assert_eq!(panic.ty, Type::NEVER);
 }
 
 /// The panic's location, and its count error, are the callee's, not the parentheses' around it.
@@ -178,7 +178,7 @@ fn read_line_lowers() {
     assert!(program.to_string().contains("(read_line)"), "{program}");
     assert_eq!(
         program.functions[0].locals[0].ty,
-        Type::Optional(Box::new(Type::String))
+        Type::optional(Type::STRING)
     );
 }
 

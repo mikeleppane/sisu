@@ -11,13 +11,13 @@ use super::{
 use crate::ast::{self, StmtKind};
 use crate::diagnostic::{DiagnosticKind, Span, Unwrap};
 use crate::symbol::Symbol;
-use crate::tir::{self, ExprKind, Type};
+use crate::tir::{self, ExprKind, Type, TypeKind};
 
 impl Checker<'_> {
     /// `never` once a statement is `never`, else the type of the last statement (`unit` when
     /// there is none). Warns "unreachable code" on the first statement after a `never` one.
     /// Every statement is checked, also after one fails. `expected` is for the block's value.
-    pub(super) fn block(&mut self, block: &ast::Block, expected: Option<&Type>) -> CheckedBlock {
+    pub(super) fn block(&mut self, block: &ast::Block, expected: Option<Type>) -> CheckedBlock {
         self.scopes.push(FxHashMap::default());
         self.scoped_block(block, expected)
     }
@@ -26,13 +26,13 @@ impl Checker<'_> {
     pub(super) fn scoped_block(
         &mut self,
         block: &ast::Block,
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> CheckedBlock {
         let mut stmts = Vec::new();
-        let mut ty = Some(Type::Unit);
+        let mut ty = Some(Type::UNIT);
         let (mut failed, mut warned, mut mismatch) = (false, false, false);
         for (i, stmt) in block.stmts.iter().enumerate() {
-            if ty == Some(Type::Never) && !warned {
+            if ty == Some(Type::NEVER) && !warned {
                 self.report(DiagnosticKind::UnreachableCode { at: stmt.span });
                 warned = true;
             }
@@ -51,7 +51,7 @@ impl Checker<'_> {
                     }
                     // `let _ = e` lowers to an expression, but a `let` has no value.
                     let ty = if matches!(stmt.kind, StmtKind::Let { .. }) {
-                        Type::Unit
+                        Type::UNIT
                     } else {
                         stmt_type(&lowered)
                     };
@@ -63,11 +63,11 @@ impl Checker<'_> {
                     mismatch = last && poisoned.mismatch;
                     // An invalid jump made the block `never` only by error; what follows is no
                     // new news. Any other failed `never` statement still leaves the block.
-                    warned |= invalid_jump && poisoned.ty == Some(Type::Never);
+                    warned |= invalid_jump && poisoned.ty == Some(Type::NEVER);
                     poisoned.ty
                 }
             };
-            if ty != Some(Type::Never) {
+            if ty != Some(Type::NEVER) {
                 ty = stmt_ty;
             }
         }
@@ -178,8 +178,8 @@ impl Checker<'_> {
                     ),
                     "the checker should lower an `if` to `If`, an `if let` to `IfSome` or `Match`, and a `match` to `Match`"
                 );
-                if !matches!(checked.ty, Type::Unit | Type::Never) {
-                    let ty = self.type_name(&checked.ty);
+                if !matches!(checked.ty, Type::UNIT | Type::NEVER) {
+                    let ty = self.type_name(checked.ty);
                     self.report(DiagnosticKind::UnusedValue {
                         ty,
                         at: source.span,
@@ -202,8 +202,8 @@ impl Checker<'_> {
         clippy::too_many_lines,
         reason = "one arm per statement kind, so the dispatch reads in one place"
     )]
-    fn stmt(&mut self, stmt: &ast::Stmt, expected: Option<&Type>) -> Result<tir::Stmt, Poisoned> {
-        let unit = || Poisoned::typed(Type::Unit);
+    fn stmt(&mut self, stmt: &ast::Stmt, expected: Option<Type>) -> Result<tir::Stmt, Poisoned> {
+        let unit = || Poisoned::typed(Type::UNIT);
         match &stmt.kind {
             StmtKind::Let {
                 mutable,
@@ -212,8 +212,8 @@ impl Checker<'_> {
                 init,
             } => {
                 let declared = ty.as_ref().map(|ty| self.resolve(ty));
-                let init = match &declared {
-                    Some(declared) => self.expect(init, declared.as_ref()),
+                let init = match declared {
+                    Some(declared) => self.expect(init, declared),
                     None => self.value(init, None),
                 };
                 // `let _ = e` binds nothing: the value is an expression statement, which
@@ -225,7 +225,7 @@ impl Checker<'_> {
                 // known (`if` with one failed branch); an unknown declared type is `Error`.
                 let ty = match declared {
                     Some(None) => None,
-                    _ => type_of(&init).cloned(),
+                    _ => type_of(&init),
                 };
                 let kind = if mutable.is_some() {
                     BindingKind::Var
@@ -240,7 +240,7 @@ impl Checker<'_> {
             }
             StmtKind::While { cond, body } => {
                 let header = LoopContext::Header(keyword_span(stmt.span, "while"));
-                let cond = self.in_loop(header, |c| c.expect(cond, Some(&Type::Bool)));
+                let cond = self.in_loop(header, |c| c.expect(cond, Some(Type::BOOL)));
                 let checked = self.in_loop(LoopContext::Body, |c| c.block(body, None));
                 if let Ok(checked) = &checked {
                     self.discard_tail(body, checked);
@@ -344,10 +344,10 @@ impl Checker<'_> {
             self.discard_tail(body, checked);
         }
         let (Some(header), Ok(body)) = (header, checked) else {
-            return Err(Poisoned::typed(Type::Unit));
+            return Err(Poisoned::typed(Type::UNIT));
         };
         // The body keeps its own type, so codegen releases a counted tail value.
-        let body_ty = body.ty.clone();
+        let body_ty = body.ty;
         let ForHeader {
             mut stmts,
             counter,
@@ -368,7 +368,7 @@ impl Checker<'_> {
         let block = |stmts| tir::Block {
             stmts,
             value: None,
-            ty: Type::Unit,
+            ty: Type::UNIT,
         };
         // The counter moves on before the body runs, so `continue` needs nothing more. Over
         // `..=`, it stays at the last value, which `i64::MAX + 1` would overflow.
@@ -378,11 +378,11 @@ impl Checker<'_> {
                 lhs: Box::new(at(counter)),
                 rhs: Box::new(at(limit)),
             };
-            let flag = || local(go, Type::Bool, span);
+            let flag = || local(go, Type::BOOL, span);
             let moves = vec![
                 tir::Stmt::Assign {
                     place: tir::Place::Local(go),
-                    value: expr(last, Type::Bool),
+                    value: expr(last, Type::BOOL),
                 },
                 tir::Stmt::Expr(expr(
                     ExprKind::If {
@@ -390,7 +390,7 @@ impl Checker<'_> {
                         then_block: block(vec![step]),
                         else_block: None,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                 )),
             ];
             (moves, flag().kind)
@@ -412,24 +412,26 @@ impl Checker<'_> {
             then_block,
             span,
             |then_block, exit| ExprKind::If {
-                cond: Box::new(expr(cond, Type::Bool)),
+                cond: Box::new(expr(cond, Type::BOOL)),
                 then_block,
                 else_block: Some(exit),
             },
         )));
-        Ok(tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span)))
+        Ok(tir::Stmt::Expr(block_expr(stmts, None, Type::UNIT, span)))
     }
 
     /// The header of `for x in e`, and the type of `x`: the element type, `None` (`Error`) when
     /// `e` is no array.
     fn for_array(&mut self, span: Span, e: &ast::Expr) -> (Option<ForHeader>, Option<Type>) {
         let checked = self.value(e, None);
-        let (element, d) = match type_of(&checked) {
-            Some(Type::Array(element)) => (Some((**element).clone()), None),
-            Some(Type::Optional(payload)) if matches!(**payload, Type::Array(_)) => {
+        let (element, d) = match type_of(&checked).map(|ty| (ty, ty.kind())) {
+            Some((_, TypeKind::Array(element))) => (Some(element), None),
+            Some((_, TypeKind::Optional(payload)))
+                if matches!(payload.kind(), TypeKind::Array(_)) =>
+            {
                 (None, Some(optional_array(e)))
             }
-            Some(ty) => {
+            Some((ty, _)) => {
                 let found = self.type_name(ty);
                 let d = DiagnosticKind::ForNeedsArray { found, at: e.span };
                 (None, Some(d.into()))
@@ -437,15 +439,15 @@ impl Checker<'_> {
             None => (None, None),
         };
         self.diagnostics.extend(d);
-        let ty = type_of(&checked).cloned().unwrap_or(Type::Unit);
-        let array = self.fresh(ty.clone());
+        let ty = type_of(&checked).unwrap_or(Type::UNIT);
+        let array = self.fresh(ty);
         let len = self.fresh(Type::I64);
         let counter = self.fresh_var(Type::I64);
-        let (Ok(checked), Some(element)) = (checked, element.clone()) else {
+        let (Ok(checked), Some(element)) = (checked, element) else {
             return (None, element);
         };
         let expr = |kind, ty| tir::Expr { kind, ty, span };
-        let read = || local(array, ty.clone(), e.span);
+        let read = || local(array, ty, e.span);
         let stmts = vec![
             tir::Stmt::Let {
                 local: array,
@@ -469,7 +471,7 @@ impl Checker<'_> {
             counter,
             limit: len,
             go: None,
-            item: expr(item, element.clone()),
+            item: expr(item, element),
         };
         (Some(header), Some(element))
     }
@@ -483,11 +485,11 @@ impl Checker<'_> {
         end: &ast::Expr,
         inclusive: bool,
     ) -> (Option<ForHeader>, Option<Type>) {
-        let start = self.expect(start, Some(&Type::I64));
-        let end = self.expect(end, Some(&Type::I64));
+        let start = self.expect(start, Some(Type::I64));
+        let end = self.expect(end, Some(Type::I64));
         let counter = self.fresh_var(Type::I64);
         let limit = self.fresh(Type::I64);
-        let go = inclusive.then(|| self.fresh_var(Type::Bool));
+        let go = inclusive.then(|| self.fresh_var(Type::BOOL));
         let (Ok(start), Ok(end)) = (start, end) else {
             return (None, Some(Type::I64));
         };
@@ -511,7 +513,7 @@ impl Checker<'_> {
                 local: go,
                 init: tir::Expr {
                     kind: some,
-                    ty: Type::Bool,
+                    ty: Type::BOOL,
                     span,
                 },
             });
@@ -533,31 +535,30 @@ impl Checker<'_> {
         span: Span,
         value: Option<&ast::Expr>,
     ) -> Result<tir::Stmt, Poisoned> {
-        let never = || Poisoned::typed(Type::Never);
+        let never = || Poisoned::typed(Type::NEVER);
         let value = match value {
-            None => match &self.ret {
-                Some(ret) if *ret != Type::Unit => {
+            None => match self.ret {
+                Some(ret) if ret != Type::UNIT => {
                     let want = self.type_name(ret);
                     self.report(DiagnosticKind::ReturnNeedsValue { want, at: span });
                     return Err(never());
                 }
                 _ => None,
             },
-            Some(value) if self.ret == Some(Type::Unit) => {
+            Some(value) if self.ret == Some(Type::UNIT) => {
                 if type_of(&self.value(value, None)).is_some() {
                     self.report(DiagnosticKind::UnexpectedReturnValue { at: value.span });
                 }
                 return Err(never());
             }
             Some(value) => {
-                let ret = self.ret.clone();
-                let value = self.expect(value, ret.as_ref()).map_err(|_| never())?;
+                let value = self.expect(value, self.ret).map_err(|_| never())?;
                 Some(Box::new(value))
             }
         };
         Ok(tir::Stmt::Expr(tir::Expr {
             kind: ExprKind::Return(value),
-            ty: Type::Never,
+            ty: Type::NEVER,
             span,
         }))
     }
@@ -591,12 +592,12 @@ impl Checker<'_> {
             None => {
                 self.report(DiagnosticKind::JumpOutsideLoop { keyword, at: span });
                 self.invalid_jump = true;
-                return Err(Poisoned::typed(Type::Never));
+                return Err(Poisoned::typed(Type::NEVER));
             }
         }
         Ok(tir::Stmt::Expr(tir::Expr {
             kind,
-            ty: Type::Never,
+            ty: Type::NEVER,
             span,
         }))
     }
@@ -610,11 +611,11 @@ impl Checker<'_> {
         name: &ast::Ident,
         ty: Option<Type>,
         block: &ast::Block,
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> (tir::LocalId, CheckedBlock) {
         self.scopes.push(FxHashMap::default());
         let bind = if name.name.as_str() == "_" {
-            self.fresh(ty.unwrap_or(Type::Unit))
+            self.fresh(ty.unwrap_or(Type::UNIT))
         } else {
             self.declare(name, ty, BindingKind::Unwrapped(keyword), None)
         };
@@ -661,8 +662,8 @@ impl Checker<'_> {
                 if i > last_exit {
                     return operand;
                 }
-                let bind = self.fresh(operand.ty.clone());
-                let read = local(bind, operand.ty.clone(), operand.span);
+                let bind = self.fresh(operand.ty);
+                let read = local(bind, operand.ty, operand.span);
                 spills.push(tir::Stmt::Let {
                     local: bind,
                     init: operand,
@@ -705,7 +706,7 @@ impl Checker<'_> {
         self.locals.push(tir::Local {
             name: Some(name.name.to_string()),
             // An `Error` local never reaches `tir`: the error behind it stops the program.
-            ty: ty.clone().unwrap_or(Type::Unit),
+            ty: ty.unwrap_or(Type::UNIT),
             mutable: kind == BindingKind::Var,
         });
         let shadows_mut = self.lookup(name.name).is_some_and(|b| b.keyword.is_some());
@@ -795,8 +796,8 @@ struct ForHeader {
 /// The type a statement gives its block when it comes last.
 fn stmt_type(stmt: &tir::Stmt) -> Type {
     match stmt {
-        tir::Stmt::Let { .. } | tir::Stmt::Assign { .. } | tir::Stmt::Append { .. } => Type::Unit,
-        tir::Stmt::Expr(e) => e.ty.clone(),
+        tir::Stmt::Let { .. } | tir::Stmt::Assign { .. } | tir::Stmt::Append { .. } => Type::UNIT,
+        tir::Stmt::Expr(e) => e.ty,
     }
 }
 
@@ -809,19 +810,19 @@ fn lower_loop(
 ) -> tir::Expr {
     let expr = |kind, ty| tir::Expr { kind, ty, span };
     let exit = tir::Block {
-        stmts: vec![tir::Stmt::Expr(expr(ExprKind::Break, Type::Never))],
+        stmts: vec![tir::Stmt::Expr(expr(ExprKind::Break, Type::NEVER))],
         value: None,
-        ty: Type::Never,
+        ty: Type::NEVER,
     };
     // The `else` branch is `never`, so the branch has the body's type.
-    let ty = body.ty.clone();
-    let branch = expr(branch(body, exit), ty.clone());
+    let ty = body.ty;
+    let branch = expr(branch(body, exit), ty);
     let looped = tir::Block {
         stmts: Vec::new(),
         value: Some(Box::new(branch)),
         ty,
     };
-    expr(ExprKind::Loop(looped), Type::Unit)
+    expr(ExprKind::Loop(looped), Type::UNIT)
 }
 
 /// The `keyword` that starts a loop statement at `span`.

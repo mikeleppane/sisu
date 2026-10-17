@@ -49,7 +49,7 @@ impl Walk {
         for stmt in &block.stmts {
             self.stmt(stmt);
             // The checker gives a value of type `never` only to an expression statement.
-            if matches!(stmt, Stmt::Expr(e) if e.ty == Type::Never) {
+            if matches!(stmt, Stmt::Expr(e) if e.ty == Type::NEVER) {
                 return;
             }
         }

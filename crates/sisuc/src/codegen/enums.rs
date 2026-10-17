@@ -24,7 +24,7 @@ use inkwell::values::{
 
 use super::rc::{Helper, param};
 use super::{Codegen, POSITIONED};
-use crate::tir::{Enum, EnumId, Expr, Payload, Type};
+use crate::tir::{Enum, EnumId, Expr, Payload, Type, TypeKind};
 
 /// An enum's LLVM types.
 pub(super) struct EnumLayout<'ctx> {
@@ -42,7 +42,7 @@ pub(super) struct EnumLayout<'ctx> {
 }
 
 /// The enum a boxed field holds: its type is `F` or `F?`.
-fn boxed_enum(ty: &Type) -> EnumId {
+fn boxed_enum(ty: Type) -> EnumId {
     ty.inline_enum()
         .expect("the checker should box only a field of an enum type or its optional")
 }
@@ -116,7 +116,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                         if field.boxed {
                             ptr_type.into()
                         } else {
-                            self.llvm_type(&field.ty).expect(
+                            self.llvm_type(field.ty).expect(
                                 "the checker should give every payload field a value type, never `unit` or `never`",
                             )
                         }
@@ -256,11 +256,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             return self.field_slot(value_addr, id, variant, field);
         }
         assert!(
-            !matches!(payload.ty, Type::Optional(_)),
+            !matches!(payload.ty.kind(), TypeKind::Optional(_)),
             "a boxed `F?` field should have no place: the checker allows only a name or `_` there"
         );
         let boxed = self.load_box(value_addr, id, variant, field);
-        self.box_value(boxed_enum(&payload.ty), boxed)
+        self.box_value(boxed_enum(payload.ty), boxed)
     }
 
     /// The value of payload field `field` of variant `variant` in the enum `id` at
@@ -275,11 +275,11 @@ impl<'ctx> Codegen<'ctx, '_> {
         field: usize,
     ) -> BasicValueEnum<'ctx> {
         let payload = &self.program.enums[id.0].variants[variant].fields[field];
-        let ty = &payload.ty;
+        let ty = payload.ty;
         let llvm_ty = self.llvm_type(ty).expect(
             "the checker should give every payload field a value type, never `unit` or `never`",
         );
-        let (true, Type::Optional(inner)) = (payload.boxed, ty) else {
+        let (true, TypeKind::Optional(inner)) = (payload.boxed, ty.kind()) else {
             let place = self.payload_place(value_addr, id, variant, field);
             return self
                 .builder
@@ -333,7 +333,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         for (field, (value, payload)) in values.into_iter().zip(fields).enumerate() {
             let place = self.field_slot(slot, id, variant, field);
             if payload.boxed {
-                self.store_boxed(place, value, &payload.ty);
+                self.store_boxed(place, value, payload.ty);
             } else {
                 self.store(place, value);
             }
@@ -344,9 +344,9 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// Stores at `place` a new box that holds `value`, of type `F`, or of `F?` when present.
-    fn store_boxed(&self, place: PointerValue<'ctx>, value: BasicValueEnum<'ctx>, ty: &Type) {
-        let (value, present) = match ty {
-            Type::Optional(_) => {
+    fn store_boxed(&self, place: PointerValue<'ctx>, value: BasicValueEnum<'ctx>, ty: Type) {
+        let (value, present) = match ty.kind() {
+            TypeKind::Optional(_) => {
                 let pair = value.into_struct_value();
                 let part = |index, name| {
                     self.builder
@@ -459,7 +459,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let boxed = self.load_box(value, id, variant, field);
                 self.call(self.rc_retain, &[boxed.into()]);
             } else {
-                self.retain(self.payload_value(value, id, variant, field), &payload.ty);
+                self.retain(self.payload_value(value, id, variant, field), payload.ty);
             }
         });
     }
@@ -475,16 +475,16 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (value, done) = self.enum_entry(function);
         let Some(members) = self.component(id) else {
             self.for_each_counted_field(id, value, done, |variant, field, payload| {
-                self.release(self.payload_value(value, id, variant, field), &payload.ty);
+                self.release(self.payload_value(value, id, variant, field), payload.ty);
             });
             return;
         };
         let heads_type = self.heads_type(members.len());
         let heads = self.entry_alloca(heads_type.into(), "heads");
         self.store(heads, heads_type.const_zero().into());
-        let walk = self.helper(Helper::Walk, &Type::Enum(id));
+        let walk = self.helper(Helper::Walk, Type::intern(TypeKind::Enum(id)));
         self.call(walk, &[value.into(), heads.into()]);
-        let drain = self.helper(Helper::Drain, &Type::Enum(members[0]));
+        let drain = self.helper(Helper::Drain, Type::intern(TypeKind::Enum(members[0])));
         self.call(drain, &[heads.into()]);
         self.branch_to(done);
     }
@@ -529,7 +529,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
         self.for_each_counted_field(id, value, done, |variant, field, payload| {
             if !payload.boxed {
-                self.release(self.payload_value(value, id, variant, field), &payload.ty);
+                self.release(self.payload_value(value, id, variant, field), payload.ty);
                 return;
             }
             let block = |name| self.context.append_basic_block(function, name);
@@ -540,7 +540,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.builder.position_at_end(live);
             self.decrement(boxed, last, next);
             self.builder.position_at_end(last);
-            let index = member_position(&members, boxed_enum(&payload.ty));
+            let index = member_position(&members, boxed_enum(payload.ty));
             let head = self.head(heads_type, heads, index);
             let old = self
                 .builder
@@ -585,7 +585,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_load(ptr_type, boxed, "following")
                 .expect(POSITIONED);
             self.store(head, following);
-            let walk = self.helper(Helper::Walk, &Type::Enum(member));
+            let walk = self.helper(Helper::Walk, Type::intern(TypeKind::Enum(member)));
             self.call(walk, &[self.box_value(member, boxed).into(), heads.into()]);
             let [size, align] = self.box_layout(member);
             self.call(self.free, &[boxed.into(), size, align]);
@@ -611,7 +611,10 @@ impl<'ctx> Codegen<'ctx, '_> {
         let entry = block("entry");
         if let Some(members) = self.component(id) {
             self.builder.position_at_end(entry);
-            let component = self.helper(Helper::EqComponent, &Type::Enum(members[0]));
+            let component = self.helper(
+                Helper::EqComponent,
+                Type::intern(TypeKind::Enum(members[0])),
+            );
             let args = [self.member_index(&members, id).into(), a.into(), b.into()];
             let equal = self.call_component(component, &args);
             self.builder.build_return(Some(&equal)).expect(POSITIONED);
@@ -631,7 +634,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             |_| true,
             |variant, field, payload| {
                 let pair = self.equal(
-                    &payload.ty,
+                    payload.ty,
                     self.payload_value(a, id, variant, field),
                     self.payload_value(b, id, variant, field),
                 );
@@ -661,13 +664,13 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// which branches to `same` or `unequal`; only an `F?` box is `null`, for `None`.
     fn boxes_differ(
         &self,
-        ty: &Type,
+        ty: Type,
         a: PointerValue<'ctx>,
         b: PointerValue<'ctx>,
         same: BasicBlock<'ctx>,
         unequal: BasicBlock<'ctx>,
     ) {
-        let nullable = matches!(ty, Type::Optional(_));
+        let nullable = matches!(ty.kind(), TypeKind::Optional(_));
         self.compare_at_once(self.reflexive(ty), nullable, a, b, same, unequal);
     }
 
@@ -744,10 +747,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                     }
                     let next = block("next");
                     let pair = if payload.boxed {
-                        let inner = boxed_enum(&payload.ty);
+                        let inner = boxed_enum(payload.ty);
                         let box_a = self.load_box(a, id, variant, field);
                         let box_b = self.load_box(b, id, variant, field);
-                        self.boxes_differ(&payload.ty, box_a, box_b, next, unequal);
+                        self.boxes_differ(payload.ty, box_a, box_b, next, unequal);
                         let args = [
                             self.member_index(&members, inner).into(),
                             self.box_value(inner, box_a).into(),
@@ -756,7 +759,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                         self.call_component(function, &args)
                     } else {
                         self.equal(
-                            &payload.ty,
+                            payload.ty,
                             self.payload_value(a, id, variant, field),
                             self.payload_value(b, id, variant, field),
                         )
@@ -768,10 +771,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                     self.branch_to(equal);
                     continue;
                 };
-                let inner = boxed_enum(&payloads[field].ty);
+                let inner = boxed_enum(payloads[field].ty);
                 let box_a = self.load_box(a, id, variant, field);
                 let box_b = self.load_box(b, id, variant, field);
-                self.boxes_differ(&payloads[field].ty, box_a, box_b, equal, unequal);
+                self.boxes_differ(payloads[field].ty, box_a, box_b, equal, unequal);
                 let step = self.current_block();
                 kind.add_incoming(&[(&self.member_index(&members, inner), step)]);
                 pa.add_incoming(&[(&self.box_value(inner, box_a), step)]);

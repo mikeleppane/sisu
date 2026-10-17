@@ -26,10 +26,10 @@ enum Constant {
 impl Constant {
     /// The integer `n` as a value of the type `ty`, or `None` when it does not fit: a `u8`
     /// holds `0..=255` and a `char` a Unicode scalar value.
-    fn of(n: i64, ty: &Type) -> Option<Constant> {
+    fn of(n: i64, ty: Type) -> Option<Constant> {
         match ty {
             Type::U8 => u8::try_from(n).ok().map(Constant::U8),
-            Type::Char => u32::try_from(n)
+            Type::CHAR => u32::try_from(n)
                 .ok()
                 .and_then(char::from_u32)
                 .map(Constant::Char),
@@ -42,9 +42,9 @@ impl Constant {
             Constant::Int(_) => Type::I64,
             Constant::U8(_) => Type::U8,
             Constant::F64(_) => Type::F64,
-            Constant::Bool(_) => Type::Bool,
-            Constant::Char(_) => Type::Char,
-            Constant::Str(_) => Type::String,
+            Constant::Bool(_) => Type::BOOL,
+            Constant::Char(_) => Type::CHAR,
+            Constant::Str(_) => Type::STRING,
         }
     }
 
@@ -153,8 +153,8 @@ impl ConstantSite {
     /// The literal that replaces the conversion `to(arg)` at `call`: only when the call is the
     /// whole value, any declared type is `to`, and `arg` converts to a value that a literal shows
     /// with no escape. An `f64` converts when it is a whole number in `i64`'s range.
-    pub(super) fn literal(&self, call: Span, to: &Type, arg: &tir::Expr) -> Option<TypedLiteral> {
-        if call != self.value || self.declared.as_ref().is_some_and(|ty| ty != to) {
+    pub(super) fn literal(&self, call: Span, to: Type, arg: &tir::Expr) -> Option<TypedLiteral> {
+        if call != self.value || self.declared.is_some_and(|ty| ty != to) {
             return None;
         }
         let n = match evaluate(arg, &mut FxHashMap::default()).ok()? {
@@ -210,9 +210,9 @@ impl Checker<'_> {
                     resolved @ (Type::I64
                     | Type::U8
                     | Type::F64
-                    | Type::Bool
-                    | Type::Char
-                    | Type::String),
+                    | Type::BOOL
+                    | Type::CHAR
+                    | Type::STRING),
                 ) => Some(resolved),
                 Some(_) => {
                     self.report(DiagnosticKind::ConstantType { at: ty.span });
@@ -228,15 +228,15 @@ impl Checker<'_> {
         self.in_constant = Some(ConstantSite {
             value: c.value.span,
             name_end: c.name.span.end(),
-            declared: declared.clone(),
+            declared,
         });
-        let checked = match &declared {
+        let checked = match declared {
             Some(ty) => self.expect(&c.value, Some(ty)),
             None => self.value(&c.value, None),
         };
         self.in_constant = None;
         self.locals.truncate(locals);
-        let ty = declared.or_else(|| type_of(&checked).cloned());
+        let ty = declared.or_else(|| type_of(&checked));
         let Ok(checked) = checked else {
             return (ty, None);
         };
@@ -307,7 +307,7 @@ impl Checker<'_> {
             Declared::Known(ConstInfo {
                 value: Some(value), ..
             }) => Ok(value.lower(span)),
-            Declared::Known(info) => Err(Poisoned::of(info.ty.clone())),
+            Declared::Known(info) => Err(Poisoned::of(info.ty)),
             Declared::Broken => Err(Poisoned::error()),
         })
     }
@@ -343,12 +343,12 @@ fn evaluate(
         |panic| -> Diagnostic { DiagnosticKind::ConstantPanics { panic, at: e.span }.into() };
     // An integer result in the node's type; one that does not fit overflows.
     let int = |n: Option<i64>| {
-        n.and_then(|n| Constant::of(n, &e.ty))
+        n.and_then(|n| Constant::of(n, e.ty))
             .ok_or_else(|| panic(Panic::Overflow))
     };
     Ok(match &e.kind {
         tir::ExprKind::Int(n) => {
-            Constant::of(*n, &e.ty).expect("the checker should fit a literal in its type")
+            Constant::of(*n, e.ty).expect("the checker should fit a literal in its type")
         }
         tir::ExprKind::Float(x) => Constant::F64(*x),
         tir::ExprKind::Bool(b) => Constant::Bool(*b),

@@ -7,7 +7,7 @@ use super::expr::typed;
 use super::{Checked, Checker, Poisoned, payload, type_of};
 use crate::ast;
 use crate::diagnostic::{DiagnosticKind, MismatchFix, Span};
-use crate::tir::{self, Stream, Type};
+use crate::tir::{self, Stream, Type, TypeKind};
 
 /// The prelude's names.
 pub(super) const PRELUDE: [&str; 4] = ["print", "eprint", "panic", "read_line"];
@@ -50,21 +50,25 @@ impl Checker<'_> {
         };
         let checked = self.expr(&arg.value, None);
         let error = match type_of(&checked) {
-            Some(ty) if matches!(payload(ty), Type::Array(_)) => DiagnosticKind::PrintArray {
-                function,
-                ty: self.type_name(ty),
-                optional: matches!(ty, Type::Optional(_)),
-                at: arg.value.span,
+            Some(ty) if matches!(payload(ty).kind(), TypeKind::Array(_)) => {
+                DiagnosticKind::PrintArray {
+                    function,
+                    ty: self.type_name(ty),
+                    optional: matches!(ty.kind(), TypeKind::Optional(_)),
+                    at: arg.value.span,
+                }
+                .into()
             }
-            .into(),
-            Some(ty @ (Type::Class(_) | Type::Enum(_))) => DiagnosticKind::PrintArgument {
-                function,
-                at: arg.value.span,
-                class: Some(self.type_name(ty)),
+            Some(ty) if matches!(ty.kind(), TypeKind::Class(_) | TypeKind::Enum(_)) => {
+                DiagnosticKind::PrintArgument {
+                    function,
+                    at: arg.value.span,
+                    class: Some(self.type_name(ty)),
+                }
+                .into()
             }
-            .into(),
-            Some(Type::Unit | Type::Optional(_)) => wrong(),
-            Some(Type::Never) => DiagnosticKind::PrintNever {
+            Some(ty) if ty == Type::UNIT || matches!(ty.kind(), TypeKind::Optional(_)) => wrong(),
+            Some(Type::NEVER) => DiagnosticKind::PrintNever {
                 function,
                 at: arg.value.span,
             }
@@ -77,7 +81,7 @@ impl Checker<'_> {
                         stream,
                         operand: Box::new(operand),
                     });
-                return typed(span, Type::Unit, labeled, kind);
+                return typed(span, Type::UNIT, labeled, kind);
             }
         };
         self.diagnostics.push(error);
@@ -102,14 +106,14 @@ impl Checker<'_> {
         let labeled = self.labels(args);
         let text = |text: &str| tir::Expr {
             kind: tir::ExprKind::Str(text.to_string()),
-            ty: Type::String,
+            ty: Type::STRING,
             span: keyword,
         };
         let message = match args {
             [] => Ok(text("not yet implemented")),
             [arg] => self.message(&arg.value).map(|message| {
                 let operands = vec![text("not yet implemented: "), message];
-                self.spilled(keyword, Type::String, operands, |operands| {
+                self.spilled(keyword, Type::STRING, operands, |operands| {
                     let (lhs, rhs) = pair(operands);
                     tir::ExprKind::Concat { lhs, rhs }
                 })
@@ -124,7 +128,7 @@ impl Checker<'_> {
         if !args.is_empty() {
             return self.argument_count("read_line", 0, span, args);
         }
-        let ty = Type::Optional(Box::new(Type::String));
+        let ty = Type::optional(Type::STRING);
         typed(span, ty, false, Some(tir::ExprKind::ReadLine))
     }
 
@@ -149,17 +153,17 @@ impl Checker<'_> {
     /// A `panic` or `todo` message, an expression of type `string`. A value that interpolation
     /// prints, on one line, gets the fix that wraps it in a literal.
     pub(super) fn message(&mut self, arg: &ast::Expr) -> Checked {
-        let checked = self.value(arg, Some(&Type::String));
+        let checked = self.value(arg, Some(Type::STRING));
         let got = match type_of(&checked) {
-            Some(Type::String) | None => return checked,
+            Some(Type::STRING) | None => return checked,
             Some(got) => got,
         };
         let printed = matches!(
             got,
-            Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char
+            Type::I64 | Type::U8 | Type::F64 | Type::BOOL | Type::CHAR
         );
         self.report(DiagnosticKind::Mismatch {
-            want: vec![self.type_name(&Type::String)],
+            want: vec![self.type_name(Type::STRING)],
             got: self.type_name(got),
             at: arg.span,
             source: None,
@@ -180,5 +184,5 @@ fn panics(span: Span, labeled: bool, message: Checked) -> Checked {
         .ok()
         .filter(|_| !labeled)
         .map(|message| tir::ExprKind::Panic(Box::new(message)));
-    typed(span, Type::Never, failed, kind)
+    typed(span, Type::NEVER, failed, kind)
 }
