@@ -4,6 +4,7 @@
 //! bug signal is a panic.
 
 use inkwell::context::Context;
+use inkwell::module::Module;
 
 use crate::codegen;
 use crate::diagnostic::{Code, Diagnostic, Edit, Fix};
@@ -46,9 +47,14 @@ fn assert_compiles(program: &Program, source: &str) {
     for rc_checks in [false, true] {
         let context = Context::create();
         let module = codegen::compile(&context, program, "input.sisu", source, &machine, rc_checks);
-        if let Err(e) = module.verify() {
-            panic!("LLVM rejects the module (rc_checks: {rc_checks}):\n{e}");
-        }
+        assert_verified(&module, rc_checks);
+    }
+}
+
+/// Asserts that LLVM verifies `module`, compiled with `rc_checks`.
+fn assert_verified(module: &Module<'_>, rc_checks: bool) {
+    if let Err(e) = module.verify() {
+        panic!("LLVM rejects the module (rc_checks: {rc_checks}):\n{e}");
     }
 }
 
@@ -196,7 +202,9 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::thread;
 
-    use super::{assert_safe_fixes, assert_spans, front_end};
+    use inkwell::context::Context;
+
+    use super::{assert_safe_fixes, assert_spans, assert_verified, front_end};
     use crate::diagnostic::{Code, Diagnostic};
     use crate::source::Span;
 
@@ -338,6 +346,17 @@ mod tests {
                 fixed(&[(span(1, 3), ""), (span(0, 1), "")]),
             ],
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "LLVM rejects the module (rc_checks: true)")]
+    fn rejects_a_module_llvm_does_not_verify() {
+        // A block without a terminator.
+        let context = Context::create();
+        let module = context.create_module("main");
+        let f = module.add_function("f", context.void_type().fn_type(&[], false), None);
+        context.append_basic_block(f, "entry");
+        assert_verified(&module, true);
     }
 
     #[test]
