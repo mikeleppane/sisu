@@ -57,14 +57,18 @@ fn assert_verified(module: &Module<'_>, rc_checks: bool) {
         panic!("LLVM rejects the module (rc_checks: {rc_checks}):\n{e}");
     }
     #[cfg(test)]
-    VERIFIED.with(|n| n.set(n.get() + 1));
+    VERIFIED.with(|n| {
+        let mut counts = n.get();
+        counts[usize::from(rc_checks)] += 1;
+        n.set(counts);
+    });
 }
 
 #[cfg(test)]
 thread_local! {
-    /// How many modules `assert_verified` has passed on this thread, so a test can see that
-    /// `front_end` compiles a clean input.
-    static VERIFIED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many modules `assert_verified` has passed on this thread, without and with
+    /// `--rc-checks`, so a test can see that `front_end` compiles a clean input both ways.
+    static VERIFIED: std::cell::Cell<[usize; 2]> = const { std::cell::Cell::new([0; 2]) };
 }
 
 /// Asserts that every span of `diagnostics` (primary, secondary and each fix's edits) is a range
@@ -357,17 +361,19 @@ mod tests {
         );
     }
 
-    /// How many modules `front_end` verifies for `source`, run on this thread.
-    fn verified(source: &str) -> usize {
+    /// How many modules `front_end` verifies for `source`, run on this thread, without and with
+    /// `--rc-checks`.
+    fn verified(source: &str) -> [usize; 2] {
         let before = VERIFIED.with(std::cell::Cell::get);
         front_end(source.as_bytes());
-        VERIFIED.with(std::cell::Cell::get) - before
+        let after = VERIFIED.with(std::cell::Cell::get);
+        [after[0] - before[0], after[1] - before[1]]
     }
 
     #[test]
     fn compiles_a_clean_input_with_and_without_rc_checks() {
-        assert_eq!(verified("fn main() {\n    print(1)\n}\n"), 2);
-        assert_eq!(verified("fn main() {\n    print(x)\n}\n"), 0);
+        assert_eq!(verified("fn main() {\n    print(1)\n}\n"), [1, 1]);
+        assert_eq!(verified("fn main() {\n    print(x)\n}\n"), [0, 0]);
     }
 
     #[test]
