@@ -1,0 +1,42 @@
+// `a..=b` takes in `b`, even the largest `i64`, and runs no times when `b` is below `a`. The loop
+// stops after `b` without computing `b + 1`, with `continue` and with `break` on the last value,
+// and evaluates each bound once, the start first.
+fn bound(n: i64, name: string) -> i64 {
+    print("bound {name}")
+    n
+}
+
+fn main() {
+    for i in 1..=3 {
+        print(i)                    // 1, then 2, then 3
+    }
+    for i in 9223372036854775806..=9223372036854775807 {
+        print(i)                    // 9223372036854775806, then 9223372036854775807
+    }
+    for i in 5..=4 {
+        print(i)                    // never
+    }
+    for i in 4..=4 {
+        print(i)                    // 4
+    }
+    for i in 9223372036854775806..=9223372036854775807 {
+        if i == 9223372036854775807 {
+            continue
+        }
+        print(i)                    // 9223372036854775806
+    }
+    for i in 9223372036854775806..=9223372036854775807 {
+        print(i)                    // 9223372036854775806, then 9223372036854775807
+        if i == 9223372036854775807 {
+            break
+        }
+    }
+    // `bound` prints "bound start", then "bound end", once each.
+    for i in bound(1, "start")..=bound(2, "end") {
+        print(i)                    // 1, then 2
+    }
+    // `bound` prints "bound start", then "bound end", once each.
+    for i in bound(3, "start")..=bound(2, "end") {
+        print(i)                    // never
+    }
+}

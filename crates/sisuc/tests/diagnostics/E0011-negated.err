@@ -1,0 +1,8 @@
+error[E0011]: expected an integer literal, found `x`
+ --> E0011-negated.sisu:3:10
+  |
+3 |         -x => print(1)
+  |          ^
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0011

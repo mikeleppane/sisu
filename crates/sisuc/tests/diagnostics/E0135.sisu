@@ -1,0 +1,10 @@
+fn early(c: char) -> bool {
+    match c {
+        "a".."n" => true
+        _ => false
+    }
+}
+
+fn main() {
+    print(early('b'))
+}

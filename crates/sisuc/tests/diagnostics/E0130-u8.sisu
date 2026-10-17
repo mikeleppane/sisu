@@ -1,0 +1,9 @@
+fn digit(b: u8) -> bool {
+    match b {
+        0..=9 => true
+    }
+}
+
+fn main() {
+    print(digit("7".bytes()[0]))
+}

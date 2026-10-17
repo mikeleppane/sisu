@@ -1,0 +1,16 @@
+warning[W0006]: unreachable alternative
+  --> W0006-alternative.sisu:10:9
+   |
+ 9 |         Red => true
+   |         --- this arm covers it
+10 |         Red | Amber => true
+   |         ^^^
+   |
+help: remove the alternative
+   |
+10 -         Red | Amber => true
+10 +         Amber => true
+   |
+
+sisuc: 1 warning
+sisuc: for more on a code, run `sisuc --explain <code>`: W0006

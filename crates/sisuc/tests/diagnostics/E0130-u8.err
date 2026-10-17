@@ -1,0 +1,14 @@
+error[E0130]: `match` does not cover `10..=255`
+ --> E0130-u8.sisu:2:5
+  |
+2 |     match b {
+  |     ^^^^^
+  |
+  = help: add `_ =>`
+help: add a `_ =>` arm
+  |
+4 +         _ => todo
+  |
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0130

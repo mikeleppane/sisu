@@ -83,8 +83,8 @@ of sharing it, so a write that follows can skip the copy.
 _Avoid_: move (the compiler's name for the node, not the language rule)
 
 **Range**:
-The `a..b` in a `for` header, covering `a` up to but not including `b`. It is
-not a value and appears nowhere else.
+`a..b`, covering `a` up to but not including `b`, or `a..=b`, which includes
+`b`. It appears in a `for` header and as a pattern, and is not a value.
 
 ## Text
 
@@ -213,15 +213,21 @@ in `match e { ... }`. A `match` evaluates it once, before it tries any arm.
 _Avoid_: subject, matched value
 
 **Arm**:
-One case of a `match`, on its own line: a pattern, `=>`, and a body, which is
-an expression, an assignment, `return`, `break`, `continue` or a block. The
-arms are tried top to bottom, and the first whose pattern matches runs.
+One case of a `match`, on its own line: a pattern, an optional guard, `=>`, and
+a body, which is an expression, an assignment, `return`, `break`, `continue`
+or a block. The arms are tried top to bottom, and the first whose pattern
+matches and whose guard holds runs.
 _Avoid_: case, branch (the two sides of an `if`)
 
 **Pattern**:
 The shape a `match` arm, `if let` or `while let` tests a value against. A
 pattern can bind names to the parts it matches.
 _Avoid_: matcher, case
+
+**Alternative**:
+One of the patterns joined by `|`, at the top of a pattern or inside one:
+`Red | Amber => ...`. The pattern matches when any alternative does, and every
+alternative binds the same names.
 
 **Guard**:
 An `if` condition after an arm's pattern. The arm runs only when the pattern

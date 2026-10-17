@@ -10,7 +10,10 @@
 //! - `If` and `IfSome` evaluate the condition or scrutinee, then one branch.
 //! - `Match` evaluates its scrutinee, then tests the arms' patterns in order and runs the body
 //!   of the first that matches, its bindings defined. So the set live at an arm's test is
-//!   what its body reads joined with what the next arm's test reads, its bindings killed.
+//!   what its body reads joined with what the next arm's test reads, its bindings killed. A
+//!   guard runs after its arm's test, and goes on to the body or to the next arm's test; with
+//!   an `|` in the pattern it can run again, for a later alternative, so it is a loop body.
+//!   A guard never moves its arm's bindings, which the body or the next alternative still holds.
 //! - Assigning a local evaluates the value, then kills the local; assigning a field evaluates
 //!   the base, then the value.
 //! - Assigning an element evaluates a field root's base, then the indexes from the root
@@ -22,9 +25,11 @@
 
 use std::mem;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::tir::{Arm, BinaryOp, Block, Expr, ExprKind, LocalId, Place, Program, Stmt};
+use crate::tir::{
+    Arm, BinaryOp, Block, Expr, ExprKind, LocalId, Pattern, PatternKind, Place, Program, Stmt,
+};
 
 /// Rewrites each read of a counted local that is its last use into `ExprKind::Move`.
 pub(crate) fn mark(program: &mut Program) {
@@ -36,6 +41,7 @@ pub(crate) fn mark(program: &mut Program) {
                 .map(|l| l.ty.is_counted(&program.enums))
                 .collect(),
             live: vec![false; function.locals.len()],
+            pinned: vec![false; function.locals.len()],
             rewrite: true,
             loops: Vec::new(),
             trail: Vec::new(),
@@ -51,6 +57,9 @@ struct Walk {
     counted: Vec<bool>,
     /// Indexed by `LocalId`: whether the local is read later on some path.
     live: Vec<bool>,
+    /// Indexed by `LocalId`: whether the local is a binding of the arm whose guard is being
+    /// walked, which no read moves.
+    pinned: Vec<bool>,
     /// Whether the walk rewrites last reads; a loop's first pass only computes its head set.
     rewrite: bool,
     /// The enclosing loops, innermost last: the set live after each, and at its head.
@@ -118,7 +127,8 @@ impl Walk {
     )]
     fn expr(&mut self, e: &mut Expr) {
         if let ExprKind::Local(local) | ExprKind::Move(local) = e.kind {
-            if self.rewrite && self.counted[local.0] && !self.live[local.0] {
+            if self.rewrite && self.counted[local.0] && !self.live[local.0] && !self.pinned[local.0]
+            {
                 e.kind = ExprKind::Move(local);
             }
             self.set(local.0, true);
@@ -300,24 +310,54 @@ impl Walk {
 
     /// A `match`'s arms, from the set live after them. Each body is walked from that set, and
     /// the set live at the tests is their union, the bindings killed. Each arm is undone through
-    /// the trail, so an arm costs the locals it changes, not every local of the function.
+    /// the trail, so an arm costs the locals it changes, not every local of the function. The
+    /// arms go last to first, so a guard's failure edge, the next arm's test, holds the union
+    /// of the later arms: the set after the `match`, changed only where `changed` says.
     fn arms(&mut self, arms: &mut [Arm]) {
         let mark = self.trail.len();
         let outer = mem::replace(&mut self.undoing, true);
         // Each local an arm wrote: the last arm that did, how many did, and whether one left it
-        // live.
+        // live, its bindings left out.
         let mut changed: FxHashMap<usize, (usize, usize, bool)> = FxHashMap::default();
-        for (i, arm) in arms.iter_mut().enumerate() {
+        // The locals some later arm leaves live at its test where the set after the `match`
+        // has them dead, or that an arm wrote: the sparse part of the failure edge's set.
+        let mut later = FxHashSet::default();
+        let count = arms.len();
+        for (i, arm) in arms.iter_mut().enumerate().rev() {
             self.block(&mut arm.body);
+            for bind in &arm.bindings {
+                self.pinned[bind.0] = true;
+            }
+            if let Some(guard) = &mut arm.guard {
+                let done = count - 1 - i;
+                // Whether a local this arm wrote, `after` after the `match`, is live at the next
+                // arm's test: some later arm left it live, or left it alone. A guarded last arm is
+                // unreachable, so its failure edge, the set after the `match`, is never taken.
+                let failing = |local, after| match changed.get(&local) {
+                    Some(&(_, wrote, live)) => live || (after && wrote < done),
+                    None => after,
+                };
+                let retries = has_or(&arm.pattern);
+                self.guard(guard, retries, mark, &later, failing);
+            }
             // Newest first, so the first entry of a local finds the arm's final value in `live`.
             for (local, was) in self.trail.drain(mark..).rev() {
                 let now = mem::replace(&mut self.live[local], was);
+                if self.pinned[local] {
+                    continue;
+                }
                 let (last, count, live) = changed.entry(local).or_insert((usize::MAX, 0, false));
                 if *last != i {
                     *last = i;
                     *count += 1;
+                    if now && !*live {
+                        later.insert(local);
+                    }
                     *live |= now;
                 }
+            }
+            for bind in &arm.bindings {
+                self.pinned[bind.0] = false;
             }
         }
         self.undoing = outer;
@@ -331,6 +371,75 @@ impl Walk {
                 self.set(bind.0, false);
             }
         }
+    }
+
+    /// A guard, after its arm's body is walked from the set after the `match`. It runs on to
+    /// the body or to the next arm's test, so it is walked from both sets joined: the body's,
+    /// which the trail from `mark` holds, and the next test's, which is `later` and each
+    /// local of the trail that `failing` says, given whether it was live after the `match`.
+    /// Of `later`, only the locals the guard reads or writes are joined, so a guard costs its
+    /// own size, not the later arms' locals; the others pass through it unread. When it
+    /// `retries`, for a later alternative, its entry set joins its exit set too.
+    fn guard(
+        &mut self,
+        guard: &mut Expr,
+        retries: bool,
+        mark: usize,
+        later: &FxHashSet<usize>,
+        failing: impl Fn(usize, bool) -> bool,
+    ) {
+        // The oldest entry of a local holds its value after the `match`.
+        let mut after = FxHashMap::default();
+        for &(local, was) in &self.trail[mark..] {
+            after.entry(local).or_insert(was);
+        }
+        for (local, was) in after {
+            if !self.live[local] && failing(local, was) {
+                self.set(local, true);
+            }
+        }
+        // Only a local the guard reads or writes can have a liveness inside it that differs.
+        let mut mentioned = Vec::new();
+        mentions(guard, &mut mentioned);
+        for local in mentioned {
+            if later.contains(&local) && !self.live[local] {
+                self.set(local, true);
+            }
+        }
+        // shortcut: a guard that compares, or holds `&&`, `||` or an `if`, copies the dense
+        // live set as any such expression does (`.scratch/diagnostics-scale/issues/02`), so
+        // many such guards among many locals are quadratic; fix it with that ticket. Each guard
+        // collects the locals of its whole text, and with an `|` is walked once more without
+        // rewriting, so guards nested d deep cost d²; share the work if a real program nests
+        // them deeply.
+        if !retries {
+            self.expr(guard);
+            return;
+        }
+        // As a loop body: one walk without rewriting finds the entry set, the fixed point,
+        // since liveness is gen/kill; the rewriting walk starts from it joined with the exit
+        // set. No frame goes on `loops`, so a `break` in the guard leaves the source loop.
+        let start = self.trail.len();
+        let rewrite = mem::replace(&mut self.rewrite, false);
+        self.expr(guard);
+        self.rewrite = rewrite;
+        if !rewrite {
+            return;
+        }
+        let entry: Vec<_> = self.trail[start..]
+            .iter()
+            .map(|&(local, _)| local)
+            .filter(|&local| self.live[local])
+            .collect();
+        for (local, was) in self.trail.drain(start..).rev() {
+            self.live[local] = was;
+        }
+        for local in entry {
+            if !self.live[local] {
+                self.set(local, true);
+            }
+        }
+        self.expr(guard);
     }
 
     /// Sets whether `local` is live, recording the write while an arm may be undone.
@@ -376,6 +485,136 @@ impl Walk {
                 self.set(local, false);
             }
         }
+    }
+}
+
+/// Adds to `found` each local that `e` reads or assigns, and those its blocks define.
+fn mentions(e: &Expr, found: &mut Vec<usize>) {
+    match &e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Char(_)
+        | ExprKind::Str(_)
+        | ExprKind::None
+        | ExprKind::ReadLine
+        | ExprKind::Break
+        | ExprKind::Continue
+        | ExprKind::Return(None) => {}
+        ExprKind::Local(local) | ExprKind::Move(local) => found.push(local.0),
+        ExprKind::Call { args, .. }
+        | ExprKind::New { args, .. }
+        | ExprKind::Variant { args, .. }
+        | ExprKind::ArrayLit(args)
+        | ExprKind::Interpolate { parts: args, .. }
+        | ExprKind::Math { operands: args, .. }
+        | ExprKind::Compare { operands: args, .. } => {
+            for arg in args {
+                mentions(arg, found);
+            }
+        }
+        ExprKind::Field { base: operand, .. }
+        | ExprKind::Len(operand)
+        | ExprKind::Chars(operand)
+        | ExprKind::Bytes(operand)
+        | ExprKind::Words(operand)
+        | ExprKind::FromChars(operand)
+        | ExprKind::Sum(operand)
+        | ExprKind::Wrap(operand)
+        | ExprKind::Convert(operand)
+        | ExprKind::Print { operand, .. }
+        | ExprKind::Unary { operand, .. }
+        | ExprKind::Panic(operand)
+        | ExprKind::Return(Some(operand)) => mentions(operand, found),
+        ExprKind::Binary { lhs, rhs, .. }
+        | ExprKind::Concat { lhs, rhs }
+        | ExprKind::Equal { lhs, rhs, .. }
+        | ExprKind::Is { lhs, rhs }
+        | ExprKind::ArrayFill {
+            value: lhs,
+            len: rhs,
+        }
+        | ExprKind::Index {
+            base: lhs,
+            index: rhs,
+        }
+        | ExprKind::Contains {
+            base: lhs,
+            value: rhs,
+        } => {
+            mentions(lhs, found);
+            mentions(rhs, found);
+        }
+        ExprKind::If {
+            cond: scrutinee,
+            then_block,
+            else_block,
+        }
+        | ExprKind::IfSome {
+            scrutinee,
+            then_block,
+            else_block,
+            ..
+        } => {
+            mentions(scrutinee, found);
+            block_mentions(then_block, found);
+            if let Some(else_block) = else_block {
+                block_mentions(else_block, found);
+            }
+        }
+        ExprKind::Match {
+            scrutinee, arms, ..
+        } => {
+            mentions(scrutinee, found);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    mentions(guard, found);
+                }
+                block_mentions(&arm.body, found);
+            }
+        }
+        ExprKind::Loop(block) | ExprKind::Block(block) => block_mentions(block, found),
+    }
+}
+
+/// Adds to `found` each local that `block` reads or assigns.
+fn block_mentions(block: &Block, found: &mut Vec<usize>) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { local, init } => {
+                found.push(local.0);
+                mentions(init, found);
+            }
+            Stmt::Assign { place, value } | Stmt::Append { place, value } => {
+                place_mentions(place, found);
+                mentions(value, found);
+            }
+            Stmt::Expr(e) => mentions(e, found),
+        }
+    }
+    if let Some(value) = &block.value {
+        mentions(value, found);
+    }
+}
+
+/// Adds to `found` each local that `place` names or reads.
+fn place_mentions(place: &Place, found: &mut Vec<usize>) {
+    match place {
+        Place::Local(local) => found.push(local.0),
+        Place::Field { base, .. } => mentions(base, found),
+        Place::Index { base, index } => {
+            place_mentions(base, found);
+            mentions(index, found);
+        }
+    }
+}
+
+/// Whether `pattern` holds an `|`, so its arm's guard can run once per alternative.
+fn has_or(pattern: &Pattern) -> bool {
+    match &pattern.kind {
+        PatternKind::Or(_) => true,
+        PatternKind::Variant { fields, .. } => fields.iter().any(has_or),
+        _ => false,
     }
 }
 
@@ -651,6 +890,240 @@ mod tests {
             "f",
             &["(len (move xs#0))"],
         );
+    }
+
+    /// A guard's reads: a binding the guard reads is pinned, a guard that can run once per
+    /// alternative is a loop body, and its `break` or `continue` targets the source loop.
+    #[test]
+    fn guard_reads() {
+        // `s` is the arm's binding: the guard's `return s` retains it.
+        has(
+            "enum N {\n    Name(string)\n    Other\n}\nfn f(n: N) -> string {\n    match n {\n        Name(s) if (if s == \"\" { return s } else { true }) => s\n        _ => \"x\"\n    }\n}",
+            "f",
+            &["(block (return s#1))"],
+        );
+        // An outer `t`, read only in a guard: it can run again with an `Or`, so it never moves;
+        // without one, it moves when no later arm reads it.
+        let decls =
+            "enum E {\n    V(i64)\n    W(i64)\n    Z\n}\nfn keep(t: string) -> bool { true }\n";
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) | W(_) if keep(t) => 1\n        _ => 0\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))"],
+        );
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) if keep(t) => 1\n        _ => 0\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep (move t#1)))"],
+        );
+        // A later arm that reads `t` keeps it live on the guard's failure edge.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) if keep(t) => 1\n        _ => if keep(t) {{ 2 }} else {{ 0 }}\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))", "(call keep (move t#1))"],
+        );
+        // The first arm writes `u`, but the guard's failure edge reaches the last arm, which
+        // leaves `u` alone for the read after the `match`; the second arm also writes it.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        W(_) => {{\n            u = \"z\"\n            2\n        }}\n        _ => 0\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep u#2))"],
+        );
+        // When every later arm writes `u`, the guard's read is its last.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        _ => {{\n            u = \"z\"\n            0\n        }}\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep (move u#2)))"],
+        );
+        // An `|` inside a variant runs the guard again too.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(1 | 2) if keep(t) => 1\n        _ => 0\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))"],
+        );
+        // A `return` leaves nothing live, even in a guard that runs again.
+        has(
+            &format!(
+                "{decls}fn f(e: E, c: bool, t: string) -> string {{\n    match e {{\n        V(_) | W(_) if (if c {{ return t }} else {{ true }}) => \"a\"\n        _ => \"b\"\n    }}\n}}"
+            ),
+            "f",
+            &["(return (move t#2))"],
+        );
+        // The guard's body reads `t` as well, so `t` is live at the guard already.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> i64 {{\n    match e {{\n        V(_) if keep(t) => if keep(t) {{ 1 }} else {{ 2 }}\n        _ => if keep(t) {{ 3 }} else {{ 0 }}\n    }}\n}}"
+            ),
+            "f",
+            &["(if (call keep t#1))"],
+        );
+        // Only the guarded arm writes `u`, so the failure edge, through arms that leave `u`
+        // alone, keeps it live for the read after the `match`.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        _ => 0\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep u#2))"],
+        );
+        // Every arm after the guarded one writes `u`, so an arm before it changes nothing.
+        has(
+            &format!(
+                "{decls}fn f(e: E, t: string) -> string {{\n    let mut u = t\n    let _ = match e {{\n        Z => 2\n        V(_) if keep(u) => {{\n            u = \"y\"\n            1\n        }}\n        _ => {{\n            u = \"z\"\n            0\n        }}\n    }}\n    u\n}}"
+            ),
+            "f",
+            &["(if (call keep (move u#2)))"],
+        );
+        // `break` and `continue` in a guard reach the `while`, whose exit and head read `t`;
+        // every other path from the first `print(t)` returns, so only the guard's jump keeps
+        // `t` live there.
+        for jump in ["break", "continue"] {
+            has(
+                &format!(
+                    "enum AB {{\n    A\n    B\n    C\n}}\nfn f(e: AB, c: bool, t: string) {{\n    while c {{\n        print(t)\n        let _ = match e {{\n            A | B if (if c {{ {jump} }} else {{ true }}) => 0\n            _ => 1\n        }}\n        return\n    }}\n    print(t)\n}}"
+                ),
+                "f",
+                &["(loop (block (if c#1 (block (print t#2)"],
+            );
+        }
+    }
+
+    /// The keep-alive override for this test is in `.config/nextest.toml`: a set live on each
+    /// guard's failure edge copied densely per arm is quadratic in the arms, and this test hangs
+    /// instead of failing.
+    #[test]
+    fn many_guarded_arms_mark_last_uses_in_linear_time() {
+        const VARIANTS: usize = 32_000;
+        let variants = (0..VARIANTS)
+            .map(|i| format!("    V{i}(string)\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let arms = (0..VARIANTS)
+            .map(|i| format!("        V{i}(s) if keep => s\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let printed = marked(&format!(
+            "enum E {{\n{variants}}}\nfn f(e: E, keep: bool) -> string {{\n    match e {{\n{arms}        _ => \"\"\n    }}\n}}"
+        ));
+        // Each arm's `s` is read once, in its body, so every read is its last use.
+        assert_eq!(printed.matches("(block (move s#").count(), VARIANTS);
+    }
+
+    /// As above, with each guard reading its own outer local, so the failure edge of each guard
+    /// holds every later guard's local. The keep-alive override is in `.config/nextest.toml`.
+    #[test]
+    fn many_guards_of_distinct_locals_mark_last_uses_in_linear_time() {
+        const VARIANTS: usize = 48_000;
+        let variants = (0..VARIANTS)
+            .map(|i| format!("    V{i}(string)\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let locals = (0..VARIANTS)
+            .map(|i| format!("    let g{i} = c\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let arms = (0..VARIANTS)
+            .map(|i| format!("        V{i}(s) if g{i} => s\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let printed = marked(&format!(
+            "enum E {{\n{variants}}}\nfn f(e: E, c: bool) -> string {{\n{locals}    match e {{\n{arms}        _ => \"\"\n    }}\n}}"
+        ));
+        assert_eq!(printed.matches("(block (move s#").count(), VARIANTS);
+    }
+
+    /// A guard whose `match` holds a guard, 48 deep: a guard walked once more for each guard
+    /// around it costs 2^48, which hangs. The keep-alive override is in `.config/nextest.toml`.
+    #[test]
+    fn nested_guards_mark_last_uses_in_linear_time() {
+        const DEPTH: usize = 48;
+        let guard = (0..DEPTH).fold("c".to_owned(), |inner, _| {
+            format!("match c {{\n true if {inner} => true\n _ => false\n }}")
+        });
+        let printed = marked(&format!(
+            "enum E {{\n    V(string)\n    W\n}}\nfn f(e: E, c: bool) -> string {{\n    match e {{\n        V(s) if {guard} => s\n        _ => \"\"\n    }}\n}}"
+        ));
+        assert_eq!(printed.matches("(block (move s#").count(), 1);
+    }
+
+    /// `mentions` finds a local wherever an expression or a statement holds it: each named
+    /// local of `f` stands in one kind of node.
+    #[test]
+    fn mentions_every_kind_of_node() {
+        let src = "class O {\n    mut n: i64\n    mut s: string\n}\n\
+                   enum E {\n    V(i64)\n    W\n}\n\
+                   fn g(x: i64) -> i64 { x }\n\
+                   fn f(call: i64, new: i64, math: f64, len: [i64], chars: string, bytes: string, \
+                   words: string, from: [char], sum: [i64], field: O, wrap: i64, convert: i64, \
+                   unary: i64, binary: i64, concat: string, equal: i64, is1: O, is2: O, \
+                   fill: i64, index: [i64], contains: [i64], compare: i64, part: string, lit: i64, \
+                   variant: i64, cond: bool, some: i64?, scrutinee: E, guard: i64, looped: bool, \
+                   assigned: i64, placed: O, at: i64, root: i64, appended: O, returned: i64, panicked: string) -> i64 {\n\
+                   print(g(call))\n\
+                   let made = O(n: new, s: \"\")\n\
+                   print(math.abs())\n\
+                   print(len.len())\n\
+                   print(chars.chars().len())\n\
+                   print(bytes.bytes().len())\n\
+                   print(words.words().len())\n\
+                   print(string(from))\n\
+                   print(sum.sum())\n\
+                   print(field.n)\n\
+                   let wrapped: i64? = wrap\n\
+                   let converted = u8(convert)\n\
+                   print(-unary)\n\
+                   print(binary + 1)\n\
+                   print(concat + \"a\")\n\
+                   print(equal == 1)\n\
+                   print(is1 is is2)\n\
+                   print([fill; 2].len())\n\
+                   print(index[0])\n\
+                   print(contains.contains(1))\n\
+                   print(1 < compare < 3)\n\
+                   print(\"{part}\")\n\
+                   print([lit].len())\n\
+                   let v = E.V(variant)\n\
+                   if cond { print(1) } else { print(2) }\n\
+                   if let n = some { print(n) }\n\
+                   match scrutinee {\n        V(j) if j > guard => print(j)\n        _ => print(0)\n    }\n\
+                   while looped { break }\n\
+                   let mut local = 0\n\
+                   local = assigned\n\
+                   placed.n = 1\n\
+                   let mut xs = [1]\n\
+                   xs[at] = root\n\
+                   appended.s += \"x\"\n\
+                   if cond { return returned }\n\
+                   panic(panicked)\n\
+                   }\nfn main() {}";
+        let ast = parse_ok(src);
+        let (program, diagnostics) = check(&ast, src);
+        let program = program.unwrap_or_else(|| panic!("{diagnostics:?}"));
+        let f = program
+            .functions
+            .iter()
+            .find(|f| f.name == "f")
+            .expect("the source should define `f`");
+        let mut found = Vec::new();
+        block_mentions(&f.body, &mut found);
+        let found: FxHashSet<_> = found.into_iter().collect();
+        for (id, local) in f.locals.iter().enumerate() {
+            if let Some(name) = &local.name {
+                assert!(found.contains(&id), "`{name}` not found");
+            }
+        }
     }
 
     #[test]

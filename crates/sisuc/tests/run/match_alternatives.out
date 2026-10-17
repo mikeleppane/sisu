@@ -1,0 +1,41 @@
+drop zero: 5
+drop zero: 7
+drop zero: 0
+keep (1 + 2)
+try x with tag-y
+try y with tag-y
+picked y
+try x with tag-x
+picked x
+try x with tag-z
+try y with tag-z
+neither of x and y
+long long one
+short ab
+ab
+see 1 3
+see 1 4
+see 2 3
+see 2 4
+none taken
+see 1
+see 2
+see 3
+see 4
+none taken
+g 5
+took 5
+g (2 + 3)
+took (2 + 3)
+g 7
+took 7
+g 9
+fell through
+fell through
+h no
+fell through
+h yes
+took yes
+h yes
+took yes
+fell through

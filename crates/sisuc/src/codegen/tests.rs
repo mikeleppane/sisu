@@ -883,6 +883,26 @@ fn fast_path_skips_base_count() {
     }
 }
 
+/// A string pattern compares the scrutinee with its literal's global borrowed: the test calls
+/// the string `eq` helper and retains nothing. A retained global is never freed, so neither
+/// Valgrind nor `--rc-checks` would see the extra count; only the IR shows it.
+#[test]
+fn string_pattern_borrows_its_literal() {
+    let context = Context::create();
+    let ir = compiled(
+        &context,
+        "fn f(s: string) -> i64 {\n    match s {\n        \"hi\" => 1\n        _ => 0\n    }\n}\nfn main() {}",
+    )
+    .print_to_string()
+    .to_string();
+    let body = function_body(&ir, "define internal i64 @sisu.f(ptr");
+    assert!(
+        body.contains("@sisu_rc.eq.string("),
+        "no string comparison in\n{body}"
+    );
+    assert!(!body.contains("@sisu_rc.retain("), "a retain in\n{body}");
+}
+
 /// The runtime's print functions touch only memory the module cannot reach (their buffer,
 /// `errno`) and what a pointer argument points to, which they read, and never unwind, but
 /// they can exit the process, so they are not `willreturn`. `sisu_str_compare` only reads its

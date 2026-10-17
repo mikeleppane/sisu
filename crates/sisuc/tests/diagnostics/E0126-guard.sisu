@@ -1,0 +1,14 @@
+const LIMIT = 9
+
+enum Expr {
+    Num(i64)
+    Neg(Expr)
+}
+
+fn main() {
+    let n = 3
+    match Expr.Num(n) {
+        Num(LIMIT) if n > 0 => print(n)
+        _ => print(2)
+    }
+}

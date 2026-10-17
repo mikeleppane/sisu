@@ -1,0 +1,175 @@
+// Alternatives and guards. Alternatives are tried left to right as if the pattern were expanded
+// into a list of whole alternatives, so a later failure, of a sub-pattern or of the guard,
+// retries the most recent choice point first. A guard runs once per alternative tried, and its
+// side effects repeat. A failed guard releases nothing; strings are built at run time, so
+// Valgrind and `--rc-checks` see every binding released exactly once.
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+}
+
+enum Two {
+    Pair(string, string)
+    Single(string)
+}
+
+enum Ints {
+    T(i64, i64)
+}
+
+enum Duo {
+    D(Ints, Ints)
+}
+
+// `L` and `P` hold each other, so `N`'s field and `Pair`'s first field are boxed.
+enum L {
+    N(P)
+    End
+    Other(string)
+}
+
+enum P {
+    Pair(L, string)
+}
+
+fn show(e: Expr) -> string {
+    match e {
+        Num(n) => "{n}"
+        Add(a, b) => "({show(a)} + {show(b)})"
+        Mul(a, b) => "({show(a)} * {show(b)})"
+    }
+}
+
+// Each alternative binds `x` from its own field.
+fn drop_zero(e: Expr) -> string {
+    match e {
+        Add(Num(0), x) | Add(x, Num(0)) => "drop zero: {show(x)}"
+        _ => "keep {show(e)}"
+    }
+}
+
+fn keep(a: string, tag: string, want: string) -> bool {
+    print("try {a} with {tag}")
+    a == want
+}
+
+// The guard fails on the first alternative and runs again on the second. `tag` is read only in
+// the guard, which can run twice, so it is never moved into the call.
+fn pick(t: Two, want: string) -> string {
+    let tag = "tag-" + want
+    match t {
+        Pair(a, _) | Pair(_, a) if keep(a, tag, want) => "picked {a}"
+        Pair(a, b) => "neither of {a} and {b}"
+        Single(s) => s
+    }
+}
+
+// A false guard with a counted binding falls to the next arm.
+fn size(t: Two) -> string {
+    match t {
+        Single(s) if s.len() > 3 => "long {s}"
+        Single(s) => "short {s}"
+        Pair(a, b) => a + b
+    }
+}
+
+fn see(x: i64, y: i64) -> bool {
+    print("see {x} {y}")
+    false
+}
+
+fn see_one(x: i64) -> bool {
+    print("see {x}")
+    false
+}
+
+// The guard always fails, so it prints every expansion in the order they are tried: the second
+// field's choice point, the most recent, is retried before the first field's.
+fn order(d: Duo) -> string {
+    match d {
+        D(T(x, _) | T(_, x), T(y, _) | T(_, y)) if see(x, y) => "seen"
+        D(_, _) => "none taken"
+    }
+}
+
+// Alternatives inside alternatives: the inner choice point is exhausted before the outer one
+// moves on.
+fn order_nested(d: Duo) -> string {
+    match d {
+        D(T(x, _) | T(_, x), _) | D(_, T(x, _) | T(_, x)) if see_one(x) => "seen"
+        D(_, _) => "none taken"
+    }
+}
+
+fn g(x: Expr) -> bool {
+    let text = show(x)
+    print("g {text}")
+    text != "9"
+}
+
+// Reached through each alternative, and through each of the first one's inner alternatives.
+fn small_add_or_mul(e: Expr) -> string {
+    match e {
+        Add(Num(0) | Num(1), x) | Mul(x, _) if g(x) => "took {show(x)}"
+        _ => "fell through"
+    }
+}
+
+fn h(x: string) -> bool {
+    print("h {x}")
+    x == "yes"
+}
+
+// The inner alternative sits under two boxes and before the sibling binding `x`. A false guard
+// retries the inner alternative from the guard, then the outer one.
+fn boxed(l: L) -> string {
+    match l {
+        N(Pair(End | N(_), x)) | Other(x) if h(x) => "took {x}"
+        _ => "fell through"
+    }
+}
+
+fn num(n: i64) -> Expr {
+    Expr.Num(n)
+}
+
+fn run(s: string) -> string {
+    s + ""
+}
+
+fn main() {
+    print(drop_zero(Expr.Add(num(0), num(5))))    // drop zero: 5
+    print(drop_zero(Expr.Add(num(7), num(0))))    // drop zero: 7
+    print(drop_zero(Expr.Add(num(0), num(0))))    // drop zero: 0
+    print(drop_zero(Expr.Add(num(1), num(2))))    // keep (1 + 2)
+    // `keep` prints "try x with tag-y", then "try y with tag-y".
+    print(pick(Two.Pair(run("x"), run("y")), run("y")))    // picked y
+    // `keep` prints "try x with tag-x".
+    print(pick(Two.Pair(run("x"), run("y")), run("x")))    // picked x
+    // `keep` prints "try x with tag-z", then "try y with tag-z".
+    print(pick(Two.Pair(run("x"), run("y")), run("z")))    // neither of x and y
+    print(size(Two.Single(run("long one"))))      // long long one
+    print(size(Two.Single(run("ab"))))            // short ab
+    print(size(Two.Pair(run("a"), run("b"))))     // ab
+    // `see` prints "see 1 3", "see 1 4", "see 2 3", then "see 2 4".
+    print(order(Duo.D(Ints.T(1, 2), Ints.T(3, 4))))           // none taken
+    // `see_one` prints "see 1", "see 2", "see 3", then "see 4".
+    print(order_nested(Duo.D(Ints.T(1, 2), Ints.T(3, 4))))    // none taken
+    // `g` prints "g 5".
+    print(small_add_or_mul(Expr.Add(num(0), num(5))))                      // took 5
+    // `g` prints "g (2 + 3)".
+    print(small_add_or_mul(Expr.Add(num(1), Expr.Add(num(2), num(3)))))    // took (2 + 3)
+    // `g` prints "g 7".
+    print(small_add_or_mul(Expr.Mul(num(7), num(8))))                      // took 7
+    // `g` prints "g 9".
+    print(small_add_or_mul(Expr.Add(num(0), num(9))))                      // fell through
+    print(small_add_or_mul(Expr.Add(num(2), num(5))))                      // fell through
+    // `h` prints "h no".
+    print(boxed(L.N(P.Pair(L.End, run("no")))))                            // fell through
+    // `h` prints "h yes".
+    print(boxed(L.N(P.Pair(L.N(P.Pair(L.End, run("inner"))), run("yes")))))  // took yes
+    // `h` prints "h yes".
+    print(boxed(L.Other(run("yes"))))                                      // took yes
+    print(boxed(L.End))                                                    // fell through
+}

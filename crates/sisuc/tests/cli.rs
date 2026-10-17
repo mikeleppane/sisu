@@ -1016,6 +1016,22 @@ fn emit_tokens_match() {
 }
 
 #[test]
+fn emit_tokens_pipe_and_inclusive_range() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::write(dir.join("emit_tokens_pipe.sisu"), "| ..= ||\n").expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_sisuc"))
+        .current_dir(dir)
+        .args(["--emit", "tokens", "emit_tokens_pipe.sisu"])
+        .output()
+        .expect("sisuc starts");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1:1 Pipe |\n1:3 DotDotEq ..=\n1:7 OrOr ||\n1:9 Eof\n"
+    );
+}
+
+#[test]
 fn enum_layouts_follow_the_target() {
     use std::fmt::Write as _;
     // `Outer` is declared before the `Pair?` it holds and `Holder` before the `Trio` it holds,

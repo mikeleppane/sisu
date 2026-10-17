@@ -11,7 +11,8 @@ use super::expr::{local, no_member, path, typed};
 use super::{Checked, Checker, Poisoned, block_expr, payload, type_of};
 use crate::ast::{self, CompareOp, ExprKind};
 use crate::diagnostic::{
-    Definition, Diagnostic, DiagnosticKind, InterpolateHelp, MismatchFix, Operand, Span,
+    Definition, Diagnostic, DiagnosticKind, InterpolateHelp, MismatchFix, MismatchSource, Operand,
+    Span,
 };
 use crate::tir::{self, Type};
 
@@ -159,7 +160,7 @@ impl Checker<'_> {
             want: vec![self.type_name(&Type::String)],
             got: self.type_name(got),
             at: e.span,
-            other: Some(other),
+            source: Some(MismatchSource::Concat(other)),
             fix: unsafe_fix.then(|| MismatchFix::Interpolate {
                 lhs: operand(lhs),
                 rhs: operand(rhs),
@@ -321,7 +322,7 @@ impl Checker<'_> {
                     want: from.iter().map(|ty| self.type_name(ty)).collect(),
                     got: self.type_name(ty),
                     at: arg.value.span,
-                    other: None,
+                    source: None,
                     fix: None,
                     conversion: false,
                 }
@@ -389,7 +390,7 @@ impl Checker<'_> {
             want: vec![self.type_name(want)],
             got: self.type_name(got),
             at: arg.span,
-            other: None,
+            source: None,
             fix: Some(MismatchFix::InterpolateCall {
                 call,
                 arg: arg.span,

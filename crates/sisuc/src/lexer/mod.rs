@@ -88,8 +88,10 @@ pub(crate) enum TokenKind {
     Colon,
     Arrow,
     FatArrow,
+    Pipe,
     Dot,
     DotDot,
+    DotDotEq,
     LBracket,
     RBracket,
     Semicolon,
@@ -176,8 +178,10 @@ impl TokenKind {
             TokenKind::Colon => "Colon",
             TokenKind::Arrow => "Arrow",
             TokenKind::FatArrow => "FatArrow",
+            TokenKind::Pipe => "Pipe",
             TokenKind::Dot => "Dot",
             TokenKind::DotDot => "DotDot",
+            TokenKind::DotDotEq => "DotDotEq",
             TokenKind::LBracket => "LBracket",
             TokenKind::RBracket => "RBracket",
             TokenKind::Semicolon => "Semicolon",
@@ -254,8 +258,10 @@ impl TokenKind {
             TokenKind::Colon | TokenKind::FormatSpec(_) => ":",
             TokenKind::Arrow => "->",
             TokenKind::FatArrow => "=>",
+            TokenKind::Pipe => "|",
             TokenKind::Dot => ".",
             TokenKind::DotDot => "..",
+            TokenKind::DotDotEq => "..=",
             TokenKind::LBracket => "[",
             TokenKind::RBracket => "]",
             TokenKind::Semicolon => ";",
@@ -925,10 +931,10 @@ pub(crate) fn literal_too_large(at: Span) -> Diagnostic {
 /// The operator or punctuation starting with `c`, consuming a second char when it has one.
 fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
     use TokenKind::{
-        AndAnd, Arrow, Bang, Colon, Comma, Dot, DotDot, Eq, EqEq, FatArrow, Ge, Gt, LBrace,
-        LBracket, LParen, Le, Lt, Minus, MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq,
-        QuestionDot, QuestionQuestion, RBrace, RBracket, RParen, Semicolon, Slash, SlashEq, Star,
-        StarEq, StarStar,
+        AndAnd, Arrow, Bang, Colon, Comma, Dot, DotDot, DotDotEq, Eq, EqEq, FatArrow, Ge, Gt,
+        LBrace, LBracket, LParen, Le, Lt, Minus, MinusEq, NotEq, OrOr, Percent, PercentEq, Pipe,
+        Plus, PlusEq, QuestionDot, QuestionQuestion, RBrace, RBracket, RParen, Semicolon, Slash,
+        SlashEq, Star, StarEq, StarStar,
     };
     let mut eat = |want| chars.next_if(|&(_, n)| n == want).is_some();
     Some(match c {
@@ -955,13 +961,20 @@ fn symbol(c: char, chars: &mut Chars) -> Option<TokenKind> {
         '>' => Gt,
         '&' if eat('&') => AndAnd,
         '|' if eat('|') => OrOr,
+        '|' => Pipe,
         '(' => LParen,
         ')' => RParen,
         '{' => LBrace,
         '}' => RBrace,
         ',' => Comma,
         ':' => Colon,
-        '.' if eat('.') => DotDot,
+        '.' if eat('.') => {
+            if eat('=') {
+                DotDotEq
+            } else {
+                DotDot
+            }
+        }
         '.' => Dot,
         '[' => LBracket,
         ']' => RBracket,
@@ -1108,6 +1121,39 @@ mod tests {
                 ident("matches"),
                 Eof
             ]
+        );
+    }
+
+    #[test]
+    fn pipe_and_range_tokens() {
+        use TokenKind::{DotDot, DotDotEq, Eof, OrOr, Pipe};
+        assert_eq!(
+            kinds("a | b || c"),
+            [ident("a"), Pipe, ident("b"), OrOr, ident("c"), Eof]
+        );
+        assert_eq!(kinds("a..=b"), [ident("a"), DotDotEq, ident("b"), Eof]);
+        assert_eq!(kinds("a..b"), [ident("a"), DotDot, ident("b"), Eof]);
+        assert_eq!(kinds("a ..= b"), [ident("a"), DotDotEq, ident("b"), Eof]);
+    }
+
+    /// A `|` cannot end a statement, so a line that ends with one continues onto the next.
+    #[test]
+    fn a_line_ending_in_a_pipe_continues() {
+        use TokenKind::{Eof, FatArrow, Newline, Pipe};
+        assert_eq!(
+            tokens("A |\nB =>\n")
+                .into_iter()
+                .map(|t| t.kind)
+                .collect::<Vec<_>>(),
+            [ident("A"), Pipe, ident("B"), FatArrow, Eof]
+        );
+        // A `|` that starts the line follows a statement that ends.
+        assert_eq!(
+            tokens("A\n| B")
+                .into_iter()
+                .map(|t| t.kind)
+                .collect::<Vec<_>>(),
+            [ident("A"), Newline, Pipe, ident("B"), Newline, Eof]
         );
     }
 
@@ -2144,17 +2190,16 @@ mod tests {
 
     #[test]
     fn unexpected_character_fix() {
-        // A lone `&` or `|` gets an unsafe fix to the doubled operator.
-        for (src, doubled) in [("a & b", "&&"), ("a | b", "||")] {
-            let d = only(src);
-            assert_eq!(d.code(), Code::UnexpectedCharacter, "{src}");
-            assert_eq!(line_col(src, d.span().start()), (1, 3), "{src}");
-            assert_eq!(
-                fix_edits(&d),
-                Some((false, vec![(2, 3, doubled.to_string())])),
-                "{src}"
-            );
-        }
+        // A lone `&` gets an unsafe fix to the doubled operator; a lone `|` is the parser's.
+        let src = "a & b";
+        let d = only(src);
+        assert_eq!(d.code(), Code::UnexpectedCharacter, "{src}");
+        assert_eq!(line_col(src, d.span().start()), (1, 3), "{src}");
+        assert_eq!(
+            fix_edits(&d),
+            Some((false, vec![(2, 3, "&&".to_string())])),
+            "{src}"
+        );
         // No fix is offered for any other character.
         let d = only("a $ b");
         assert_eq!(d.code(), Code::UnexpectedCharacter);
@@ -2976,7 +3021,7 @@ mod tests {
                 vec![(UnexpectedCharacter, 2, 15)],
             ),
             (
-                "fn main() {\n    f(a |\n        [0])\n}",
+                "fn main() {\n    f(a $\n        [0])\n}",
                 vec![(UnexpectedCharacter, 2, 9)],
             ),
             (

@@ -31,7 +31,7 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0020](E0020.md) | error | `self` that is not the first parameter |
 | [E0021](E0021.md) | error | assignment to something that is not a place |
 | [E0022](E0022.md) | error | assignment through `?.` |
-| [E0023](E0023.md) | error | range outside `for` |
+| [E0023](E0023.md) | error | range outside `for` and patterns |
 | [E0024](E0024.md) | error | chained `==`, `!=` or `is` |
 | [E0025](E0025.md) | error | comparison chain that turns around |
 | [E0026](E0026.md) | error | name taken by a built-in |
@@ -140,6 +140,11 @@ stands. The code may be in any case. Links in an explanation are relative to
 | [E0129](E0129.md) | error | name bound twice in one pattern |
 | [E0130](E0130.md) | error | `match` that does not cover every value |
 | [E0131](E0131.md) | error | `if let` or `while let` that always matches |
+| [E0132](E0132.md) | error | range written another language's way |
+| [E0133](E0133.md) | error | arm split across lines |
+| [E0134](E0134.md) | error | interpolation in a string pattern |
+| [E0135](E0135.md) | error | a range pattern that cannot match |
+| [E0136](E0136.md) | error | alternatives bind different names |
 | [W0001](W0001.md) | warning | unreachable code |
 | [W0002](W0002.md) | warning | variable that is never reassigned |
 | [W0003](W0003.md) | warning | `todo` left in the program |

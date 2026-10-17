@@ -1,0 +1,35 @@
+// `bool` and string literal patterns. A string pattern compares the scrutinee's bytes with the
+// literal's, so a string built at run time matches; it borrows the literal, so a thousand tests
+// leak nothing and free nothing twice, which Valgrind and `--rc-checks` see.
+fn yes_no(b: bool) -> string {
+    match b {
+        true => "yes"
+        false => "no"
+    }
+}
+
+fn kind(s: string) -> i64 {
+    match s {
+        "" => 0
+        "hi" => 1
+        "héllo" => 2
+        _ => 3
+    }
+}
+
+fn main() {
+    print(yes_no(1 < 2))    // yes
+    print(yes_no(2 < 1))    // no
+    // Each word is joined from two parts. "hj" misses "hi" by one byte, "hello" misses "héllo".
+    let starts = ["", "h", "hé", "h", "he"]
+    let ends = ["", "i", "llo", "j", "llo"]
+    let mut counts = [0, 0, 0, 0]
+    for i in 0..1000 {
+        let word = starts[i % 5] + ends[i % 5]
+        counts[kind(word)] += 1
+    }
+    print(counts[0])    // 200
+    print(counts[1])    // 200
+    print(counts[2])    // 200
+    print(counts[3])    // 400
+}

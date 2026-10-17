@@ -173,6 +173,11 @@ codes! {
     BoundTwice = "E0129",
     NonExhaustive = "E0130",
     AlwaysMatches = "E0131",
+    ForeignRange = "E0132",
+    ArmSplit = "E0133",
+    InterpolatedPattern = "E0134",
+    BadRange = "E0135",
+    AlternativeBindings = "E0136",
     NanComparison = "W0005",
     UnreachableArm = "W0006",
 }
@@ -326,14 +331,14 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// A value of type `got`, at `at`, where one of the types `want` is expected; `fix` is the
-    /// rewrite that would fit. `other` is the `string` operand of the `+` that expects a
-    /// `string` of it, if that is what does. `conversion` is whether the value is a conversion
-    /// that can fail, whose optional stands where its payload is expected.
+    /// rewrite that would fit. `source` is the place the expectation came from, if the report
+    /// points at it. `conversion` is whether the value is a conversion that can fail, whose
+    /// optional stands where its payload is expected.
     Mismatch {
         want: Vec<String>,
         got: String,
         at: Span,
-        other: Option<Span>,
+        source: Option<MismatchSource>,
         fix: Option<MismatchFix>,
         conversion: bool,
     },
@@ -695,8 +700,15 @@ pub(crate) enum DiagnosticKind {
     CannotMatch { ty: String, at: Span },
     /// The upper-case name `name`, at `at`, in a pattern where no enum is expected.
     NotVariantHere { name: String, at: Span },
-    /// The constant `name`, at `at`, written as a pattern.
-    ConstantInPattern { name: String, at: Span },
+    /// The constant `name`, at `at`, written as a pattern. `guard` is the guard the help shows:
+    /// a name and the guard that compares it with the constant, `n if n == LIMIT`, or in words
+    /// in an arm with `|`; only in a `match` arm, and not for a range bound, where `n == LIMIT`
+    /// would change what the range means.
+    ConstantInPattern {
+        name: String,
+        at: Span,
+        guard: Option<GuardHelp>,
+    },
     /// The pattern at `at`, neither a name nor `_`, at a position of type `ty`, which takes only
     /// those.
     OnlyNamePosition { ty: String, at: Span },
@@ -708,7 +720,13 @@ pub(crate) enum DiagnosticKind {
         at: Span,
     },
     /// The name `name`, at `at`, bound again in one pattern; `first` is its first binding.
-    BoundTwice { name: String, at: Span, first: Span },
+    /// `guard` is the guard the help shows, in a `match` arm.
+    BoundTwice {
+        name: String,
+        at: Span,
+        first: Span,
+        guard: Option<GuardHelp>,
+    },
     /// The pattern at `at`, `found` as written (`Shape.Circle`, `None`), at a position of type
     /// `want`.
     PatternMismatch {
@@ -718,27 +736,48 @@ pub(crate) enum DiagnosticKind {
     },
     /// The `match` whose keyword is at `at`, which does not cover `missing`. `partly` is the
     /// first arm with `missing`'s variant at the top: its span, its pattern and its payload.
+    /// `guarded` is whether a guarded arm may not match it, and `gap` whether it is a gap in an
+    /// integer, `char` or `string` type, which only `_ =>` closes for good.
     /// The fix writes a `_ =>` arm, indented by `indent`, in place of `insert`: an empty span,
     /// or the space between the last arm and a `}` on its line. `close` is the indentation of
     /// that `}`, which the fix moves to a line of its own.
     NonExhaustive {
         missing: String,
         partly: Option<(Span, String, String)>,
+        guarded: bool,
+        gap: bool,
         at: Span,
         insert: Span,
         indent: String,
         close: Option<String>,
     },
-    /// The arm whose pattern is at `at`, which no value reaches; `covered_by` is the arm that
-    /// takes all its values, when one does. `remove` is the arm's line, or, when the
-    /// `match`'s `}` ends that line, from the line break before the arm through its body.
+    /// The arm whose pattern is at `at`, or the alternative at `at` when `alternative`, which no
+    /// value reaches; `covered_by` is the arm that takes all its values, when one does.
+    /// `remove` is the arm's line, or, when the `match`'s `}` ends that line, from the line
+    /// break before the arm through its body; for an alternative, the alternative and the `|`
+    /// that joins it to the one before it, or after it when it is first.
     UnreachableArm {
         at: Span,
+        alternative: bool,
         covered_by: Option<Span>,
         remove: Span,
     },
     /// The pattern at `at` of `keyword`, which every value of its enum matches.
     AlwaysMatches { keyword: Unwrap, at: Span },
+    /// A range written another language's way, with its operator at `at`.
+    ForeignRange { form: ForeignRange, at: Span },
+    /// A line of an arm list, from `at`, its first token, that starts with `|`, `=>` or a
+    /// guard's `if`, and so continues the arm above. `join` is the space from the end of the
+    /// line above to `at`, which the fix replaces with one space; `None` when a comment lies in
+    /// it.
+    ArmSplit { at: Span, join: Option<Span> },
+    /// The interpolation at `at` in a string pattern.
+    InterpolatedPattern { at: Span },
+    /// The range pattern at `at`, which `form` says is wrong.
+    BadRange { form: BadRange, at: Span },
+    /// The alternative at `at`, which does not bind `name`, though another alternative of the
+    /// same `|` does.
+    AlternativeBindings { name: String, at: Span },
     /// The comparison at `at`, `!=` when `negated`, one side of which is `f64.nan`, which no
     /// number equals; `fix` is its `is_nan` test, when the other side is an `f64`.
     NanComparison {
@@ -910,6 +949,14 @@ pub(crate) struct Conversion {
     pub(crate) operand: Span,
 }
 
+/// Where a mismatch's expected type came from.
+pub(crate) enum MismatchSource {
+    /// The `string` operand of a `+` that expects a `string` of the other.
+    Concat(Span),
+    /// The earlier alternative's binding of `name`, at `at`, which gave it the type wanted.
+    Binding { name: String, at: Span },
+}
+
 /// A rewrite that would give a mismatched value the type expected.
 #[derive(Clone, Copy)]
 pub(crate) enum MismatchFix {
@@ -1004,6 +1051,37 @@ pub(crate) enum ForeignPattern {
         replace: Span,
         fields: String,
     },
+}
+
+/// A range written another language's way. `start` and `end` are its bounds as written; `end` is
+/// `None` when it did not parse, and the message then calls it `end`.
+pub(crate) enum ForeignRange {
+    /// `start..<end`; `remove` is the `<`, unless removing it leaves a range the parser rejects.
+    Exclusive {
+        start: String,
+        end: Option<String>,
+        remove: Option<Span>,
+    },
+    /// `start...end`.
+    Ellipsis { start: String, end: Option<String> },
+}
+
+/// The guard the help of `BoundTwice` or `ConstantInPattern` suggests.
+pub(crate) enum GuardHelp {
+    /// Written out: for `BoundTwice` the arm's pattern with the second binding renamed and the
+    /// guard that compares the two, for `ConstantInPattern` a name and the guard.
+    Rewritten(String),
+    /// In words: the arm holds an `|`, whose other alternatives would not bind the name the
+    /// guard reads.
+    InWords,
+}
+
+/// What is wrong with a range pattern.
+pub(crate) enum BadRange {
+    /// It stands at a position of a type with no ranges, or its bounds are of one.
+    Type,
+    /// It matches no value: `5..=4`, `5..5`.
+    Empty,
 }
 
 /// What owns a method.
@@ -1218,6 +1296,11 @@ impl DiagnosticKind {
             DiagnosticKind::NonExhaustive { .. } => Code::NonExhaustive,
             DiagnosticKind::UnreachableArm { .. } => Code::UnreachableArm,
             DiagnosticKind::AlwaysMatches { .. } => Code::AlwaysMatches,
+            DiagnosticKind::ForeignRange { .. } => Code::ForeignRange,
+            DiagnosticKind::ArmSplit { .. } => Code::ArmSplit,
+            DiagnosticKind::InterpolatedPattern { .. } => Code::InterpolatedPattern,
+            DiagnosticKind::BadRange { .. } => Code::BadRange,
+            DiagnosticKind::AlternativeBindings { .. } => Code::AlternativeBindings,
         }
     }
 }
@@ -1538,9 +1621,11 @@ impl From<DiagnosticKind> for Diagnostic {
                 Diagnostic::coded(code, at, "cannot assign through `?.`")
                     .with_help("unwrap it with `if let`")
             }
-            DiagnosticKind::RangeOutsideFor { at } => {
-                Diagnostic::coded(code, at, "ranges are only allowed in `for`")
-            }
+            DiagnosticKind::RangeOutsideFor { at } => Diagnostic::coded(
+                code,
+                at,
+                "ranges are only allowed in `for` and in patterns",
+            ),
             DiagnosticKind::EqualityChain { at } => {
                 Diagnostic::coded(code, at, "`==`, `!=` and `is` do not chain")
                     .with_help("join the comparisons with `&&`")
@@ -1613,7 +1698,7 @@ impl From<DiagnosticKind> for Diagnostic {
                 want,
                 got,
                 at,
-                other,
+                source,
                 fix,
                 conversion,
             } => {
@@ -1627,8 +1712,14 @@ impl From<DiagnosticKind> for Diagnostic {
                 };
                 let mut d =
                     Diagnostic::coded(code, at, format!("expected {want}, found `{got}`"));
-                if let Some(other) = other {
-                    d = d.with_secondary(other, "`+` joins this `string`");
+                match source {
+                    Some(MismatchSource::Concat(operand)) => {
+                        d = d.with_secondary(operand, "`+` joins this `string`");
+                    }
+                    Some(MismatchSource::Binding { name, at }) => {
+                        d = d.with_secondary(at, format!("`{name}` is {want} here"));
+                    }
+                    None => {}
                 }
                 if conversion {
                     d = d.with_help(
@@ -2652,11 +2743,22 @@ impl From<DiagnosticKind> for Diagnostic {
                     .with_help("a binding starts with a lower-case letter")
                     .with_fix(unsafe_fix(&format!("write `{lower}`"), at, &lower))
             }
-            DiagnosticKind::ConstantInPattern { name, at } => Diagnostic::coded(
-                code,
-                at,
-                format!("`{name}` is a constant; a pattern cannot compare with it"),
-            ),
+            DiagnosticKind::ConstantInPattern { name, at, guard } => {
+                let d = Diagnostic::coded(
+                    code,
+                    at,
+                    format!("`{name}` is a constant; a pattern cannot compare with it"),
+                );
+                match guard {
+                    Some(GuardHelp::Rewritten(guard)) => {
+                        d.with_help(format!("use a guard: `{guard}`"))
+                    }
+                    Some(GuardHelp::InWords) => d.with_help(format!(
+                        "use a guard: bind a name and compare it with `{name}`"
+                    )),
+                    None => d,
+                }
+            }
             DiagnosticKind::OnlyNamePosition { ty, at } => Diagnostic::coded(
                 code,
                 at,
@@ -2675,9 +2777,24 @@ impl From<DiagnosticKind> for Diagnostic {
                     format!("`{variant}` has {fields} field{plural}, the pattern has {found}"),
                 )
             }
-            DiagnosticKind::BoundTwice { name, at, first } => {
-                Diagnostic::coded(code, at, format!("`{name}` is bound twice in this pattern"))
-                    .with_secondary(first, "first bound here")
+            DiagnosticKind::BoundTwice {
+                name,
+                at,
+                first,
+                guard,
+            } => {
+                let d =
+                    Diagnostic::coded(code, at, format!("`{name}` is bound twice in this pattern"))
+                        .with_secondary(first, "first bound here");
+                match guard {
+                    Some(GuardHelp::Rewritten(guard)) => {
+                        d.with_help(format!("use a guard: `{guard}`"))
+                    }
+                    Some(GuardHelp::InWords) => d.with_help(format!(
+                        "use a guard: bind a second name and compare it with `{name}`"
+                    )),
+                    None => d,
+                }
             }
             DiagnosticKind::PatternMismatch { want, found, at } => Diagnostic::coded(
                 code,
@@ -2687,12 +2804,20 @@ impl From<DiagnosticKind> for Diagnostic {
             DiagnosticKind::NonExhaustive {
                 missing,
                 partly,
+                guarded,
+                gap,
                 at,
                 insert,
                 indent,
                 close,
             } => {
                 let d = Diagnostic::coded(code, at, format!("`match` does not cover `{missing}`"));
+                let d = if guarded {
+                    d.with_label("a guarded arm may not match")
+                } else {
+                    d
+                };
+                let d = if gap { d.with_help("add `_ =>`") } else { d };
                 let d = match partly {
                     Some((arm, pattern, payload)) => {
                         d.with_secondary(arm, format!("`{pattern}` covers only `{payload}`"))
@@ -2707,15 +2832,17 @@ impl From<DiagnosticKind> for Diagnostic {
             }
             DiagnosticKind::UnreachableArm {
                 at,
+                alternative,
                 covered_by,
                 remove,
             } => {
-                let d = Diagnostic::coded(code, at, "unreachable arm");
+                let what = if alternative { "alternative" } else { "arm" };
+                let d = Diagnostic::coded(code, at, format!("unreachable {what}"));
                 match covered_by {
                     Some(arm) => d.with_secondary(arm, "this arm covers it"),
                     None => d,
                 }
-                .with_fix(unsafe_fix("remove the arm", remove, ""))
+                .with_fix(unsafe_fix(&format!("remove the {what}"), remove, ""))
             }
             DiagnosticKind::AlwaysMatches { keyword, at } => match keyword {
                 Unwrap::IfLet => Diagnostic::coded(code, at, "`if let` always matches here")
@@ -2726,6 +2853,47 @@ impl From<DiagnosticKind> for Diagnostic {
                     "`while let` always matches here, so the pattern never ends the loop",
                 ),
             },
+            DiagnosticKind::ForeignRange { form, at } => match form {
+                ForeignRange::Exclusive { start, end, remove } => {
+                    let end = end.as_deref().unwrap_or("end");
+                    let d = Diagnostic::coded(code, at, format!("write `{start}..{end}`"));
+                    match remove {
+                        Some(lt) => d.with_fix(safe_fix("remove the `<`", lt, "")),
+                        None => d,
+                    }
+                }
+                ForeignRange::Ellipsis { start, end } => {
+                    let end = end.as_deref().unwrap_or("end");
+                    Diagnostic::coded(
+                    code,
+                    at,
+                    format!(
+                        "write `{start}..={end}` to include `{end}`, or `{start}..{end}` to leave it out"
+                    ),
+                    )
+                }
+            },
+            DiagnosticKind::ArmSplit { at, join } => {
+                let d = Diagnostic::coded(code, at, "an arm continues on the line above");
+                match join {
+                    Some(join) => d.with_fix(safe_fix("join it to the line above", join, " ")),
+                    None => d,
+                }
+            }
+            DiagnosticKind::InterpolatedPattern { at } => {
+                Diagnostic::coded(code, at, "a pattern takes no interpolation")
+            }
+            DiagnosticKind::BadRange { form, at } => match form {
+                BadRange::Type => {
+                    Diagnostic::coded(code, at, "a range pattern takes `i64`, `u8` or `char`")
+                }
+                BadRange::Empty => Diagnostic::coded(code, at, "this range matches no value"),
+            },
+            DiagnosticKind::AlternativeBindings { name, at } => Diagnostic::coded(
+                code,
+                at,
+                format!("`{name}` is bound in one alternative but not the other"),
+            ),
             DiagnosticKind::NanComparison { at, negated, fix } => {
                 let always = if negated { "true" } else { "false" };
                 let d = Diagnostic::coded(

@@ -1,0 +1,22 @@
+error[E0129]: `x` is bound twice in this pattern
+  --> E0129-alternative.sisu:10:16
+   |
+10 |         Add(x, x) | Num(x) => print(x)
+   |             -  ^
+   |             |
+   |             first bound here
+   |
+   = help: use a guard: bind a second name and compare it with `x`
+
+error[E0129]: `y` is bound twice in this pattern
+  --> E0129-alternative.sisu:14:16
+   |
+14 |         Sum(y, y, true | false) => print(y)
+   |             -  ^
+   |             |
+   |             first bound here
+   |
+   = help: use a guard: bind a second name and compare it with `y`
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0129

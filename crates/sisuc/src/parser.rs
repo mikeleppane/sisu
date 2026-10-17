@@ -3,14 +3,14 @@
 use std::ops::Range;
 
 use crate::ast::{
-    Align, Arg, Arm, BinaryOp, Block, Broken, BrokenKind, Class, CompareOp, Const, Enum, Expr,
-    ExprKind, FieldDecl, ForSource, FormatSpec, Function, Ident, Item, Member, Param, Part,
-    Pattern, PatternKind, PayloadField, Program, Stmt, StmtKind, TypeExpr, TypeKind, UnaryOp,
-    Variant,
+    Align, Arg, Arm, BinaryOp, Block, Bound, Broken, BrokenKind, Class, CompareOp, Const, Enum,
+    Expr, ExprKind, FieldDecl, ForSource, FormatSpec, Function, Ident, Item, Literal, Member,
+    Param, Part, Pattern, PatternKind, PayloadField, Program, Stmt, StmtKind, TypeExpr, TypeKind,
+    UnaryOp, Variant,
 };
 use crate::diagnostic::{
-    self, BuiltIn, Diagnostic, DiagnosticKind, ForeignPattern, Join, LetField, MatchIdiomForm,
-    Owner, PowerFix, SemicolonPlace, Span,
+    self, BuiltIn, Diagnostic, DiagnosticKind, ForeignPattern, ForeignRange, Join, LetField,
+    MatchIdiomForm, Owner, PowerFix, SemicolonPlace, Span,
 };
 use crate::lexer::{Lexed, MIN_MAGNITUDE, Token, TokenKind, literal_too_large};
 use crate::symbol::Symbol;
@@ -223,6 +223,17 @@ enum EnumMember {
     Method(Function),
 }
 
+/// A range operator as written.
+#[derive(Clone, Copy)]
+enum RangeOp {
+    /// `..`.
+    Exclusive,
+    /// `..=`.
+    Inclusive,
+    /// Another language's `..<` (`lt` is the `<`) or `...`, with the span of the operator.
+    Foreign { at: Span, lt: Option<Span> },
+}
+
 struct Parser<'a> {
     /// The text the token spans index.
     source: &'a str,
@@ -326,7 +337,11 @@ impl<'a> Parser<'a> {
     /// "expected <what>, found <the next token>", pointing at the next token.
     /// A stray `var` or reserved word always gets its own diagnostic, wherever it appears.
     fn expected(&self, what: &str) -> Diagnostic {
-        let found = self.peek();
+        self.expected_at(self.peek(), what)
+    }
+
+    /// "expected <what>, found <found>", pointing at the token `found`, which need not be next.
+    fn expected_at(&self, found: &Token, what: &str) -> Diagnostic {
         match found.kind {
             TokenKind::Var => DiagnosticKind::Var {
                 at: found.span,
@@ -1159,13 +1174,18 @@ impl<'a> Parser<'a> {
                     p.binary(1)
                 };
                 let first = self.child(base, &mut reach, side)?;
-                let source = if self.eat(&TokenKind::DotDot).is_some() {
-                    ForSource::Range {
+                let source = match self.range_op() {
+                    None => ForSource::Array(first),
+                    Some(RangeOp::Foreign { at, lt }) => {
+                        // Reported even when the end does not parse.
+                        let end = self.child(base, &mut reach, side).ok().map(|e| e.span);
+                        return Err(self.foreign_range(at, lt, first.span, end, true));
+                    }
+                    Some(op) => ForSource::Range {
                         start: first,
                         end: self.child(base, &mut reach, side)?,
-                    }
-                } else {
-                    ForSource::Array(first)
+                        inclusive: matches!(op, RangeOp::Inclusive),
+                    },
                 };
                 StmtKind::For {
                     name,
@@ -1263,13 +1283,46 @@ impl<'a> Parser<'a> {
         Ok(Some((pattern, value)))
     }
 
-    /// A pattern: `_`, `None`, a name, `Num(p, ...)`, `Expr.Num(p, ...)` or `Expr.Idle`.
+    /// A pattern: one or more `single`s joined by `|`.
     fn pattern(&mut self) -> Result<Pattern, Diagnostic> {
         self.descend()?;
         let base = self.depth;
         let mut reach = base;
+        let first = self.child(base, &mut reach, Self::single)?;
+        let pattern = if self.at(&TokenKind::Pipe) {
+            let mut span = first.span;
+            let mut alternatives = vec![first];
+            while self.eat(&TokenKind::Pipe).is_some() {
+                let next = self.child(base, &mut reach, Self::single)?;
+                span = span.to(next.span);
+                alternatives.push(next);
+            }
+            // The `Or` is the parent of its alternatives: one level more.
+            self.reach(reach + 1)?;
+            return Ok(Pattern {
+                kind: PatternKind::Or(alternatives),
+                span,
+            });
+        } else {
+            first
+        };
+        self.depth = reach;
+        Ok(pattern)
+    }
+
+    /// One alternative of a pattern: `_`, `None`, a name, `Num(p, ...)`, `Expr.Num(p, ...)`,
+    /// `Expr.Idle`, a literal, or a range of two literals. The caller has counted its level.
+    fn single(&mut self) -> Result<Pattern, Diagnostic> {
+        let base = self.depth;
+        let mut reach = base;
         let token = self.peek();
         let (kind, span) = match token.kind {
+            TokenKind::Minus
+            | TokenKind::Int(_)
+            | TokenKind::Char(_)
+            | TokenKind::Str(_)
+            | TokenKind::True
+            | TokenKind::False => return self.literal_pattern(),
             TokenKind::Underscore => {
                 self.bump();
                 (PatternKind::Wild, token.span)
@@ -1341,14 +1394,200 @@ impl<'a> Parser<'a> {
                         parens: None,
                     };
                     (kind, span)
+                } else if let Some(op) = self.range_op() {
+                    return self.range_end(Bound::Name(name), token.span, op);
                 } else {
                     (PatternKind::Name(name), token.span)
                 }
             }
+            TokenKind::StrHead(_) => return Err(self.interpolated_pattern()),
             _ => return Err(self.expected("a pattern")),
         };
+        // A name or a literal can start a range; no other pattern is a bound.
+        if matches!(self.peek().kind, TokenKind::DotDot | TokenKind::DotDotEq) {
+            return Err(self.expected_at(token, "a literal"));
+        }
         self.depth = reach;
         Ok(Pattern { kind, span })
+    }
+
+    /// The error for a string pattern with an interpolation, at the next token, the string's
+    /// head: `InterpolatedPattern` on the first interpolation, once it parses.
+    fn interpolated_pattern(&mut self) -> Diagnostic {
+        // The head's text ends just after its `{`, and the next piece starts at its `}`.
+        let open = self.bump().span.end() - 1;
+        let base = self.depth;
+        let mut reach = base;
+        if let Err(error) = self.child(base, &mut reach, Self::expr) {
+            return error;
+        }
+        if matches!(self.peek().kind, TokenKind::FormatSpec(_)) {
+            self.bump();
+        }
+        let close = self.peek().span.start();
+        if !matches!(
+            self.peek().kind,
+            TokenKind::StrMiddle(_) | TokenKind::StrTail(_)
+        ) {
+            return self.expected("`}`");
+        }
+        DiagnosticKind::InterpolatedPattern {
+            at: Span::new(open, close + 1),
+        }
+        .into()
+    }
+
+    /// A literal pattern, or a range that starts with one, at the next token.
+    fn literal_pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        let (start, start_span) = self.literal()?;
+        match self.range_op() {
+            Some(op) => self.range_end(Bound::Literal(start), start_span, op),
+            None => Ok(Pattern {
+                kind: PatternKind::Literal(start),
+                span: start_span,
+            }),
+        }
+    }
+
+    /// The rest of a range pattern, after its `start` at `start_span` and its operator `op`: its
+    /// end. A bare name is a bound the checker reports, but not when it starts a path or a call;
+    /// nothing else but a literal is a bound. A range written another language's way is reported
+    /// even when its end does not parse.
+    fn range_end(
+        &mut self,
+        start: Bound,
+        start_span: Span,
+        op: RangeOp,
+    ) -> Result<Pattern, Diagnostic> {
+        let bound = |p: &mut Self| {
+            let token = p.peek();
+            match token.kind {
+                TokenKind::Ident(name)
+                    if !matches!(p.tokens[p.pos + 1].kind, TokenKind::LParen | TokenKind::Dot) =>
+                {
+                    p.bump();
+                    Ok((
+                        Bound::Name(Ident {
+                            name,
+                            span: token.span,
+                        }),
+                        token.span,
+                    ))
+                }
+                _ => p
+                    .literal()
+                    .map(|(literal, span)| (Bound::Literal(literal), span)),
+            }
+        };
+        let end = bound(self);
+        if let RangeOp::Foreign { at, lt } = op {
+            let end = end.ok().map(|(_, span)| span);
+            return Err(self.foreign_range(at, lt, start_span, end, true));
+        }
+        let (end, end_span) = end?;
+        Ok(Pattern {
+            kind: PatternKind::Range {
+                start,
+                end,
+                inclusive: matches!(op, RangeOp::Inclusive),
+            },
+            span: start_span.to(end_span),
+        })
+    }
+
+    /// The literal at the next token, `["-"] Int | Char | Str | "true" | "false"`, and its
+    /// span, `-` included. Anything else is "expected a literal".
+    fn literal(&mut self) -> Result<(Literal, Span), Diagnostic> {
+        let token = self.peek();
+        let minus = (token.kind == TokenKind::Minus).then(|| self.bump().span);
+        let token = self.peek();
+        let literal = match (&token.kind, minus) {
+            (&TokenKind::Int(magnitude), _) => {
+                // Only a `-` takes `i64::MIN`'s magnitude, as in an expression.
+                let value = if minus.is_some() && magnitude == MIN_MAGNITUDE {
+                    i64::MIN
+                } else {
+                    let value =
+                        i64::try_from(magnitude).map_err(|_| literal_too_large(token.span))?;
+                    if minus.is_some() { -value } else { value }
+                };
+                Literal::Int {
+                    value,
+                    text: token.span,
+                    negative: minus,
+                }
+            }
+            (_, Some(_)) => return Err(self.expected("an integer literal")),
+            (&TokenKind::Char(c), None) => Literal::Char(c),
+            (TokenKind::Str(s), None) => Literal::Str(s.clone()),
+            (&TokenKind::True | &TokenKind::False, None) => {
+                Literal::Bool(token.kind == TokenKind::True)
+            }
+            _ => return Err(self.expected("a literal")),
+        };
+        let end = self.bump().span;
+        Ok((literal, minus.map_or(end, |minus| minus.to(end))))
+    }
+
+    /// The range operator at the next token, consumed: `..`, `..=`, or another language's
+    /// `..<` and `...` when `..` is followed with no gap by a `<` or a `.`.
+    fn range_op(&mut self) -> Option<RangeOp> {
+        let op = self.peek();
+        match op.kind {
+            TokenKind::DotDotEq => {
+                self.bump();
+                Some(RangeOp::Inclusive)
+            }
+            TokenKind::DotDot => {
+                self.bump();
+                let next = self.peek();
+                if next.span.start() == op.span.end()
+                    && matches!(next.kind, TokenKind::Lt | TokenKind::Dot)
+                {
+                    self.bump();
+                    return Some(RangeOp::Foreign {
+                        at: op.span.to(next.span),
+                        lt: (next.kind == TokenKind::Lt).then_some(next.span),
+                    });
+                }
+                Some(RangeOp::Exclusive)
+            }
+            _ => None,
+        }
+    }
+
+    /// The error for a range written another language's way: `at` is its operator, `lt` the
+    /// `<` of `..<`, and `start` and `end` its bounds, `end` being `None` when it did not parse.
+    /// Removing the `<` is a safe fix only where `fixable` and the end parsed: where the range is
+    /// not allowed, or the end is broken, it leaves an error.
+    fn foreign_range(
+        &self,
+        at: Span,
+        lt: Option<Span>,
+        start: Span,
+        end: Option<Span>,
+        fixable: bool,
+    ) -> Diagnostic {
+        let start_text = self.source[start.range()].to_string();
+        let end_text = end.map(|end| self.source[end.range()].to_string());
+        let form = match lt {
+            Some(lt) => ForeignRange::Exclusive {
+                start: start_text,
+                end: end_text,
+                remove: (fixable && end.is_some()).then_some(lt),
+            },
+            None => ForeignRange::Ellipsis {
+                start: start_text,
+                end: end_text,
+            },
+        };
+        DiagnosticKind::ForeignRange { form, at }.into()
+    }
+
+    /// A lone `|` where an expression stands: logical or is `||`.
+    fn lone_pipe(&self) -> Diagnostic {
+        let at = self.peek().span;
+        DiagnosticKind::UnexpectedCharacter { c: '|', at }.into()
     }
 
     /// The sub-patterns after the `(` or `{` at the next token, through `close`; the label
@@ -1532,7 +1771,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `pattern => body`.
+    /// `pattern => body`, or `pattern if guard => body`.
     fn arm(&mut self) -> Result<Arm, Diagnostic> {
         let base = self.depth;
         let mut reach = base;
@@ -1540,6 +1779,14 @@ impl<'a> Parser<'a> {
             return Err(error);
         }
         let pattern = self.child(base, &mut reach, Self::pattern)?;
+        self.arm_split(&[TokenKind::Pipe, TokenKind::FatArrow, TokenKind::If])?;
+        let guard = if self.eat(&TokenKind::If).is_some() {
+            let guard = self.child(base, &mut reach, Self::expr)?;
+            self.arm_split(&[TokenKind::FatArrow])?;
+            Some(guard)
+        } else {
+            None
+        };
         if self.at(&TokenKind::Arrow) {
             return Err(DiagnosticKind::MatchIdiom {
                 form: MatchIdiomForm::Arrow,
@@ -1550,7 +1797,34 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::FatArrow)?;
         let body = self.child(base, &mut reach, Self::arm_body)?;
         self.depth = reach;
-        Ok(Arm { pattern, body })
+        Ok(Arm {
+            pattern,
+            guard,
+            body,
+        })
+    }
+
+    /// `ArmSplit` when the line ends here and the next line with code starts with one of
+    /// `continues`, so continues the arm. The fix joins the lines, unless a comment lies between.
+    fn arm_split(&self, continues: &[TokenKind]) -> Result<(), Diagnostic> {
+        if !self.at(&TokenKind::Newline) {
+            return Ok(());
+        }
+        let Some(next) = self.tokens[self.pos..]
+            .iter()
+            .find(|t| t.kind != TokenKind::Newline)
+            .filter(|t| continues.contains(&t.kind))
+        else {
+            return Ok(());
+        };
+        let gap = self.last_code_end()..next.span.start();
+        let join =
+            (!self.comments.iter().any(|c| gap.contains(c))).then(|| Span::new(gap.start, gap.end));
+        Err(DiagnosticKind::ArmSplit {
+            at: next.span,
+            join,
+        }
+        .into())
     }
 
     /// An arm's body: an expression, or a statement that is not one (an assignment, `return`,
@@ -1697,11 +1971,15 @@ impl<'a> Parser<'a> {
     fn expr(&mut self) -> Result<Expr, Diagnostic> {
         self.descend()?;
         let e = self.binary(1)?;
-        if self.at(&TokenKind::DotDot) {
-            return Err(DiagnosticKind::RangeOutsideFor {
-                at: self.peek().span,
-            }
-            .into());
+        if matches!(self.peek().kind, TokenKind::DotDot | TokenKind::DotDotEq) {
+            let at = self.peek().span;
+            return Err(match self.range_op() {
+                Some(RangeOp::Foreign { at, lt }) => {
+                    let end = self.binary(1).ok().map(|end| end.span);
+                    self.foreign_range(at, lt, e.span, end, false)
+                }
+                _ => DiagnosticKind::RangeOutsideFor { at }.into(),
+            });
         }
         Ok(e)
     }
@@ -1773,6 +2051,8 @@ impl<'a> Parser<'a> {
                     }
                     .into());
                 }
+            } else if *kind == TokenKind::Pipe {
+                return Err(self.lone_pipe());
             } else {
                 return Ok(lhs);
             }
@@ -2080,6 +2360,7 @@ impl<'a> Parser<'a> {
                 }
                 .into());
             }
+            TokenKind::Pipe => return Err(self.lone_pipe()),
             _ => return Err(self.expected("an expression")),
         };
         Ok(Expr {
@@ -3629,6 +3910,284 @@ mod tests {
         }
     }
 
+    /// Literals, ranges, alternatives and guards in an arm, and a line that continues.
+    #[test]
+    fn pattern_forms() {
+        let rows = [
+            ("0 => 1", "(arm 0 1)"),
+            ("-1 => 1", "(arm -1 1)"),
+            // The first arm: a later line that starts with `- ` is E0002, as in an expression.
+            ("- 1 => 1", "(arm -1 1)"),
+            ("-0 => 1", "(arm -0 1)"),
+            ("-9223372036854775808 => 1", "(arm -9223372036854775808 1)"),
+            ("'a' => 1", "(arm 'a' 1)"),
+            ("\"yes\" => 1", "(arm \"yes\" 1)"),
+            ("true => 1", "(arm true 1)"),
+            ("1..=4 => 1", "(arm (..= 1 4) 1)"),
+            ("0..10 => 1", "(arm (.. 0 10) 1)"),
+            ("'A'..='Z' => 1", "(arm (..= 'A' 'Z') 1)"),
+            ("-9..=-1 => 1", "(arm (..= -9 -1) 1)"),
+            ("0..n => 1", "(arm (.. 0 n) 1)"),
+            ("LIMIT..=10 => 1", "(arm (..= LIMIT 10) 1)"),
+            ("lo..10 => 1", "(arm (.. lo 10) 1)"),
+            ("LO..=HI => 1", "(arm (..= LO HI) 1)"),
+            ("lo..hi | 0 => 1", "(arm (| (.. lo hi) 0) 1)"),
+            ("A | B => 1", "(arm (| A B) 1)"),
+            ("0 | 1 | 2 => 1", "(arm (| 0 1 2) 1)"),
+            (
+                "'a'..='z' | 'A'..='Z' => 1",
+                "(arm (| (..= 'a' 'z') (..= 'A' 'Z')) 1)",
+            ),
+            (
+                "Add(Num(0) | Num(1), x) => 1",
+                "(arm (Add (| (Num 0) (Num 1)) x) 1)",
+            ),
+            ("A | B if c => 1", "(arm (| A B) (if c) 1)"),
+            ("n if n > 0 => 1", "(arm n (if (> n 0)) 1)"),
+            // A line that ends in `|` continues, so these are one arm.
+            ("A |\n        B => 1", "(arm (| A B) 1)"),
+            (
+                "Num(n) =>\n        if c { 1 } else { 2 }",
+                "(arm (Num n) (if c (block 1) (block 2)))",
+            ),
+        ];
+        for (arm, want) in rows {
+            let src = format!("match e {{\n    {arm}\n}}");
+            assert_eq!(expr(&src), format!("(match e {want})"), "{arm}");
+        }
+    }
+
+    /// The pattern of each arm of `arms`, the arms of a `match` in `main`.
+    fn arm_patterns(arms: &str) -> (String, Vec<Pattern>) {
+        let src = format!("fn main() {{\n    match e {{\n{arms}\n    }}\n}}");
+        let f = first_fn(&src);
+        let StmtKind::Expr(Expr {
+            kind: ExprKind::Match { arms, .. },
+            ..
+        }) = &f.body.stmts[0].kind
+        else {
+            panic!("expected a match");
+        };
+        let patterns = arms.iter().map(|arm| arm.pattern.clone()).collect();
+        (src, patterns)
+    }
+
+    /// Each pattern's span covers its own text: `-` and the digits, the whole range, the whole
+    /// alternation.
+    #[test]
+    fn pattern_spans() {
+        let (src, patterns) = arm_patterns("        - 1 | 3..=4 | 'a'..n => 1");
+        let PatternKind::Or(alternatives) = &patterns[0].kind else {
+            panic!("expected alternatives");
+        };
+        let text = |p: &Pattern| &src[p.span.range()];
+        assert_eq!(text(&patterns[0]), "- 1 | 3..=4 | 'a'..n");
+        let written: Vec<&str> = alternatives.iter().map(text).collect();
+        assert_eq!(written, ["- 1", "3..=4", "'a'..n"]);
+    }
+
+    /// A negative literal holds its signed value, the `-`'s span and the digits' span; the
+    /// printer shows only the magnitude and the sign, so it cannot tell them apart.
+    #[test]
+    fn literal_values() {
+        let (src, patterns) = arm_patterns(
+            "        5 => 1\n        -5 => 1\n        -0 => 1\n        -9223372036854775808 => 1",
+        );
+        let ints: Vec<_> = patterns
+            .iter()
+            .map(|p| {
+                let PatternKind::Literal(Literal::Int {
+                    value,
+                    text,
+                    negative,
+                }) = &p.kind
+                else {
+                    panic!("expected an integer literal");
+                };
+                (
+                    *value,
+                    &src[text.range()],
+                    negative.map(|minus| &src[minus.range()]),
+                )
+            })
+            .collect();
+        assert_eq!(
+            ints,
+            [
+                (5, "5", None),
+                (-5, "5", Some("-")),
+                (0, "0", Some("-")),
+                (i64::MIN, "9223372036854775808", Some("-")),
+            ]
+        );
+    }
+
+    #[test]
+    fn for_inclusive() {
+        let rows = [
+            ("for i in 1..=3 {}", "(for i (..= 1 3) (block))"),
+            ("for i in 0..=n + 1 {}", "(for i (..= 0 (+ n 1)) (block))"),
+        ];
+        for (src, want) in rows {
+            assert_eq!(expr(src), want, "{src}");
+        }
+    }
+
+    /// The code and position of each error in a pattern, a range or a `|`, and its fix.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row per error, so the table reads in one place"
+    )]
+    fn pattern_parse_errors() {
+        let main = |body: &str| format!("fn main() {{\n    {body}\n}}");
+        let arm = |arm: &str| main(&format!("match e {{\n        {arm}\n    }}"));
+        // Each row: the source, the code and position of the error, and its fix: whether it is
+        // safe, and the source it gives.
+        let rows = [
+            (
+                main("for i in 0..<n {}"),
+                Code::ForeignRange,
+                (2, 15),
+                Some((true, main("for i in 0..n {}"))),
+            ),
+            (
+                arm("0..<9 => 1"),
+                Code::ForeignRange,
+                (3, 10),
+                Some((true, arm("0..9 => 1"))),
+            ),
+            (arm("1...5 => 1"), Code::ForeignRange, (3, 10), None),
+            (main("let r = 1...5"), Code::ForeignRange, (2, 14), None),
+            // The fix would leave a range outside `for`.
+            (main("let r = 0..<3"), Code::ForeignRange, (2, 14), None),
+            // A gap after `..` makes the `<` or `.` the end's own first token.
+            (main("for i in 0.. <n {}"), Code::Expected, (2, 18), None),
+            (main("for i in 0.. .n {}"), Code::Expected, (2, 18), None),
+            // A start that is no literal or bare name, and an end that starts a path or a call:
+            // at its first token.
+            (arm("f(1)..2 => 1"), Code::Expected, (3, 9), None),
+            (arm("_..2 => 1"), Code::Expected, (3, 9), None),
+            (arm("A.B..2 => 1"), Code::Expected, (3, 9), None),
+            (arm("0..f(1) => 1"), Code::Expected, (3, 12), None),
+            (arm("0..A.B => 1"), Code::Expected, (3, 12), None),
+            // A range of another language is reported whatever its end is.
+            (main("let r = 1...*"), Code::ForeignRange, (2, 14), None),
+            (main("for i in 0..<* {}"), Code::ForeignRange, (2, 15), None),
+            (arm("1...* => 1"), Code::ForeignRange, (3, 10), None),
+            (arm("1..<* => 1"), Code::ForeignRange, (3, 10), None),
+            // A later arm that starts with `- ` is E0002, as a line of an expression does.
+            (
+                main("match e {\n        0 => 1\n        - 1 => 2\n    }"),
+                Code::LeadingBinaryMinus,
+                (4, 9),
+                None,
+            ),
+            (arm("0..* => 1"), Code::Expected, (3, 12), None),
+            (arm("-x => 1"), Code::Expected, (3, 10), None),
+            // The error of a bound, an alternative, a guard or an end that fails to parse.
+            (arm("A | * => 1"), Code::Expected, (3, 13), None),
+            (arm("A if * => 1"), Code::Expected, (3, 14), None),
+            (main("let r = 1..."), Code::ForeignRange, (2, 14), None),
+            (arm("1.5 => 1"), Code::Expected, (3, 9), None),
+            (
+                arm("9223372036854775808 => 1"),
+                Code::IntegerTooLarge,
+                (3, 9),
+                None,
+            ),
+            (
+                main("let y = a | b"),
+                Code::UnexpectedCharacter,
+                (2, 15),
+                Some((false, main("let y = a || b"))),
+            ),
+            (
+                main("let y = |true"),
+                Code::UnexpectedCharacter,
+                (2, 13),
+                Some((false, main("let y = ||true"))),
+            ),
+            (main("let r = 0..=3"), Code::RangeOutsideFor, (2, 14), None),
+            // A line that starts with `|`, `=>` or a guard's `if` continues the arm above, and
+            // the fix joins it, across blank lines too, unless a comment would swallow it.
+            (
+                arm("A\n        | B => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A | B => 1"))),
+            ),
+            (
+                arm("A\n        => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A => 1"))),
+            ),
+            (
+                arm("A\n        if c => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A if c => 1"))),
+            ),
+            (
+                arm("A if c\n        => 1"),
+                Code::ArmSplit,
+                (4, 9),
+                Some((true, arm("A if c => 1"))),
+            ),
+            (
+                arm("A\n\n        => 1"),
+                Code::ArmSplit,
+                (5, 9),
+                Some((true, arm("A => 1"))),
+            ),
+            (arm("A // note\n        => 1"), Code::ArmSplit, (4, 9), None),
+            // An arm above that is complete has nothing to continue: the line reads as an arm.
+            (
+                main("match e {\n        A => 1\n        | B => 2\n    }"),
+                Code::Expected,
+                (4, 9),
+                None,
+            ),
+            (
+                main("match e {\n        A => 1\n        => 2\n    }"),
+                Code::Expected,
+                (4, 9),
+                None,
+            ),
+            (
+                main("match e {\n        1 => 1\n        if n > 0 => 1\n    }"),
+                Code::Expected,
+                (4, 9),
+                None,
+            ),
+            (
+                arm("\"{x}\" => 1"),
+                Code::InterpolatedPattern,
+                (3, 10),
+                None,
+            ),
+            (
+                arm("\"a{x:4}b\" => 1"),
+                Code::InterpolatedPattern,
+                (3, 11),
+                None,
+            ),
+            // An interpolation that does not parse reports that first.
+            (arm("\"{*}\" => 1"), Code::Expected, (3, 11), None),
+            (arm("\"{x y}\" => 1"), Code::Expected, (3, 13), None),
+            // A line that does not continue the arm leaves its `=>` missing.
+            (arm("A\n        B => 1"), Code::Expected, (3, 10), None),
+        ];
+        for (src, code, position, fix) in rows {
+            let d = parse_diagnostic(&src);
+            assert_eq!(d.code(), code, "{src}");
+            assert_eq!(line_col(&src, d.span().start()), position, "{src}");
+            let found = fix_edits(&d).map(|(safe, _)| (safe, apply_fix(&src, &d)));
+            assert_eq!(found, fix, "{src}");
+        }
+    }
+
     /// `_` is no value, and `let _ =` is no arm body, so the error has no fix.
     #[test]
     fn underscore_arm_body_has_no_fix() {
@@ -3642,8 +4201,8 @@ mod tests {
     #[test]
     fn let_pattern_needs_a_pattern() {
         let rows = [
-            ("if let 1 = x {}", 20),
-            ("while let 1 = x {}", 23),
+            ("if let 1.5 = x {}", 20),
+            ("while let 1.5 = x {}", 23),
             ("if let n x {}", 22),
             ("if let = n {}", 20),
             ("if let x = * {}", 24),

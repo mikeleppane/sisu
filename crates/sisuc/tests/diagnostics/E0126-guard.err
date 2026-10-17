@@ -1,0 +1,10 @@
+error[E0126]: `LIMIT` is a constant; a pattern cannot compare with it
+  --> E0126-guard.sisu:11:13
+   |
+11 |         Num(LIMIT) if n > 0 => print(n)
+   |             ^^^^^
+   |
+   = help: use a guard: `n2 if n2 == LIMIT && n > 0`
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0126

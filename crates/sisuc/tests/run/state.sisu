@@ -1,0 +1,54 @@
+// A state machine over an enum whose variants carry nothing, a class and a labeled field; `if let`
+// takes one variant apart, and a `while let` loop walks a recursive list enum. `step` changes
+// `c.count` through the class that `Running(c)` binds, so the change shows in `counter`.
+class Counter {
+    mut count: i64
+}
+
+enum State {
+    Idle
+    Running(Counter)
+    Done(steps: i64)
+}
+
+enum Steps {
+    Cons(i64, Steps)
+    End
+}
+
+fn step(s: State, counter: Counter) -> State {
+    match s {
+        Idle => State.Running(counter)
+        Running(c) if c.count >= 3 => State.Done(steps: c.count)
+        Running(c) => {
+            c.count += 1
+            s
+        }
+        Done(_) => s
+    }
+}
+
+fn main() {
+    let counter = Counter(count: 0)
+    let mut s = State.Idle
+    let mut moves = 0
+
+    while true {
+        if let Done(steps) = s {
+            print("done after {steps} counts and {moves} moves")  // done after 3 counts and 5 moves
+            break
+        }
+        s = step(s, counter)
+        moves += 1
+        print("counter {counter.count}")                         // counter 0, 1, 2, 3, 3
+    }
+
+    // The list 1, 2, 3 is walked front to back, the `while let` ending at `End`.
+    let mut list = Steps.Cons(1, Steps.Cons(2, Steps.Cons(3, Steps.End)))
+    let mut total = 0
+    while let Cons(n, rest) = list {
+        total += n
+        list = rest
+    }
+    print("total {total}")                                         // total 6
+}

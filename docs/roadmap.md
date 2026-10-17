@@ -5,9 +5,10 @@ proves it works. Its design is settled in a working spec before work starts.
 The specs are not published. The decisions they settled are listed below,
 and the lasting ones are recorded as ADRs in [adr](adr).
 
-## Milestones 1 to 6
+## Milestones 1 to 7
 
-These are adopted. Together they give Sisu a working imperative core.
+These are adopted. Together they give Sisu a working imperative core, and
+enums with `match`.
 
 | # | Milestone | Done when | Status |
 | --- | --- | --- | --- |
@@ -17,6 +18,7 @@ These are adopted. Together they give Sisu a working imperative core.
 | 4 | Strings | A program reverses and compares strings | Done |
 | 5 | Standard streams and arguments | A word-count tool reads standard input | Done |
 | 6 | Floats and conversions: `f64`, conversions that can fail return an optional, an unused-value warning, format specs | A Mandelbrot set prints as text, and a projectile table prints with format specs and a conversion to `i64?`, all clean under Valgrind | Done |
+| 7 | Enums with payloads, `match` with destructuring, alternatives, guards, literal and range patterns and an exhaustiveness check, `if let` and `while let` with enum patterns, and `..=` in `for` | An evaluator over a recursive `enum Expr` of `Num(i64)`, `Add` and `Mul` prints correct results, and a state machine runs with `match`, `if let` and `while let`, all clean under Valgrind; a non-exhaustive `match` is a compile error | Done |
 
 ### What works today
 
@@ -43,11 +45,15 @@ These are adopted. Together they give Sisu a working imperative core.
 - `match` on an enum, `i64`, `u8`, `bool`, `char` or `string`, as an
   expression or a statement, with one arm per line; a pattern is a variant,
   bare or through its enum (`Num(n)`, `Expr.Num(n)`), whose sub-patterns
-  nest, or a name that binds, or `_`, and on a type that is not an enum an
-  arm takes only a name or `_`; a `match` that misses a value does not
-  compile and names one it misses, such as `Mul(_, _)`, and an arm that no
-  value reaches warns (`W0006`); `if let` and `while let` take the same
-  patterns on an enum
+  nest, or a name that binds, or `_`; a pattern is also a literal (`0`, `'a'`,
+  `"x"`, `true`) on `i64`, `u8`, `char`, `bool` and `string`,
+  or a range (`'A'..='Z'`, `0..10`) on `i64`, `u8` and `char`, while at a
+  class, array or optional position it is only a name or `_`; patterns may
+  be alternatives
+  (`Add(Num(0), x) | Add(x, Num(0))`), and an arm may add a guard,
+  `n if n > 0 =>`; a `match` that misses a value does not compile and names
+  one it misses, such as `Mul(_, _)`, and an arm that no value reaches warns
+  (`W0006`); `if let` and `while let` take the same patterns on an enum
 - `f64`, written `2.5`, `1e-3` or `3.0e8`, with IEEE 754 arithmetic and
   comparisons (`nan` is not equal to itself, and `-0.0` equals `0.0`);
   `i64(x)`, an `i64?` that is `None` unless `x` is a whole number in range,
@@ -66,7 +72,7 @@ These are adopted. Together they give Sisu a working imperative core.
   `n` does not fit, with no panic
 - arrays such as `[i64]` and `[[bool]]`, built with `[1, 2, 3]` or `[0; n]`,
   read and written by index, compared with `==`, and walked with `for x in xs`
-  or `for i in 0..n`; `len`, `sum` and `contains` are methods on them
+  or `for i in 0..n` (`..=` includes the end); `len`, `sum` and `contains` are methods on them
 - `char`, one Unicode scalar value such as `'ä'`, compared by code point and
   converted with `i64(c)` and `char(n)`, a `char?` that is `None` for a
   surrogate or a value above `0x10FFFF`, with no panic
@@ -214,9 +220,43 @@ These came out of the milestone 2 design and are now part of its spec:
 - The proof programs are `mandelbrot.sisu` and `projectile.sisu` in
   `crates/sisuc/tests/run/`.
 
+### Decided in milestone 7
+
+- An enum is a value: a tag plus the payload of its variant, stored inline.
+  `Expr.Num(2)` builds one, a pattern uses the bare name (`Num(n)`), and a
+  payload field whose enum type leads back to the declaring enum is stored
+  behind a counted box the compiler adds, so a recursive enum needs no
+  annotation. A box that reaches count zero is freed from a pending list,
+  not by recursion, so deep values free in constant stack. Enum values never
+  change in place
+  ([ADR 0019](adr/0019-enums-are-values-named-through-their-enum.md)).
+- A variant labels all its payload fields or none, the labels are written in
+  the declaration, a call gives every label in declared order, and a pattern
+  binds by position
+  ([ADR 0020](adr/0020-labels-belong-to-the-declaration.md)).
+- `match` owns its scrutinee and moves nothing out of it: arms are tested in
+  order, straight into basic blocks, with backtracking for alternatives and
+  guards, so there is no `mir`. A part the scrutinee held alone is counted up
+  and down once; reusing a box waits for a benchmark.
+- `match` is checked for exhaustiveness and reachability in one pass. A
+  guarded arm may not match, so it never covers a value. `i64`, `u8` and
+  `char` are finite domains, so ranges can cover them. A missing value is an
+  error that names one; an arm no value reaches warns (`W0006`).
+- A range pattern has Rust's two forms: `a..b` leaves out its end, as `for`
+  does, and `a..=b` includes it. `for` gains `..=` too.
+- Alternatives bind the same names with the same types, and a guard runs once
+  per alternative tried, so its side effects repeat.
+- `Option`, `Result`, `Some`, `None`, `Ok` and `Err` are reserved, so
+  milestone 8 can make them bare prelude names without breaking a program.
+- `if let x = opt` on a `T?` is an implicit `Some`: only a name or `_` may
+  stand there until milestone 8 settles the `Some` and `None` pattern rule.
+- Order (`<`) on an enum is an error, as on a class.
+- The proof programs are `expr.sisu` and `state.sisu` in
+  `crates/sisuc/tests/run/`.
+
 ### What panics
 
-After milestone 6, these are all the ways a Sisu program panics, each with
+After milestone 7, these are all the ways a Sisu program panics, each with
 how to avoid it. Each milestone keeps the table current.
 
 | Operation | Panics when | Without the panic |
@@ -285,7 +325,7 @@ fn area(s: Shape) -> f64 {
 }
 
 fn main() {
-    let shapes = [Circle(1.0), Rect(2.0, 3.0)]
+    let shapes = [Shape.Circle(radius: 1.0), Shape.Rect(w: 2.0, h: 3.0)]
     let mut total = 0.0
 
     for s in shapes {
@@ -299,9 +339,10 @@ fn main() {
 }
 ```
 
-The sample builds variants without the enum's name and without payload
-labels. Both are open decisions ("Names and namespaces", "Argument labels"),
-and the sample changes to match what they decide.
+The sample builds a variant through its enum, with every label, and matches
+it by the bare name with positional bindings, as milestone 7 decided
+([ADR 0019](adr/0019-enums-are-values-named-through-their-enum.md),
+[ADR 0020](adr/0020-labels-belong-to-the-declaration.md)).
 
 ## Fold into milestones 2 to 6
 
@@ -414,14 +455,13 @@ The compiler is fuzzed in two stages:
    would catch a program that compiles but computes the wrong answer, which
    crash fuzzing cannot see.
 
-## Proposed milestones 7 to 12
+## Proposed milestones 8 to 12
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| 7 | Enums with payloads, `match` with destructuring, alternatives, guards, literal and range patterns and an exhaustiveness check, `if let` and `while let` with enum patterns, and `..=` in `for` | An evaluator over a recursive `enum Expr` of `Num(i64)`, `Add` and `Mul` prints correct results; a non-exhaustive `match` is a compile error |
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface; `Option` and `Result` join the prelude, with the bare names `Some`, `None`, `Ok` and `Err` in expressions and patterns, and on a `T?` a pattern whose outermost name is `Some` or `None` matches the optional itself while any other pattern matches the value inside it | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
-| 10 | Records, named arguments, default parameters | A `Point` record prints and compares with no hand-written methods |
+| 10 | Records, named arguments, default parameters, and `p as name` to bind a whole sub-pattern | A `Point` record prints and compares with no hand-written methods |
 | 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`), including `os.env(name)`, `os.exit(code)`, and an `io` module with `read_lines()`, read-everything and `read_bytes()` | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
 
@@ -496,7 +536,7 @@ settle before work starts.
 | Milestone 4: strings | Done | 5, `panic("msg")`, `Display` in 8, the proof programs of 6 and 9 |
 | Milestone 5: standard streams and arguments | 4 | The word-count tool |
 | Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof printed text, so it landed after 4 |
-| Milestone 7: enums and `match` | Decisions: values with fields, names and namespaces, argument labels, closure syntax | 8, 12 |
+| Milestone 7: enums and `match` | Done | 8, 12 |
 | Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), compiler-implemented interfaces (10), the standard library (11) |
 | Milestone 12: `Result` and `?` | 7, 8 | File I/O, the standard library (11), concurrency |
 | `weak` fields (ADR 0008) | Decision: the cycle part of equality and hashing | Closures that capture their owner |
@@ -511,15 +551,14 @@ settle before work starts.
 
 ### What can start now
 
-With milestone 4 done, each of these tracks can run beside the others once
-the decisions it needs are settled:
+With milestones 1 to 7 done, each of these tracks can run beside the others
+once the decisions it needs are settled:
 
 - **Decisions**: every entry in "Open decisions" is design work with no
   code. Settle the shared ones first, because several tracks build on each:
-  values with fields, names and namespaces, argument labels, closure syntax,
-  and the cycle part of equality and hashing.
-- **The language core**: milestone 5. Milestone 6 can be built in parallel.
-- **Enums**: milestone 7. It does not need floats or I/O.
+  what is left of argument labels (records and named arguments), names and
+  namespaces for modules, closure syntax for closures, values with fields
+  for records, and the cycle part of equality and hashing.
 - **Closures**: `weak` fields, then closures and function types from
   milestone 9. A function type names concrete types, such as
   `(i64) -> bool`, so closures need no generics.
@@ -556,13 +595,10 @@ the Sisu prelude can start, iterator methods once closures are done too, and
 compiler-implemented interfaces once records are done too. The standard
 library comes after them, and concurrency last.
 
-### Smaller additions to milestones 7 to 11
+### Smaller additions to milestones 8 to 11
 
 Each is small once its milestone's main feature exists:
 
-- Milestone 7: alternative patterns, `1 | 3 => ...`, and guards,
-  `n if n > 0 => ...`. The exhaustiveness check treats a guarded arm as
-  possibly not matching.
 - Milestone 8: type aliases, `type Index = Map<string, [i64]>`. An alias is
   another name for the same type, so it adds no type safety; for a distinct
   type, use a newtype (milestone 10). Also `echo x`, which prints `x` with its file
@@ -992,8 +1028,9 @@ These do not make code nicer to write, so they wait:
   Kotlin inlines lambda arguments. `@inline` on a recursive function is an
   error. From milestone 9, calls through closures cannot be inlined. At
   `-O2`, LLVM already inlines small functions, so this waits for a need.
-- More patterns after milestone 7: binding a whole sub-pattern with
-  `p as name`, and array patterns such as `[first, ..rest]`.
+- More patterns after milestone 7: array patterns such as `[first, ..rest]`.
+  `p as name` is in milestone 10, beside
+  records.
 - Doc comments, `///` before a declaration. The lexer drops comments today,
   so they wait for the formatter, which must keep comments anyway, and for
   the language server, which can show them.
@@ -1202,16 +1239,18 @@ standard library. The milestones after 12 then follow from it.
 - **Small-string optimisation.** Store short strings inside the variable's
   slot, as Swift and C++ do. Programs cannot observe it. Decide when a
   benchmark asks for it.
-- **Values with fields.** Agreed 2026-10-14; the spec of milestone 7 or of
-  records (milestone 10), whichever starts first, confirms it, because both
-  build on it:
+- **Values with fields.** Agreed 2026-10-14. Resolved for enums in milestone
+  7 ([ADR 0019](adr/0019-enums-are-values-named-through-their-enum.md));
+  records and tuples (milestone 10) reuse the mechanism and confirm the rest:
   - Records and tuples are values with their fields inline: the newtype
     promise (milestone 10) and ADR 0007 need that. An enum is the same: a tag
     and room for its largest payload, as in Rust and Swift. A heap object
     would make a second layout, and every `i64?`, an inline `{ i1, i64 }`
     pair today, would allocate once it becomes `Option<i64>` in milestone 8.
-    An enum with one empty variant and one that holds a class, a string or
-    an array uses the null pointer as its tag, as `T?` does today.
+    Milestone 7 always stores a tag; using the null pointer as the tag of an
+    enum with one empty variant and one that holds a class, a string or an
+    array, as `T?` does today, is not built. Milestone 8 may add that niche
+    for `Option`-shaped enums, since a program cannot see layout.
   - A payload cannot change in place. A pattern such as `Circle(r)` binds a
     copy, not a reference, so `let mut e` changes only by a new value:
     `e = Circle(2.0)`. Payloads have no place to assign to, because the
@@ -1222,7 +1261,8 @@ standard library. The milestones after 12 then follow from it.
     variants as well as records.
   - A variant that holds its own enum, such as `Add(Expr, Expr)`, gets its
     indirection without a keyword, unlike Swift's `indirect`. The compiler
-    boxes exactly the payload fields whose type leads back to the enum. The
+    boxes every payload field whose enum type lies in the declaring enum's
+    cycle, which may be more than the minimum. The
     box is counted and never changes, since a payload cannot change, so no
     program can tell it is there. A record that contains itself stays an
     error whose help says to use a class (milestone 10): its fields can
@@ -1239,31 +1279,36 @@ standard library. The milestones after 12 then follow from it.
   shared object. Swift checks this at run time and panics. The other choice
   is to leave the place empty or stale during the call, which needs no check
   but lets such a read see the wrong value. Decide in milestone 10.
-- **Names and namespaces.** Decide before milestone 7 and modules
-  (milestone 11). The target sample writes `Circle(1.0)` with no enum name,
-  but two enums can both have a `Circle`, and classes and functions already
-  share one namespace. Modules add module names to it. The candidates are
-  `Shape.Circle` always, or Swift's `.circle` where the expected type is
-  known. Every generated symbol then carries its module path, as "Modules"
-  describes.
-- **Argument labels.** Decide before milestone 7, records, named arguments
-  and closures, which all pass labeled values. Today a class constructor must
-  name every field in declaration order, and any other labeled argument is an
-  error. Decide:
-  - whether an enum payload and a record are built like a class, with every
-    label, and whether a payload may leave its labels out, as the target
-    sample does;
+- **Names and namespaces.** Resolved for enums in milestone 7
+  ([ADR 0019](adr/0019-enums-are-values-named-through-their-enum.md)): a
+  variant is built as `Shape.Circle`, a pattern uses the bare name, and the
+  type of the matched value decides which enum's variants are searched. Swift's
+  `.circle` short form stays open for expressions only. Modules (milestone 11)
+  still decide their part: classes and functions share one namespace, modules
+  add module names to it, and every generated symbol then carries its module
+  path, as "Modules" describes.
+- **Argument labels.** Resolved for enum payloads in milestone 7
+  ([ADR 0020](adr/0020-labels-belong-to-the-declaration.md)): a variant
+  labels all its fields or none, a call gives every label in declared order,
+  as a class constructor does, and arguments are evaluated left to right as
+  written. Still open, before records, named arguments and closures, which
+  all pass labeled values. Today any other labeled argument is an error.
+  Decide:
+  - whether a record is built like a class, with every label;
   - which calls may leave labels out, and whether labels may come in a
     different order;
   - whether labels and default values belong to a function type, so a call
     through a closure keeps them. Swift dropped labels from function types;
-  - that arguments are evaluated left to right as written, which the
+  - that arguments are still evaluated left to right as written, which the
     last-use pass already assumes, even when labels reorder them.
-- **Closure syntax.** Decide before milestone 7 and closures. `=>` ends both a
-  `match` arm, `Circle(r) => ...`, and a closure's parameters,
-  `w => w.len() > 3`, so a closure inside an arm reads
-  `n => xs.filter(x => x > n)`. Decide how the two parse together, and what
-  the newline rule (ADR 0001) does after `=>` at the end of a line.
+- **Closure syntax.** Resolved for `match` in milestone 7; the rest stays
+  with milestone 9. The arm's pattern comes before its `=>` and an expression
+  after it, so a closure inside an arm body, `n => xs.filter(x => x > n)`,
+  parses as it reads. A guard ends at the first `=>` outside brackets, so a
+  closure in a guard must be inside parentheses or an argument list,
+  `Num(n) if xs.any(x => x > n) => ...`. An arm body may itself be a closure,
+  and `=>` groups to the right: `F(n) => x => x + n`. Still to decide in
+  milestone 9: the closure forms beyond these.
 - **Weak captures.** Decide before closures. A closure stored in a field of
   the object it captures is a cycle that a `weak` field cannot break
   (ADR 0008). Decide how a closure captures one name weakly, as Swift's

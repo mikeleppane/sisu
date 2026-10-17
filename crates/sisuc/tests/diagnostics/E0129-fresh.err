@@ -1,0 +1,22 @@
+error[E0129]: `x` is bound twice in this pattern
+ --> E0129-fresh.sisu:9:24
+  |
+9 |         Add(Add(x, y), x) => print(1)
+  |                 -      ^
+  |                 |
+  |                 first bound here
+  |
+  = help: use a guard: `Add(Add(x, y), x2) if x == x2`
+
+error[E0129]: `z` is bound twice in this pattern
+  --> E0129-fresh.sisu:10:16
+   |
+10 |         Add(z, z) => print(2)
+   |             -  ^
+   |             |
+   |             first bound here
+   |
+   = help: use a guard: `Add(z, z2) if z == z2`
+
+sisuc: 2 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0129

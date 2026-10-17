@@ -1,0 +1,85 @@
+// Range patterns hit at each bound: one before the start, the start, the end, and one past the
+// end, for `..=` and for `..`, which leaves its end out. `i64` ranges compare signed, so a range
+// across zero holds its negative values. `u8` ranges compare unsigned, so `100..=200` holds 127,
+// 128 and 200, and `0..=127 | 128..=255` covers every `u8` with no `_`.
+fn letter(c: char) -> string {
+    match c {
+        'b'..='d' => "b to d"
+        'f'..'h' => "f to g"
+        _ => "other"
+    }
+}
+
+fn size(n: i64) -> string {
+    match n {
+        -9..=-4 => "low"
+        -3..=3 => "small"
+        7 => "seven"
+        10..20 => "teens"
+        _ => "other"
+    }
+}
+
+fn byte(b: u8) -> string {
+    match b {
+        0 => "zero"
+        100..=200 => "middle"
+        255 => "top"
+        _ => "other"
+    }
+}
+
+fn half(b: u8) -> string {
+    match b {
+        0..=127 => "low half"
+        128..=255 => "high half"
+    }
+}
+
+// No `_`: the two halves cover every `u8`, so no value reaches the trap.
+fn any(b: u8) -> u8 {
+    match b {
+        0..=127 | 128..=255 => b
+    }
+}
+
+fn main() {
+    print(letter('a'))  // other
+    print(letter('b'))  // b to d
+    print(letter('d'))  // b to d
+    print(letter('e'))  // other
+    print(letter('f'))  // f to g
+    print(letter('g'))  // f to g
+    print(letter('h'))  // other
+    print(size(-10))    // other
+    print(size(-9))     // low
+    print(size(-4))     // low
+    print(size(-3))     // small
+    print(size(0))      // small
+    print(size(3))      // small
+    print(size(4))      // other
+    print(size(6))      // other
+    print(size(7))      // seven
+    print(size(8))      // other
+    print(size(9))      // other
+    print(size(10))     // teens
+    print(size(19))     // teens
+    print(size(20))     // other
+    print(byte(0))      // zero
+    print(byte(1))      // other
+    print(byte(99))     // other
+    print(byte(100))    // middle
+    print(byte(127))    // middle
+    print(byte(128))    // middle
+    print(byte(200))    // middle
+    print(byte(201))    // other
+    print(byte(255))    // top
+    print(half(0))      // low half
+    print(half(127))    // low half
+    print(half(128))    // high half
+    print(half(255))    // high half
+    print(any(0))       // 0
+    print(any(127))     // 127
+    print(any(128))     // 128
+    print(any(255))     // 255
+}

@@ -1,0 +1,53 @@
+// An expression evaluator and simplifier over a recursive enum. `eval` is a method that matches
+// `self`; `simplify` uses nested patterns, alternatives and a guard. Each tree prints its value
+// before and after `simplify`, and the two are equal: no tree here overflows.
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+
+    fn eval(self) -> i64 {
+        match self {
+            Num(n) => n
+            Add(a, b) => a.eval() + b.eval()
+            Mul(a, b) => a.eval() * b.eval()
+        }
+    }
+}
+
+fn simplify(e: Expr) -> Expr {
+    match e {
+        Add(Num(0), x) | Add(x, Num(0)) => simplify(x)
+        Mul(Num(1), x) | Mul(x, Num(1)) => simplify(x)
+        Mul(Num(0), _) | Mul(_, Num(0)) => Expr.Num(0)
+        Add(a, b) if a == b             => simplify(Expr.Mul(Expr.Num(2), a))
+        other                           => other
+    }
+}
+
+fn show(label: string, e: Expr) {
+    let before = e.eval()
+    let after = simplify(e).eval()
+    print("{label}: {before} {after} {before == after}")
+}
+
+fn main() {
+    // (2 + 3) * 4 matches no arm but `other`.
+    show("plain", Expr.Mul(Expr.Add(Expr.Num(2), Expr.Num(3)), Expr.Num(4)))   // plain: 20 20 true
+    // 0 + 7: the left alternative of the first arm.
+    show("add zero left", Expr.Add(Expr.Num(0), Expr.Num(7)))                   // add zero left: 7 7 true
+    // 7 + 0: the right alternative of the first arm.
+    show("add zero right", Expr.Add(Expr.Num(7), Expr.Num(0)))                  // add zero right: 7 7 true
+    // 1 * 5 and 5 * 1: both alternatives of the second arm.
+    show("mul one left", Expr.Mul(Expr.Num(1), Expr.Num(5)))                    // mul one left: 5 5 true
+    show("mul one right", Expr.Mul(Expr.Num(5), Expr.Num(1)))                   // mul one right: 5 5 true
+    // 0 * (2 + 3) and (2 + 3) * 0: both alternatives of the third arm.
+    show("mul zero left", Expr.Mul(Expr.Num(0), Expr.Add(Expr.Num(2), Expr.Num(3))))   // mul zero left: 0 0 true
+    show("mul zero right", Expr.Mul(Expr.Add(Expr.Num(2), Expr.Num(3)), Expr.Num(0)))  // mul zero right: 0 0 true
+    // (1 + 2) + (1 + 2): the guard `a == b` holds, so the sum becomes 2 * (1 + 2).
+    show("double", Expr.Add(Expr.Add(Expr.Num(1), Expr.Num(2)), Expr.Add(Expr.Num(1), Expr.Num(2))))  // double: 6 6 true
+    // 1 + 2: the guard fails, so the last arm keeps the tree.
+    show("distinct", Expr.Add(Expr.Num(1), Expr.Num(2)))                        // distinct: 3 3 true
+    // 0 + (1 * (4 + 0)): simplification recurses through three arms.
+    show("nested", Expr.Add(Expr.Num(0), Expr.Mul(Expr.Num(1), Expr.Add(Expr.Num(4), Expr.Num(0)))))  // nested: 4 4 true
+}

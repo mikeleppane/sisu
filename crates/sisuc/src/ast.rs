@@ -198,10 +198,11 @@ pub(crate) enum StmtKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ForSource {
     Array(Expr),
-    /// `start..end`.
+    /// `start..end`, or `start..=end` when `inclusive`.
     Range {
         start: Expr,
         end: Expr,
+        inclusive: bool,
     },
 }
 
@@ -321,11 +322,13 @@ pub(crate) enum ExprKind {
     Block(Block),
 }
 
-/// One line of a `match`: `pattern => body`. The parser wraps a body that is a statement
-/// (an assignment, `return`, `break` or `continue`) in a block holding it.
+/// One line of a `match`: `pattern ["if" guard] => body`. The guard covers every alternative of
+/// the pattern. The parser wraps a body that is a statement (an assignment, `return`, `break` or
+/// `continue`) in a block holding it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Arm {
     pub(crate) pattern: Pattern,
+    pub(crate) guard: Option<Expr>,
     pub(crate) body: Expr,
 }
 
@@ -351,6 +354,40 @@ pub(crate) enum PatternKind {
         fields: Vec<Pattern>,
         parens: Option<Span>,
     },
+    /// `0`, `-1`, `'a'`, `"yes"`, `true`.
+    Literal(Literal),
+    /// `start..end`, or `start..=end` when `inclusive`.
+    Range {
+        start: Bound,
+        end: Bound,
+        inclusive: bool,
+    },
+    /// `p | q | ...`: at least two alternatives, none of them an `Or`.
+    Or(Vec<Pattern>),
+}
+
+/// A literal in a pattern, or at the end of a range pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Literal {
+    /// `value` is signed, so `-5` holds `-5`. `text` is the span of the digits as written, which
+    /// a diagnostic quotes, and `negative` the span of the `-` before them, when there is one:
+    /// `-0` is negative with value `0`.
+    Int {
+        value: i64,
+        text: Span,
+        negative: Option<Span>,
+    },
+    Char(char),
+    Str(String),
+    Bool(bool),
+}
+
+/// One end of a range pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Bound {
+    Literal(Literal),
+    /// A bare name, which the checker reports: no range takes a binding.
+    Name(Ident),
 }
 
 /// A part of an interpolation: a text piece, or an expression with the format spec it may have.
@@ -568,7 +605,36 @@ impl fmt::Display for Enum {
 
 impl fmt::Display for Arm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(arm {} {})", self.pattern, self.body)
+        write!(f, "(arm {}", self.pattern)?;
+        if let Some(guard) = &self.guard {
+            write!(f, " (if {guard})")?;
+        }
+        write!(f, " {})", self.body)
+    }
+}
+
+impl fmt::Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Literal::Int {
+                value, negative, ..
+            } => {
+                let sign = if negative.is_some() { "-" } else { "" };
+                write!(f, "{sign}{}", value.unsigned_abs())
+            }
+            Literal::Char(c) => write!(f, "{c:?}"),
+            Literal::Str(s) => write!(f, "{s:?}"),
+            Literal::Bool(b) => write!(f, "{b}"),
+        }
+    }
+}
+
+impl fmt::Display for Bound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Bound::Literal(literal) => literal.fmt(f),
+            Bound::Name(name) => f.write_str(name.name.as_str()),
+        }
     }
 }
 
@@ -597,6 +663,20 @@ impl fmt::Display for Pattern {
                     f.write_str(" ()")?;
                 }
                 spaced(f, fields)?;
+                f.write_str(")")
+            }
+            PatternKind::Literal(literal) => literal.fmt(f),
+            PatternKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                let op = if *inclusive { "..=" } else { ".." };
+                write!(f, "({op} {start} {end})")
+            }
+            PatternKind::Or(alternatives) => {
+                f.write_str("(|")?;
+                spaced(f, alternatives)?;
                 f.write_str(")")
             }
         }
@@ -666,8 +746,13 @@ impl fmt::Display for Stmt {
             } => write!(f, "(while-let {pattern} {value} {body})"),
             StmtKind::For { name, source, body } => match source {
                 ForSource::Array(e) => write!(f, "(for {} {e} {body})", name.name),
-                ForSource::Range { start, end } => {
-                    write!(f, "(for {} (.. {start} {end}) {body})", name.name)
+                ForSource::Range {
+                    start,
+                    end,
+                    inclusive,
+                } => {
+                    let op = if *inclusive { "..=" } else { ".." };
+                    write!(f, "(for {} ({op} {start} {end}) {body})", name.name)
                 }
             },
             StmtKind::Return(None) => f.write_str("(return)"),

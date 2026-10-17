@@ -1,0 +1,13 @@
+error[E0010]: unexpected character `|`
+ --> E0010-pipe-operand.sisu:2:13
+  |
+2 |     let _ = |true
+  |             ^
+  |
+help: if you meant logical or, use `||`
+  |
+2 |     let _ = ||true
+  |              +
+
+sisuc: 1 error
+sisuc: for more on a code, run `sisuc --explain <code>`: E0010

@@ -1,0 +1,9 @@
+fn bit(b: bool) -> i64 {
+    match b {
+        true => 1
+    }
+}
+
+fn main() {
+    print(bit(true))
+}

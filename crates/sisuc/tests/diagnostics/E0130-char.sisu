@@ -1,0 +1,9 @@
+fn plane(c: char) -> i64 {
+    match c {
+        '\u{0}'..='\u{D7FF}' => 0
+    }
+}
+
+fn main() {
+    print(plane('a'))
+}

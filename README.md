@@ -169,8 +169,9 @@ editors and agents, and marks each fix as safe or unsafe.
 
 Sisu has no releases and runs on x86-64 Linux only. Today it compiles
 functions, `i64`, `f64`, `u8`, `bool` and `char`, classes with methods,
-optionals, enums with payloads, methods and `match`, arrays, and strings with `+`,
-`+=`, interpolation (with width and precision specs) and `chars()`. Programs
+optionals, enums with payloads and methods, `match` with nested,
+alternative, guarded and range patterns, arrays, and strings with `+`, `+=`,
+interpolation (with width and precision specs) and `chars()`. Programs
 read standard input with `read_line()`, write standard error with `eprint`,
 take `main(args)` and stop with `panic`. Conversions that can fail return an optional. An expression
 statement whose value nothing uses warns (`W0004`); `let _ = e` drops a value

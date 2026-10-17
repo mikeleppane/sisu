@@ -1,0 +1,13 @@
+enum Expr {
+    Num(i64)
+    Add(Expr, Expr)
+}
+
+fn main() {
+    let e = Expr.Num(1)
+    match e {
+        Add(Add(x, y), x) => print(1)
+        Add(z, z) => print(2)
+        _ => print(0)
+    }
+}

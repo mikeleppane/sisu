@@ -1,0 +1,10 @@
+fn greet(s: string, name: string) -> bool {
+    match s {
+        "hello {name}" => true
+        _ => false
+    }
+}
+
+fn main() {
+    print(greet("hello Ann", "Ann"))
+}

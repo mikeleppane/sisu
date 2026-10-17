@@ -1,4 +1,4 @@
-error[E0023]: ranges are only allowed in `for`
+error[E0023]: ranges are only allowed in `for` and in patterns
  --> E0023.sisu:2:14
   |
 2 |     let r = 0..3

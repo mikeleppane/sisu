@@ -1,0 +1,6 @@
+fn main() {
+    match 1 {
+        0..| => print(1)
+        _ => print(0)
+    }
+}

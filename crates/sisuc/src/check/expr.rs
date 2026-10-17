@@ -831,7 +831,7 @@ impl Checker<'_> {
                     want: vec![self.type_name(ty)],
                     got: "None".to_string(),
                     at: span,
-                    other: None,
+                    source: None,
                     fix: None,
                     conversion: false,
                 },

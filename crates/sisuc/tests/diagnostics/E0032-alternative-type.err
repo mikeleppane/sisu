@@ -1,0 +1,26 @@
+error[E0032]: expected `i64`, found `string`
+  --> E0032-alternative-type.sisu:18:18
+   |
+18 |         V(x) | W(x) => 1
+   |           -      ^
+   |           |
+   |           `x` is `i64` here
+
+error[E0032]: expected `i64`, found `string`
+  --> E0032-alternative-type.sisu:23:20
+   |
+23 |         R(x) | P(W(x) | Y(x)) => 1
+   |           -        ^
+   |           |
+   |           `x` is `i64` here
+
+error[E0032]: expected `i64`, found `string`
+  --> E0032-alternative-type.sisu:23:27
+   |
+23 |         R(x) | P(W(x) | Y(x)) => 1
+   |           -               ^
+   |           |
+   |           `x` is `i64` here
+
+sisuc: 3 errors
+sisuc: for more on a code, run `sisuc --explain <code>`: E0032

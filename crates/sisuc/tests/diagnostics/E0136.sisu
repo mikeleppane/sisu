@@ -1,0 +1,14 @@
+enum Shape {
+    Square(f64)
+    Rect(f64, f64)
+}
+
+fn width(s: Shape) -> f64 {
+    match s {
+        Square(w) | Rect(_, h) => w
+    }
+}
+
+fn main() {
+    print(width(Shape.Square(2.0)))
+}

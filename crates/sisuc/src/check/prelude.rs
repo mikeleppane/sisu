@@ -162,7 +162,7 @@ impl Checker<'_> {
             want: vec![self.type_name(&Type::String)],
             got: self.type_name(got),
             at: arg.span,
-            other: None,
+            source: None,
             fix: (printed && self.one_line(arg.span))
                 .then_some(MismatchFix::WrapInString(arg.span)),
             conversion: false,
