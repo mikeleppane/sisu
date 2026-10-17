@@ -391,11 +391,16 @@ fn evaluate(
             }
             // Each operand fits in an `i64`, so a `u8` result overflows only out of `u8`.
             int(match op {
-                BinaryOp::Add | BinaryOp::AddUnchecked => l.checked_add(r),
+                BinaryOp::Add => l.checked_add(r),
                 BinaryOp::Sub => l.checked_sub(r),
                 BinaryOp::Mul => l.checked_mul(r),
                 BinaryOp::Div => l.checked_div(r),
                 BinaryOp::Rem => l.checked_rem(r),
+                BinaryOp::AddUnchecked => {
+                    unreachable!(
+                        "the checker should step only a for loop's counter, never a constant"
+                    )
+                }
                 BinaryOp::And | BinaryOp::Or => {
                     unreachable!("`&&` and `||` should take the arms above")
                 }
