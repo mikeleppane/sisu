@@ -754,10 +754,24 @@ fn many_arms_check_in_linear_time() {
 
 /// The keep-alive override for this test is in `.config/nextest.toml`: finding the arm that
 /// covers each unreachable arm or alternative by solving again the arms above it is quadratic,
-/// so this test hangs instead of failing.
+/// and so is copying every alternative's takers into each matrix above it, which a payload
+/// 20,000 fields deep with an `|` in each makes 20,000 matrices deep; this test hangs instead of
+/// failing.
 #[test]
 fn many_unreachable_rows_check_in_linear_time() {
     const VARIANTS: usize = 20_000;
+    const FIELDS: usize = 20_000;
+    let fields = vec!["bool"; FIELDS].join(", ");
+    let pattern = vec!["true | false"; FIELDS].join(", ");
+    let (src, line) = typed(
+        &format!("enum F {{ V({fields}) }}\n"),
+        "F",
+        &[&format!("V({pattern}) => 0"), &format!("V({pattern}) => 1")],
+    );
+    assert_eq!(
+        found(&src),
+        [(Code::UnreachableArm, (line + 2, 9), vec![(line + 1, 9)])]
+    );
     let variants = (0..VARIANTS)
         .map(|i| format!("    V{i}\n"))
         .collect::<Vec<_>>()

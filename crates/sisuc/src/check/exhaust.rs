@@ -18,8 +18,9 @@
 //! bottom that says whether the arm is guarded, so a matrix is its rows' stack ids, and a matrix
 //! met twice is solved once. Each `|` is interned apart, by its span, so a matrix met twice holds
 //! the same alternatives, and reaching one is recorded once for the whole check. A solved matrix
-//! also says which of its rows took each alternative's values, wherever no leaf reached it, so the
-//! arm that covers an alternative comes out of the one solve.
+//! whose rows took an alternative's values, or whose children's did, keeps those takers by its own
+//! rows. Once the solve ends, one pass from the top renames each such matrix's rows to the arms they
+//! come from on every path to it, so the arm that covers an alternative comes out of the one solve.
 //!
 //! shortcut: usefulness can meet exponentially many distinct matrices when payload patterns are
 //! correlated across fields (arm i needs fields `x_i` and `y_i`, with every x before every y);
@@ -102,6 +103,7 @@ pub(super) fn check(enums: &[tir::Enum], ty: Type, rows: &[Row<'_>]) -> Report {
         memo: FxHashMap::default(),
         defaults: FxHashMap::default(),
         reached: FxHashSet::default(),
+        taken: Vec::new(),
     };
     let col = column(ty);
     let pats: Vec<_> = rows
@@ -115,6 +117,7 @@ pub(super) fn check(enums: &[tir::Enum], ty: Type, rows: &[Row<'_>]) -> Report {
         .collect();
     stacks.push(solver.push(WILD, col, EMPTY));
     let result = solver.solve(stacks.into());
+    let takers = solver.takers(result.taken, rows.len() + 1);
     let mut unreachable = Vec::new();
     for (k, (row, reach)) in rows.iter().zip(&result.reach).enumerate() {
         let covered_by = match reach {
@@ -124,8 +127,8 @@ pub(super) fn check(enums: &[tir::Enum], ty: Type, rows: &[Row<'_>]) -> Report {
                 for (alternative, at, remove) in found {
                     // The alternatives before it in its own arm cover none of it: a value they
                     // take would reach it, were it alone.
-                    let covered_by = match result.alternatives.get(&alternative) {
-                        Some(&Reach::Taken(first, last)) if first == last && first != k => {
+                    let covered_by = match takers.get(&alternative) {
+                        Some(&(first, last)) if first == last && first != k => {
                             Some(rows[first].pattern.span)
                         }
                         _ => None,
@@ -323,9 +326,18 @@ struct Solved {
     /// there: the lowest interval that reaches the sentinel, joined with each next adjacent one
     /// that does too.
     gap: Option<(i64, i64)>,
-    /// What the leaves say of each alternative in the rows, by the rows' indices, unless a leaf
-    /// of the whole check reached it already.
-    alternatives: FxHashMap<Alternative, Reach>,
+    /// The index in `Solver::taken` of this matrix, when its rows or its children's took an
+    /// alternative's values.
+    taken: Option<usize>,
+}
+
+/// A matrix whose rows took the values of alternatives, or one of whose children's rows did.
+struct Taken {
+    /// Each alternative its rows took values of, and the first and last row that took them.
+    here: Vec<(Alternative, (usize, usize))>,
+    /// Each child that is a `Taken` too: its index, and for each of its rows, the row of this
+    /// matrix it comes from.
+    below: Vec<(usize, Vec<usize>)>,
 }
 
 /// A row of a matrix with each `|` at its head expanded: the head and the stack below it, the
@@ -363,8 +375,8 @@ struct Frame {
     next: usize,
     /// What the solved children say of each expanded row.
     reach: Vec<Takers>,
-    /// What the solved children say of each alternative inside a row, by the rows' indices.
-    alternatives: FxHashMap<Alternative, Takers>,
+    /// The children that are a `Taken`, as `Taken::below`.
+    below: Vec<(usize, Vec<usize>)>,
     /// The witness first in constructor order so far: its child's order, the child, the
     /// child's witness, and its `guarded`.
     best: Option<(usize, usize, StackId, bool)>,
@@ -381,15 +393,13 @@ impl Frame {
         debug_assert!(child.members.is_sorted(), "a child's members should ascend");
         // A row another takes is named by its matrix row, so two alternatives of one row that
         // take a row's values are one row.
-        let rename = |by: usize| self.expanded[child.members[by]].origin;
         for (&e, &found) in child.members.iter().zip(&solved.reach) {
-            self.reach[e].add(found, rename);
+            let expanded = &self.expanded;
+            self.reach[e].add(found, |by| expanded[child.members[by]].origin);
         }
-        for (&alternative, &found) in &solved.alternatives {
-            self.alternatives
-                .entry(alternative)
-                .or_default()
-                .add(found, rename);
+        if let Some(taken) = solved.taken {
+            let origins = child.members.iter().map(|&e| self.expanded[e].origin);
+            self.below.push((taken, origins.collect()));
         }
         if let Some(witness) = solved.witness {
             if self.best.is_none_or(|(order, ..)| child.order < order) {
@@ -424,6 +434,9 @@ struct Solver<'a> {
     defaults: FxHashMap<(usize, usize), PatId>,
     /// Each alternative a leaf reached, over the whole check.
     reached: FxHashSet<Alternative>,
+    /// Each matrix solved so far whose rows or children's rows took an alternative's values, in
+    /// the order they were solved, so a matrix comes after every child.
+    taken: Vec<Taken>,
 }
 
 /// Puts the expanded row `e` into the bucket of the constructor `key`, which comes `order`th,
@@ -538,22 +551,58 @@ impl Solver<'_> {
         }
     }
 
-    /// Adds to `found` each alternative in `pat`, inside one another too, as taken by `taker`.
-    fn alternatives_in(&self, pat: PatId, taker: Reach, found: &mut FxHashMap<Alternative, Reach>) {
+    /// Adds to `found` each alternative in `pat`, inside one another too, as taken by the first
+    /// row.
+    fn alternatives_in(&self, pat: PatId, found: &mut Vec<(Alternative, (usize, usize))>) {
         match &self.pats[pat] {
             Pat::Variant { fields, .. } => {
                 for &field in fields.iter().filter(|&&field| self.ors[field]) {
-                    self.alternatives_in(field, taker, found);
+                    self.alternatives_in(field, found);
                 }
             }
             Pat::Or { alts, .. } => {
                 for (a, &alt) in alts.iter().enumerate() {
-                    found.insert((pat, a), taker);
-                    self.alternatives_in(alt, taker, found);
+                    found.push(((pat, a), (0, 0)));
+                    self.alternatives_in(alt, found);
                 }
             }
             _ => {}
         }
+    }
+
+    /// The first and last of the `rows` rows of the matrix whose `taken` is `top` that took each
+    /// alternative's values: each `Taken`'s rows are renamed to the top rows they come from on
+    /// every path, and the ends are enough, as in `Reach::Taken`.
+    fn takers(&self, top: Option<usize>, rows: usize) -> FxHashMap<Alternative, (usize, usize)> {
+        let mut takers: FxHashMap<Alternative, (usize, usize)> = FxHashMap::default();
+        let Some(top) = top else {
+            return takers;
+        };
+        // Each `Taken`'s rows as top rows, filled by its parents, which come after it.
+        let mut renamed: Vec<Option<Vec<(usize, usize)>>> = vec![None; top + 1];
+        renamed[top] = Some((0..rows).map(|row| (row, row)).collect());
+        for id in (0..=top).rev() {
+            let Some(names) = renamed[id].take() else {
+                continue;
+            };
+            let Taken { here, below } = &self.taken[id];
+            let join = |(first, last): &mut (usize, usize), (lo, hi): (usize, usize)| {
+                *first = (*first).min(lo);
+                *last = (*last).max(hi);
+            };
+            for &(alternative, (first, last)) in here {
+                let found = (names[first].0, names[last].1);
+                join(takers.entry(alternative).or_insert(found), found);
+            }
+            for (child, origins) in below {
+                let child =
+                    renamed[*child].get_or_insert_with(|| vec![(usize::MAX, 0); origins.len()]);
+                for (name, &origin) in child.iter_mut().zip(origins) {
+                    join(name, names[origin]);
+                }
+            }
+        }
+        takers
     }
 
     /// The first unguarded row of `rows`, interned as `pats`, with the variant of `top`, a missing value, at
@@ -669,23 +718,42 @@ impl Solver<'_> {
             reach[0] = Reach::Reached;
             // Alone, the first row is the sentinel, already a `_` for each column.
             let witness = (rows.len() == 1).then_some(rows[0]);
-            // The first row takes the values of every alternative below it, too.
-            let mut alternatives = FxHashMap::default();
+            // The first row takes the values of every alternative below it, too. A matrix met
+            // again records them once.
+            if !rows[1..].iter().any(|&row| self.nodes[row].ors) {
+                return Some(Rc::new(Solved {
+                    reach,
+                    witness,
+                    guarded: false,
+                    gap: None,
+                    taken: None,
+                }));
+            }
+            if let Some(solved) = self.memo.get(&rows) {
+                return Some(Rc::clone(solved));
+            }
+            let mut here = Vec::new();
             for &row in &rows[1..] {
                 let mut stack = row;
                 while self.nodes[stack].ors {
                     let node = self.nodes[stack];
-                    self.alternatives_in(node.pat, Reach::Taken(0, 0), &mut alternatives);
+                    self.alternatives_in(node.pat, &mut here);
                     stack = node.tail;
                 }
             }
-            return Some(Rc::new(Solved {
+            self.taken.push(Taken {
+                here,
+                below: Vec::new(),
+            });
+            let solved = Rc::new(Solved {
                 reach,
                 witness,
                 guarded: false,
                 gap: None,
-                alternatives,
-            }));
+                taken: Some(self.taken.len() - 1),
+            });
+            self.memo.insert(rows, Rc::clone(&solved));
+            return Some(solved);
         }
         // A leaf whose first row is guarded: every row is a bottom, and the guarded rows up to
         // the first unguarded one are reached, without taking its values.
@@ -702,7 +770,7 @@ impl Solver<'_> {
                 witness,
                 guarded: witness.is_some(),
                 gap: None,
-                alternatives: FxHashMap::default(),
+                taken: None,
             }));
         }
         if let Some(solved) = self.memo.get(&rows) {
@@ -798,7 +866,7 @@ impl Solver<'_> {
         }
         Frame {
             reach: expanded.iter().map(|_| Takers::default()).collect(),
-            alternatives: FxHashMap::default(),
+            below: Vec::new(),
             rows,
             expanded,
             col,
@@ -877,7 +945,7 @@ impl Solver<'_> {
 
     /// What `frame`, all of whose children are solved, says; also kept for its rows. Each
     /// alternative its expanded rows reached is recorded.
-    fn finish(&mut self, mut frame: Frame) -> Rc<Solved> {
+    fn finish(&mut self, frame: Frame) -> Rc<Solved> {
         let witness = frame.best.map(|(order, child, witness, _)| {
             let head = match frame.col {
                 // A bucket's witness starts with the variant's fields: they become its payload.
@@ -937,32 +1005,33 @@ impl Solver<'_> {
             None => (None, frame.best.is_some_and(|(.., guarded)| guarded)),
         };
         let mut reach: Vec<Takers> = frame.rows.iter().map(|_| Takers::default()).collect();
+        let mut here = Vec::new();
         for (row, found) in frame.expanded.iter().zip(frame.reach) {
             let found = found.reach();
-            if let Some(alternative) = row.alternative {
-                if let Reach::Reached = found {
+            match (found, row.alternative) {
+                (Reach::Reached, Some(alternative)) => {
                     self.reached.insert(alternative);
                 }
-                frame
-                    .alternatives
-                    .entry(alternative)
-                    .or_default()
-                    .add(found, |by| by);
+                (Reach::Taken(first, last), Some(alternative)) => {
+                    here.push((alternative, (first, last)));
+                }
+                (_, None) => {}
             }
             reach[row.origin].add(found, |by| by);
         }
-        let alternatives = frame
-            .alternatives
-            .into_iter()
-            .filter(|(alternative, _)| !self.reached.contains(alternative))
-            .map(|(alternative, found)| (alternative, found.reach()))
-            .collect();
+        let taken = (!here.is_empty() || !frame.below.is_empty()).then(|| {
+            self.taken.push(Taken {
+                here,
+                below: frame.below,
+            });
+            self.taken.len() - 1
+        });
         let solved = Rc::new(Solved {
             reach: reach.into_iter().map(Takers::reach).collect(),
             witness,
             guarded,
             gap,
-            alternatives,
+            taken,
         });
         self.memo.insert(frame.rows, Rc::clone(&solved));
         solved
