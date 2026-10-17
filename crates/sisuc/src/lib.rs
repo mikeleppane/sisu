@@ -350,7 +350,10 @@ fn run_check(reporter: &mut Report, input: &Path) -> ExitCode {
     let Some(bytes) = read_bytes(reporter, input) else {
         return ExitCode::FAILURE;
     };
-    if check_bytes(reporter, &input.to_string_lossy(), bytes).passed {
+    if check_bytes(reporter, &input.to_string_lossy(), bytes)
+        .program
+        .is_some()
+    {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -363,8 +366,8 @@ pub(crate) struct Checked {
     /// the replacement text `decode` returns.
     pub(crate) source: String,
     pub(crate) diagnostics: Vec<Diagnostic>,
-    /// The front end returned a program: `program.is_some()`, today's `--check` exit rule.
-    pub(crate) passed: bool,
+    /// The program, unless a diagnostic is an error. `--check` passes when it is `Some`.
+    pub(crate) program: Option<Program>,
 }
 
 /// Decodes `bytes`, runs the front end on the source, and reports every diagnostic as read
@@ -377,21 +380,21 @@ pub(crate) fn check_bytes<W: Write>(
     path: &str,
     bytes: Vec<u8>,
 ) -> Checked {
-    let (source, diagnostics, passed) = match front_end::decode(bytes) {
+    let (source, diagnostics, program) = match front_end::decode(bytes) {
         Ok(source) => {
             let (program, diagnostics) = front_end::front_end(&source);
-            (source, diagnostics, program.is_some())
+            (source, diagnostics, program)
         }
         Err(e) => {
             let (shown, d) = *e;
-            (shown, vec![d], false)
+            (shown, vec![d], None)
         }
     };
     reporter.diagnostics(path, &source, &diagnostics);
     Checked {
         source,
         diagnostics,
-        passed,
+        program,
     }
 }
 

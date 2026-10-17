@@ -1,14 +1,21 @@
 //! The entry point of the front-end fuzz target: `sisuc --check` on one input, with checks that
-//! every span it reports is well formed and every safe fix it shows keeps its promise. The bug
-//! signal is a panic.
+//! every span it reports is well formed and every safe fix it shows keeps its promise. An input
+//! that checks clean is also printed as a typed tree and compiled to LLVM IR, which LLVM must
+//! verify. The bug signal is a panic.
 
+use inkwell::context::Context;
+use inkwell::module::Module;
+
+use crate::codegen;
 use crate::diagnostic::{Code, Diagnostic, Edit, Fix};
 use crate::report::{Format, Reporter};
 use crate::source::Span;
+use crate::tir::Program;
 
 /// Runs `sisuc --check` on `data` as the file `input.sisu`, reports it as colored text and then
 /// as JSON, and asserts that every span of every diagnostic is well formed and that every safe
-/// fix shown is safe. Returns the text report followed by the JSON report.
+/// fix shown is safe. When the input checks clean, asserts that it compiles too. Returns the
+/// text report followed by the JSON report.
 ///
 /// The caller runs it on a thread with a stack of `STACK_SIZE`, as `main` runs `cli`: the
 /// deepest program the parser accepts overflows a smaller stack.
@@ -23,7 +30,45 @@ pub fn front_end(data: &[u8]) -> String {
     assert_spans(&checked.source, &checked.diagnostics);
     let shown = crate::front_end::sound_fixes(&checked.source, &checked.diagnostics);
     assert_safe_fixes(&checked.source, &shown);
+    if let Some(program) = &checked.program {
+        assert_compiles(program, &checked.source);
+    }
     String::from_utf8(out).expect("the reports should be UTF-8, as the source they quote is")
+}
+
+/// Prints `program` as a typed tree, then compiles it, without and with `--rc-checks`, and asserts that
+/// LLVM verifies each module. No pass runs and nothing links: `-O2` changes only the pipeline,
+/// not the module codegen makes.
+fn assert_compiles(program: &Program, source: &str) {
+    // The printer's only check is that it does not panic.
+    drop(program.to_string());
+    let machine = codegen::target_machine(false)
+        .expect("LLVM should have a target machine for the host sisuc runs on");
+    for rc_checks in [false, true] {
+        let context = Context::create();
+        let module = codegen::compile(&context, program, "input.sisu", source, &machine, rc_checks);
+        assert_verified(&module, rc_checks);
+    }
+}
+
+/// Asserts that LLVM verifies `module`, compiled with `rc_checks`.
+fn assert_verified(module: &Module<'_>, rc_checks: bool) {
+    if let Err(e) = module.verify() {
+        panic!("LLVM rejects the module (rc_checks: {rc_checks}):\n{e}");
+    }
+    #[cfg(test)]
+    VERIFIED.with(|n| {
+        let mut counts = n.get();
+        counts[usize::from(rc_checks)] += 1;
+        n.set(counts);
+    });
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many modules `assert_verified` has passed on this thread, without and with
+    /// `--rc-checks`, so a test can see that `front_end` compiles a clean input both ways.
+    static VERIFIED: std::cell::Cell<[usize; 2]> = const { std::cell::Cell::new([0; 2]) };
 }
 
 /// Asserts that every span of `diagnostics` (primary, secondary and each fix's edits) is a range
@@ -170,7 +215,9 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::thread;
 
-    use super::{assert_safe_fixes, assert_spans, front_end};
+    use inkwell::context::Context;
+
+    use super::{VERIFIED, assert_safe_fixes, assert_spans, assert_verified, front_end};
     use crate::diagnostic::{Code, Diagnostic};
     use crate::source::Span;
 
@@ -312,6 +359,32 @@ mod tests {
                 fixed(&[(span(1, 3), ""), (span(0, 1), "")]),
             ],
         );
+    }
+
+    /// How many modules `front_end` verifies for `source`, run on this thread, without and with
+    /// `--rc-checks`.
+    fn verified(source: &str) -> [usize; 2] {
+        let before = VERIFIED.with(std::cell::Cell::get);
+        front_end(source.as_bytes());
+        let after = VERIFIED.with(std::cell::Cell::get);
+        [after[0] - before[0], after[1] - before[1]]
+    }
+
+    #[test]
+    fn compiles_a_clean_input_with_and_without_rc_checks() {
+        assert_eq!(verified("fn main() {\n    print(1)\n}\n"), [1, 1]);
+        assert_eq!(verified("fn main() {\n    print(x)\n}\n"), [0, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "LLVM rejects the module (rc_checks: true)")]
+    fn rejects_a_module_llvm_does_not_verify() {
+        // A block without a terminator.
+        let context = Context::create();
+        let module = context.create_module("main");
+        let f = module.add_function("f", context.void_type().fn_type(&[], false), None);
+        context.append_basic_block(f, "entry");
+        assert_verified(&module, true);
     }
 
     #[test]

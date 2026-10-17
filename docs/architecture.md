@@ -24,7 +24,9 @@ so every span offset fits in a `u32`; a larger file is a tool error. The
 fuzzer calls the library too:
 `fuzz.rs` runs the `--check` path on raw bytes and asserts that every
 diagnostic span and fix edit is well formed, and that every safe fix, applied
-alone, deletes no comment and removes its diagnostic and no other. The `--emit` and `--check` flags stop
+alone, deletes no comment and removes its diagnostic and no other. For an
+input that checks clean, it also prints the typed tree and runs codegen, and
+LLVM must verify the module. The `--emit` and `--check` flags stop
 the pipeline early, as [Developing Sisu](development.md#look-inside-the-compiler)
 lists. `--format json` switches the diagnostics to JSON Lines, and
 `--explain <code>` prints the explanation of a code and runs no stage.

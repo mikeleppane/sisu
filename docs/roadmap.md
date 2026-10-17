@@ -450,7 +450,8 @@ The compiler is fuzzed in two stages:
 
 1. Front-end crash fuzzing. Done. A libFuzzer target feeds arbitrary bytes to
    `sisuc --check` and fails on a panic, a stack overflow, a timeout or an
-   out-of-memory, or on a malformed span or fix in the report. CI runs it
+   out-of-memory, or on a malformed span or fix in the report. An input that
+   checks clean is also compiled, and fails when LLVM rejects the module. CI runs it
    nightly; [development.md](development.md#fuzz-the-front-end) covers it.
 2. Wrong-code oracles. Open. Generators of well-typed programs, run
    differentially (a build without `-O2` against one with it, for example),

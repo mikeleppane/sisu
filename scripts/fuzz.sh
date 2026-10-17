@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fuzzes the compiler front end (fuzz/fuzz_targets/front_end.rs) with cargo-fuzz.
+# Fuzzes the compiler (fuzz/fuzz_targets/front_end.rs) with cargo-fuzz: the front end on every
+# input, and codegen on each input that checks clean.
 # Every libFuzzer flag lives here, so CI never repeats one.
 #   scripts/fuzz.sh [seconds]          fuzz for <seconds>, 1800 by default
 #   scripts/fuzz.sh --replay <input>   run one input
