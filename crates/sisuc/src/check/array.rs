@@ -3,7 +3,8 @@
 use super::expr::{fits, literal_type, no_member, none_literal, path, rank, typed};
 use super::{Checked, Checker, Poisoned, UNKNOWN, optional_of, payload, type_of, wrap};
 use crate::ast;
-use crate::diagnostic::{Definition, Diagnostic, DiagnosticKind, Literal, Span};
+use crate::diagnostic::{Definition, Diagnostic, DiagnosticKind, Literal};
+use crate::source::Span;
 use crate::tir::{self, Type, TypeKind};
 
 impl Checker<'_> {

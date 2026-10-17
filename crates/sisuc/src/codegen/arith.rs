@@ -6,7 +6,8 @@ use inkwell::values::{BasicValueEnum, FloatValue, IntValue};
 use inkwell::{FloatPredicate, IntPredicate};
 
 use super::{Codegen, POSITIONED};
-use crate::diagnostic::{Panic, Span};
+use crate::diagnostic::Panic;
+use crate::source::Span;
 use crate::tir::{BinaryOp, CompareOp, Expr, ExprKind, Type, TypeKind};
 
 impl<'ctx> Codegen<'ctx, '_> {

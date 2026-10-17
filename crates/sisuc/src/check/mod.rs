@@ -18,8 +18,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::ast;
 use crate::diagnostic::{
     BuiltIn, Conversion, Definition, Diagnostic, DiagnosticKind, Earlier, MismatchFix, Severity,
-    Span, Unbuilt, suggestion,
+    Unbuilt, suggestion,
 };
+use crate::source::Span;
 use crate::symbol::Symbol;
 use crate::tir::{self, Type, TypeKind};
 use constant::{ConstInfo, ConstantSite};

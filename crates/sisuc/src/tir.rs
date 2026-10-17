@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::diagnostic::Span;
+use crate::source::Span;
 
 pub(crate) use crate::ast::{Align, CompareOp, UnaryOp};
 pub(crate) use crate::types::{Type, TypeKind};

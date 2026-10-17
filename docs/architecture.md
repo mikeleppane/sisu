@@ -208,6 +208,13 @@ built with `--rc-checks` calls `sisu_rc_fault` when a count check fails, and
 `sisu_rc_check_exit` at a normal exit, which fails when that number is not
 zero. Both exit with code 102.
 
+**Source positions** (`source.rs`). `Span` is a byte range of the source, kept
+as two `u32` offsets; `MAX_SOURCE`, 1 GiB, is the longest source that keeps
+them in range. `LineIndex` turns a byte offset into a line and column for
+people with a binary search. Every stage imports these: the lexer and parser
+make spans, the checker carries them, codegen turns them into debug-info
+lines, and the diagnostics and the report show them.
+
 **Diagnostics** (`diagnostic/`, `report.rs`). The lexer, parser and checker
 report problems as diagnostics. `diagnostic/registry.rs` holds the code table
 and every message, label, help and fix: a stage builds a `DiagnosticKind`, and

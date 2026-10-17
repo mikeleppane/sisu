@@ -12,8 +12,8 @@ use super::{Checked, Checker, Poisoned, block_expr, type_of};
 use crate::ast::{self, CompareOp, ExprKind};
 use crate::diagnostic::{
     Definition, Diagnostic, DiagnosticKind, InterpolateHelp, MismatchFix, MismatchSource, Operand,
-    Span,
 };
+use crate::source::Span;
 use crate::tir::{self, Type, TypeKind};
 
 impl Checker<'_> {

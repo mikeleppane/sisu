@@ -2,8 +2,9 @@
 //! every span it reports is well formed and every safe fix it shows keeps its promise. The bug
 //! signal is a panic.
 
-use crate::diagnostic::{Code, Diagnostic, Edit, Fix, Span};
+use crate::diagnostic::{Code, Diagnostic, Edit, Fix};
 use crate::report::{Format, Reporter};
+use crate::source::Span;
 
 /// Runs `sisuc --check` on `data` as the file `input.sisu`, reports it as colored text and then
 /// as JSON, and asserts that every span of every diagnostic is well formed and that every safe
@@ -170,7 +171,8 @@ mod tests {
     use std::thread;
 
     use super::{assert_safe_fixes, assert_spans, front_end};
-    use crate::diagnostic::{Code, Diagnostic, Span};
+    use crate::diagnostic::{Code, Diagnostic};
+    use crate::source::Span;
 
     /// `front_end` on a thread with a `STACK_SIZE` stack, as its contract asks.
     fn on_stack(data: &[u8]) -> String {

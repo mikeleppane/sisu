@@ -1,22 +1,8 @@
 //! The front end: from source to the checked program.
 
-use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
+use crate::source::Span;
 use crate::{check, last_use, lexer, parser, tir};
-
-/// The longest source in bytes: 1 GiB. A `Span` stores its offsets as `u32`s, and two texts
-/// longer than the source get spans too:
-/// - `decode`'s shown text, the valid prefix and one U+FFFD: at most `MAX_SOURCE + 3` bytes;
-/// - a fix applied to the source: `sound_fixes` applies each fix alone and lexes the result
-///   again. Only `diagnostic::registry` builds fixes. One writes either at most 11 bytes of its
-///   own text (`char(i64(` and `))` around an operand; `let _ = ` is 8; a typed literal is at
-///   most `: char` and a 3-byte literal, in place of a call of at least 5 bytes), or one name
-///   and at most 4 bytes: a declared field (`{field}: `), a similar name, or the array method a
-///   call names (`(` and `{close}.{name}(`). That name is a built-in one or also stands
-///   elsewhere in the source, in its declaration or in the call the fix rewrites, so a fix
-///   inserts at most source-sized text and the fixed text is at most `2 * MAX_SOURCE` bytes.
-pub(crate) const MAX_SOURCE: usize = 1 << 30;
-
-const _: () = assert!(2 * MAX_SOURCE + 3 <= u32::MAX as usize);
 
 /// The source in `bytes`. Bytes that are not UTF-8 are an error at the first invalid one, with
 /// the text to render it over: the valid text before it, then U+FFFD in its place, so the
@@ -109,8 +95,9 @@ fn syntax_errors(source: &str) -> (bool, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::Code;
     use crate::diagnostic::explanations::{apply_fix, fix_edits};
-    use crate::diagnostic::{Code, line_col};
+    use crate::source::line_col;
 
     /// The code and `(line, col)` of every diagnostic `src` reports, in order.
     fn codes(src: &str) -> Vec<(Code, (usize, usize))> {

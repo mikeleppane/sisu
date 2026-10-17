@@ -4,7 +4,8 @@
 use std::fmt;
 
 use super::{Chars, MIN_MAGNITUDE, Token, TokenKind, literal_too_large, take_while};
-use crate::diagnostic::{Diagnostic, DiagnosticKind, LiteralKind, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, LiteralKind};
+use crate::source::Span;
 
 /// The number or `char` literal that starts at `source[start..]`, whose first char `chars` has
 /// consumed, after the `tokens` before it. After an error it records the diagnostic and gives a

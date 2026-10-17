@@ -8,7 +8,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, counted_core, param};
 use super::{Codegen, POSITIONED, Slot, class_of};
-use crate::diagnostic::Span;
+use crate::source::Span;
 use crate::tir::{Expr, ExprKind, LocalId, Place, Type, TypeKind};
 
 /// Where an array's elements sit in its block, from the target's data layout.

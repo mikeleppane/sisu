@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use crate::diagnostic::Span;
 use crate::lexer::Float;
+use crate::source::Span;
 use crate::symbol::Symbol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
