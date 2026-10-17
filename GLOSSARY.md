@@ -259,7 +259,6 @@ _Avoid_: nil, null
 **Unwrap**:
 Getting the value out of one layer of an optional when it holds one, with
 `if let`, `while let`, `?.` or `??`. Unwrapping an `i64??` gives an `i64?`.
-Nesting arrives in milestone 8.
 
 **Niche**:
 A bit pattern that a type's values never use, in which an `Option`-shaped

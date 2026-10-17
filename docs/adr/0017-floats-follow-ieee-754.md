@@ -16,7 +16,7 @@ Two rules follow from IEEE 754 and are worth stating.
   and `(0.0).min(-0.0)` is `-0.0`. `==` still says `-0.0 == 0.0`.
 - **`==` on a composite holding an `f64` has no same-object shortcut.** It
   compares every element. An array or enum that holds NaN is therefore not
-  equal to itself, even when both sides are the same array.
+  equal to itself, even when both sides are the same value.
 
 ## Considered options
 
