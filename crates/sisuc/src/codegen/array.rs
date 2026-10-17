@@ -7,9 +7,9 @@ use inkwell::values::{BasicValueEnum, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 use super::rc::{Helper, counted_core, param};
-use super::{Codegen, POSITIONED, Slot};
+use super::{Codegen, POSITIONED, Slot, class_of};
 use crate::diagnostic::Span;
-use crate::tir::{Expr, ExprKind, LocalId, Place, Type};
+use crate::tir::{Expr, ExprKind, LocalId, Place, Type, TypeKind};
 
 /// Where an array's elements sit in its block, from the target's data layout.
 pub(super) struct ArrayLayout<'ctx> {
@@ -31,7 +31,7 @@ pub(super) struct PlaceOperands<'p, 'ctx> {
     /// The type of the value the root's slot holds.
     pub(super) ty: Type,
     /// A field root's base and its type, which the write releases last.
-    object: Option<(PointerValue<'ctx>, &'p Type)>,
+    object: Option<(PointerValue<'ctx>, Type)>,
     /// Each index with its value, from the root outwards.
     pub(super) indexes: Vec<(&'p Expr, IntValue<'ctx>)>,
     /// Whether the root is a local that an enclosing loop made unique before it started, so
@@ -49,8 +49,8 @@ impl<'ctx> PlaceOperands<'_, 'ctx> {
 }
 
 /// The element type of `ty`, an array type.
-fn element_of(ty: &Type) -> &Type {
-    let Type::Array(element) = ty else {
+fn element_of(ty: Type) -> Type {
+    let TypeKind::Array(element) = ty.kind() else {
         unreachable!("the checker should give an array node an array type")
     };
     element
@@ -94,7 +94,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.context.struct_type(&[i64_type, i64_type], false)
     }
 
-    pub(super) fn array_layout(&self, element: &Type) -> ArrayLayout<'ctx> {
+    pub(super) fn array_layout(&self, element: Type) -> ArrayLayout<'ctx> {
         let header = self.header();
         let ty = self
             .llvm_type(element)
@@ -116,7 +116,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// taken from an existing string, as `chars()` and `bytes()` do, needs no check.
     pub(super) fn alloc_array(
         &self,
-        element: &Type,
+        element: Type,
         len: IntValue<'ctx>,
         span: Option<Span>,
     ) -> PointerValue<'ctx> {
@@ -197,7 +197,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     )]
     pub(super) fn element_ptr(
         &self,
-        element: &Type,
+        element: Type,
         array: PointerValue<'ctx>,
         index: IntValue<'ctx>,
     ) -> PointerValue<'ctx> {
@@ -226,7 +226,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// The element at `index`, without retaining it.
     fn load_element(
         &self,
-        element: &Type,
+        element: Type,
         array: PointerValue<'ctx>,
         index: IntValue<'ctx>,
     ) -> BasicValueEnum<'ctx> {
@@ -288,7 +288,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `ArrayLit`: every element first, left to right, then the block, which takes each
     /// element's reference. Allocating last means an element that exits leaves no block.
-    pub(super) fn array_lit(&mut self, ty: &Type, elements: &[Expr]) -> PointerValue<'ctx> {
+    pub(super) fn array_lit(&mut self, ty: Type, elements: &[Expr]) -> PointerValue<'ctx> {
         let values: Vec<_> = elements
             .iter()
             .map(|e| {
@@ -312,7 +312,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `ArrayFill`: `value`, then `len`, then the block, with `value` in every slot. A
     /// counted pointer `value` gains `len - 1` references in one step, or loses its one when
     /// `len` is 0. A counted enum `value` is retained once per slot, then released.
-    pub(super) fn array_fill(&mut self, ty: &Type, value: &Expr, len: &Expr) -> PointerValue<'ctx> {
+    pub(super) fn array_fill(&mut self, ty: Type, value: &Expr, len: &Expr) -> PointerValue<'ctx> {
         let element = element_of(ty);
         let filler = self.expr(value).expect(
             "the checker should give the value of `[v; n]` a value type, never `unit` or `never`",
@@ -337,7 +337,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// Gives `filler`, stored into `count` slots, one reference per slot: adds `count - 1`
     /// when it is an object or array and `count > 0`, or releases it when `count` is 0.
-    fn share_filler(&self, filler: BasicValueEnum<'ctx>, ty: &Type, count: IntValue<'ctx>) {
+    fn share_filler(&self, filler: BasicValueEnum<'ctx>, ty: Type, count: IntValue<'ctx>) {
         let i64_type = self.context.i64_type();
         let function = self.current_function();
         let block = |name| self.context.append_basic_block(function, name);
@@ -378,7 +378,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// is released after the load, unless it is a local read whose index leaves every local
     /// as it was: the local then keeps the block alive, so codegen skips its retain and
     /// release.
-    pub(super) fn index(&mut self, ty: &Type, base: &Expr, index: &Expr) -> BasicValueEnum<'ctx> {
+    pub(super) fn index(&mut self, ty: Type, base: &Expr, index: &Expr) -> BasicValueEnum<'ctx> {
         let local = borrowed_index_base(base, index);
         let array = match local {
             Some(local) => self.load_local(local),
@@ -391,7 +391,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let value = self.load_element(ty, array, at);
         self.retain(value, ty);
         if local.is_none() {
-            self.release(array.into(), &base.ty);
+            self.release(array.into(), base.ty);
         }
         value
     }
@@ -407,13 +407,13 @@ impl<'ctx> Codegen<'ctx, '_> {
         let array = array
             .expect("the checker should only call `len` on an array or a string, which lower to a pointer")
             .into_pointer_value();
-        let len = if base.ty == Type::String {
+        let len = if base.ty == Type::STRING {
             self.string_len(array)
         } else {
             self.array_len(array)
         };
         if !borrowed {
-            self.release(array.into(), &base.ty);
+            self.release(array.into(), base.ty);
         }
         len
     }
@@ -422,7 +422,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// from zero; then the base is released. An `i64` adds with the checked add of `+`, which
     /// panics at `span`, and an `f64` with `fadd` from `+0.0`, so an empty `[f64]` sums to
     /// `0.0` and the order of the additions is the order of the elements.
-    pub(super) fn sum(&mut self, ty: &Type, base: &Expr, span: Span) -> BasicValueEnum<'ctx> {
+    pub(super) fn sum(&mut self, ty: Type, base: &Expr, span: Span) -> BasicValueEnum<'ctx> {
         let array = self
             .expr(base)
             .expect("the checker should only call `sum` on an array, which lowers to a pointer")
@@ -433,7 +433,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.count_loop(self.array_len(array), |index| {
             let element = self.load_element(ty, array, index);
             let so_far = self.load(llvm_type, total);
-            let added = if *ty == Type::F64 {
+            let added = if ty == Type::F64 {
                 self.builder
                     .build_float_add(so_far.into_float_value(), element.into_float_value(), "sum")
                     .expect(POSITIONED)
@@ -450,14 +450,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.store(total, added);
         });
         let sum = self.load(llvm_type, total);
-        self.release(array.into(), &base.ty);
+        self.release(array.into(), base.ty);
         sum
     }
 
     /// `Contains`: `base`, then `value`; whether some element of `base` is `==` to `value`,
     /// stopping at the first that is. Then both are released.
     pub(super) fn contains(&mut self, base: &Expr, value: &Expr) -> IntValue<'ctx> {
-        let element = element_of(&base.ty);
+        let element = element_of(base.ty);
         let array = self
             .expr(base)
             .expect(
@@ -491,8 +491,8 @@ impl<'ctx> Codegen<'ctx, '_> {
                 ],
             )
             .into_int_value();
-        self.release(array.into(), &base.ty);
-        self.release(needle, &value.ty);
+        self.release(array.into(), base.ty);
+        self.release(needle, value.ty);
         hit
     }
 
@@ -516,7 +516,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.expr(base)
                     .expect("the checker should only make a field place on a class-typed base, which lowers to a pointer")
                     .into_pointer_value(),
-                &base.ty,
+                base.ty,
             )),
             _ => None,
         };
@@ -525,16 +525,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             at.push((index, self.expr(index)?.into_int_value()));
         }
         let (slot, ty) = match root {
-            Place::Local(local) => (self.variable_slot(*local), self.types[local.0].clone()),
+            Place::Local(local) => (self.variable_slot(*local), self.types[local.0]),
             Place::Field { base, index } => {
-                let Type::Class(class) = base.ty else {
-                    unreachable!("the checker should only make a field place on a class-typed base")
-                };
+                let class = class_of(base.ty);
                 let (object, _) =
                     object.expect("a field root's base should have been evaluated above");
                 (
-                    self.field_ptr(&base.ty, object, *index),
-                    self.program.classes[class.0].fields[*index].ty.clone(),
+                    self.field_ptr(class, object, *index),
+                    self.program.classes[class.0].fields[*index].ty,
                 )
             }
             Place::Index { .. } => unreachable!("the loop above should stop at the root"),
@@ -566,7 +564,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         operands: &PlaceOperands<'_, 'ctx>,
     ) -> (PointerValue<'ctx>, Type) {
         let unique_from = usize::from(operands.unique_root);
-        self.walk(operands.slot, &operands.ty, &operands.indexes, unique_from)
+        self.walk(operands.slot, operands.ty, &operands.indexes, unique_from)
     }
 
     /// Walks `place`'s indexes as `element_slot` does, but makes nothing unique: the slot that
@@ -574,7 +572,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     pub(super) fn read_slot(
         &self,
         root_slot: PointerValue<'ctx>,
-        root_ty: &Type,
+        root_ty: Type,
         indexes: &[(&Expr, IntValue<'ctx>)],
     ) -> PointerValue<'ctx> {
         self.walk(root_slot, root_ty, indexes, indexes.len()).0
@@ -590,7 +588,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn walk(
         &self,
         mut slot: PointerValue<'ctx>,
-        mut ty: &Type,
+        mut ty: Type,
         indexes: &[(&Expr, IntValue<'ctx>)],
         unique_from: usize,
     ) -> (PointerValue<'ctx>, Type) {
@@ -608,7 +606,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ty = element_of(ty);
             slot = self.element_ptr(ty, array, at);
         }
-        (slot, ty.clone())
+        (slot, ty)
     }
 
     /// `Assign { place: Index { .. }, value }`. The place's own operands come first, from
@@ -627,7 +625,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .is_counted(&self.program.enums)
             .then(|| self.load_tagged(value.get_type(), slot, "old", self.element_tag));
         self.store_tagged(slot, value, self.element_tag);
-        self.discard(old, &ty);
+        self.discard(old, ty);
         operands.release_object(self);
     }
 
@@ -636,7 +634,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     pub(super) fn define_array_helper(
         &self,
         kind: Helper,
-        element: &Type,
+        element: Type,
         function: FunctionValue<'ctx>,
     ) {
         match kind {
@@ -657,7 +655,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `@sisu_rc.drop.[T]`: releases each counted element in order, then frees the block, its
     /// size recomputed from the length.
-    fn define_array_drop(&self, element: &Type, function: FunctionValue<'ctx>) {
+    fn define_array_drop(&self, element: Type, function: FunctionValue<'ctx>) {
         self.builder
             .position_at_end(self.context.append_basic_block(function, "entry"));
         let array = param(function);
@@ -682,7 +680,7 @@ impl<'ctx> Codegen<'ctx, '_> {
 
     /// `@sisu_rc.eq.[T](a, b)`: see `eq_entry` for the same pointer and `null`; otherwise the
     /// lengths, then each pair of elements by `T`'s `==`, up to the first difference.
-    fn define_array_eq(&self, element: &Type, function: FunctionValue<'ctx>) {
+    fn define_array_eq(&self, element: Type, function: FunctionValue<'ctx>) {
         let (a, b, equal, unequal) = self.eq_entry(function, self.reflexive(element));
         let len = self.array_len(a);
         let same_len = self.int_compare(IntPredicate::EQ, len, self.array_len(b));
@@ -711,7 +709,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// elements copied with `llvm.memcpy` and each counted one retained, is stored into
     /// `slot`. It has no `null` early return: the slot is an `alloca`, a field address or an
     /// element address.
-    fn define_array_unique(&self, element: &Type, function: FunctionValue<'ctx>) {
+    fn define_array_unique(&self, element: Type, function: FunctionValue<'ctx>) {
         let block = |name| self.context.append_basic_block(function, name);
         let (entry, only, shared) = (block("entry"), block("only"), block("shared"));
         self.builder.position_at_end(entry);

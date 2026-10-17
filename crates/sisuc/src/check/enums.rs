@@ -9,7 +9,7 @@ use super::{Checked, Checker, Declared, Definition, DiagnosticKind, Poisoned};
 use crate::ast;
 use crate::diagnostic::{BuiltIn, Span, Unbuilt, VariantLabels, suggestion};
 use crate::symbol::Symbol;
-use crate::tir::{self, EnumId, Type};
+use crate::tir::{self, EnumId, Type, TypeKind};
 
 pub(super) struct EnumInfo {
     pub(super) name: ast::Ident,
@@ -123,7 +123,7 @@ impl Checker<'_> {
                     .insert(method.name.name, Declared::Known(func));
             }
             self.signature(method, format!("{owner}.{}", method.name.name));
-            declared.push((method, Some(Type::Enum(id))));
+            declared.push((method, Some(Type::intern(TypeKind::Enum(id)))));
         }
         for method in &e.broken_methods {
             self.enums[id.0]
@@ -173,7 +173,7 @@ impl Checker<'_> {
         // Built only for a diagnostic.
         let path = format_args!("{enum_name}.{}", member.name);
         let v = &info.variants[variant];
-        let ty = Type::Enum(id);
+        let ty = Type::intern(TypeKind::Enum(id));
         let args = match call {
             None if v.fields.is_empty() => Vec::new(),
             Some((args, _)) if !v.fields.is_empty() => {
@@ -184,7 +184,7 @@ impl Checker<'_> {
                         .iter()
                         .flatten()
                         .copied()
-                        .zip(v.fields.iter().cloned())
+                        .zip(v.fields.iter().copied())
                         .collect();
                     self.construct(span, &path, &named, args)
                 } else if v.labels.iter().all(Option::is_none) {
@@ -270,7 +270,7 @@ impl Checker<'_> {
         let (checked, mismatched): (Vec<_>, Vec<_>) = args
             .iter()
             .zip(fields)
-            .map(|(arg, field)| self.operand(&arg.value, field.as_ref()))
+            .map(|(arg, field)| self.operand(&arg.value, *field))
             .unzip();
         let failed = labeled || mismatched.contains(&true);
         match checked.into_iter().collect() {
@@ -304,6 +304,7 @@ impl Checker<'_> {
             .map(|e| {
                 let fields = e.variants.iter().flat_map(|v| v.fields.iter().flatten());
                 fields
+                    .copied()
                     .filter_map(Type::inline_enum)
                     .map(|id| id.0)
                     .collect()
@@ -323,9 +324,9 @@ impl Checker<'_> {
                         fields: v
                             .fields
                             .iter()
-                            .map(|ty| {
+                            .map(|&ty| {
                                 // An `Error` field's error stops the program before codegen.
-                                let ty = ty.clone().unwrap_or(Type::Never);
+                                let ty = ty.unwrap_or(Type::NEVER);
                                 let boxed = ty
                                     .inline_enum()
                                     .is_some_and(|f| component[f.0] == component[e]);
@@ -369,9 +370,9 @@ impl Checker<'_> {
     /// type that only needs one of those is not.
     fn never_built(&mut self, cyclic: &[bool]) {
         let classes = self.classes.len();
-        let node = |ty: &Option<Type>| match ty {
-            Some(Type::Class(id)) => Some(id.0),
-            Some(Type::Enum(id)) => Some(classes + id.0),
+        let node = |ty: &Option<Type>| match ty.map(Type::kind) {
+            Some(TypeKind::Class(id)) => Some(id.0),
+            Some(TypeKind::Enum(id)) => Some(classes + id.0),
             _ => None,
         };
         // Each class, and each variant, as (its type's node, the nodes it needs built).
@@ -462,11 +463,11 @@ impl Checker<'_> {
         let classes = self.classes.len();
         // A field named `name` of type `ty`, if that type cannot be built: its name, its type's
         // name and its node.
-        let unbuilt = |(name, ty): (&str, &Option<Type>)| {
-            let ty = ty.as_ref()?;
-            let n = match ty {
-                Type::Class(id) => id.0,
-                Type::Enum(id) => classes + id.0,
+        let unbuilt = |(name, ty): (&str, Option<Type>)| {
+            let ty = ty?;
+            let n = match ty.kind() {
+                TypeKind::Class(id) => id.0,
+                TypeKind::Enum(id) => classes + id.0,
                 _ => return None,
             };
             (!built[n]).then(|| (name.to_string(), self.type_name(ty), n))
@@ -477,13 +478,13 @@ impl Checker<'_> {
         while !std::mem::replace(&mut on_chain[at], true) {
             let (holder, field) = if at < classes {
                 let class = &self.classes[at];
-                let mut fields = class.fields.iter().map(|f| (f.name.name.as_str(), &f.ty));
+                let mut fields = class.fields.iter().map(|f| (f.name.name.as_str(), f.ty));
                 (&class.name, fields.find_map(unbuilt))
             } else {
                 let e = &self.enums[at - classes];
                 let mut fields = e.variants.first().into_iter().flat_map(|v| {
                     let name = v.name.name.as_str();
-                    v.fields.iter().map(move |ty| (name, ty))
+                    v.fields.iter().map(move |&ty| (name, ty))
                 });
                 (&e.name, fields.find_map(unbuilt))
             };

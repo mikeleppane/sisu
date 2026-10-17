@@ -74,7 +74,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `Str`: `string_global` for this literal node, retained.
     pub(super) fn string_lit(&self, text: &str) -> PointerValue<'ctx> {
         let string = self.string_global(text);
-        self.retain(string.into(), &Type::String);
+        self.retain(string.into(), Type::STRING);
         string
     }
 
@@ -145,14 +145,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             "the checker should only make an append whose indexes are locals or literals, which cannot exit",
         );
         let ptr_type = self.context.ptr_type(AddressSpace::default()).into();
-        let slot = self.read_slot(operands.slot, &operands.ty, &operands.indexes);
+        let slot = self.read_slot(operands.slot, operands.ty, &operands.indexes);
         let read = self.load(ptr_type, slot);
-        self.retain(read, &Type::String);
+        self.retain(read, Type::STRING);
         let text = self
             .expr(value)
             .expect("the checker should only make an append whose value cannot exit");
         let (slot, _) = self.element_slot(&operands);
-        self.release(self.load(ptr_type, slot), &Type::String);
+        self.release(self.load(ptr_type, slot), Type::STRING);
         let result = self.concat(read.into_pointer_value(), text.into_pointer_value());
         self.store(slot, result.into());
         operands.release_object(self);
@@ -253,7 +253,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         self.builder.position_at_end(copy);
         let fresh = self.new_string(needed);
         self.copy_bytes(self.string_field(fresh, BYTES), lhs, len);
-        self.release(lhs.into(), &Type::String);
+        self.release(lhs.into(), Type::STRING);
         let copied = self.current_block();
         self.branch_to(join);
 
@@ -266,7 +266,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let result = result.as_basic_value().into_pointer_value();
         self.copy_bytes(self.string_byte(result, len), rhs, rhs_len);
         self.store(self.string_field(result, LEN), needed.into());
-        self.release(rhs.into(), &Type::String);
+        self.release(rhs.into(), Type::STRING);
         result
     }
 
@@ -337,11 +337,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             |cap, (i, (part, value))| {
                 let format = formats_in_order.next_if(|format| format.part == i);
                 let text = match part.ty {
-                    Type::String => self.string_len(value.into_pointer_value()),
+                    Type::STRING => self.string_len(value.into_pointer_value()),
                     Type::I64 => bound(20),
                     Type::U8 => bound(3),
-                    Type::Bool => bound(5),
-                    Type::Char => bound(4),
+                    Type::BOOL => bound(5),
+                    Type::CHAR => bound(4),
                     Type::F64 => bound(
                         format
                             .and_then(|format| format.precision)
@@ -365,7 +365,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             let format = formats_in_order.next_if(|format| format.part == i);
             let at = self.string_byte(result, len);
             let written = match part.ty {
-                Type::String => {
+                Type::STRING => {
                     let string = value.into_pointer_value();
                     let part_len = self.string_len(string);
                     self.copy_bytes(at, string, part_len);
@@ -387,7 +387,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     }
                     None => self.write_text("sisu_write_f64", &[*value, at.into()]),
                 },
-                Type::Bool => self.write_text("sisu_write_bool", &[*value, at.into()]),
+                Type::BOOL => self.write_text("sisu_write_bool", &[*value, at.into()]),
                 _ => self.write_text("sisu_write_char", &[*value, at.into()]),
             };
             let written = match format.and_then(|format| format.pad) {
@@ -411,7 +411,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         }
         self.store(self.string_field(result, LEN), len.into());
         for (part, value) in parts.iter().zip(values) {
-            self.discard(Some(value), &part.ty);
+            self.discard(Some(value), part.ty);
         }
         Some(result.into())
     }
@@ -430,11 +430,11 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (string, borrowed) = self.borrow_pointer(base);
         let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
         let count = self.utf8_size("sisu_utf8_count", bytes, len);
-        let array = self.alloc_array(&Type::Char, count, None);
-        let first = self.element_ptr(&Type::Char, array, self.context.i64_type().const_zero());
+        let array = self.alloc_array(Type::CHAR, count, None);
+        let first = self.element_ptr(Type::CHAR, array, self.context.i64_type().const_zero());
         self.utf8_fill("sisu_utf8_decode", bytes, len, first);
         if !borrowed {
-            self.release(string.into(), &base.ty);
+            self.release(string.into(), base.ty);
         }
         array
     }
@@ -444,11 +444,11 @@ impl<'ctx> Codegen<'ctx, '_> {
     pub(super) fn bytes(&mut self, base: &Expr) -> PointerValue<'ctx> {
         let (string, borrowed) = self.borrow_pointer(base);
         let len = self.string_len(string);
-        let array = self.alloc_array(&Type::U8, len, None);
-        let first = self.element_ptr(&Type::U8, array, self.context.i64_type().const_zero());
+        let array = self.alloc_array(Type::U8, len, None);
+        let first = self.element_ptr(Type::U8, array, self.context.i64_type().const_zero());
         self.copy_bytes(first, string, len);
         if !borrowed {
-            self.release(string.into(), &base.ty);
+            self.release(string.into(), base.ty);
         }
         array
     }
@@ -461,7 +461,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
         let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01);
         if !borrowed {
-            self.release(string.into(), &base.ty);
+            self.release(string.into(), base.ty);
         }
         count
     }
@@ -474,7 +474,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let i64_type = self.context.i64_type();
         let (bytes, len) = (self.string_field(string, BYTES), self.string_len(string));
         let count = self.call_word_function("sisu_words_count", &[bytes.into(), len.into()], 0b01);
-        let array = self.alloc_array(&Type::String, count, None);
+        let array = self.alloc_array(Type::STRING, count, None);
         // `count_loop` gives its body only the index, so the offset where the last word ended,
         // and the start of the word just found, live in slots.
         let from = self.entry_alloca(i64_type.into(), "from");
@@ -494,12 +494,12 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_int_nuw_sub(end, first, "word_len")
                 .expect(POSITIONED);
             let word = self.string_from_bytes(self.string_byte(string, first), word_len);
-            let slot = self.element_ptr(&Type::String, array, index);
+            let slot = self.element_ptr(Type::STRING, array, index);
             self.store(slot, word.into());
             self.store(from, end.into());
         });
         if !borrowed {
-            self.release(string.into(), &base.ty);
+            self.release(string.into(), base.ty);
         }
         array
     }
@@ -546,7 +546,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         let (array, borrowed) = self.borrow_pointer(base);
         let zero = self.context.i64_type().const_zero();
         let (chars, count) = (
-            self.element_ptr(&Type::Char, array, zero),
+            self.element_ptr(Type::CHAR, array, zero),
             self.array_len(array),
         );
         let len = self.utf8_size("sisu_utf8_len", chars, count);
@@ -559,7 +559,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         );
         self.store(self.string_field(string, LEN), len.into());
         if !borrowed {
-            self.release(array.into(), &base.ty);
+            self.release(array.into(), base.ty);
         }
         string
     }
@@ -676,8 +676,8 @@ impl<'ctx> Codegen<'ctx, '_> {
         let order = self.str_compare(l.into_pointer_value(), r.into_pointer_value());
         let zero = self.context.i64_type().const_zero();
         let holds = self.compare_pair(op, true, order.into(), zero.into());
-        self.release(l, &lhs.ty);
-        self.release(r, &rhs.ty);
+        self.release(l, lhs.ty);
+        self.release(r, rhs.ty);
         holds
     }
 
@@ -692,7 +692,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 self.string_len(string).into(),
             ],
         );
-        self.release(string.into(), &operand.ty);
+        self.release(string.into(), operand.ty);
     }
 
     /// `panic(message)` at `span`: `sisu_panic_message(at, at_len, bytes, len)`, then

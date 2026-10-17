@@ -53,7 +53,9 @@ read from standard input has no location: `sisu: panic: <message>`.
 _Avoid_: trap, crash, abort
 
 **Prelude**:
-The names visible in every file without an import.
+The names visible in every file without an import. Most are declared in Sisu,
+in the prelude file the compiler builds into every program.
+The Sisu prelude file arrives in milestone 8.
 
 **RC check**:
 A check that a program built with `sisuc --rc-checks` makes on its reference
@@ -64,9 +66,11 @@ on stderr and exits with code 102.
 ## Arrays
 
 **Array**:
-A fixed-length sequence of values of one type, written `[T]`. An array is a
-value: binding it, passing it or storing it behaves as a copy.
-_Avoid_: list, vector (a growable collection, milestone 11)
+A growable sequence of values of one type, written `[T]`, stored side by side
+in one block. An array is a value: binding it, passing it or storing it
+behaves as a copy.
+Growth methods arrive in milestone 10.
+_Avoid_: list, vector
 
 **Copy-on-write**:
 How arrays and strings behave as values without copying eagerly: holders
@@ -159,8 +163,8 @@ reassigned; a bare one is set by the constructor and never changes.
 _Avoid_: property, member variable, attribute
 
 **Method**:
-A function declared inside a class or record whose first parameter is `self`,
-called as `receiver.name(args)`.
+A function declared inside a class, enum or record, or in an `extend` block,
+whose first parameter is `self`, called as `receiver.name(args)`.
 _Avoid_: member function
 
 **Mutating method**:
@@ -184,8 +188,10 @@ the references in its fields.
 _Avoid_: deinit, destructor, finalizer
 
 **Structural equality**:
-What `==` means on classes: two objects are equal when each pair of fields is
-equal.
+`==` on a value comparing it part by part: array elements, variant payloads,
+an optional's contents. Classes have none: they compare by **Identity**, and
+have `==` only when they conform to `Eq` by hand.
+Until milestone 8 stage 5 (ADR 0022), classes compare field by field.
 
 **Identity**:
 Whether two references refer to the same object, tested with `is`.
@@ -242,7 +248,9 @@ _Avoid_: total, complete
 ## Optionals
 
 **Optional**:
-A value of type `T?`, holding either a `T` or `None`.
+A value of type `T?`, short for `Option<T>`, holding either a `T` or `None`.
+Optionals nest: `i64??` is `Option<Option<i64>>`.
+Nesting arrives in milestone 8.
 _Avoid_: nullable, maybe
 
 **`None`**:
@@ -250,8 +258,90 @@ The optional that holds no value.
 _Avoid_: nil, null
 
 **Unwrap**:
-Getting the `T` out of a `T?` when it holds one, with `if let`, `while let`,
-`?.` or `??`.
+Getting the value out of one layer of an optional when it holds one, with
+`if let`, `while let`, `?.` or `??`. Unwrapping an `i64??` gives an `i64?`.
+
+**Niche**:
+A bit pattern that a type's values never use, in which an `Option`-shaped
+enum stores its empty variant with no separate flag: null for a reference,
+`0x110000` for a `char`.
+
+## Generics and interfaces
+
+Milestone 8 adds these.
+
+**Type parameter**:
+A name for a type that a generic function, class, enum, interface or alias
+takes in angle brackets, such as `T` in `fn largest<T: Ord>(xs: [T])`.
+_Avoid_: generic parameter
+
+**Type argument**:
+The type given for a type parameter at a use, written out (`Stack<i64>`) or
+inferred (`largest([3, 9, 2])`).
+
+**Bound**:
+An interface a type parameter must conform to, written after it: `T: Ord`,
+`T: Shape & Ord`. Inside a generic body, a value of type `T` supports only
+what its bounds give it.
+_Avoid_: constraint
+
+**Instantiation**:
+One compiled copy of a generic function or type for one list of type
+arguments, such as `largest<i64>`.
+_Avoid_: specialization
+
+**Monomorphization**:
+Compiling a generic definition once for each instantiation the program
+reaches, so that generic code runs as fast as a copy written by hand for
+each type.
+
+**Interface**:
+A named set of method signatures and associated types, declared with
+`interface`. An interface is used as a bound, or after `any` as the type of
+an interface value; on its own it is not a type.
+_Avoid_: trait, protocol
+
+**Conformance**:
+A type's declaration that it meets an interface, with the methods the
+interface requires: `class Circle: Shape { ... }` or
+`extend Celsius: Convert<Kelvin> { ... }`. A type conforms to an interface
+with the same arguments at most once.
+_Avoid_: impl, implementation
+
+**Generated conformance**:
+A conformance the compiler writes, such as `Display` for every type, or `Eq`
+for an enum whose payloads are all `Eq`. A conformance the program writes
+replaces it.
+_Avoid_: derived, synthesized, auto-implemented
+
+**Language interface**:
+One of the four prelude interfaces the language itself uses: `Display` for
+`print` and interpolation, `Eq` for `==` and `!=`, `Ord` for `<`, `<=`, `>`
+and `>=`, and `AnyObject` for `is` and `weak` in generic code.
+
+**Associated type**:
+A type an interface names and each conforming type chooses once, such as
+`type Item` in `interface Source`. Outside the interface it is written
+through the type: `S.Item`.
+
+**`extend`**:
+A block that adds methods to a type declared elsewhere (`extend T { ... }`),
+or one conformance (`extend T: I { ... }`). Only the prelude may extend a
+built-in type.
+
+**Interface value**:
+A value of type `any I`: a value of any type that conforms to `I`, whose
+methods are called through a table.
+_Avoid_: trait object, existential
+
+**`AnyObject`**:
+The interface every class conforms to and nothing else can. A bound
+`T: AnyObject` lets generic code use `is` and `weak` on a `T`. Not to be
+confused with **Object**, one heap value of a class.
+
+**Class-only interface**:
+An interface that inherits `AnyObject`, so that only classes conform to it
+and its interface values support `is` and `weak`.
 
 ## Compiler
 

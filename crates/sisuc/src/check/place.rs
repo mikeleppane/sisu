@@ -5,7 +5,7 @@ use super::{BindingKind, Checked, Checker, Declared, Poisoned, UNKNOWN, block_ex
 use crate::ast;
 use crate::diagnostic::{DiagnosticKind, Immutable, Span};
 use crate::symbol::Symbol;
-use crate::tir::{self, ExprKind, Type};
+use crate::tir::{self, ExprKind, Type, TypeKind};
 
 /// A place, flattened. `operands` are its own operands in evaluation order: a field root's
 /// base expression, then each index from the root outwards.
@@ -50,7 +50,7 @@ impl Checker<'_> {
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
         let place = self.place(span, target, false);
-        let value = self.expect(value, place.ty.as_ref());
+        let value = self.expect(value, place.ty);
         self.assigned(span, place, value)
     }
 
@@ -65,7 +65,7 @@ impl Checker<'_> {
             (Some(path), Ok(value)) if place.writable => {
                 Ok(self.write(span, path.root, path.operands, value))
             }
-            _ => Err(Poisoned::typed(Type::Unit)),
+            _ => Err(Poisoned::typed(Type::UNIT)),
         }
     }
 
@@ -83,7 +83,7 @@ impl Checker<'_> {
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Result<tir::Stmt, Poisoned> {
-        let unit = || Poisoned::typed(Type::Unit);
+        let unit = || Poisoned::typed(Type::UNIT);
         if let ast::ExprKind::Name(name) = target.kind {
             // `assign` already reports an unknown target; a synthetic read would repeat it.
             if self.lookup(name).is_none() {
@@ -91,19 +91,19 @@ impl Checker<'_> {
             }
             // A `char` has no arithmetic, and a rewrite of the statement would break the
             // assignment: `target` stands for the value, which `assign` accepts.
-            if self.lookup(name).is_some_and(|b| b.ty == Some(Type::Char)) {
+            if self.lookup(name).is_some_and(|b| b.ty == Some(Type::CHAR)) {
                 self.char_compound(op_span, value);
                 return self.assign(span, target, target);
             }
             // `assign` of `target op value`, whose `op` spans the statement.
             let place = self.place(span, target, false);
-            let want = place.ty.as_ref();
+            let want = place.ty;
             let checked = self.binary(
                 span,
                 (op, op_span),
                 target,
                 value,
-                Some(want.unwrap_or(&UNKNOWN)),
+                Some(want.unwrap_or(UNKNOWN)),
                 true,
             );
             let expanded = ast::Expr {
@@ -121,17 +121,17 @@ impl Checker<'_> {
         let place = self.place(span, target, false);
         let Some(ty) = place.ty else {
             // Only its own mistakes are left to report.
-            let _ = self.expr(value, Some(&UNKNOWN));
+            let _ = self.expr(value, Some(UNKNOWN));
             return Err(unit());
         };
-        if ty == Type::Char {
+        if ty == Type::CHAR {
             self.char_compound(op_span, value);
             return Err(unit());
         }
         let (op, _) = operator(op).expect(
             "the parser should produce only arithmetic operators for a compound assignment",
         );
-        let want = literal_type(Some(&ty));
+        let want = literal_type(Some(ty));
         let mut lets = Vec::new();
         let path = place.path.map(|path| {
             let temps: Vec<_> = path
@@ -144,8 +144,8 @@ impl Checker<'_> {
                     {
                         return (l, init.ty, init.span);
                     }
-                    let temp = self.fresh(init.ty.clone());
-                    let read = (temp, init.ty.clone(), init.span);
+                    let temp = self.fresh(init.ty);
+                    let read = (temp, init.ty, init.span);
                     lets.push(tir::Stmt::Let { local: temp, init });
                     read
                 })
@@ -155,29 +155,29 @@ impl Checker<'_> {
         let reads = |temps: &[(tir::LocalId, Type, Span)]| {
             temps
                 .iter()
-                .map(|(temp, ty, span)| local(*temp, ty.clone(), *span))
+                .map(|(temp, ty, span)| local(*temp, *ty, *span))
                 .collect::<Vec<_>>()
         };
         let read = match &path {
             Some((root, temps)) => Ok(self.read(build(*root, reads(temps)), target.span)),
-            None => Err(Poisoned::typed(ty.clone())),
+            None => Err(Poisoned::typed(ty)),
         };
-        let value = if ty == Type::String && op == tir::BinaryOp::Add {
-            let checked = self.value(value, Some(&ty));
-            let got = type_of(&checked).filter(|got| **got != ty).cloned();
+        let value = if ty == Type::STRING && op == tir::BinaryOp::Add {
+            let checked = self.value(value, Some(ty));
+            let got = type_of(&checked).filter(|&got| got != ty);
             let (value, mismatched) = match got {
                 // As in `binary`: the place is the `string` that the value is joined to.
                 // A rejected expected type leaves no type, so `got` is the value's own.
                 Some(got) => {
-                    let d = self.concat_mismatch(value, &got, &[target, value], true);
+                    let d = self.concat_mismatch(value, got, &[target, value], true);
                     self.diagnostics.push(d);
                     (Err(Poisoned::error()), true)
                 }
-                _ => self.settled(value, checked, Some(&ty)),
+                _ => self.settled(value, checked, Some(ty)),
             };
             self.concat(span, read, value, mismatched)
         } else {
-            let read = self.against(target, read, Some(&want));
+            let read = self.against(target, read, Some(want));
             self.arithmetic(span, (op, op_span), want, read, value)
         };
         let (Some((root, temps)), Ok(value), true) = (path, value, place.writable) else {
@@ -185,7 +185,7 @@ impl Checker<'_> {
         };
         let operands = reads(&temps);
         lets.push(self.write(span, root, operands, value));
-        Ok(tir::Stmt::Expr(block_expr(lets, None, Type::Unit, span)))
+        Ok(tir::Stmt::Expr(block_expr(lets, None, Type::UNIT, span)))
     }
 
     /// Reports the compound assignment, at its operator `op_span`, to a `char` place, and checks
@@ -193,7 +193,7 @@ impl Checker<'_> {
     fn char_compound(&mut self, op_span: Span, value: &ast::Expr) {
         self.report(DiagnosticKind::ArithmeticOnChar { at: op_span });
         // Only its diagnostics matter.
-        let _ = self.expr(value, Some(&UNKNOWN));
+        let _ = self.expr(value, Some(UNKNOWN));
     }
 
     /// The constant `name` as the root of a place that `span` assigns, reported, if `name` names
@@ -203,7 +203,7 @@ impl Checker<'_> {
         let Declared::Known(constant) = self.constants.get(&name)? else {
             return Some(CheckedPlace::failed());
         };
-        let (declared, ty) = (constant.span, constant.ty.clone());
+        let (declared, ty) = (constant.span, constant.ty);
         self.report(DiagnosticKind::AssignToImmutable {
             name: name.to_string(),
             at: span,
@@ -242,7 +242,7 @@ impl Checker<'_> {
                     return CheckedPlace::failed();
                 };
                 b.reassigned |= b.kind == BindingKind::Var;
-                let (local, ty, kind, declared) = (b.local, b.ty.clone(), b.kind, b.span);
+                let (local, ty, kind, declared) = (b.local, b.ty, b.kind, b.span);
                 let redeclared = b.shadows_mut;
                 let cause = match kind {
                     BindingKind::Var => None,
@@ -282,7 +282,7 @@ impl Checker<'_> {
                     return CheckedPlace::failed();
                 };
                 let field = &self.classes[class.0].fields[index];
-                let (ty, writable) = (field.ty.clone(), field.mutable);
+                let (ty, writable) = (field.ty, field.mutable);
                 if !writable {
                     let (name, declared) = (field.name.name.to_string(), field.name.span);
                     self.report(DiagnosticKind::AssignToImmutable {
@@ -303,8 +303,8 @@ impl Checker<'_> {
             }
             ast::ExprKind::Index { base, index } => {
                 let inner = self.place(span, base, true);
-                let element = self.element(base, inner.ty.as_ref());
-                let (index, mismatched) = self.operand(index, Some(&Type::I64));
+                let element = self.element(base, inner.ty);
+                let (index, mismatched) = self.operand(index, Some(Type::I64));
                 let path = inner
                     .path
                     .filter(|_| element.is_some())
@@ -353,20 +353,20 @@ impl Checker<'_> {
             return assign;
         }
         stmts.push(assign);
-        tir::Stmt::Expr(block_expr(stmts, None, Type::Unit, span))
+        tir::Stmt::Expr(block_expr(stmts, None, Type::UNIT, span))
     }
 
     /// The value `place` holds, read at `span`.
     fn read(&self, place: tir::Place, span: Span) -> tir::Expr {
         let (kind, ty) = match place {
-            tir::Place::Local(id) => (ExprKind::Local(id), self.locals[id.0].ty.clone()),
+            tir::Place::Local(id) => (ExprKind::Local(id), self.locals[id.0].ty),
             tir::Place::Field { base, index } => {
-                let Type::Class(class) = base.ty else {
+                let TypeKind::Class(class) = base.ty.kind() else {
                     panic!(
                         "a field place's base should be of a class type, as `find_field` found the field on it"
                     )
                 };
-                let ty = self.classes[class.0].fields[index].ty.clone().expect(
+                let ty = self.classes[class.0].fields[index].ty.expect(
                     "a place whose type is known should not be a field whose type is `Error`",
                 );
                 let base = Box::new(base);
@@ -374,10 +374,10 @@ impl Checker<'_> {
             }
             tir::Place::Index { base, index } => {
                 let base = self.read(*base, span);
-                let Type::Array(element) = &base.ty else {
+                let TypeKind::Array(element) = base.ty.kind() else {
                     panic!("an indexed place should hold an array, as `element` checked")
                 };
-                let ty = (**element).clone();
+                let ty = element;
                 let (base, index) = (Box::new(base), Box::new(index));
                 (ExprKind::Index { base, index }, ty)
             }

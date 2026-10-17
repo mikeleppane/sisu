@@ -136,7 +136,9 @@ These came out of the milestone 2 design and are now part of its spec:
   `None` as the empty value. `None` becomes the `Option<T>` case in
   milestone 8.
 - `if let` and `while let` for optionals, brought forward from milestone 7.
-- `==` compares classes structurally; `a is b` compares identity.
+- `==` compares classes structurally; `a is b` compares identity. Reversed in
+  milestone 8: classes compare by identity
+  ([ADR 0022](adr/0022-classes-compare-by-identity.md)).
 - The checker reports every error in one run, using a poison type.
 - The checker builds a typed, desugared tree (`tir`) and codegen reads only
   that.
@@ -462,7 +464,7 @@ The compiler is fuzzed in two stages:
 | 8 | Generics (monomorphization) and interfaces, with `print` generic through a `Display`-like interface; `Option` and `Result` join the prelude, with the bare names `Some`, `None`, `Ok` and `Err` in expressions and patterns, and on a `T?` a pattern whose outermost name is `Some` or `None` matches the optional itself while any other pattern matches the value inside it | `print(x)` works for any printable type; `T?` is shorthand for a library `Option<T>` |
 | 9 | Closures and lazy iterator methods (`map`, `filter`, `count`, `sum`), plus a `filter_some`-style method on `[T?]` | Closures first: a function that takes an `(i64) -> bool` runs with a closure that captures a local. Then `words.filter(w => w.len() > 3).count()` runs |
 | 10 | Records, named arguments, default parameters, and `p as name` to bind a whole sub-pattern | A `Point` record prints and compares with no hand-written methods |
-| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`List`, `Map`), including `os.env(name)`, `os.exit(code)`, and an `io` module with `read_lines()`, read-everything and `read_bytes()` | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
+| 11 | Modules, `pub` visibility, and a standard library written in Sisu (`Map`), including `os.env(name)`, `os.exit(code)`, and an `io` module with `read_lines()`, read-everything and `read_bytes()` | Modules first: a program of two files, each with a class of the same name, builds and runs. Then a word-frequency tool reads like a Python script |
 | 12 | Error handling: `Result<T, E>` and a `?` operator | File I/O code has no nested error checks |
 
 Order matters in these places:
@@ -470,10 +472,10 @@ Order matters in these places:
 - Milestone 7 comes before generics, because `Option` and `Result` are
   enums. Optionals still change twice: milestone 2 builds `T?` into the
   compiler, and milestone 8 turns it into shorthand for the library
-  `Option<T>` (as in Swift). The syntax stays, so no program breaks. Two
-  things must also stay: an optional class reference is a pointer that is
-  null for `None`, and `T?` of an optional is the same optional (see "Open
-  decisions").
+  `Option<T>` (as in Swift). The syntax stays, so no program breaks. One
+  thing must also stay: an optional class reference is a pointer that is
+  null for `None` (see "Open decisions"). Optionals nest from milestone 8
+  ([ADR 0024](adr/0024-optionals-nest.md)).
 - Milestone 7 has both `..` and `..=` in `for` and in range patterns, as
   Rust does. `..` already leaves out its end in `for`, so Swift's `...` or
   Kotlin's inclusive `..` would change the meaning of existing loops.
@@ -537,14 +539,14 @@ settle before work starts.
 | Milestone 5: standard streams and arguments | 4 | The word-count tool |
 | Milestone 6: floats and conversions | None | Float formatting in `"{x}"`; its Mandelbrot proof printed text, so it landed after 4 |
 | Milestone 7: enums and `match` | Done | 8, 12 |
-| Milestone 8: generics and interfaces | 4, 7. Decisions: nested optionals, equality and hashing, integer widths, generic arguments and `<` | 12, iterator methods (9), compiler-implemented interfaces (10), the standard library (11) |
+| Milestone 8: generics and interfaces | 4, 7 | 12, iterator methods (9), generated conformances on request (10), the standard library (11) |
 | Milestone 12: `Result` and `?` | 7, 8 | File I/O, the standard library (11), concurrency |
-| `weak` fields (ADR 0008) | Decision: the cycle part of equality and hashing | Closures that capture their owner |
+| `weak` fields (ADR 0008) | None | Closures that capture their owner |
 | Milestone 9: closures and function types | `weak` fields. Decisions: closure syntax, weak captures, argument labels | Iterator methods (9), concurrency |
 | Milestone 9: lazy iterator methods | 8, closures | The standard library (11) |
 | Milestone 10: named arguments, default parameters | Decision: argument labels | Records (10) |
-| Milestone 10: records, tuples, newtypes | 4 for `print`. Decisions: values with fields, argument labels | Compiler-implemented interfaces, tuple patterns in closure parameters (9) |
-| Milestone 10: compiler-implemented interfaces | 7, 8, records. Decision: equality and hashing | `Map` keys of user types (11) |
+| Milestone 10: records, tuples, newtypes | 4 for `print`. Decisions: values with fields, argument labels | Generated conformances on request, tuple patterns in closure parameters (9) |
+| Milestone 10: generated conformances on request | 7, 8, records. Decision: equality and hashing | `Map` keys of user types (11) |
 | Milestone 11: modules and `pub` | Keywords reserved, a build of more than one file. Decision: names and namespaces | The standard library (11), opaque types (11) |
 | Milestone 11: standard library in Sisu | 8, 12, iterator methods (9), modules | Concurrency |
 | Concurrency | 8, 9, 11, 12 | |
@@ -557,8 +559,8 @@ once the decisions it needs are settled:
 - **Decisions**: every entry in "Open decisions" is design work with no
   code. Settle the shared ones first, because several tracks build on each:
   what is left of argument labels (records and named arguments), names and
-  namespaces for modules, closure syntax for closures, values with fields
-  for records, and the cycle part of equality and hashing.
+  namespaces for modules, closure syntax for closures, and values with fields
+  for records.
 - **Closures**: `weak` fields, then closures and function types from
   milestone 9. A function type names concrete types, such as
   `(i64) -> bool`, so closures need no generics.
@@ -592,7 +594,7 @@ rewrites of `codegen/rc.rs` at once.
 
 Once 7 is done, milestone 8 starts. Once 8 is done, milestone 12 and
 the Sisu prelude can start, iterator methods once closures are done too, and
-compiler-implemented interfaces once records are done too. The standard
+generated conformances on request once records are done too. The standard
 library comes after them, and concurrency last.
 
 ### Smaller additions to milestones 8 to 11
@@ -601,13 +603,15 @@ Each is small once its milestone's main feature exists:
 
 - Milestone 8: type aliases, `type Index = Map<string, [i64]>`. An alias is
   another name for the same type, so it adds no type safety; for a distinct
-  type, use a newtype (milestone 10). Also `echo x`, which prints `x` with its file
-  and line and returns `x`, so it can wrap any expression while debugging.
-  It needs the `Display`-like interface.
-- Milestone 8: `Hash` and `Ord` interfaces in the prelude. `Map` keys
-  (milestone 11) need `Hash`, and `sort` needs `Ord`. Which built-in types
-  implement them is an open decision: classes and floats need rules first
-  (see "Open decisions").
+  type, use a newtype (milestone 10). Also `dbg(x)`, which prints `x` with its
+  file and line on standard error and returns `x`, so it can wrap any
+  expression while debugging. It needs the `Display`-like interface.
+- Milestone 8: `Eq` and `Ord` interfaces in the prelude; milestone 11:
+  `Hash`, with `Map` and `Set`. `Map` keys need `Hash`, and `sort` needs
+  `Ord`. `Hash` has the shape
+  `interface Hash: Eq { fn hash(self, h: mut Hasher) }`, which is Swift's
+  `hash(into:)`: a type feeds its fields to the runtime's `Hasher`. Classes
+  and `f64` get no `Hash` (see "Open decisions").
 - Milestone 8: a prelude written in Sisu, compiled with every program before
   modules exist. Array `sum` and `contains` (milestone 3) and the string
   methods (milestone 4) are built into the checker and codegen today. Once
@@ -615,23 +619,30 @@ Each is small once its milestone's main feature exists:
   prelude. What depends on a value's layout, such as an array's length,
   element access and allocation, stays built in. Milestone 11 turns the
   prelude into the standard library's first module.
-- Milestone 8: two data-oriented changes wait for generics (agreed
-  2026-10-14). Niches: `Option<T>` stores `None` as a value `T` can never
-  hold, so `char?` becomes an `i32` with `0x110000` for `None` (8 bytes to
-  4) and `bool?` an `i8` with 2. One rule covers every `Option`-shaped
-  enum; `char?` gets no special case before it, since milestone 7's enums
-  take no niche. `i64?` and `u8?` have no spare value and keep `{ i1, T }`.
-  A `None` sentinel never reaches the runtime: printing decodes it first.
-  Interned types: `tir::Type` becomes a `TypeId(u32)` handle into one
-  table, as `Symbol` is for names, so copying, comparing and hashing a type
-  cost an integer operation. Monomorphization multiplies the types the
-  checker builds; interning before it would design `TypeId` twice.
+- Milestone 8: two data-oriented changes, ordered around generics (agreed
+  2026-10-14, revised 2026-10-16). Interned types now come first in
+  milestone 8, before generics, so that generic types are built on the
+  handle from the start; niches arrive with `Option<T>` in stage 3.
+  `Option<T>` stores `None` as a value `T` can never hold, so `char?`
+  becomes an `i32` with `0x110000` for `None` (8 bytes to 4) and `bool?` an
+  `i8` with 2. One rule covers every `Option`-shaped enum; `char?` gets no
+  special case before it, since milestone 7's enums take no niche. `i64?` and
+  `u8?` have no spare value and keep `{ i1, T }`. A `None` sentinel never
+  reaches the runtime: printing decodes it first. Interned types (done in
+  milestone 8 stage 1): `tir::Type` is a 4-byte handle into one table, as
+  `Symbol` is for names, so copying, comparing and hashing a type cost an
+  integer operation. Monomorphization multiplies the types the checker
+  builds, so `Type` became a handle before generics, and generic types are
+  designed on it once.
 - Milestone 9: `for` over any iterator. Milestone 3's `for` lowers to a loop
   over an array or a range. An iterator `for` lowers to a loop that calls
   `next()` until it returns `None`, before the last-use pass runs, so a
   `break` or `return` inside it still releases what the loop holds. A range
   then becomes a value that can be passed and stored, so the glossary's
   "range" entry changes with it.
+- Milestone 9: iterator `sum` over `i64` items needs a
+  `where Item == i64`-style constraint or a per-type built-in, since
+  milestone 8 has no `where` clauses.
 - Milestone 9: function types, written `(i64, i64) -> i64` as in Swift and
   Kotlin. A named function and a closure have the same type, so a function
   can take, return and store either. A closure that captures nothing is a
@@ -657,7 +668,7 @@ Each is small once its milestone's main feature exists:
   its record takes `mut self` and is called only on a place that can change,
   so `p.move_by(1, 2)` changes `p` with no copy. A record that contains
   itself is an error whose help says to use a class.
-- Milestone 10: interfaces the compiler implements. A record or enum that
+- Milestone 10: generated conformances on request. A record or enum that
   declares `Hash` or `Ord` after its name, as in `record Point: Hash {`, gets
   the methods written by the compiler from its fields, in declaration order,
   as Swift synthesizes `Hashable` and `Comparable`. It is a compile error on
@@ -667,6 +678,13 @@ Each is small once its milestone's main feature exists:
   neither until "Equality, hashing and order" decides otherwise. The list is
   fixed by the compiler: this replaces
   derive macros, not user code generation.
+- Milestone 10: `mut self` requirements in interfaces arrive with records,
+  and milestone 10 decides whether a class's `self` method satisfies one, as
+  in Swift.
+- Milestone 10: array `push` and the other methods that change an array take
+  `mut self` (ADR 0011) and arrive with records. `push` grows the block in
+  place when nothing else holds it, doubling its capacity when full, and
+  copies first when it is shared (ADR 0007).
 - Milestone 10: a copy of a record with some fields changed,
   `Point(..p, y: 0)`, as Gleam writes it and as Kotlin's `copy(y = 0)` does.
   It also builds a labeled enum variant from a bound one, which is how a
@@ -785,7 +803,7 @@ fn main() {
             for line in read_lines("big.txt") { lines.send(line) }
             lines.close()
         })
-        let mut workers: List<Task<i64>> = []
+        let mut workers: [Task<i64>] = []
         for _ in 0..4 {
             workers.push(s.spawn(() => {
                 let mut words = 0
@@ -875,6 +893,20 @@ These do not make code nicer to write, so they wait:
 - Linking with `lld` (`-fuse-ld=lld`) when it is installed, because linking
   time grows with the program.
 - Parser error recovery, so a syntax error does not hide the next one.
+- A fixed-size inline array: its length is part of its type, and it is stored
+  inline (on the stack, or inside the object that holds it) with no header,
+  no count and no heap block. Name and syntax are open (Swift's
+  `InlineArray<3, i64>`, Rust's `[i64; 3]`, which would clash with today's
+  `[x; n]` making a `[T]`). A built-in literal length needs no const
+  generics; generic code over the length does. Build it when a benchmark shows
+  the heap `[T]` costs too much.
+- A `Value` bound for type parameters, the mirror of `AnyObject`: every type
+  that is not a class, nor an optional of one, conforms, and nothing else can.
+  Milestone 8 rejects `[x; n]` in a generic body when `x` is a `T` or `T?`,
+  because `T` may be a class and every element would be the same object
+  (E0067); `T: Value` would allow it. The ban only rejects programs, so
+  lifting it breaks none. Open: whether an enum or array that holds a class
+  conforms.
 - More lint checks as compiler warnings, as in Go's `vet` and `rustc`'s
   built-in lints, with no separate tool and no configuration file. The
   checker already warns about code after `return`, `break` or `continue`, and
@@ -1067,7 +1099,7 @@ stretch goals" with no date. Each gap gets a milestone once a definition of
   another host: there is no standard output, so a program imports JavaScript
   functions and exports its own through the `extern fn` that C uses, not a
   second mechanism.
-- **Standard library scope.** Milestone 11 names `List` and `Map`, and
+- **Standard library scope.** Milestone 11 names `Map`, and
   milestone 12 brings files. Time, processes, directories, networking,
   regular expressions and JSON are not planned.
 - **Platforms.** Sisu builds only for x86-64 Linux. ARM64 Linux and macOS
@@ -1141,7 +1173,7 @@ standard library. The milestones after 12 then follow from it.
   Generics and interfaces (milestone 8) cover the same ground, and errors
   stay plain when type checking does not depend on running code. Macros
   hide code from error messages, the formatter and the language server. The
-  other jobs macros do have other answers: interfaces the compiler implements
+  other jobs macros do have other answers: generated conformances on request
   (milestone 10), `const` initializers and attributes (later goals), and, for
   serialization or bindings, a script that writes ordinary `.sisu` files
   that are committed, as Go's `go generate` does. Runtime reflection is
@@ -1176,11 +1208,15 @@ standard library. The milestones after 12 then follow from it.
 - **Same-scope shadowing.** Resolved in milestone 4: allowed. `let n = n.trim()`
   in the same scope declares a new binding, and the old one stays visible to
   its own right-hand side.
-- **Generic arguments and `<`.** `f(a < b, c > d)` reads as two comparisons
-  or as one generic call. Decide the syntax in milestone 8.
+- **Generic arguments and `<`.** Resolved in milestone 8
+  ([ADR 0023](adr/0023-generics-are-monomorphized-and-checked-at-the-definition.md)):
+  after a name in an expression, `<` starts a type-argument list only if a
+  well-formed list follows and its closing `>` is followed by `(` or `.`.
+  Otherwise it is a comparison, so `f(a < b, c > d)` stays two comparisons.
 - **Interfaces as types.** Agreed 2026-10-14; milestone 8's spec confirms
   it. An interface is a generic bound, `T: Drawable`, dispatched statically
-  after monomorphization. A list of different types that share an interface,
+  after monomorphization. Bounds combine with `&`, as in `T: Drawable & Ord`.
+  A list of different types that share an interface,
   such as a file and an in-memory buffer used as one `Writer`, needs an
   interface value as well:
   - The type is written `any Drawable`, so the box and the indirect call show
@@ -1192,19 +1228,24 @@ standard library. The milestones after 12 then follow from it.
   - An `any` value is two words: a pointer to the data and a table of its
     methods, which also holds the drop code and ADR 0010's copy code. A class
     object is pointed at directly. A record, an enum or a number is boxed on
-    the heap first, as Go does. An interface with a generic method, or with a
-    method that returns its own type, can be a bound but not an `any` type,
-    as Rust's dyn-compatibility rule says.
-  - An interface names the types its methods use with associated types, as
-    Rust and Swift do, not with type parameters (`Iterator<T>`). A type then
-    has one iterator, so `for x in it` always knows the type of `x`:
+    the heap first, as Go does. `any` takes one interface. In milestone 8, an
+    interface with a generic method, with `Self` outside the receiver, or
+    with an associated type can be a bound but not an `any` type. The first
+    two follow Rust's dyn-compatibility rule.
+  - An interface may take type parameters as well as associated types. A type
+    parameter fits when a type conforms several ways (`Convert<T>`); an
+    associated type fits when it has one answer, as Rust and Swift use them.
+    `Iterator` uses an associated type, so a type has one iterator and
+    `for x in it` always knows the type of `x`:
 
     ```
     interface Iterator {
         type Item
-        fn next(mut self) -> Item?
+        fn next(self) -> Item?
     }
     ```
+
+    `mut self` requirements in interfaces wait for milestone 10, with records.
 
   - A type declares its interfaces after its name: `class Tree: Display {`,
     and `record Point: Hash {` as milestone 10 writes them.
@@ -1217,8 +1258,8 @@ standard library. The milestones after 12 then follow from it.
 - **Operators on newtypes.** Without them, `Meters` arithmetic needs
   `a.plus(b)` or `a.value + b.value`, the same boilerplate Rust newtypes
   carry. An opt-in such as Haskell's `deriving` would let a newtype keep its
-  field's `+` and `<`. One candidate reuses the interfaces the compiler
-  implements (milestone 10): `record Meters: Add, Ord { value: f64 }` forwards
+  field's `+` and `<`. One candidate reuses the generated conformances on request
+  (milestone 10): `record Meters: Add, Ord { value: f64 }` forwards
   `+` and `<` to the field. The operators come from a fixed list and the
   compiler writes them, so this is not unrestricted operator overloading.
   Decide in milestone 10.
@@ -1334,31 +1375,34 @@ standard library. The milestones after 12 then follow from it.
   The `test` blocks scheduled right after milestone 6 do not wait for this:
   running each test in a child process isolates its panic with no runtime
   support.
-- **Nested optionals.** Decide before milestone 8. Milestone 2 rejects
-  `T??` and treats an optional of an optional as the same optional. The
-  library `Option<Option<T>>` nests: a `Map<K, V?>` lookup returns one. Decide
-  what `?.`, `??` and `if let` do on a nested `Option` in generic code, so
-  that no program written before milestone 8 changes meaning.
-- **Equality, hashing and order.** Decide before milestone 8. Decide the
-  first point before `weak` fields, which let programs build cycles on
-  purpose:
-  - `==` compares classes structurally (milestone 2). It returns at once when
-    both sides are the same object, but comparing two distinct object graphs
-    that contain cycles never ends. If `print` comes to cover classes, so
-    would printing one.
-  - A class object used as a `Map` key and then changed corrupts the map.
-    Hashing a class by identity does not fix this: two objects that are `==`
-    would hash differently. One option: classes get no compiler-written
-    `Hash` or `Ord`, and only values (numbers, `bool`, strings, enums,
-    records and tuples) do. A value that holds a class reference needs the
-    same rule.
-  - Floats: [ADR 0017](adr/0017-floats-follow-ieee-754.md) settles equality:
-    NaN is not equal to itself, and `-0.0 == 0.0`. `Ord` and `Hash` stay
-    open: decide whether `f64` implements them, or a total order is used,
-    before "built-in types implement both" is promised.
+- **User drop code.** Decide before milestone 12's file handles, together with
+  recovering from a panic. Today drop only frees memory; code the user writes
+  to run at drop earns its place when an object holds something outside
+  memory: a file, a socket, a lock. Decide its form, an interface the compiler
+  calls (Rust's `Drop`) or a block in the class (Swift's `deinit`); what
+  happens when the drop code stores `self` somewhere, so the object outlives
+  its last reference; how it runs inside the loop that drops a class's
+  own-type field (ADR 0005); and whether a panic runs it. An object in a cycle
+  is never dropped, so drop code cannot be what makes a program correct.
+- **Nested optionals.** Resolved in milestone 8
+  ([ADR 0024](adr/0024-optionals-nest.md)): optionals nest, `??` and `if let`
+  peel one layer, and `?.` flattens one.
+- **Equality, hashing and order.** Resolved in milestone 8, except for
+  function values:
+  - Classes: [ADR 0022](adr/0022-classes-compare-by-identity.md) makes them
+    compare by identity (`is`). A class has `==` only when it conforms to `Eq`
+    by hand, so a comparison that could follow a cycle is never hidden behind
+    `==`. Classes get no `Hash`: a class object used as a `Map` key and then
+    changed would corrupt the map, and hashing by identity would disagree with
+    a hand-written `Eq`.
+  - Floats: [ADR 0017](adr/0017-floats-follow-ieee-754.md) settles them. `f64`
+    conforms to `Eq` and `Ord` with IEEE semantics, so NaN is not equal to
+    itself and `-0.0 == 0.0`, and it gets no `Hash`.
+  - `Hash`'s shape is decided for milestone 11:
+    `interface Hash: Eq { fn hash(self, h: mut Hasher) }`.
   - Function values: whether they have `==` and `print`, and so what a
     record or class that holds one gets.
-- **Integer widths and wrapping.** Decide before milestone 8. Sisu has
-  `i64` and `u8`. `Hash` needs a hash width and wrapping arithmetic, which
-  ADR 0003 adds in the milestone that first needs it. Other widths, such as
-  `i32` for the C FFI, can wait for the FFI.
+- **Integer widths and wrapping.** `Hash` no longer needs a width or wrapping
+  arithmetic in the language, since the runtime's `Hasher` holds it. `u64` and
+  wrapping operators wait for the first Sisu code that needs them (ADR 0003),
+  and other widths, such as `i32`, for the FFI.

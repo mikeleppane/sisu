@@ -36,7 +36,7 @@ use self::rc::{Helper, counted_core};
 use crate::diagnostic::{LineIndex, Span};
 use crate::tir::{
     Block, Class, ClassId, CompareOp, Expr, ExprKind, Function, LocalId, Place, Program, Stmt,
-    Stream, Type, UnaryOp,
+    Stream, Type, TypeKind, UnaryOp,
 };
 
 /// The `expect` message for a builder call: codegen positions the builder before it emits code.
@@ -141,7 +141,7 @@ pub(crate) fn compile<'ctx>(
     // Every class gets its helpers, used or not, as in milestone 2.
     for helper in [Helper::Release, Helper::Eq] {
         for id in 0..program.classes.len() {
-            codegen.helper(helper, &Type::Class(ClassId(id)));
+            codegen.helper(helper, Type::intern(TypeKind::Class(ClassId(id))));
         }
     }
     // Declare every function first so that calls can refer to functions defined later.
@@ -271,6 +271,14 @@ fn add_nounwind_memory(module: &Module<'_>, function: FunctionValue<'_>, memory:
     );
 }
 
+/// The class of a field access's base, whose type is `ty`.
+fn class_of(ty: Type) -> ClassId {
+    let TypeKind::Class(id) = ty.kind() else {
+        unreachable!("the checker should only allow field access on a class-typed value")
+    };
+    id
+}
+
 fn zeroext(context: &Context) -> Attribute {
     context.create_enum_attribute(Attribute::get_named_enum_kind_id("zeroext"), 0)
 }
@@ -370,20 +378,20 @@ struct Codegen<'ctx, 'src> {
 
 impl<'ctx> Codegen<'ctx, '_> {
     /// The LLVM type of a value of `ty`; `None` for `unit` and `never`, which have no value.
-    fn llvm_type(&self, ty: &Type) -> Option<BasicTypeEnum<'ctx>> {
-        match ty {
-            Type::I64 => Some(self.context.i64_type().into()),
-            Type::U8 => Some(self.context.i8_type().into()),
-            Type::F64 => Some(self.context.f64_type().into()),
-            Type::Bool => Some(self.context.bool_type().into()),
-            Type::Char => Some(self.context.i32_type().into()),
-            Type::Unit | Type::Never => None,
+    fn llvm_type(&self, ty: Type) -> Option<BasicTypeEnum<'ctx>> {
+        match ty.kind() {
+            TypeKind::I64 => Some(self.context.i64_type().into()),
+            TypeKind::U8 => Some(self.context.i8_type().into()),
+            TypeKind::F64 => Some(self.context.f64_type().into()),
+            TypeKind::Bool => Some(self.context.bool_type().into()),
+            TypeKind::Char => Some(self.context.i32_type().into()),
+            TypeKind::Unit | TypeKind::Never => None,
             // An object, an array or a string is a pointer to its block.
-            Type::String | Type::Class(_) | Type::Array(_) => {
+            TypeKind::String | TypeKind::Class(_) | TypeKind::Array(_) => {
                 Some(self.context.ptr_type(AddressSpace::default()).into())
             }
-            Type::Enum(id) => Some(self.enum_layout(*id).ty.into()),
-            Type::Optional(payload) => match self
+            TypeKind::Enum(id) => Some(self.enum_layout(id).ty.into()),
+            TypeKind::Optional(payload) => match self
                 .llvm_type(payload)
                 .expect("the checker should reject an optional of `unit` or `never`, so its payload has a value type")
             {
@@ -447,7 +455,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .fields
             .iter()
             .map(|field| {
-                self.llvm_type(&field.ty)
+                self.llvm_type(field.ty)
                     .expect("the checker should give every class field a value type, never `unit` or `never`")
             })
             .collect();
@@ -475,41 +483,41 @@ impl<'ctx> Codegen<'ctx, '_> {
         )
     }
 
-    /// A pointer to field `index` of `object`, whose type is `ty`.
-    fn field_ptr(&self, ty: &Type, object: PointerValue<'ctx>, index: usize) -> PointerValue<'ctx> {
-        let Type::Class(id) = ty else {
-            unreachable!("the checker should only allow field access on a class-typed value")
-        };
+    /// A pointer to field `index` of `object`, an object of class `id`.
+    fn field_ptr(
+        &self,
+        id: ClassId,
+        object: PointerValue<'ctx>,
+        index: usize,
+    ) -> PointerValue<'ctx> {
         let layout = &self.classes[id.0];
         self.builder
             .build_struct_gep(layout.ty, object, layout.element[index], "field")
             .expect("the checker should only emit a field index that the class has")
     }
 
-    /// The TBAA tag of field `index` of a class `ty`.
-    fn field_tag(&self, ty: &Type, index: usize) -> MetadataValue<'ctx> {
-        let Type::Class(id) = ty else {
-            unreachable!("the checker should only allow field access on a class-typed value")
-        };
+    /// The TBAA tag of field `index` of class `id`.
+    fn field_tag(&self, id: ClassId, index: usize) -> MetadataValue<'ctx> {
         self.classes[id.0].field_tag[index]
     }
 
     /// Field `index` of the object `base`, whose type is `ty`. A local base is borrowed: the
     /// local keeps the object alive, so codegen skips its retain and release.
-    fn read_field(&mut self, base: &Expr, index: usize, ty: &Type) -> BasicValueEnum<'ctx> {
+    fn read_field(&mut self, base: &Expr, index: usize, ty: Type) -> BasicValueEnum<'ctx> {
         let (object, borrowed) = self.borrow_or_expr(base);
         let object = object
             .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
             .into_pointer_value();
-        let field = self.field_ptr(&base.ty, object, index);
+        let class = class_of(base.ty);
+        let field = self.field_ptr(class, object, index);
         let llvm_ty = self.llvm_type(ty).expect(
             "the checker should give every class field a value type, never `unit` or `never`",
         );
-        let value = self.load_tagged(llvm_ty, field, "load", self.field_tag(&base.ty, index));
+        let value = self.load_tagged(llvm_ty, field, "load", self.field_tag(class, index));
         // Retain before releasing the base: the base's drop could release the field first.
         self.retain(value, ty);
         if !borrowed {
-            self.release(object.into(), &base.ty);
+            self.release(object.into(), base.ty);
         }
         value
     }
@@ -538,7 +546,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// Releases a value nobody keeps, if there is one.
-    fn discard(&self, value: Option<BasicValueEnum<'ctx>>, ty: &Type) {
+    fn discard(&self, value: Option<BasicValueEnum<'ctx>>, ty: Type) {
         if let Some(value) = value {
             self.release(value, ty);
         }
@@ -550,7 +558,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             let value = self.load_local(*local).expect(
                 "a counted local should have a value, since only initialised locals are released",
             );
-            self.release(value, &self.types[local.0]);
+            self.release(value, self.types[local.0]);
         }
     }
 
@@ -604,9 +612,8 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("`sisu_alloc` should return a pointer, as the runtime declares it")
             .into_pointer_value();
         self.store(object, i64_type.const_int(1, false).into());
-        let ty = Type::Class(class);
         for (index, arg) in args.into_iter().enumerate() {
-            let field = self.field_ptr(&ty, object, index);
+            let field = self.field_ptr(class, object, index);
             self.store(field, arg);
         }
         object
@@ -617,12 +624,12 @@ impl<'ctx> Codegen<'ctx, '_> {
             .params
             .iter()
             .map(|p| {
-                self.llvm_type(&f.locals[p.0].ty)
+                self.llvm_type(f.locals[p.0].ty)
                     .expect("the checker should reject a `unit` or `never` parameter, so each parameter has a value type")
                     .into()
             })
             .collect();
-        let fn_type = match self.llvm_type(&f.ret) {
+        let fn_type = match self.llvm_type(f.ret) {
             Some(ret) => ret.fn_type(&params, false),
             None => self.context.void_type().fn_type(&params, false),
         };
@@ -644,13 +651,13 @@ impl<'ctx> Codegen<'ctx, '_> {
             .iter()
             .map(|local| {
                 let ty = self
-                    .llvm_type(&local.ty)
+                    .llvm_type(local.ty)
                     .filter(|_| local.mutable || local.ty.is_counted(&self.program.enums))?;
                 let name = local.name.as_deref().unwrap_or("");
                 Some(Slot::Alloca(self.entry_alloca(ty, name), ty))
             })
             .collect();
-        self.types = f.locals.iter().map(|local| local.ty.clone()).collect();
+        self.types = f.locals.iter().map(|local| local.ty).collect();
         self.unique_locals = vec![false; f.locals.len()];
         // The parameters own their arguments: they are the bottom of the live-locals stack.
         self.live = Vec::new();
@@ -660,10 +667,10 @@ impl<'ctx> Codegen<'ctx, '_> {
         let value = self.block(&f.body, None);
         if !self.terminated() {
             // The declared return type picks the `ret`: a unit function discards any body value.
-            let value = if self.llvm_type(&f.ret).is_some() {
+            let value = if self.llvm_type(f.ret).is_some() {
                 Some(value.expect("the checker should give a body that falls through a value of the function's return type"))
             } else {
-                self.discard(value, &f.body.ty);
+                self.discard(value, f.body.ty);
                 None
             };
             self.release_to(0);
@@ -793,7 +800,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     )
                 };
                 // The value first, then the store, then the release of the old value.
-                let counted = &self.types[local.0];
+                let counted = self.types[local.0];
                 let old = counted
                     .is_counted(&self.program.enums)
                     .then(|| self.load(ty, ptr));
@@ -816,18 +823,19 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let object = object
                     .expect("the checker should only emit a field access on a class-typed base, which lowers to a pointer")
                     .into_pointer_value();
-                let ty = &value.ty;
+                let ty = value.ty;
                 let Some(value) = self.expr(value) else {
                     return;
                 };
-                let field = self.field_ptr(&base.ty, object, *index);
+                let class = class_of(base.ty);
+                let field = self.field_ptr(class, object, *index);
                 let old = ty
                     .is_counted(&self.program.enums)
                     .then(|| self.load(value.get_type(), field));
-                self.store_tagged(field, value, self.field_tag(&base.ty, *index));
+                self.store_tagged(field, value, self.field_tag(class, *index));
                 self.discard(old, ty);
                 if !borrowed {
-                    self.release(object.into(), &base.ty);
+                    self.release(object.into(), base.ty);
                 }
             }
             Stmt::Assign {
@@ -837,7 +845,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             Stmt::Append { place, value } => self.append(place, value),
             Stmt::Expr(e) => {
                 let value = self.expr(e);
-                self.discard(value, &e.ty);
+                self.discard(value, e.ty);
             }
         }
     }
@@ -857,17 +865,17 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn equal_expr(&mut self, negated: bool, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let equal = match lhs.ty {
-            Type::I64 | Type::U8 | Type::Bool | Type::Char if negated => {
+            Type::I64 | Type::U8 | Type::BOOL | Type::CHAR if negated => {
                 self.int_compare(IntPredicate::NE, l.into_int_value(), r.into_int_value())
             }
             _ if negated => {
-                let equal = self.equal(&lhs.ty, l, r);
+                let equal = self.equal(lhs.ty, l, r);
                 self.builder.build_not(equal, "not").expect(POSITIONED)
             }
-            _ => self.equal(&lhs.ty, l, r),
+            _ => self.equal(lhs.ty, l, r),
         };
-        self.release(l, &lhs.ty);
-        self.release(r, &rhs.ty);
+        self.release(l, lhs.ty);
+        self.release(r, rhs.ty);
         equal
     }
 
@@ -875,8 +883,8 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn is_expr(&mut self, lhs: &Expr, rhs: &Expr) -> IntValue<'ctx> {
         let (l, r) = (self.operand(lhs), self.operand(rhs));
         let same = self.same_object(l.into_pointer_value(), r.into_pointer_value());
-        self.release(l, &lhs.ty);
-        self.release(r, &rhs.ty);
+        self.release(l, lhs.ty);
+        self.release(r, rhs.ty);
         same
     }
 
@@ -908,7 +916,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     fn expr(&mut self, e: &Expr) -> Option<BasicValueEnum<'ctx>> {
         let value = match &e.kind {
             ExprKind::Int(n) => self
-                .llvm_type(&e.ty)
+                .llvm_type(e.ty)
                 .expect("the checker should type an integer literal as an integer type, which has an LLVM type")
                 .into_int_type()
                 .const_int(n.cast_unsigned(), false),
@@ -918,21 +926,21 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Str(text) => return Some(self.string_lit(text).into()),
             ExprKind::Interpolate { parts, formats } => return self.interpolate(parts, formats),
             ExprKind::Concat { lhs, rhs } => return Some(self.concat_expr(lhs, rhs).into()),
-            ExprKind::ArrayLit(elements) => return Some(self.array_lit(&e.ty, elements).into()),
+            ExprKind::ArrayLit(elements) => return Some(self.array_lit(e.ty, elements).into()),
             ExprKind::ArrayFill { value, len } => {
-                return Some(self.array_fill(&e.ty, value, len).into());
+                return Some(self.array_fill(e.ty, value, len).into());
             }
-            ExprKind::Index { base, index } => return Some(self.index(&e.ty, base, index)),
+            ExprKind::Index { base, index } => return Some(self.index(e.ty, base, index)),
             ExprKind::Len(base) => self.len(base),
             ExprKind::Chars(base) => return Some(self.chars(base).into()),
             ExprKind::Bytes(base) => return Some(self.bytes(base).into()),
             ExprKind::Words(base) => return Some(self.words(base).into()),
             ExprKind::FromChars(base) => return Some(self.string_from_chars(base).into()),
-            ExprKind::Sum(base) => return Some(self.sum(&e.ty, base, e.span)),
+            ExprKind::Sum(base) => return Some(self.sum(e.ty, base, e.span)),
             ExprKind::Contains { base, value } => self.contains(base, value),
             ExprKind::Local(local) => {
                 let value = self.load_local(*local)?;
-                self.retain(value, &e.ty);
+                self.retain(value, e.ty);
                 return Some(value);
             }
             ExprKind::Move(local) => return Some(self.move_local(*local)),
@@ -981,7 +989,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 else_block,
             } => {
                 let cond = self.value(cond);
-                return self.if_expr(cond, then_block, None, else_block.as_ref(), &e.ty);
+                return self.if_expr(cond, then_block, None, else_block.as_ref(), e.ty);
             }
             ExprKind::Loop(body) => {
                 self.loop_expr(body);
@@ -1005,7 +1013,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             ExprKind::Variant { id, variant, args } => {
                 return Some(self.build_variant(*id, *variant, args));
             }
-            ExprKind::Field { base, index } => return Some(self.read_field(base, *index, &e.ty)),
+            ExprKind::Field { base, index } => return Some(self.read_field(base, *index, e.ty)),
             ExprKind::Block(block) => return self.block(block, None),
             ExprKind::Convert(_) => return Some(self.convert(e)),
             ExprKind::None | ExprKind::Wrap(_) | ExprKind::IfSome { .. } => {
@@ -1024,7 +1032,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 scrutinee,
                 temp,
                 arms,
-            } => return self.match_expr(scrutinee, *temp, arms, &e.ty),
+            } => return self.match_expr(scrutinee, *temp, arms, e.ty),
         };
         Some(value.into())
     }
@@ -1044,7 +1052,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// The scalar optional `ty` as its `{ i1, T }` pair: the flag `some`, and `value`.
     fn pair(
         &self,
-        ty: &Type,
+        ty: Type,
         some: IntValue<'ctx>,
         value: BasicValueEnum<'ctx>,
     ) -> BasicValueEnum<'ctx> {
@@ -1068,18 +1076,18 @@ impl<'ctx> Codegen<'ctx, '_> {
         match &e.kind {
             // `null`, or `{ false, 0 }`.
             ExprKind::None => Some(
-                self.llvm_type(&e.ty)
+                self.llvm_type(e.ty)
                     .expect("the checker should type `None` as an optional, which has an LLVM type")
                     .const_zero(),
             ),
             ExprKind::Wrap(operand) => {
                 let value = self.expr(operand)?;
                 // A string, class or array needs no wrapping: its pointer is never `null`.
-                if counted_core(&e.ty).is_some() {
+                if counted_core(e.ty).is_some() {
                     return Some(value);
                 }
                 let some = self.context.bool_type().const_int(1, false);
-                Some(self.pair(&e.ty, some, value))
+                Some(self.pair(e.ty, some, value))
             }
             ExprKind::IfSome {
                 bind,
@@ -1093,7 +1101,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 let value = self
                     .expr(scrutinee)
                     .expect("the checker should reject an `if let` scrutinee that is not an optional, so it has a value");
-                let (some, bound) = if counted_core(&scrutinee.ty).is_some() {
+                let (some, bound) = if counted_core(scrutinee.ty).is_some() {
                     let some = self
                         .builder
                         .build_is_not_null(value.into_pointer_value(), "some")
@@ -1110,7 +1118,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     (part(0, "some").into_int_value(), part(1, "value"))
                 };
                 let bind = Some((*bind, bound));
-                self.if_expr(some, then_block, bind, else_block.as_ref(), &e.ty)
+                self.if_expr(some, then_block, bind, else_block.as_ref(), e.ty)
             }
             _ => unreachable!("`expr` should pass `optional` only optional nodes"),
         }
@@ -1187,7 +1195,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .filter(|local| !self.unique_locals[local.0])
             .collect();
         for &local in &hoisted {
-            self.unique(self.variable_slot(local), &self.types[local.0]);
+            self.unique(self.variable_slot(local), self.types[local.0]);
             self.unique_locals[local.0] = true;
         }
         self.branch_to(start);
@@ -1199,14 +1207,14 @@ impl<'ctx> Codegen<'ctx, '_> {
             self.unique_locals[local.0] = false;
         }
         if !self.terminated() {
-            self.discard(value, &body.ty);
+            self.discard(value, body.ty);
             self.branch_to(start);
         }
         self.builder.position_at_end(end);
     }
 
     fn print(&mut self, stream: Stream, operand: &Expr) {
-        if operand.ty == Type::String {
+        if operand.ty == Type::STRING {
             self.print_string(stream, operand);
             return;
         }
@@ -1225,10 +1233,10 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .build_int_z_extend(arg, self.context.i64_type(), "widened")
                 .expect(POSITIONED);
         }
-        let is_bool = operand.ty == Type::Bool;
+        let is_bool = operand.ty == Type::BOOL;
         let print = match operand.ty {
-            Type::Bool => printers.bool,
-            Type::Char => printers.char,
+            Type::BOOL => printers.bool,
+            Type::CHAR => printers.char,
             _ => printers.int,
         };
         let call = self
@@ -1321,7 +1329,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// `a < b <= c` is `a < b && b <= c` with `b` computed once. The checker splits a chain of
     /// strings into pairs.
     fn compare(&mut self, operands: &[Expr], ops: &[CompareOp]) -> IntValue<'ctx> {
-        if operands[0].ty == Type::String {
+        if operands[0].ty == Type::STRING {
             let ([lhs, rhs], [op]) = (operands, ops) else {
                 unreachable!("the checker should split a comparison chain of strings into pairs")
             };
@@ -1332,7 +1340,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .expect("a comparison chain should have at least one operator");
         let function = self.current_function();
         let mut false_from = Vec::new();
-        let signed = !matches!(operands[0].ty, Type::U8 | Type::Char);
+        let signed = !matches!(operands[0].ty, Type::U8 | Type::CHAR);
         let mut lhs = self.operand(&operands[0]);
         for (op, operand) in first_ops.iter().zip(&operands[1..]) {
             let rhs = self.operand(operand);
@@ -1378,7 +1386,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         then_block: &Block,
         bind: Option<(LocalId, BasicValueEnum<'ctx>)>,
         else_block: Option<&Block>,
-        ty: &Type,
+        ty: Type,
     ) -> Option<BasicValueEnum<'ctx>> {
         let function = self.current_function();
         let then_start = self.context.append_basic_block(function, "then");
@@ -1387,11 +1395,11 @@ impl<'ctx> Codegen<'ctx, '_> {
             .build_conditional_branch(cond, then_start, else_start)
             .expect(POSITIONED);
         // A `unit` `if` discards its branches' values.
-        let discards = *ty == Type::Unit;
+        let discards = ty == Type::UNIT;
         self.builder.position_at_end(then_start);
         let then_value = self.block(then_block, bind);
         if discards && !self.terminated() {
-            self.discard(then_value, &then_block.ty);
+            self.discard(then_value, then_block.ty);
         }
         let then_end = self.open_block();
         self.builder.position_at_end(else_start);
@@ -1406,7 +1414,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         let else_value = self.block(else_block, None);
         if discards && !self.terminated() {
-            self.discard(else_value, &else_block.ty);
+            self.discard(else_value, else_block.ty);
         }
         let else_end = self.open_block();
         let arms: Vec<_> = [(then_value, then_end), (else_value, else_end)]

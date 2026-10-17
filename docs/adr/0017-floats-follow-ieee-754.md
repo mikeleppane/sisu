@@ -15,8 +15,11 @@ Two rules follow from IEEE 754 and are worth stating.
   754-2019 `minimumNumber` and `maximumNumber`, so `(-0.0).max(0.0)` is `0.0`
   and `(0.0).min(-0.0)` is `-0.0`. `==` still says `-0.0 == 0.0`.
 - **`==` on a composite holding an `f64` has no same-object shortcut.** It
-  compares every element. An array or class that holds NaN is therefore not
-  equal to itself, even when both sides are the same object.
+  compares every element. An array or enum that holds NaN is therefore not
+  equal to itself, even when both sides are the same value. Until milestone 8
+  stage 5 removes the structural `==` on classes
+  ([ADR 0022](0022-classes-compare-by-identity.md)), a class compares field by field, so a class holding NaN is not equal to
+  itself either.
 
 ## Considered options
 
@@ -29,9 +32,10 @@ Two rules follow from IEEE 754 and are worth stating.
 
 ## Consequences
 
-- `f64.nan != f64.nan`. An array or class holding NaN is unequal to itself,
-  and `contains(f64.nan)` is false.
-- Milestone 8 cannot give `f64` a total `Ord` or `Hash` without a rule of its
-  own for NaN and `-0.0`.
+- `f64.nan != f64.nan`. An array or enum holding NaN is unequal to itself,
+  and so is a class until milestone 8 stage 5. `contains(f64.nan)` is false.
+- `f64` conforms to `Eq` and `Ord` with IEEE semantics, so generic and
+  concrete code agree (milestone 8): `nan.eq(nan)` is false and NaN is neither
+  less nor greater than anything. `f64` gets no `Hash`.
 - A NaN can travel a long way before it shows up as a wrong answer. Printing
   it as `nan` is what makes it visible.

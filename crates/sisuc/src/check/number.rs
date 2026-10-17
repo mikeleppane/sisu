@@ -7,7 +7,7 @@ use super::expr::{no_member, postfix, typed};
 use super::{Checked, Checker, Declared, Poisoned, UNKNOWN, built_in_type};
 use crate::ast;
 use crate::diagnostic::{Definition, DiagnosticKind, MathFix, NanFix, Span};
-use crate::tir::{self, MathOp, Type};
+use crate::tir::{self, MathOp, Type, TypeKind};
 
 /// The receivers of a method.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,13 +70,13 @@ pub(super) fn method_name(name: &str) -> Option<&'static str> {
 
 /// The operation and parameter count of the method `name` of a receiver of type `ty`, if it has
 /// one.
-pub(super) fn method(ty: &Type, name: &str) -> Option<(MathOp, usize)> {
+pub(super) fn method(ty: Type, name: &str) -> Option<(MathOp, usize)> {
     METHODS
         .iter()
         .find(|(op, receivers, _)| {
             op.name() == name
                 && match receivers {
-                    Receivers::F64 => *ty == Type::F64,
+                    Receivers::F64 => ty == Type::F64,
                     Receivers::Number => matches!(ty, Type::I64 | Type::F64),
                 }
         })
@@ -203,9 +203,9 @@ impl Checker<'_> {
             self.stray(args);
             return None;
         };
-        let receiver = self.expr(&first.value, Some(&UNKNOWN));
+        let receiver = self.expr(&first.value, Some(UNKNOWN));
         let Some((ty, params)) = receiver.ok().and_then(|r| {
-            let (_, params) = method(&r.ty, name)?;
+            let (_, params) = method(r.ty, name)?;
             Some((r.ty, params))
         }) else {
             self.stray(rest);
@@ -216,7 +216,7 @@ impl Checker<'_> {
             written.start()..receiver.start(),
             receiver.end()..next.map_or(receiver.end(), Span::start),
         ];
-        let arguments = self.number_arguments(&ty, params, rest);
+        let arguments = self.number_arguments(ty, params, rest);
         if !arguments || self.comment_in(&deleted) {
             return None;
         }
@@ -238,7 +238,7 @@ impl Checker<'_> {
     /// Checks `rest`, the arguments after a receiver of type `ty` of a method with `params`
     /// parameters, each once. Whether the method takes them: as many as it has, each of type `ty`
     /// (an integer literal for an `f64`), and none failed.
-    pub(super) fn number_arguments(&mut self, ty: &Type, params: usize, rest: &[ast::Arg]) -> bool {
+    pub(super) fn number_arguments(&mut self, ty: Type, params: usize, rest: &[ast::Arg]) -> bool {
         let checked: Vec<_> = rest
             .iter()
             .map(|arg| self.expr(&arg.value, Some(ty)))
@@ -246,7 +246,7 @@ impl Checker<'_> {
         rest.len() == params
             && checked
                 .iter()
-                .all(|checked| checked.as_ref().is_ok_and(|checked| checked.ty == *ty))
+                .all(|checked| checked.as_ref().is_ok_and(|checked| checked.ty == ty))
     }
 
     /// Warns about `lhs == rhs`, or `!=` when `negated`, when a side is `f64.nan`: no number
@@ -271,12 +271,12 @@ impl Checker<'_> {
         } else {
             return;
         };
-        let fix = match other.1.as_ref().ok().map(|checked| &checked.ty) {
+        let fix = match other.1.as_ref().ok().map(|checked| checked.ty) {
             Some(Type::F64) => Some(NanFix {
                 other: other.0.span,
                 wrap: !postfix(other.0),
             }),
-            Some(Type::Optional(payload)) if **payload == Type::F64 => None,
+            Some(ty) if matches!(ty.kind(), TypeKind::Optional(Type::F64)) => None,
             _ => return,
         };
         let at = lhs.0.span.to(rhs.0.span);
@@ -290,11 +290,11 @@ impl Checker<'_> {
         &mut self,
         span: Span,
         receiver: Checked,
-        ty: &Type,
+        ty: Type,
         method: &ast::Ident,
         args: &[ast::Arg],
     ) -> Checked {
-        let float = *ty == Type::F64;
+        let float = ty == Type::F64;
         let methods = || {
             METHODS
                 .iter()
@@ -321,8 +321,8 @@ impl Checker<'_> {
             .map(|arg| self.operand(&arg.value, Some(ty)))
             .unzip();
         let result = match op {
-            MathOp::IsNan | MathOp::IsFinite | MathOp::IsInfinite => Type::Bool,
-            MathOp::Min | MathOp::Max | MathOp::Clamp => ty.clone(),
+            MathOp::IsNan | MathOp::IsFinite | MathOp::IsInfinite => Type::BOOL,
+            MathOp::Min | MathOp::Max | MathOp::Clamp => ty,
             _ => Type::F64,
         };
         let failed = labeled || mismatched.contains(&true);

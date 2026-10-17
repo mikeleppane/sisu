@@ -21,7 +21,7 @@ use crate::diagnostic::{
     Span, Unbuilt, suggestion,
 };
 use crate::symbol::Symbol;
-use crate::tir::{self, Type};
+use crate::tir::{self, Type, TypeKind};
 use constant::{ConstInfo, ConstantSite};
 use enums::EnumInfo;
 use prelude::PRELUDE;
@@ -67,7 +67,7 @@ type CheckedBlock = Result<tir::Block, Poisoned>;
 
 /// The expected type a position passes down when its own type is `Error`. No position expects
 /// `never`, so it stands for `Error` there: a `None` it reaches is `Error`, with no diagnostic.
-static UNKNOWN: Type = Type::Never;
+static UNKNOWN: Type = Type::NEVER;
 
 /// A type of `None` is `Error`: its error is reported where the signature names it.
 struct Signature {
@@ -264,7 +264,7 @@ fn lower_class(class: &ClassInfo) -> Option<tir::Class> {
         .map(|f| {
             Some(tir::Field {
                 name: f.name.name.to_string(),
-                ty: f.ty.clone()?,
+                ty: f.ty?,
                 mutable: f.mutable,
             })
         })
@@ -276,18 +276,18 @@ fn lower_class(class: &ClassInfo) -> Option<tir::Class> {
 }
 
 /// The type of a checked expression; `None` is `Error`.
-fn type_of(checked: &Checked) -> Option<&Type> {
+fn type_of(checked: &Checked) -> Option<Type> {
     match checked {
-        Ok(e) => Some(&e.ty),
-        Err(p) => p.ty.as_ref(),
+        Ok(e) => Some(e.ty),
+        Err(p) => p.ty,
     }
 }
 
 /// The type of a checked block; `None` is `Error`.
-fn block_type(checked: &CheckedBlock) -> Option<&Type> {
+fn block_type(checked: &CheckedBlock) -> Option<Type> {
     match checked {
-        Ok(b) => Some(&b.ty),
-        Err(p) => p.ty.as_ref(),
+        Ok(b) => Some(b.ty),
+        Err(p) => p.ty,
     }
 }
 
@@ -510,7 +510,7 @@ impl Checker<'_> {
                                 .insert(method.name.name, Declared::Known(func));
                         }
                         self.signature(method, format!("{}.{}", class.name.name, method.name.name));
-                        declared.push((method, Some(Type::Class(id))));
+                        declared.push((method, Some(Type::intern(TypeKind::Class(id)))));
                     }
                 }
             }
@@ -528,7 +528,7 @@ impl Checker<'_> {
         let ret = f
             .ret
             .as_ref()
-            .map_or(Some(Type::Unit), |ty| self.resolve(ty));
+            .map_or(Some(Type::UNIT), |ty| self.resolve(ty));
         self.signatures.push(Signature { name, params, ret });
     }
 
@@ -547,8 +547,8 @@ impl Checker<'_> {
             let (field, target) = class
                 .fields
                 .iter()
-                .find_map(|f| match f.ty {
-                    Some(Type::Class(d)) if in_cycle(d.0) => Some((f, d)),
+                .find_map(|f| match f.ty.map(Type::kind) {
+                    Some(TypeKind::Class(d)) if in_cycle(d.0) => Some((f, d)),
                     _ => None,
                 })
                 .expect(
@@ -576,7 +576,7 @@ impl Checker<'_> {
         let mut stack = vec![from];
         while let Some(c) = stack.pop() {
             for field in &self.classes[c].fields {
-                if let Some(Type::Class(d)) = field.ty
+                if let Some(TypeKind::Class(d)) = field.ty.map(Type::kind)
                     && !seen[d.0]
                 {
                     seen[d.0] = true;
@@ -602,9 +602,9 @@ impl Checker<'_> {
                 if params.iter().any(Option::is_none) || ret.is_none() {
                     return;
                 }
-                let args = Some(Type::Array(Box::new(Type::String)));
+                let args = Some(Type::array(Type::STRING));
                 let takes = params.is_empty() || *params == [args];
-                if !takes || *ret != Some(Type::Unit) {
+                if !takes || *ret != Some(Type::UNIT) {
                     let at = declared[id.0].0.name.span;
                     self.report(DiagnosticKind::MainSignature { at });
                 }
@@ -615,7 +615,7 @@ impl Checker<'_> {
     /// `None`, reported at the name without its `?`, for an unknown type.
     fn resolve(&mut self, ty: &ast::TypeExpr) -> Option<Type> {
         let named = match &ty.kind {
-            ast::TypeKind::Array(element) => Type::Array(Box::new(self.resolve(element)?)),
+            ast::TypeKind::Array(element) => Type::array(self.resolve(element)?),
             ast::TypeKind::Name(name) => {
                 // A broken name poisons every use, a built-in type's too.
                 if let Some(Declared::Broken) = self.class_ids.get(name) {
@@ -625,9 +625,9 @@ impl Checker<'_> {
                 } else if let Some(named) = built_in_type(name.as_str()) {
                     named
                 } else if let Some(&Declared::Known(id)) = self.class_ids.get(name) {
-                    Type::Class(id)
+                    Type::intern(TypeKind::Class(id))
                 } else if let Some(&Declared::Known(id)) = self.enum_ids.get(name) {
-                    Type::Enum(id)
+                    Type::intern(TypeKind::Enum(id))
                 } else {
                     let span = Span::new(ty.span.start(), ty.span.start() + name.as_str().len());
                     let types = ["i64", "u8", "f64", "bool", "char", "string"]
@@ -661,7 +661,7 @@ impl Checker<'_> {
         owner: Option<Type>,
     ) -> Option<tir::Function> {
         let sig = &self.signatures[id.0];
-        let (name, param_types, ret) = (sig.name.clone(), sig.params.clone(), sig.ret.clone());
+        let (name, param_types, ret) = (sig.name.clone(), sig.params.clone(), sig.ret);
         self.ret.clone_from(&ret);
         self.self_type.clone_from(&owner);
         self.scopes.push(FxHashMap::default());
@@ -684,27 +684,26 @@ impl Checker<'_> {
             )
             .collect();
         // A `unit` function discards its body's value, so it expects none.
-        let expected = match &ret {
-            None => Some(&UNKNOWN),
-            Some(Type::Unit) => None,
+        let expected = match ret {
+            None => Some(UNKNOWN),
+            Some(Type::UNIT) => None,
             Some(ret) => Some(ret),
         };
         let mut body = self.block(&f.body, expected);
-        if let (Some(Type::Unit), Ok(checked)) = (&ret, &body) {
+        if let (Some(Type::UNIT), Ok(checked)) = (ret, &body) {
             self.discard_tail(&f.body, checked);
         }
-        if let Some(want @ Type::Optional(payload)) = &ret
-            && block_type(&body) == Some(&**payload)
+        if let Some(want) = ret
+            && let TypeKind::Optional(payload) = want.kind()
+            && block_type(&body) == Some(payload)
         {
             wrap_block(&mut body, want);
         }
         self.pop_scope();
         let locals = std::mem::take(&mut self.locals);
-        match (&ret, block_type(&body)) {
-            (Some(want), Some(got))
-                if *want != Type::Unit && *got != Type::Never && got != want =>
-            {
-                let d = if *got == Type::Unit {
+        match (ret, block_type(&body)) {
+            (Some(want), Some(got)) if want != Type::UNIT && got != Type::NEVER && got != want => {
+                let d = if got == Type::UNIT {
                     let end = f.body.span.end();
                     DiagnosticKind::BodyHasNoValue {
                         function: f.name.name.to_string(),
@@ -781,13 +780,13 @@ impl Checker<'_> {
         .into()
     }
 
-    fn type_name(&self, ty: &Type) -> String {
-        match ty {
-            Type::Class(id) => self.classes[id.0].name.name.to_string(),
-            Type::Enum(id) => self.enums[id.0].name.name.to_string(),
-            Type::Array(element) => format!("[{}]", self.type_name(element)),
-            Type::Optional(payload) => format!("{}?", self.type_name(payload)),
-            ty => ty.to_string(),
+    fn type_name(&self, ty: Type) -> String {
+        match ty.kind() {
+            TypeKind::Class(id) => self.classes[id.0].name.name.to_string(),
+            TypeKind::Enum(id) => self.enums[id.0].name.name.to_string(),
+            TypeKind::Array(element) => format!("[{}]", self.type_name(element)),
+            TypeKind::Optional(payload) => format!("{}?", self.type_name(payload)),
+            _ => ty.to_string(),
         }
     }
 
@@ -799,23 +798,23 @@ impl Checker<'_> {
         &self,
         span: Span,
         source: Option<&ast::Expr>,
-        want: &Type,
-        got: &Type,
+        want: Type,
+        got: Type,
     ) -> Diagnostic {
-        let optional = matches!(want, Type::Optional(_));
+        let optional = matches!(want.kind(), TypeKind::Optional(_));
         // `u8` and `char` convert into each other through `i64`, and into `f64` through it.
         let (to, through) = match (payload(want), got) {
-            (Type::I64, Type::U8 | Type::Char) => (Some("i64"), None),
+            (Type::I64, Type::U8 | Type::CHAR) => (Some("i64"), None),
             (Type::F64, Type::I64) => (Some("f64"), None),
-            (Type::F64, Type::U8 | Type::Char) => (Some("f64"), Some("i64")),
+            (Type::F64, Type::U8 | Type::CHAR) => (Some("f64"), Some("i64")),
             (Type::U8, Type::I64) if optional => (Some("u8"), None),
-            (Type::Char, Type::I64) if optional => (Some("char"), None),
-            (Type::U8, Type::Char) if optional => (Some("u8"), Some("i64")),
-            (Type::Char, Type::U8) if optional => (Some("char"), Some("i64")),
+            (Type::CHAR, Type::I64) if optional => (Some("char"), None),
+            (Type::U8, Type::CHAR) if optional => (Some("u8"), Some("i64")),
+            (Type::CHAR, Type::U8) if optional => (Some("char"), Some("i64")),
             _ => (None, None),
         };
-        let conversion =
-            matches!(got, Type::Optional(p) if **p == *want) && source.is_some_and(can_fail);
+        let conversion = matches!(got.kind(), TypeKind::Optional(p) if p == want)
+            && source.is_some_and(can_fail);
         DiagnosticKind::Mismatch {
             want: vec![self.type_name(want)],
             got: self.type_name(got),
@@ -855,18 +854,18 @@ fn built_in_type(name: &str) -> Option<Type> {
         "i64" => Some(Type::I64),
         "u8" => Some(Type::U8),
         "f64" => Some(Type::F64),
-        "bool" => Some(Type::Bool),
-        "char" => Some(Type::Char),
-        "string" => Some(Type::String),
+        "bool" => Some(Type::BOOL),
+        "char" => Some(Type::CHAR),
+        "string" => Some(Type::STRING),
         _ => None,
     }
 }
 
 /// `T` for a `T?`, else `ty`.
-fn payload(ty: &Type) -> &Type {
-    match ty {
-        Type::Optional(payload) => payload,
-        ty => ty,
+fn payload(ty: Type) -> Type {
+    match ty.kind() {
+        TypeKind::Optional(payload) => payload,
+        _ => ty,
     }
 }
 
@@ -891,7 +890,7 @@ fn block_expr(stmts: Vec<tir::Stmt>, value: Option<tir::Expr>, ty: Type, span: S
     let block = tir::Block {
         stmts,
         value: value.map(Box::new),
-        ty: ty.clone(),
+        ty,
     };
     tir::Expr {
         kind: tir::ExprKind::Block(block),
@@ -902,23 +901,23 @@ fn block_expr(stmts: Vec<tir::Stmt>, value: Option<tir::Expr>, ty: Type, span: S
 
 /// `ty?`; an optional is its own, as optionals do not nest.
 fn optional_of(ty: Type) -> Type {
-    match ty {
-        Type::Optional(_) => ty,
-        ty => Type::Optional(Box::new(ty)),
+    match ty.kind() {
+        TypeKind::Optional(_) => ty,
+        _ => Type::optional(ty),
     }
 }
 
 /// `e`, of type `T`, where its optional `ty` is expected.
-fn wrap(e: tir::Expr, ty: &Type) -> tir::Expr {
+fn wrap(e: tir::Expr, ty: Type) -> tir::Expr {
     tir::Expr {
         span: e.span,
         kind: tir::ExprKind::Wrap(Box::new(e)),
-        ty: ty.clone(),
+        ty,
     }
 }
 
 /// Makes a block of type `T` one of the optional `ty` by wrapping its value.
-fn wrap_block(block: &mut CheckedBlock, ty: &Type) {
+fn wrap_block(block: &mut CheckedBlock, ty: Type) {
     match block {
         Ok(block) => {
             let value = block
@@ -926,9 +925,9 @@ fn wrap_block(block: &mut CheckedBlock, ty: &Type) {
                 .take()
                 .expect("a block checked as a value type should end in its value");
             block.value = Some(Box::new(wrap(*value, ty)));
-            block.ty = ty.clone();
+            block.ty = ty;
         }
-        Err(poisoned) => poisoned.ty = Some(ty.clone()),
+        Err(poisoned) => poisoned.ty = Some(ty),
     }
 }
 

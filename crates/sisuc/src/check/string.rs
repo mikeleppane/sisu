@@ -8,13 +8,13 @@ use std::fmt::Write;
 
 use super::array::pair;
 use super::expr::{local, no_member, path, typed};
-use super::{Checked, Checker, Poisoned, block_expr, payload, type_of};
+use super::{Checked, Checker, Poisoned, block_expr, type_of};
 use crate::ast::{self, CompareOp, ExprKind};
 use crate::diagnostic::{
     Definition, Diagnostic, DiagnosticKind, InterpolateHelp, MismatchFix, MismatchSource, Operand,
     Span,
 };
-use crate::tir::{self, Type};
+use crate::tir::{self, Type, TypeKind};
 
 impl Checker<'_> {
     /// `l + r` over two `string`s, which `mismatched` says were reported against.
@@ -29,9 +29,9 @@ impl Checker<'_> {
         // number, and a `char` or an expected type beside the join would report it again.
         let known = !mismatched && type_of(&l).is_some() && type_of(&r).is_some();
         let (Ok(l), Ok(r)) = (l, r) else {
-            return Err(Poisoned::of(known.then_some(Type::String)));
+            return Err(Poisoned::of(known.then_some(Type::STRING)));
         };
-        Ok(self.spilled(span, Type::String, vec![l, r], |operands| {
+        Ok(self.spilled(span, Type::STRING, vec![l, r], |operands| {
             let (lhs, rhs) = pair(operands);
             tir::ExprKind::Concat { lhs, rhs }
         }))
@@ -41,31 +41,39 @@ impl Checker<'_> {
     /// a `unit` one is reported here, and must be of a type that interpolation writes as text. A
     /// part that never finishes makes the whole never finish.
     pub(super) fn interpolate(&mut self, span: Span, parts: &[ast::Part]) -> Checked {
-        let mut ty = Type::String;
+        let mut ty = Type::STRING;
         let mut checked = Vec::with_capacity(parts.len());
         let mut formats = Vec::new();
         for (i, ast::Part { value: part, spec }) in parts.iter().enumerate() {
             let value = self.expr(part, None);
-            let help = match type_of(&value) {
+            let help = match type_of(&value).map(Type::kind) {
                 None
-                | Some(Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char | Type::String) =>
-                {
+                | Some(
+                    TypeKind::I64
+                    | TypeKind::U8
+                    | TypeKind::F64
+                    | TypeKind::Bool
+                    | TypeKind::Char
+                    | TypeKind::String,
+                ) => {
                     if let (Some(spec), Some(found)) = (spec, type_of(&value)) {
                         formats.push(self.format(i, part, spec, found));
                     }
                     checked.push(value);
                     continue;
                 }
-                Some(Type::Never) => {
-                    ty = Type::Never;
+                Some(TypeKind::Never) => {
+                    ty = Type::NEVER;
                     checked.push(value);
                     continue;
                 }
-                Some(other) if matches!(payload(other), Type::Array(_)) => {
-                    Some(InterpolateHelp::ForLoop)
+                Some(TypeKind::Optional(payload))
+                    if !matches!(payload.kind(), TypeKind::Array(_)) =>
+                {
+                    Some(InterpolateHelp::Unwrap)
                 }
-                Some(Type::Optional(_)) => Some(InterpolateHelp::Unwrap),
-                Some(Type::Unit | Type::Class(_) | Type::Enum(_) | Type::Array(_)) => None,
+                Some(TypeKind::Array(_) | TypeKind::Optional(_)) => Some(InterpolateHelp::ForLoop),
+                Some(TypeKind::Unit | TypeKind::Class(_) | TypeKind::Enum(_)) => None,
             };
             let found = type_of(&value).expect("a part reported here should have a type");
             self.report(DiagnosticKind::CannotInterpolate {
@@ -94,7 +102,7 @@ impl Checker<'_> {
         i: usize,
         part: &ast::Expr,
         spec: &ast::FormatSpec,
-        ty: &Type,
+        ty: Type,
     ) -> tir::Format {
         let numeric = matches!(ty, Type::I64 | Type::U8 | Type::F64);
         let pad = spec.width.map(|width| tir::Pad {
@@ -106,11 +114,11 @@ impl Checker<'_> {
             width,
         });
         let mut precision = spec.precision;
-        if precision.is_some() && *ty != Type::F64 {
+        if precision.is_some() && ty != Type::F64 {
             self.report(DiagnosticKind::PrecisionNeedsF64 {
                 ty: self.type_name(ty),
                 at: spec.span,
-                fix: (*ty == Type::I64).then_some(part.span),
+                fix: (ty == Type::I64).then_some(part.span),
             });
             precision = None;
         }
@@ -129,13 +137,13 @@ impl Checker<'_> {
     pub(super) fn concat_mismatch(
         &self,
         e: &ast::Expr,
-        got: &Type,
+        got: Type,
         operands: &[&ast::Expr],
         compound: bool,
     ) -> Diagnostic {
         let printed = matches!(
             got,
-            Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char | Type::String
+            Type::I64 | Type::U8 | Type::F64 | Type::BOOL | Type::CHAR | Type::STRING
         );
         let [lhs, rhs] = operands else {
             unreachable!("`+` should have two operands");
@@ -157,7 +165,7 @@ impl Checker<'_> {
             lhs.span
         };
         DiagnosticKind::Mismatch {
-            want: vec![self.type_name(&Type::String)],
+            want: vec![self.type_name(Type::STRING)],
             got: self.type_name(got),
             at: e.span,
             source: Some(MismatchSource::Concat(other)),
@@ -188,7 +196,7 @@ impl Checker<'_> {
         ops: &[CompareOp],
     ) -> tir::Expr {
         if let [op] = ops {
-            return self.spilled(span, Type::Bool, operands, |operands| {
+            return self.spilled(span, Type::BOOL, operands, |operands| {
                 tir::ExprKind::Compare {
                     operands,
                     ops: vec![*op],
@@ -199,7 +207,7 @@ impl Checker<'_> {
         let reads: Vec<_> = operands
             .into_iter()
             .map(|init| {
-                let read = (self.fresh(Type::String), init.span);
+                let read = (self.fresh(Type::STRING), init.span);
                 lets.push(tir::Stmt::Let {
                     local: read.0,
                     init,
@@ -207,23 +215,23 @@ impl Checker<'_> {
                 read
             })
             .collect();
-        let read = |i: usize| local(reads[i].0, Type::String, reads[i].1);
+        let read = |i: usize| local(reads[i].0, Type::STRING, reads[i].1);
         let pair = |i: usize| tir::Expr {
             kind: tir::ExprKind::Compare {
                 operands: vec![read(i), read(i + 1)],
                 ops: vec![ops[i]],
             },
-            ty: Type::Bool,
+            ty: Type::BOOL,
             span,
         };
         // From the innermost block out: each binds the right operand of the pair it tests.
         let mut rest = pair(ops.len() - 1);
         for i in (1..ops.len()).rev() {
             let bind = lets.pop().expect("each operand should have its `let`");
-            let inner = block_expr(vec![bind], Some(rest), Type::Bool, span);
+            let inner = block_expr(vec![bind], Some(rest), Type::BOOL, span);
             rest = and(pair(i - 1), inner, span);
         }
-        block_expr(lets, Some(rest), Type::Bool, span)
+        block_expr(lets, Some(rest), Type::BOOL, span)
     }
 
     /// `receiver.method(args)` on a `string`: `len()`, `chars()`, `bytes()` and `words()`.
@@ -236,11 +244,11 @@ impl Checker<'_> {
     ) -> Checked {
         let (ty, node): (_, fn(Box<tir::Expr>) -> tir::ExprKind) = match method.name.as_str() {
             "len" => (Type::I64, tir::ExprKind::Len),
-            "chars" => (Type::Array(Box::new(Type::Char)), tir::ExprKind::Chars),
-            "bytes" => (Type::Array(Box::new(Type::U8)), tir::ExprKind::Bytes),
-            "words" => (Type::Array(Box::new(Type::String)), tir::ExprKind::Words),
+            "chars" => (Type::array(Type::CHAR), tir::ExprKind::Chars),
+            "bytes" => (Type::array(Type::U8), tir::ExprKind::Bytes),
+            "words" => (Type::array(Type::STRING), tir::ExprKind::Words),
             _ => {
-                let owner = self.type_name(&Type::String);
+                let owner = self.type_name(Type::STRING);
                 let d = no_member(
                     Definition::Method,
                     owner,
@@ -280,20 +288,20 @@ impl Checker<'_> {
             self.stray(args);
             return Err(Poisoned::error());
         };
-        let chars = [Type::Array(Box::new(Type::Char))];
+        let chars = [Type::array(Type::CHAR)];
         let from: &[Type] = match to {
-            Type::I64 => &[Type::U8, Type::Char, Type::F64],
-            Type::String => &chars,
+            Type::I64 => &[Type::U8, Type::CHAR, Type::F64],
+            Type::STRING => &chars,
             _ => &[Type::I64],
         };
-        let checked = self.value(&arg.value, (to == Type::String).then_some(&chars[0]));
-        let fails = matches!(to, Type::U8 | Type::Char)
-            || (to == Type::I64 && type_of(&checked) == Some(&Type::F64));
+        let checked = self.value(&arg.value, (to == Type::STRING).then_some(chars[0]));
+        let fails = matches!(to, Type::U8 | Type::CHAR)
+            || (to == Type::I64 && type_of(&checked) == Some(Type::F64));
         // The head, `to(`, and the tail, `)`, are the text a rewrite of the call deletes.
         let head = span.start()..arg.value.span.start();
         let tail = arg.value.span.end()..span.end();
         let d = match type_of(&checked) {
-            Some(ty) if *ty == to => {
+            Some(ty) if ty == to => {
                 let grouped = !single_term(&arg.value);
                 // The removal deletes the head, and the tail unless the value stays grouped.
                 let commented = self
@@ -302,7 +310,7 @@ impl Checker<'_> {
                     .any(|c| head.contains(c) || (!grouped && tail.contains(c)));
                 DiagnosticKind::AlreadyConverted {
                     value: path(&arg.value).or_else(|| literal(&arg.value)),
-                    ty: self.type_name(&to),
+                    ty: self.type_name(to),
                     at: arg.value.span,
                     conversion: span,
                     grouped,
@@ -313,13 +321,13 @@ impl Checker<'_> {
             }
             // The one type `x` should have is offered a conversion to it, or for a `string`,
             // interpolation of the value.
-            Some(ty) if !from.contains(ty) => match from {
-                [only] if to == Type::String => {
+            Some(ty) if !from.contains(&ty) => match *from {
+                [only] if to == Type::STRING => {
                     self.string_call_mismatch(span, &arg.value, ty, only, &[head, tail])
                 }
                 [only] => self.mismatch(arg.value.span, Some(&arg.value), only, ty),
                 _ => DiagnosticKind::Mismatch {
-                    want: from.iter().map(|ty| self.type_name(ty)).collect(),
+                    want: from.iter().map(|&ty| self.type_name(ty)).collect(),
                     got: self.type_name(ty),
                     at: arg.value.span,
                     source: None,
@@ -331,17 +339,17 @@ impl Checker<'_> {
             _ if fails && self.in_constant.is_some() => {
                 let fix = self.in_constant.as_ref().and_then(|site| {
                     let arg = checked.as_ref().ok()?;
-                    site.literal(span, &to, arg)
+                    site.literal(span, to, arg)
                 });
                 self.report(DiagnosticKind::ConversionInConstant {
-                    to: self.type_name(&to),
+                    to: self.type_name(to),
                     at: span,
                     fix,
                 });
                 return Err(Poisoned::typed(to));
             }
             _ => {
-                let node = if to == Type::String {
+                let node = if to == Type::STRING {
                     tir::ExprKind::FromChars
                 } else {
                     tir::ExprKind::Convert
@@ -350,11 +358,7 @@ impl Checker<'_> {
                     .ok()
                     .filter(|_| !labeled)
                     .map(|arg| node(Box::new(arg)));
-                let ty = if fails {
-                    Type::Optional(Box::new(to))
-                } else {
-                    to
-                };
+                let ty = if fails { Type::optional(to) } else { to };
                 return typed(span, ty, labeled, kind);
             }
         };
@@ -369,13 +373,13 @@ impl Checker<'_> {
         &self,
         call: Span,
         arg: &ast::Expr,
-        got: &Type,
-        want: &Type,
+        got: Type,
+        want: Type,
         deleted: &[std::ops::Range<usize>],
     ) -> Diagnostic {
         let printed = matches!(
             got,
-            Type::I64 | Type::U8 | Type::F64 | Type::Bool | Type::Char
+            Type::I64 | Type::U8 | Type::F64 | Type::BOOL | Type::CHAR
         );
         let commented = self
             .comments
@@ -474,7 +478,7 @@ fn and(lhs: tir::Expr, rhs: tir::Expr, span: Span) -> tir::Expr {
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         },
-        ty: Type::Bool,
+        ty: Type::BOOL,
         span,
     }
 }

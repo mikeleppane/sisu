@@ -18,7 +18,7 @@ use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 use super::{Codegen, POSITIONED, Slot};
-use crate::tir::{Arm, Expr, LocalId, Pattern, PatternKind, Type};
+use crate::tir::{Arm, Expr, LocalId, Pattern, PatternKind, Type, TypeKind};
 
 /// Where a tested value lives.
 #[derive(Clone, Copy)]
@@ -41,7 +41,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         scrutinee: &Expr,
         temp: LocalId,
         arms: &[Arm],
-        ty: &Type,
+        ty: Type,
     ) -> Option<BasicValueEnum<'ctx>> {
         let outer = self.live.len();
         let value = self.expr(scrutinee).expect(
@@ -62,7 +62,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             }
             // The last arm's failure block is the trap.
             let fail = self.context.append_basic_block(function, "arm.next");
-            let retry = self.test(&arm.pattern, At::Root(root), &scrutinee.ty, fail);
+            let retry = self.test(&arm.pattern, At::Root(root), scrutinee.ty, fail);
             if let Some(guard) = &arm.guard {
                 // The guard reads the bindings unretained: `temp` owns what they point into.
                 let holds = self
@@ -77,8 +77,8 @@ impl<'ctx> Codegen<'ctx, '_> {
             let value = self.block(&arm.body, None);
             if !self.terminated() {
                 // A `unit` `match` discards its arms' values, as a `unit` `if` does.
-                if *ty == Type::Unit {
-                    self.discard(value, &arm.body.ty);
+                if ty == Type::UNIT {
+                    self.discard(value, arm.body.ty);
                 }
                 self.release_to(outer);
                 ends.push((value, self.current_block()));
@@ -112,7 +112,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     /// it, so that a value stored on one path is there on every path after it, without a `phi`.
     fn own_slot(&mut self, local: LocalId, name: &str) -> PointerValue<'ctx> {
         let ty = self
-            .llvm_type(&self.types[local.0])
+            .llvm_type(self.types[local.0])
             .expect("the checker should give a scrutinee and each binding a value type");
         let slot = self.entry_alloca(ty, name);
         self.locals[local.0] = Some(Slot::Alloca(slot, ty));
@@ -144,7 +144,7 @@ impl<'ctx> Codegen<'ctx, '_> {
     }
 
     /// The value of type `ty` at `at`, borrowed.
-    fn load_at(&self, at: At<'ctx>, ty: &Type) -> BasicValueEnum<'ctx> {
+    fn load_at(&self, at: At<'ctx>, ty: Type) -> BasicValueEnum<'ctx> {
         let llvm_ty = self
             .llvm_type(ty)
             .expect("the checker should test and bind only values of a value type");
@@ -162,7 +162,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         &mut self,
         pattern: &Pattern,
         at: At<'ctx>,
-        ty: &Type,
+        ty: Type,
         fail: BasicBlock<'ctx>,
     ) -> BasicBlock<'ctx> {
         match &pattern.kind {
@@ -173,7 +173,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 fail
             }
             PatternKind::Variant { variant, fields } => {
-                let Type::Enum(id) = *ty else {
+                let TypeKind::Enum(id) = ty.kind() else {
                     unreachable!("the checker should allow a variant pattern only at an enum")
                 };
                 let tag = self.load_tag(id, self.address(at));
@@ -204,7 +204,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                             let place = self.payload_place(self.address(at), id, *variant, field);
                             let slot = self.entry_alloca(place.get_type().into(), "place");
                             self.store(slot, place.into());
-                            retry = self.test(sub, At::Field(slot), &payload.ty, retry);
+                            retry = self.test(sub, At::Field(slot), payload.ty, retry);
                         }
                     }
                 }
@@ -231,7 +231,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         &self,
         kind: &PatternKind,
         value: BasicValueEnum<'ctx>,
-        ty: &Type,
+        ty: Type,
     ) -> IntValue<'ctx> {
         match kind {
             PatternKind::Bool(b) => self.int_compare(
@@ -245,7 +245,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 if lo == hi {
                     return self.int_compare(IntPredicate::EQ, value, bound(*lo));
                 }
-                let (ge, le) = if *ty == Type::I64 {
+                let (ge, le) = if ty == Type::I64 {
                     (IntPredicate::SGE, IntPredicate::SLE)
                 } else {
                     (IntPredicate::UGE, IntPredicate::ULE)
@@ -257,7 +257,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                     .expect(POSITIONED)
             }
             PatternKind::Str(text) => {
-                self.equal(&Type::String, value, self.string_global(text).into())
+                self.equal(Type::STRING, value, self.string_global(text).into())
             }
             PatternKind::Wild
             | PatternKind::Bind(_)
@@ -281,7 +281,7 @@ impl<'ctx> Codegen<'ctx, '_> {
         &mut self,
         alternatives: &[Pattern],
         at: At<'ctx>,
-        ty: &Type,
+        ty: Type,
         fail: BasicBlock<'ctx>,
     ) -> BasicBlock<'ctx> {
         let function = self.current_function();
@@ -334,13 +334,13 @@ impl<'ctx> Codegen<'ctx, '_> {
             let value = self
                 .load_local(local)
                 .expect("a binding should have its value once its arm's pattern matched");
-            self.retain(value, &self.types[local.0]);
+            self.retain(value, self.types[local.0]);
         }
         if counted {
             let value = self
                 .load_local(temp)
                 .expect("the scrutinee should be in its slot until the commit");
-            self.release(value, &self.types[temp.0]);
+            self.release(value, self.types[temp.0]);
             self.live.pop();
         }
         self.live.extend(held);

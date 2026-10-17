@@ -29,7 +29,7 @@ use std::rc::Rc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::diagnostic::Span;
-use crate::tir::{self, Type};
+use crate::tir::{self, Type, TypeKind};
 
 /// One arm's pattern: a row of the matrix.
 pub(super) struct Row<'a> {
@@ -74,7 +74,7 @@ pub(super) struct Unreachable {
 
 /// Which `rows`, the arms of a `match` on `ty` in order, no value reaches, and a value that
 /// none matches. `enums` are the program's.
-pub(super) fn check(enums: &[tir::Enum], ty: &Type, rows: &[Row<'_>]) -> Report {
+pub(super) fn check(enums: &[tir::Enum], ty: Type, rows: &[Row<'_>]) -> Report {
     let mut solver = Solver {
         enums,
         pats: vec![Pat::Wild],
@@ -215,14 +215,14 @@ enum Col {
     Other,
 }
 
-fn column(ty: &Type) -> Col {
-    match ty {
-        Type::Enum(id) => Col::Enum(id.0),
-        Type::I64 => Col::I64,
-        Type::U8 => Col::U8,
-        Type::Char => Col::Char,
-        Type::Bool => Col::Bool,
-        Type::String => Col::Str,
+fn column(ty: Type) -> Col {
+    match ty.kind() {
+        TypeKind::Enum(id) => Col::Enum(id.0),
+        TypeKind::I64 => Col::I64,
+        TypeKind::U8 => Col::U8,
+        TypeKind::Char => Col::Char,
+        TypeKind::Bool => Col::Bool,
+        TypeKind::String => Col::Str,
         _ => Col::Other,
     }
 }
@@ -463,7 +463,7 @@ impl Solver<'_> {
                 let fields = fields
                     .iter()
                     .zip(payload)
-                    .map(|(field, payload)| self.intern(field, column(&payload.ty), choices))
+                    .map(|(field, payload)| self.intern(field, column(payload.ty), choices))
                     .collect();
                 self.pat(Pat::Variant {
                     enum_id,
@@ -841,7 +841,7 @@ impl Solver<'_> {
                     .rev()
                     .fold(head.tail, |tail, (k, field)| {
                         let pat = self.field(head.head, k);
-                        self.push(pat, column(&field.ty), tail)
+                        self.push(pat, column(field.ty), tail)
                     })
             })
             .collect()
@@ -959,7 +959,7 @@ mod tests {
                 guarded: arm.guard.is_some(),
             })
             .collect();
-        check(&program.enums, &scrutinee.ty, &rows)
+        check(&program.enums, scrutinee.ty, &rows)
     }
 
     /// The texts of `Missing.partly`: the arm's pattern and its payload.

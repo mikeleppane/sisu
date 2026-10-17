@@ -107,7 +107,7 @@ impl<'ctx> Codegen<'ctx, '_> {
             .basic()
             .expect("`sisu_args_len` should return an `i64`, as the runtime declares it")
             .into_int_value();
-        let array = self.alloc_array(&Type::String, len, None);
+        let array = self.alloc_array(Type::STRING, len, None);
         let len_slot = self.entry_alloca(i64_type.into(), "len");
         self.count_loop(len, |index| {
             let bytes = self
@@ -120,7 +120,7 @@ impl<'ctx> Codegen<'ctx, '_> {
                 .into_pointer_value();
             let n = self.load(i64_type.into(), len_slot).into_int_value();
             let string = self.string_from_bytes(bytes, n);
-            self.store(self.element_ptr(&Type::String, array, index), string.into());
+            self.store(self.element_ptr(Type::STRING, array, index), string.into());
         });
         array
     }

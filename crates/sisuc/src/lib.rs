@@ -13,6 +13,7 @@ mod parser;
 mod report;
 mod symbol;
 mod tir;
+mod types;
 
 use std::ffi::OsString;
 use std::fs;

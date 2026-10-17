@@ -7,7 +7,7 @@ use inkwell::{FloatPredicate, IntPredicate};
 
 use super::{Codegen, POSITIONED};
 use crate::diagnostic::{Panic, Span};
-use crate::tir::{BinaryOp, CompareOp, Expr, ExprKind, Type};
+use crate::tir::{BinaryOp, CompareOp, Expr, ExprKind, Type, TypeKind};
 
 impl<'ctx> Codegen<'ctx, '_> {
     /// `span` is the operator expression's: arithmetic panics point at its start.
@@ -208,29 +208,30 @@ impl<'ctx> Codegen<'ctx, '_> {
         let ExprKind::Convert(operand) = &e.kind else {
             unreachable!("`convert` should be called on a `Convert` node");
         };
-        if e.ty == Type::Optional(Box::new(Type::I64)) {
+        let kind = e.ty.kind();
+        if kind == TypeKind::Optional(Type::I64) {
             let x = self.float(operand);
             let (fits, n) = self.float_to_int(x);
-            return self.pair(&e.ty, fits, n.into());
+            return self.pair(e.ty, fits, n.into());
         }
         let value = self.value(operand);
-        let (fits, payload) = match &e.ty {
-            Type::F64 => {
+        let (fits, payload) = match kind {
+            TypeKind::F64 => {
                 return self
                     .builder
                     .build_signed_int_to_float(value, self.context.f64_type(), "float")
                     .expect(POSITIONED)
                     .into();
             }
-            Type::I64 => {
+            TypeKind::I64 => {
                 return self
                     .builder
                     .build_int_z_extend(value, self.context.i64_type(), "widened")
                     .expect(POSITIONED)
                     .into();
             }
-            Type::Optional(payload) => match **payload {
-                Type::Char => (self.scalar(value), self.context.i32_type()),
+            TypeKind::Optional(payload) => match payload {
+                Type::CHAR => (self.scalar(value), self.context.i32_type()),
                 Type::U8 => {
                     let max = value.get_type().const_int(u64::from(u8::MAX), false);
                     (
@@ -238,15 +239,15 @@ impl<'ctx> Codegen<'ctx, '_> {
                         self.context.i8_type(),
                     )
                 }
-                ref ty => unreachable!("the checker should give no conversion to `{ty}?`"),
+                ty => unreachable!("the checker should give no conversion to `{ty}?`"),
             },
-            ty => unreachable!("the checker should give no conversion to `{ty}`"),
+            _ => unreachable!("the checker should give no conversion to `{}`", e.ty),
         };
         let narrowed = self
             .builder
             .build_int_truncate(value, payload, "narrowed")
             .expect(POSITIONED);
-        self.pair(&e.ty, fits, narrowed.into())
+        self.pair(e.ty, fits, narrowed.into())
     }
 
     /// Whether `x` is a whole number in `i64`'s range, and that number, with no branch.

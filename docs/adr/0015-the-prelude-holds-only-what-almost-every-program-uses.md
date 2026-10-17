@@ -11,9 +11,14 @@ tell where a bare name comes from. The roadmap rejects `import *` for the
 same reason.
 
 - **The milestone 5 prelude is `print`, `eprint`, `read_line` and `panic`.**
-  `todo` is a keyword, not a prelude name. Later milestones add `assert`,
-  `Option` and `Result`. Reading a line stays in the prelude for good, as
-  Python's `input()`, Swift's `readLine()` and Kotlin's `readln()` do.
+  `todo` is a keyword, not a prelude name. Later milestones add `assert`.
+  Milestone 8 adds `Option`, `Result`, `Some`, `None`, `Ok`, `Err`,
+  `Display`, `Eq`, `Ord`, `AnyObject` and `dbg`. Most of them are declared in
+  Sisu in the prelude file, `prelude.sisu` in `crates/sisuc/src/`, which the
+  compiler builds into every program (`dbg` stays built in). The prelude takes
+  `AnyObject` rather than `Object`, so that programs keep `Object` for their
+  own classes. Reading a line stays in the prelude for good, as Python's
+  `input()`, Swift's `readLine()` and Kotlin's `readln()` do.
 - **A top-level function, class or constant may not take a prelude name.**
   It is the existing "defined twice" error with its "is a built-in function"
   message, as for `print` today. Milestone 4 already takes `print` from
