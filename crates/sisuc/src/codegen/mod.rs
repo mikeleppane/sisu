@@ -1,5 +1,6 @@
 //! Builds LLVM IR through inkwell and writes it out as a native object file.
 
+mod abi;
 mod arith;
 mod array;
 mod enums;
@@ -60,21 +61,12 @@ pub(crate) fn compile<'ctx>(
     let target_data = machine.get_target_data();
     module.set_triple(&machine.get_triple());
     module.set_data_layout(&target_data.get_data_layout());
-    let i64_type = context.i64_type();
     let ptr_type = context.ptr_type(AddressSpace::default());
     let void = context.void_type();
 
     // `sisu_alloc(size, align)` and `sisu_free(ptr, size, align)`, from the runtime.
-    let alloc = module.add_function(
-        "sisu_alloc",
-        ptr_type.fn_type(&[i64_type.into(), i64_type.into()], false),
-        None,
-    );
-    let free = module.add_function(
-        "sisu_free",
-        void.fn_type(&[ptr_type.into(), i64_type.into(), i64_type.into()], false),
-        None,
-    );
+    let alloc = abi::declare(&module, abi::row("sisu_alloc"));
+    let free = abi::declare(&module, abi::row("sisu_free"));
     // `@sisu_rc.retain(object)`; see `define_helpers`.
     let rc_retain = module.add_function(
         "sisu_rc.retain",
@@ -82,26 +74,18 @@ pub(crate) fn compile<'ctx>(
         Some(Linkage::Internal),
     );
 
-    // A string crosses into the runtime as its bytes and its length: `sisu_print_str(bytes,
-    // len)`, `sisu_eprint_str(bytes, len)` and `sisu_str_compare(a, a_len, b, b_len) -> i64`.
-    let bytes_len: [BasicMetadataTypeEnum; 2] = [ptr_type.into(), i64_type.into()];
     // The runtime's print functions, one set for each `Stream`; `Stream::index` indexes them.
     let printers = [Stream::Stdout, Stream::Stderr]
-        .map(|stream| declare_printers(context, &module, stream.symbol_prefix(), &bytes_len));
-    let compare = i64_type.fn_type(&[bytes_len, bytes_len].concat(), false);
-    let str_compare = module.add_function("sisu_str_compare", compare, None);
-    // A pure function of the bytes it reads: `ArgMem` `Ref` (1) and no other location.
-    add_nounwind_memory(&module, str_compare, 0b01);
+        .map(|stream| declare_printers(&module, stream.symbol_prefix()));
+    let str_compare = abi::declare(&module, abi::row("sisu_str_compare"));
     // `sisu_panic(msg, len)` prints the message and exits; `sisu_panic_bounds(msg, len,
     // index, length)` prints a bounds panic and exits; `sisu_panic_message(at, at_len, msg,
     // msg_len)` prints a `panic` call's panic and exits.
-    let panic = declare_noreturn(&module, "sisu_panic", &bytes_len);
-    let bounds = [bytes_len, [i64_type.into(); 2]].concat();
-    let panic_bounds = declare_noreturn(&module, "sisu_panic_bounds", &bounds);
-    let panic_message = declare_noreturn(&module, "sisu_panic_message", &[bytes_len; 2].concat());
+    let panic = abi::declare(&module, abi::row("sisu_panic"));
+    let panic_bounds = abi::declare(&module, abi::row("sisu_panic_bounds"));
+    let panic_message = abi::declare(&module, abi::row("sisu_panic_message"));
     // Declared only with the checks, so that a plain build's module stays as it was.
-    let rc_fault =
-        rc_checks.then(|| declare_noreturn(&module, "sisu_rc_fault", &[context.i32_type().into()]));
+    let rc_fault = rc_checks.then(|| abi::declare(&module, abi::row("sisu_rc_fault")));
     let tbaa_root = context.metadata_node(&[context.metadata_string("sisu").into()]);
 
     let mut codegen = Codegen {
@@ -170,21 +154,6 @@ fn tbaa_tag<'ctx>(
     context.metadata_node(&[ty.into(), ty.into(), offset])
 }
 
-/// Declares the runtime function `name`, which takes `params` and never returns.
-fn declare_noreturn<'ctx>(
-    module: &Module<'ctx>,
-    name: &str,
-    params: &[BasicMetadataTypeEnum<'ctx>],
-) -> FunctionValue<'ctx> {
-    let context = module.get_context();
-    let function = module.add_function(name, context.void_type().fn_type(params, false), None);
-    function.add_attribute(
-        AttributeLoc::Function,
-        context.create_enum_attribute(Attribute::get_named_enum_kind_id("noreturn"), 0),
-    );
-    function
-}
-
 /// The runtime's print functions for one stream, by operand type.
 #[derive(Clone, Copy)]
 struct Printers<'ctx> {
@@ -195,69 +164,22 @@ struct Printers<'ctx> {
     str: FunctionValue<'ctx>,
 }
 
-/// `<prefix>_int`, `_f64`, `_bool`, `_char` and `_str`, which takes the string's `bytes_len`.
-/// `zeroext` keeps the C `bool` ABI: the callee may read all 8 bits of the argument, so the
-/// caller must extend the `i1` with zeros.
-fn declare_printers<'ctx>(
-    context: &'ctx Context,
-    module: &Module<'ctx>,
-    prefix: &str,
-    bytes_len: &[BasicMetadataTypeEnum<'ctx>],
-) -> Printers<'ctx> {
-    let bool = declare_print(
-        module,
-        &format!("{prefix}_bool"),
-        &[context.bool_type().into()],
-    );
-    bool.add_attribute(AttributeLoc::Param(0), zeroext(context));
+/// Declares `<prefix>_int`, `_f64`, `_bool`, `_char` and `_str`, each from its row of
+/// `abi::RUNTIME`.
+fn declare_printers<'ctx>(module: &Module<'ctx>, prefix: &str) -> Printers<'ctx> {
+    let declare = |kind: &str| abi::declare(module, abi::row(&format!("{prefix}_{kind}")));
+    // `bool` first: `--emit ir-raw` lists the declarations in the order they were added.
+    let bool = declare("bool");
     Printers {
-        int: declare_print(
-            module,
-            &format!("{prefix}_int"),
-            &[context.i64_type().into()],
-        ),
-        f64: declare_print(
-            module,
-            &format!("{prefix}_f64"),
-            &[context.f64_type().into()],
-        ),
+        int: declare("int"),
+        f64: declare("f64"),
         bool,
-        char: declare_print(
-            module,
-            &format!("{prefix}_char"),
-            &[context.i32_type().into()],
-        ),
-        str: declare_print(module, &format!("{prefix}_str"), bytes_len),
+        char: declare("char"),
+        str: declare("str"),
     }
 }
 
-/// Declares the runtime print function `name`, which takes `params` and returns nothing.
-/// The runtime is built with `panic = "abort"`, so it never unwinds. Of the module's memory, a
-/// print reads only what a pointer parameter points to; otherwise it uses only the runtime's
-/// own buffer and state (inaccessible memory) and can set `errno`. It can also exit the
-/// process, so there is no `willreturn`. Treating the runtime's allocator as inaccessible memory matches LLVM's
-/// own annotation of `malloc`. These attributes assume no LTO, no `atexit` handlers and no
-/// module globals that the runtime reaches.
-fn declare_print<'ctx>(
-    module: &Module<'ctx>,
-    name: &str,
-    params: &[BasicMetadataTypeEnum<'ctx>],
-) -> FunctionValue<'ctx> {
-    // LLVM 22's `MemoryEffects` encoding (`llvm/Support/ModRef.h`): two bits per location,
-    // `Ref` 1 and `Mod` 2, lowest first: `ArgMem`, `InaccessibleMem`, `ErrnoMem`, then
-    // everything else. So this is `ErrnoMem` 3, `InaccessibleMem` 3, `ArgMem` 0 or `Ref`, and
-    // none for `Other` and the target locations, globals included.
-    const MEMORY: u64 = 0b11_11_00;
-    let reads_args = params
-        .iter()
-        .any(|param| matches!(param, BasicMetadataTypeEnum::PointerType(_)));
-    let context = module.get_context();
-    let function = module.add_function(name, context.void_type().fn_type(params, false), None);
-    add_nounwind_memory(module, function, MEMORY | u64::from(reads_args));
-    function
-}
-
-/// Marks `function` `nounwind` with the `memory` effects `memory`, encoded as `declare_print`
+/// Marks `function` `nounwind` with the `memory` effects `memory`, encoded as `abi::Attrs`
 /// describes.
 fn add_nounwind_memory(module: &Module<'_>, function: FunctionValue<'_>, memory: u64) {
     let context = module.get_context();
