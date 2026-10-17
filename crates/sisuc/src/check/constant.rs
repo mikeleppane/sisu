@@ -391,7 +391,7 @@ fn evaluate(
             }
             // Each operand fits in an `i64`, so a `u8` result overflows only out of `u8`.
             int(match op {
-                BinaryOp::Add => l.checked_add(r),
+                BinaryOp::Add | BinaryOp::AddUnchecked => l.checked_add(r),
                 BinaryOp::Sub => l.checked_sub(r),
                 BinaryOp::Mul => l.checked_mul(r),
                 BinaryOp::Div => l.checked_div(r),
@@ -447,6 +447,7 @@ fn float_binary(op: BinaryOp, l: f64, r: f64) -> f64 {
         BinaryOp::Div => l / r,
         // The remainder has the sign of `l`, as LLVM's `frem` and C's `fmod`.
         BinaryOp::Rem => l % r,
+        BinaryOp::AddUnchecked => unreachable!("the checker should step only `i64` counters"),
         BinaryOp::And | BinaryOp::Or => {
             unreachable!("`&&` and `||` should take the `bool` arms of `evaluate`")
         }

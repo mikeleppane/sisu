@@ -31,6 +31,10 @@ impl<'ctx> Codegen<'ctx, '_> {
         };
         match op {
             BinaryOp::Add => self.checked(&intrinsic("add"), l, r, span),
+            BinaryOp::AddUnchecked => self
+                .builder
+                .build_int_nsw_add(l, r, "step")
+                .expect(POSITIONED),
             BinaryOp::Sub => self.checked(&intrinsic("sub"), l, r, span),
             BinaryOp::Mul => self.checked(&intrinsic("mul"), l, r, span),
             BinaryOp::Div | BinaryOp::Rem => self.division(op == BinaryOp::Rem, signed, l, r, span),
@@ -56,6 +60,9 @@ impl<'ctx> Codegen<'ctx, '_> {
             BinaryOp::Mul => b.build_float_mul(l, r, "product"),
             BinaryOp::Div => b.build_float_div(l, r, "quotient"),
             BinaryOp::Rem => b.build_float_rem(l, r, "remainder"),
+            BinaryOp::AddUnchecked => {
+                unreachable!("the checker should step only `i64` counters, never `f64`")
+            }
             BinaryOp::And | BinaryOp::Or => {
                 unreachable!("the checker should type `and` and `or` `bool`, never `f64`")
             }

@@ -24,6 +24,9 @@ pub(crate) struct EnumId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BinaryOp {
     Add,
+    /// `+` on `i64`s that the checker emits only where it cannot overflow: a loop counter's
+    /// step. No overflow check; codegen emits `add nsw`.
+    AddUnchecked,
     Sub,
     Mul,
     Div,
@@ -595,6 +598,7 @@ impl fmt::Display for BinaryOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             BinaryOp::Add => "+",
+            BinaryOp::AddUnchecked => "+unchecked",
             BinaryOp::Sub => "-",
             BinaryOp::Mul => "*",
             BinaryOp::Div => "/",
@@ -1366,6 +1370,7 @@ mod tests {
     fn prints_every_binary_operator() {
         let ops = [
             (BinaryOp::Add, "+"),
+            (BinaryOp::AddUnchecked, "+unchecked"),
             (BinaryOp::Sub, "-"),
             (BinaryOp::Mul, "*"),
             (BinaryOp::Div, "/"),
